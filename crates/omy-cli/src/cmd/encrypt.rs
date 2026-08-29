@@ -62,6 +62,14 @@ pub struct Args {
     #[arg(long, value_enum, value_name = "PROFILE")]
     pub kdf_profile: Option<KdfProfile>,
 
+    /// 加入已有库：复用该文件（或该目录下任一文件）的 vault salt 与 KDF 参数
+    ///
+    /// 不指定时会生成新的随机 salt，产出的文件**自成一库**——
+    /// 即使用同一个密码，也需要为它单独跑一次 Argon2 才能解开。
+    /// 分批加密到同一个文件夹时必须指定这个参数，否则每批都是独立的库。
+    #[arg(long, value_name = "PATH")]
+    pub vault: Option<PathBuf>,
+
     /// AEAD 算法
     #[arg(long, value_enum, value_name = "CIPHER")]
     pub cipher: Option<Cipher>,
@@ -263,9 +271,35 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         bail!("最多 8 个密码 slot，当前 {}", passwords.len());
     }
 
-    // vault salt：同一次调用内共享，使 KEK 可复用
-    let vault_salt = omy_core::util::random_16();
-    let params = profile.params();
+    // vault salt：同一次调用内共享，使 KEK 可复用。
+    //
+    // 指定 --vault 时改为沿用已有库的 salt 与 KDF 参数。
+    // 这两者必须一起沿用：salt 相同但参数不同，派生出的仍是
+    // 不同的 KEK，文件照样打不开——而且症状是「密码正确却解不开」，
+    // 极难排查。
+    let (vault_salt, params) = match &a.vault {
+        Some(p) => {
+            let (salt, existing) = read_vault_params(p)?;
+            if a.kdf_profile.is_some() && existing != profile.params() {
+                // 用户同时指定了 --vault 和 --kdf-profile 且两者冲突。
+                // 不能静默采用其中之一：沿用已有参数会让 --kdf-profile
+                // 失效（用户以为改了强度），采用新参数则文件进不了那个库。
+                bail!(
+                    "--vault 指定的库使用 m={} t={} p={}，与 --kdf-profile 的 m={} t={} p={} 冲突。\n\
+                     加入已有库时不能改 KDF 参数——同一库内参数必须一致，否则同一密码会派生出不同的 KEK。\n\
+                     去掉 --kdf-profile 即可沿用该库的参数。",
+                    existing.m_kib, existing.t, existing.p,
+                    profile.params().m_kib, profile.params().t, profile.params().p
+                );
+            }
+            ctx.out.detail(&format!(
+                "加入已有库：沿用 {} 的 vault salt 与 KDF 参数",
+                p.display()
+            ));
+            (salt, existing)
+        }
+        None => (omy_core::util::random_16(), profile.params()),
+    };
 
     ctx.out.detail(&format!(
         "派生 KEK：Argon2id m={} t={} p={}（{} 个密码，只跑一次）",
@@ -562,4 +596,58 @@ fn verify_then_delete(ctx: &Ctx<'_>, orig: &Path, enc: &[u8], keks: &[Kek]) -> R
         .with_context(|| format!("删除 {} 失败", orig.display()))?;
     ctx.out.info(&format!("已删除原文件 {}", orig.display()));
     Ok(())
+}
+
+/// 从已有的 omy 文件读出 vault salt 与 KDF 参数，用于 `--vault`。
+///
+/// 传目录时取其中第一个可解析的文件——同一库内这些参数本就一致，
+/// 取哪个都一样。传文件时直接读它。
+///
+/// 只读文件开头一小段：头部就在最前面，为了取 16 字节的盐
+/// 去读一个 800 MB 的视频没有道理。
+fn read_vault_params(p: &Path) -> Result<([u8; 16], omy_core::crypto::Argon2Params)> {
+    let candidates: Vec<PathBuf> = if p.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(p)
+            .with_context(|| format!("无法读取目录 {}", p.display()))?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|q| q.is_file())
+            .collect();
+        // 排序让结果可复现：目录遍历顺序在不同文件系统上不保证一致，
+        // 「取第一个」若每次不同会让问题难以复现
+        v.sort();
+        v
+    } else {
+        vec![p.to_path_buf()]
+    };
+
+    if candidates.is_empty() {
+        bail!("{} 中没有文件", p.display());
+    }
+
+    for c in &candidates {
+        let Ok(bytes) = read_header_prefix(c) else {
+            continue;
+        };
+        if let Ok(h) = omy_core::file::peek_header(&bytes) {
+            return Ok((h.vault_salt, h.argon2_params()));
+        }
+    }
+
+    bail!(
+        "{} 中没有可识别的 omy 文件，无法取得 vault salt",
+        p.display()
+    )
+}
+
+/// 只读文件开头的头部区域。
+fn read_header_prefix(p: &Path) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(p).with_context(|| format!("无法打开 {}", p.display()))?;
+    // 4 KiB 足够覆盖固定头与 slot 区；TLV 区可能更长，
+    // 但 peek_header 只需要固定头
+    let mut buf = vec![0u8; 4096];
+    let got = f.read(&mut buf)?;
+    buf.truncate(got);
+    Ok(buf)
 }

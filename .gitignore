@@ -20,6 +20,10 @@ src-tauri/target/
 # 例外：spike 的前端页面是手写源码，不是构建产物，必须入库
 !/spikes/webview-range/dist/
 !/spikes/webview-range/dist/**
+# 例外：GUI 的 dist/ 同样是手写源码（无打包步骤，运行时直接读取），
+# 若被上面的 dist/ 规则吞掉，应用启动就是一片空白
+!/crates/omy-gui/dist/
+!/crates/omy-gui/dist/**
 
 # 开发期工具（便携版 ffmpeg 等，体积大且可脚本重建）
 /tools/
@@ -29,6 +33,12 @@ src-tauri/target/
 
 # tauri-build 自动生成的 ACL schema，每次构建重新产出
 /spikes/**/gen/schemas/
+/crates/**/gen/schemas/
+
+# 一次性调试脚本（precommit-check、peek-tail 之类，用完即弃）
+/spikes/peek-tail.ps1
+/spikes/precommit-check.ps1
+/spikes/probe-vault-salt.ps1
 
 # 编辑器与操作系统
 .vscode/*

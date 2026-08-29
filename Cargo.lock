@@ -2395,6 +2395,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omy-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "omy-core",
+ "omy-media",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "omy-media"
 version = "0.1.0"
 dependencies = [

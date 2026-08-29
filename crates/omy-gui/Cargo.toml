@@ -1,0 +1,46 @@
+[package]
+name = "omy-gui"
+description = "omy 图形界面：Tauri v2 + WebView，加密文件浏览、预览与播放。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+# GUI 与 CLI 同为 GPL-3.0（决策 D-25 的分层许可策略）：
+# core/net 用 MIT OR Apache-2.0 保持可复用，cli/gui 用 GPL-3.0 保障用户自由。
+# 依赖 LGPL 的 omy-media 在这个方向上是允许的。
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "omy-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+omy-core = { path = "../omy-core" }
+omy-media = { path = "../omy-media" }
+# 不启用 protocol-asset：所有内容都走自定义的 omystream:// 协议。
+# asset 协议会直接暴露文件系统路径，与「明文不落盘」的目标相悖。
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+sys-locale.workspace = true
+dirs.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+# GUI 直接面对用户的任意文件与任意操作，同样不允许 panic 类模式。
+# 允许算术与整数除法：大量做像素、进度、字节数的换算，
+# 且这些计算不参与密钥派生或偏移寻址。
+[lints.clippy]
+indexing_slicing        = "warn"
+unwrap_used             = "warn"
+panic                   = "warn"
+expect_used             = "warn"
+todo                    = "warn"
+unimplemented           = "warn"

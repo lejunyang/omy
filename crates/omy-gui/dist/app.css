@@ -1,0 +1,575 @@
+/* omy 界面样式
+ *
+ * 色值与尺寸全部取自 docs/research/08-ui-ux-design.md §4，
+ * 不自行发挥——那份文档的配色已经过对比度校验（WCAG AA）。
+ *
+ * 布局一律用逻辑属性（margin-inline-start 而非 margin-left），
+ * 为将来的 RTL 预留（文档 §7.5）。事后再改代价很高。
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --bg2: #161b22;
+  --bg3: #1c2128;
+  --border: #30363d;
+  --fg: #e6edf3;
+  --fg2: #8b949e;
+  --accent: #4493f8;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --r-s: 4px;
+  --r-m: 8px;
+  --r-l: 12px;
+  /* 基准单位 4px，所有间距是它的倍数 */
+  --sp: 4px;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg2: #f7f8fa;
+  --bg3: #eef0f3;
+  --border: #e5e7eb;
+  --fg: #1f2328;
+  --fg2: #656d76;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --danger: #dc2626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/20px 'Segoe UI Variable', 'Microsoft YaHei UI', -apple-system,
+    'PingFang SC', 'Inter', 'Noto Sans CJK SC', sans-serif;
+  /* 选中文本时不要出现系统默认的高亮闪烁 */
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* 尊重系统的减少动效设置（文档 §8） */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 焦点指示：2px 强调色描边，不依赖颜色单独传达信息 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+}
+
+/* ---------- 布局骨架 ---------- */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.topbar {
+  height: 48px;
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 3);
+  padding-inline: calc(var(--sp) * 4);
+  background: var(--bg2);
+  border-block-end: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.5px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.search {
+  width: 260px;
+  height: 28px;
+  padding-inline: calc(var(--sp) * 2.5);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  color: var(--fg);
+}
+
+.search::placeholder {
+  color: var(--fg2);
+}
+
+.lockstate {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  padding: calc(var(--sp)) calc(var(--sp) * 2.5);
+  border-radius: var(--r-m);
+  font-size: 12px;
+  background: var(--bg3);
+}
+
+.lockstate[data-on='1'] {
+  color: var(--ok);
+}
+
+.lockstate[data-on='0'] {
+  color: var(--fg2);
+}
+
+.iconbtn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-m);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.iconbtn:hover {
+  background: var(--bg3);
+}
+
+.iconbtn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 220px;
+  flex: 0 0 220px;
+  background: var(--bg2);
+  border-inline-end: 1px solid var(--border);
+  padding: calc(var(--sp) * 3);
+  overflow-y: auto;
+}
+
+.side-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-block: calc(var(--sp) * 2) calc(var(--sp) * 1.5);
+}
+
+.side-item {
+  display: block;
+  width: 100%;
+  text-align: start;
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border-radius: var(--r-s);
+  color: var(--fg);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-item:hover {
+  background: var(--bg3);
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolbar {
+  height: 40px;
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding-inline: calc(var(--sp) * 4);
+  border-block-end: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--fg2);
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: calc(var(--sp) * 3);
+}
+
+.statusbar {
+  height: 32px;
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 3);
+  padding-inline: calc(var(--sp) * 4);
+  background: var(--bg2);
+  border-block-start: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+/* ---------- 文件网格 ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: start;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.12s;
+}
+
+.card:hover {
+  border-color: var(--accent);
+}
+
+.card .thumb {
+  height: 120px;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: var(--fg2);
+  overflow: hidden;
+  position: relative;
+}
+
+.card .thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card .info {
+  padding: calc(var(--sp) * 2);
+  min-height: 60px;
+}
+
+.card .name {
+  font-size: 13px;
+  line-height: 18px;
+  /* 长文件名截断成两行，避免卡片高度参差 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.card .meta {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--fg2);
+  margin-block-start: calc(var(--sp));
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp));
+}
+
+/* 锁定的卡片：灰调，且不显示任何真实信息 */
+.card[data-locked='1'] .name {
+  color: var(--fg2);
+}
+
+.tier {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+/* ---------- 列表视图 ---------- */
+
+.list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.list th {
+  text-align: start;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--fg2);
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border-block-end: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+
+.list td {
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border-block-end: 1px solid var(--border);
+  height: 40px;
+}
+
+.list tbody tr {
+  cursor: pointer;
+}
+
+.list tbody tr:hover {
+  background: var(--bg2);
+}
+
+/* ---------- 空状态 ---------- */
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--sp) * 2);
+  color: var(--fg2);
+}
+
+.empty .icon {
+  font-size: 48px;
+  opacity: 0.6;
+}
+
+.empty .title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* ---------- 按钮 ---------- */
+
+.btn {
+  height: 32px;
+  padding-inline: calc(var(--sp) * 4);
+  border-radius: var(--r-m);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.btn.primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- 解锁界面 ---------- */
+
+.unlock-screen {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.unlock-box {
+  width: 380px;
+  padding: calc(var(--sp) * 8);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-l);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--sp) * 3);
+}
+
+.unlock-box .lock-icon {
+  font-size: 40px;
+  text-align: center;
+}
+
+.unlock-box h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.unlock-box .hint {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg2);
+  text-align: center;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--sp));
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.field input {
+  height: 32px;
+  padding-inline: calc(var(--sp) * 2.5);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  color: var(--fg);
+  width: 100%;
+}
+
+.field input:focus {
+  border-color: var(--accent);
+}
+
+.errbox {
+  padding: calc(var(--sp) * 2) calc(var(--sp) * 2.5);
+  border-radius: var(--r-m);
+  font-size: 12px;
+  line-height: 16px;
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
+}
+
+.folder-row {
+  display: flex;
+  gap: calc(var(--sp) * 2);
+  align-items: center;
+}
+
+.folder-row .path {
+  flex: 1;
+  font-size: 12px;
+  color: var(--fg2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 长路径优先显示尾部——尾部才是有用的信息 */
+  text-align: start;
+}
+
+/* ---------- 预览层 ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 82%);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.overlay-bar {
+  height: 48px;
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 3);
+  padding-inline: calc(var(--sp) * 4);
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+}
+
+.overlay-bar .title {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: calc(var(--sp) * 4);
+}
+
+.overlay-body video,
+.overlay-body img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.overlay-body audio {
+  width: min(560px, 90%);
+}
+
+.overlay-body pre {
+  max-width: 900px;
+  max-height: 100%;
+  overflow: auto;
+  background: var(--bg2);
+  color: var(--fg);
+  padding: calc(var(--sp) * 4);
+  border-radius: var(--r-m);
+  font: 13px/20px 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.overlay-msg {
+  color: #fff;
+  text-align: center;
+  font-size: 14px;
+  opacity: 0.85;
+}

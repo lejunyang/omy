@@ -1,0 +1,65 @@
+{
+  "app": { "name": "omy", "tagline": "Encrypted vault" },
+  "unlock": {
+    "title": "Unlock",
+    "password": "Password",
+    "label": "Password name",
+    "label_hint": "Distinguishes multiple passwords, e.g. \"work\", \"personal\"",
+    "submit": "Unlock",
+    "deriving": "Deriving key…",
+    "scanning": "Scanning…",
+    "pick_folder": "Choose a folder first",
+    "pick_folder_hint": "Unlock parameters live inside the files, so pick a folder before entering a password",
+    "browse": "Choose folder…",
+    "add_password": "Add password",
+    "recursive": "Include subfolders"
+  },
+  "status": {
+    "locked": "Locked",
+    "unlocked": "Unlocked",
+    "credentials_one": "{{count}} password unlocked",
+    "credentials_other": "{{count}} passwords unlocked",
+    "files_one": "{{count}} file",
+    "files_other": "{{count}} files",
+    "total_size": "{{size}} total",
+    "lock_now": "Lock"
+  },
+  "file": {
+    "locked_name": "🔒 Encrypted file",
+    "locked_meta": "Locked",
+    "unknown": "Unknown",
+    "open_external": "Open with external app",
+    "reveal": "Show in file manager"
+  },
+  "playback": {
+    "tier_p1": "Direct",
+    "tier_p2": "Remux",
+    "tier_p3": "Transcode",
+    "tier_p1_desc": "No processing, fastest seek",
+    "tier_p2_desc": "Container swap only, no re-encode",
+    "tier_p3_desc": "Requires re-encoding, slower",
+    "cannot_preview": "This format cannot be previewed in-app",
+    "loading": "Loading…"
+  },
+  "view": {
+    "grid": "Grid view",
+    "list": "List view",
+    "empty_title": "No encrypted files yet",
+    "empty_hint": "Choose a folder containing .omy files",
+    "no_match": "No matching files",
+    "name": "Name",
+    "size": "Size",
+    "kind": "Kind",
+    "search": "Search…"
+  },
+  "kind": {
+    "video": "Video",
+    "audio": "Audio",
+    "image": "Image",
+    "text": "Text",
+    "other": "Other"
+  },
+  "theme": { "toggle": "Toggle theme", "dark": "Dark", "light": "Light" },
+  "lang": { "toggle": "Language / 语言" },
+  "actions": { "cancel": "Cancel", "confirm": "OK", "close": "Close", "retry": "Retry" }
+}

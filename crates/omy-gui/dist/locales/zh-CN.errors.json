@@ -1,0 +1,18 @@
+{
+  "wrong_password": "密码不正确，或此文件不属于当前密码",
+  "empty_password": "请输入密码",
+  "bad_salt": "文件头中的盐格式不正确，文件可能已损坏",
+  "no_vault_selected": "请先选择一个文件夹",
+  "not_a_directory": "这不是一个文件夹",
+  "io_error": "无法读取该文件夹，可能没有权限",
+  "no_omy_file_found": "此文件夹中没有找到 omy 加密文件",
+  "file_not_found": "找不到这个文件，它可能已被移动或删除",
+  "scan_failed": "扫描失败",
+  "internal": "内部错误",
+  "load_failed": "加载失败",
+  "preview_failed": "无法预览此文件",
+  "media_error_1": "加载被中止",
+  "media_error_2": "网络错误，无法读取数据",
+  "media_error_3": "解码失败，文件可能已损坏",
+  "media_error_4": "此格式无法在应用内播放"
+}

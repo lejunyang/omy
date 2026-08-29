@@ -1,0 +1,18 @@
+{
+  "wrong_password": "Incorrect password, or this file does not belong to it",
+  "empty_password": "Please enter a password",
+  "bad_salt": "Malformed salt in the file header; the file may be damaged",
+  "no_vault_selected": "Choose a folder first",
+  "not_a_directory": "Not a folder",
+  "io_error": "Cannot read this folder — permission may be missing",
+  "no_omy_file_found": "No omy encrypted files found in this folder",
+  "file_not_found": "File not found; it may have been moved or deleted",
+  "scan_failed": "Scan failed",
+  "internal": "Internal error",
+  "load_failed": "Failed to load",
+  "preview_failed": "Cannot preview this file",
+  "media_error_1": "Loading was aborted",
+  "media_error_2": "Network error while reading data",
+  "media_error_3": "Decoding failed; the file may be damaged",
+  "media_error_4": "This format cannot be played in-app"
+}
