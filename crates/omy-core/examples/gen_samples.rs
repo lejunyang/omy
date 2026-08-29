@@ -1,7 +1,14 @@
 //! 生成用于跨实现验证的样本文件。
 //!
-//! 由 `_xcheck.py` 调用：Rust 在此写出各种配置的 omy 文件，
-//! 再由 Python 参考实现独立读取。这是与 Rust 自身解码路径**完全无关**的验证通道。
+//! Rust 在此写出各种配置的 omy 文件，供其它实现（如 `docs/research/reference/omy_ref.py`）
+//! 独立读取。这是与 Rust 自身解码路径**完全无关**的验证通道：只靠 Rust 自测，
+//! 无法发现「编码与解码两侧同样误解了规范」这类偏差。
+//!
+//! 用法：`cargo run --example gen_samples -- <输出目录>`
+
+// 这是生成测试数据的工具，算术用于构造样本内容而非处理不可信输入，
+// 因此局部放宽相关 lint，不影响库代码的严格检查。
+#![allow(clippy::arithmetic_side_effects, clippy::integer_division)]
 
 use omy_core::crypto::{Argon2Params, CipherId, Kek};
 use omy_core::file::{EncryptOptions, RandomMaterial, encrypt};

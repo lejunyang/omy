@@ -119,6 +119,15 @@ impl Kek {
         &self.0
     }
 
+    /// 显式复制。
+    ///
+    /// 命名与 [`SecretKey::duplicate`] 一致，刻意不实现 `Clone`——这样审计时
+    /// 能搜出所有 KEK 复制点。扫描器需要它把会话缓存中的 KEK 传给解包函数。
+    #[must_use]
+    pub fn duplicate(&self) -> Self {
+        Self(self.0.duplicate())
+    }
+
     /// 用 Argon2id 从密码派生 KEK。
     ///
     /// # 开销

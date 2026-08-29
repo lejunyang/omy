@@ -10,11 +10,14 @@
 
 use crate::crypto::{CipherId, Fek, ZERO_NONCE};
 use crate::error::{Error, Result};
-use crate::header::FILENAME_BUCKET;
+use crate::header::{FILENAME_BUCKET, parse_limits};
 use crate::util::{Cursor, Writer};
 
 /// TLV 条目头长度（type 2 + flags 2 + length 4）。
 pub const TLV_HEADER_LEN: usize = 8;
+
+/// 压缩索引单条记录长度（u64 offset + u32 ct_len + u32 plain_len）。
+pub const INDEX_ENTRY_LEN: usize = 16;
 
 /// 已分配的 TLV 类型（规范 §4.4）。
 pub mod types {
@@ -177,13 +180,22 @@ impl TlvSet {
     /// 只做结构解析，不检查未知 CRITICAL 类型——那需要在 MAC 验证通过之后再做，
     /// 见 [`TlvSet::check_critical`]。
     ///
+    /// 条目数受 [`parse_limits::MAX_TLV_ENTRIES`] 限制，防止大量零长度条目耗尽内存。
+    ///
     /// # Errors
     ///
-    /// 长度字段越界或数据截断时返回 [`Error::Truncated`]。
+    /// - [`Error::Truncated`]：长度字段越界或数据截断
+    /// - [`Error::MalformedTlv`]：条目数超过上限
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data, "tlv area");
         let mut entries = Vec::new();
         while c.remaining() > 0 {
+            if entries.len() >= parse_limits::MAX_TLV_ENTRIES {
+                return Err(Error::MalformedTlv {
+                    tlv_type: 0,
+                    reason: "too many TLV entries",
+                });
+            }
             if c.remaining() < TLV_HEADER_LEN {
                 return Err(Error::Truncated {
                     context: "tlv entry header",
@@ -194,6 +206,8 @@ impl TlvSet {
             let tlv_type = c.u16le()?;
             let flags = c.u16le()?;
             let length = c.u32le()? as usize;
+            // take() 会做边界检查，因此这里无需额外校验 length 上界：
+            // 声明超长的条目会因数据不足而返回 Truncated
             let value = c.take(length)?.to_vec();
             entries.push(TlvEntry { tlv_type, flags, value });
         }
@@ -348,7 +362,9 @@ pub struct CompressionIndexEntry {
 #[must_use]
 pub fn encode_compression_index(entries: &[CompressionIndexEntry]) -> Vec<u8> {
     let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-    let mut w = Writer::with_capacity(4usize.saturating_add(entries.len().saturating_mul(16)));
+    let mut w = Writer::with_capacity(
+        4usize.saturating_add(entries.len().saturating_mul(INDEX_ENTRY_LEN)),
+    );
     w.u32le(count);
     for e in entries {
         w.u64le(e.ct_offset).u32le(e.ct_len).u32le(e.plain_len);
@@ -358,20 +374,36 @@ pub fn encode_compression_index(entries: &[CompressionIndexEntry]) -> Vec<u8> {
 
 /// 解码压缩索引表。
 ///
+/// # 分配安全
+///
+/// `entry_count` 来自不可信输入，因此在 `Vec::with_capacity` **之前**先校验上界，
+/// 再校验它与实际数据长度严格相符。否则声明 `entry_count = 0xFFFFFFFF` 的
+/// 4 字节数据就能触发 64 GiB 的预分配。
+///
 /// # Errors
 ///
-/// 数据截断或条目数与实际长度不符时返回 [`Error::MalformedTlv`]。
+/// 条目数超限、数据截断或条目数与实际长度不符时返回 [`Error::MalformedTlv`]。
 pub fn decode_compression_index(data: &[u8]) -> Result<Vec<CompressionIndexEntry>> {
     let mut c = Cursor::new(data, "compression index");
-    let count = c.u32le().map_err(|_| Error::MalformedTlv {
+    let count_u32 = c.u32le().map_err(|_| Error::MalformedTlv {
         tlv_type: types::COMPRESSION_INDEX,
         reason: "missing entry_count",
-    })? as usize;
+    })?;
 
-    let need = count.checked_mul(16).ok_or(Error::MalformedTlv {
+    // 先查上界，再谈分配
+    if count_u32 > parse_limits::MAX_INDEX_ENTRIES {
+        return Err(Error::MalformedTlv {
+            tlv_type: types::COMPRESSION_INDEX,
+            reason: "entry_count exceeds the parse limit",
+        });
+    }
+    let count = count_u32 as usize;
+
+    let need = count.checked_mul(INDEX_ENTRY_LEN).ok_or(Error::MalformedTlv {
         tlv_type: types::COMPRESSION_INDEX,
         reason: "entry_count overflows",
     })?;
+    // 严格相等：多余或不足都说明数据不可信
     if c.remaining() != need {
         return Err(Error::MalformedTlv {
             tlv_type: types::COMPRESSION_INDEX,

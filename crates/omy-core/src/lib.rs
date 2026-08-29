@@ -46,8 +46,11 @@
 pub mod crypto;
 pub mod error;
 pub mod file;
+pub mod fsatomic;
 pub mod header;
 pub mod payload;
+pub mod scan;
+pub mod session;
 pub mod shard;
 pub mod slot;
 pub mod tlv;
@@ -59,7 +62,10 @@ pub use file::{
     EncryptOptions, EncryptedFile, OpenedFile, RandomMaterial, encrypt, is_omy_file, open,
     open_with_password, peek_header,
 };
+pub use fsatomic::{AtomicWriter, TempPlaintext, write_atomic};
 pub use header::{FixedHeader, MAGIC_FILE, MAGIC_SHARD, flags};
+pub use scan::{ScanHit, ScanOptions, ScanResult, UnlockOutcome, probe_file, scan_dir};
+pub use session::{CredentialKind, SessionKeys};
 pub use shard::{ShardHeader, merge, split};
 pub use tlv::{TlvEntry, TlvSet};
 

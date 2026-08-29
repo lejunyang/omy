@@ -62,6 +62,35 @@ pub fn decrypt_chunk(
         .ok_or(Error::ChunkAuthFailed { index: u64::from(index) })
 }
 
+/// 解压单个块，并约束输出大小不超过 `chunk_size`。
+///
+/// # 为什么要约束
+///
+/// `plain_len` 来自索引表（不可信输入）。虽然 `zstd::bulk::decompress` 的第二参数
+/// 是容量上限、超出会报错而非分配，但若不额外约束到 `chunk_size`，一个块就能声明
+/// 解压出远超分块大小的数据，破坏「块内偏移可由 `chunk_size` 推算」这一前提，
+/// 也为解压炸弹留了口子。
+fn decompress_chunk(body: &[u8], plain_len: u32, chunk_size: u32) -> Result<Vec<u8>> {
+    if plain_len > chunk_size {
+        return Err(Error::MalformedTlv {
+            tlv_type: crate::tlv::types::COMPRESSION_INDEX,
+            reason: "index plain_len exceeds chunk_size",
+        });
+    }
+    let out = zstd::bulk::decompress(body, plain_len as usize)
+        .map_err(|err| Error::Compression { reason: err.to_string() })?;
+    // zstd 已按上限截断，这里再确认一次实际长度与声明相符
+    if out.len() != plain_len as usize {
+        return Err(Error::Compression {
+            reason: format!(
+                "decompressed length {} does not match index plain_len {plain_len}",
+                out.len()
+            ),
+        });
+    }
+    Ok(out)
+}
+
 /// 分块加密整个明文。
 ///
 /// 返回 `(密文, 压缩索引)`。仅当启用压缩时索引非空——未压缩时偏移由公式算出，
@@ -189,8 +218,7 @@ pub fn decrypt_payload(
                 is_final,
                 ct,
             )?;
-            let plain = zstd::bulk::decompress(&body, e.plain_len as usize)
-                .map_err(|err| Error::Compression { reason: err.to_string() })?;
+            let plain = decompress_chunk(&body, e.plain_len, header.chunk_size)?;
             out.extend_from_slice(&plain);
         }
     } else {
@@ -304,8 +332,7 @@ where
                 is_final,
                 &ct,
             )?;
-            zstd::bulk::decompress(&body, e.plain_len as usize)
-                .map_err(|err| Error::Compression { reason: err.to_string() })?
+            decompress_chunk(&body, e.plain_len, header.chunk_size)?
         } else {
             let (abs_off, ct_len) = header.chunk_ct_range(i)?;
             let rel = abs_off

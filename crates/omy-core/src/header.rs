@@ -53,6 +53,59 @@ pub const MOBILE_MAX_CHUNK_SIZE: u32 = 1024 * 1024;
 /// 文件名 padding 的桶大小。
 pub const FILENAME_BUCKET: usize = 64;
 
+/// 固定头中 `header_len` 字段的字节偏移。
+///
+/// 布局：`magic(8) + version_major(2) + version_minor(2)` = 12。
+///
+/// 扫描器需要在**不做完整解析**的前提下先取出 `header_len`，以便决定还要再读
+/// 多少字节（完整解析需要 slot 区之后的数据，此时还没读到）。因此这个偏移必须
+/// 作为公开常量暴露，而不是散落的魔数。
+pub const HEADER_LEN_FIELD_OFFSET: usize = 12;
+
+// 若固定头布局调整而此常量未同步，扫描器会读到错误的长度且不报错——用静态断言锁住
+const _: () = assert!(
+    HEADER_LEN_FIELD_OFFSET == MAGIC_FILE.len() + 2 + 2,
+    "HEADER_LEN_FIELD_OFFSET 必须等于 magic + version_major + version_minor 的长度"
+);
+
+/// 解析不可信输入时的健壮性上界（见 `docs/research/07-platform-and-sidechannels.md` §8.3）。
+///
+/// # 为什么这些上界必须存在
+///
+/// 头部里的长度字段来自**不可信的文件内容**。若不设上界，一个 12 字节的恶意头部
+/// 声明 `tlv_len = 0xFFFFFFFF` 就能让实现尝试分配 4 GiB 内存——无需任何有效密钥，
+/// 纯粹的拒绝服务。
+///
+/// # 这一组与 [`MIN_CHUNK_SIZE`] 那一组的区别
+///
+/// 本模块存在**两套**边界，用途完全不同，不可混用：
+///
+/// | 用途 | 常量 | 作用位置 |
+/// |---|---|---|
+/// | 解析上界（防 DoS） | `parse_limits::*` | 读取任何文件时，**必须**校验 |
+/// | 新建策略范围 | [`MIN_CHUNK_SIZE`]/[`MAX_CHUNK_SIZE`] | 仅创建文件时校验 |
+///
+/// 解析上界比策略范围宽松得多，这是刻意的：格式允许的取值范围应大于本实现推荐用户
+/// 选择的范围，否则会拒绝其它实现产出的合法文件（测试向量 v3/v4 即用 4096/2048
+/// 字节的块）。
+pub mod parse_limits {
+    /// `header_len` 上限：64 MiB。含缩略图的头部也远小于此值。
+    pub const MAX_HEADER_LEN: u32 = 64 * 1024 * 1024;
+    /// `tlv_len` 上限：32 MiB。
+    pub const MAX_TLV_LEN: u32 = 32 * 1024 * 1024;
+    /// TLV 条目数上限，防止大量零长度条目耗尽内存。
+    pub const MAX_TLV_ENTRIES: usize = 4096;
+    /// 压缩索引条目数上限。
+    pub const MAX_INDEX_ENTRIES: u32 = 16 * 1024 * 1024;
+    /// 解析时接受的最大分块大小：64 MiB。
+    ///
+    /// 这是**唯一**需要卡住的分块边界：过大的 `chunk_size` 会让单块解密
+    /// 一次性分配巨额内存。
+    pub const MAX_PARSE_CHUNK_SIZE: u32 = 64 * 1024 * 1024;
+    /// 容器模式目录条目数上限。
+    pub const MAX_FOLDER_ENTRIES: usize = 10_000_000;
+}
+
 /// KDF 标识：Argon2id。
 pub const KDF_ARGON2ID: u8 = 1;
 /// 压缩标识：不压缩。
@@ -218,11 +271,14 @@ impl FixedHeader {
         Ok(h)
     }
 
-    /// 校验字段自洽性。
+    /// 校验字段自洽性与解析上界。
+    ///
+    /// 上界校验在**分配任何内存之前**完成，这样恶意头部无法通过声明巨大长度
+    /// 触发大额分配（见 `docs/research/07-platform-and-sidechannels.md` §8.3）。
     ///
     /// # Errors
     ///
-    /// 任一字段非法或字段间矛盾时返回 [`Error::MalformedHeader`]。
+    /// 任一字段非法、超出解析上界，或字段间矛盾时返回 [`Error::MalformedHeader`]。
     pub fn validate(&self) -> Result<()> {
         if self.slot_count as usize != SLOT_COUNT {
             return Err(Error::MalformedHeader { reason: "slot_count must be 8" });
@@ -236,24 +292,53 @@ impl FixedHeader {
         if self.chunk_version != 0 {
             return Err(Error::MalformedHeader { reason: "chunk_version must be 0 in v1" });
         }
+
+        // ---- 解析上界：必须在任何内存分配之前拒绝 ----
+        if self.header_len > parse_limits::MAX_HEADER_LEN {
+            return Err(Error::MalformedHeader {
+                reason: "header_len exceeds the 64 MiB parse limit",
+            });
+        }
+        if self.tlv_len > parse_limits::MAX_TLV_LEN {
+            return Err(Error::MalformedHeader {
+                reason: "tlv_len exceeds the 32 MiB parse limit",
+            });
+        }
+        // chunk_size 只卡上限，不卡下限。
+        //
+        // 设计文档 §8.3 曾建议 MIN_CHUNK_SIZE = 4096，但测试向量 v4 使用 2048 字节块，
+        // v3 使用 4096。向量由参考实现产出且已验证，是可执行的事实；而小块**不构成
+        // DoS 风险**（只会让文件略大），真正危险的是过大的 chunk_size 导致单块解密
+        // 一次性分配巨额内存。因此这里只拒绝过大值和零值。
         if self.chunk_size == 0 {
             return Err(Error::MalformedHeader { reason: "chunk_size must not be zero" });
         }
-        // header_len 必须至少容纳固定头 + slot 区 + 声明的 TLV + MAC
-        let min_len = TLV_AREA_OFFSET
+        if self.chunk_size > parse_limits::MAX_PARSE_CHUNK_SIZE {
+            return Err(Error::MalformedHeader {
+                reason: "chunk_size exceeds the 64 MiB parse limit",
+            });
+        }
+
+        // header_len 必须严格等于 96 + 384 + tlv_len + 32
+        let expect_len = TLV_AREA_OFFSET
             .checked_add(self.tlv_len as usize)
             .and_then(|v| v.checked_add(HEADER_MAC_LEN))
             .ok_or(Error::MalformedHeader { reason: "tlv_len overflows header_len" })?;
-        if (self.header_len as usize) < min_len {
-            return Err(Error::MalformedHeader {
-                reason: "header_len too small for declared tlv_len",
-            });
-        }
-        if (self.header_len as usize) != min_len {
+        if (self.header_len as usize) != expect_len {
             return Err(Error::MalformedHeader {
                 reason: "header_len does not match 96 + 384 + tlv_len + 32",
             });
         }
+
+        // plaintext_size 与 chunk_size 组合出的块数不得超过 u32
+        // （nonce 中的块序号是 u32be，越界会导致 nonce 复用）
+        let n = self.n_chunks();
+        if n > u64::from(u32::MAX) {
+            return Err(Error::MalformedHeader {
+                reason: "chunk count exceeds u32; nonce space would be exhausted",
+            });
+        }
+
         // COMPRESSED 与 compress_id 必须一致，否则会按错误方式解读载荷
         let compressed_flag = self.flags & flags::COMPRESSED != 0;
         if compressed_flag != (self.compress_id == COMPRESS_ZSTD) {
