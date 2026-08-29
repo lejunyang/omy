@@ -201,7 +201,17 @@ faststart 在 Web 上是刚需，是因为**跨公网的每次 seek 都要付一
 | 老资源 | XviD + AC-3 | ❌ 全部需转码 |
 | 现代 web-dl | H.264/H.265 + AAC | ✅ 可直接 remux |
 
-**MP4 容器的硬限制**：DTS、DTS-HD、TrueHD、Vorbis 无法封入；PGS/VobSub 图形字幕无法转 `mov_text`；FLAC/Opus 虽然新版规范支持但很多播放器不认。
+**MP4 容器的硬限制**：DTS、DTS-HD、TrueHD、Vorbis 无法封入；PGS/VobSub 图形字幕无法转 `mov_text`。
+
+> **实测修正（2026-08-30）**：原文此处曾写「FLAC/Opus 虽然新版规范支持但很多播放器不认」。
+> 实测与 MDN 均确认这一说法已过时：
+>
+> - FFmpeg 可将 FLAC `-c copy` 直接 remux 进 MP4（tag 为 `fLaC`），音轨完整保留、可正常解码；
+> - MDN 的 Web audio codec guide 明确列出 FLAC 的容器支持包含 MP4，
+>   浏览器解码支持覆盖 Chrome/Edge/Firefox/Safari（Safari iOS 11+ / macOS 13+）。
+>
+> 因此 `tier.rs` 的 `MP4_INCOMPATIBLE_AUDIO` **不含** flac/opus，判定按实际能力而非此段旧描述。
+> 唯一需注意的是 remux 时 FFmpeg 会输出 `codec frame size is not set` 警告，不影响播放。
 
 → **P2 的实际收益要打折扣，很多 MKV 会落到 P3。**
 
@@ -265,6 +275,20 @@ UI 提供播放方式选择，不强制自动决策：
 ```
 
 **关键**：底层的"解密某个字节区间"逻辑与 P1 完全共用，只是上层多了 demux/mux 一层。
+
+> **实现验证（2026-08-30）**：本节设想的方案已用真实素材端到端验证通过
+> （`crates/omy-media/examples/verify_remux.rs`，42 项断言）。三点实测结论：
+>
+> 1. **必须走这条路，没有捷径**。FFmpeg 的输入 seek（`-ss` 在 `-i` 前）在
+>    管道输入下**失效**，报 `Seek to desired resync point failed`，
+>    产物只有 `ftyp`+`moov` 而无 `moof`。输出 seek 可用但要从头解完整个流。
+> 2. **裸 Cluster 无法 demux**，报 `Invalid data found`——解码器需要
+>    Tracks 元素才知道编码参数。必须 `文件头 + Cluster 区间` 拼接。
+> 3. **头部很小**。实测 60 秒素材的头部仅 **754 字节**，拼接开销可忽略。
+>    seek 到 0/10/25/45/59 秒均能产出可播放片段（63–133 KB）。
+>
+> 已实现于 `omy-media` 的 `mkv`（EBML 解析、Cluster 索引、拼接）
+> 与 `remux`（fMP4 产出、init segment、轨道映射）两个模块。
 
 ### 6.3 ⚠️ MSE 的平台限制
 

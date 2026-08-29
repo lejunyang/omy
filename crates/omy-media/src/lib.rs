@@ -49,9 +49,11 @@
 pub mod error;
 pub mod ffprobe;
 pub mod meta;
+pub mod mkv;
 pub mod mp4;
 pub mod prepare;
 pub mod probe;
+pub mod remux;
 pub mod thumbnail;
 pub mod tier;
 

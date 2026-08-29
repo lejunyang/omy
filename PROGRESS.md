@@ -11,11 +11,11 @@
 |---|---|---|---|
 | `omy-core` | 🟢 格式核心可用 | 135 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
 | `omy-cli` | 🟢 12 个命令可用 | 50 项 + 79 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV |
-| `omy-media` | 🟢 探测/分级/moov/缩略图/prepare 可用 | 88 项 + 63 项真实文件验证 | LGPL，FFmpeg 封装 |
+| `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
-| `omy-gui` | ⚪ 未开始 | — | Tauri v2；**播放方案已由 S1 验证可行** |
+| `omy-gui` | ⚪ 未开始 | — | Tauri v2；**P1 播放已由 S1 验证，P2 链路已打通** |
 
-合计 **276 项自动化测试 + 79 项 CLI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **299 项自动化测试 + 79 项 CLI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -148,7 +148,7 @@
 ### 复现命令
 
 ```bash
-cargo test --workspace                            # 276 项
+cargo test --workspace                            # 299 项
 cargo clippy --workspace --all-targets -- -D warnings   # 零告警
 cargo build -p omy-cli && cargo build --release -p omy-cli
 pwsh -File scripts/verify-cli.ps1                 # 79 项端到端
@@ -159,9 +159,15 @@ cargo run --release --example fuzz_parse -- 20000
 cargo run --release --example audit_mac_scope
 cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 
-# omy-media：先生成素材，再跑真实文件验证（63 项）
+# omy-media：先生成素材，再跑真实文件验证
 pwsh -File spikes/make-media-fixtures.ps1
-cargo run --release --example verify_media -p omy-media
+pwsh -File spikes/make-seek-fixtures.ps1          # P2 需要 60s/60 关键帧素材
+cargo run --release --example verify_media -p omy-media    # 63 项
+cargo run --release --example verify_remux -p omy-media    # 42 项 P2 转封装
+
+# P2 的两轮 spike（实现前的可行性验证，产物保留供人工核对）
+pwsh -File spikes/spike-remux.ps1
+pwsh -File spikes/spike-mkv-seek.ps1
 ```
 
 > ⚠️ 跑端到端脚本前**必须先重新构建**。两个脚本已内置陈旧产物检测
@@ -236,6 +242,56 @@ TLV 落盘、解密还原这条完整链路。本脚本用**真实编译出的�
 `MediaMeta` 因此是独立定义的稳定结构，字段全部 `serde(default)` +
 `skip_serializing_if`，既兼容旧版也压体积。实测 MKV 素材的 meta 仅 **399 字节**。
 
+### P2 转封装验证（42 项，`examples/verify_remux.rs`）
+
+P2 是「容器不支持但编码支持」的播放路径：只换容器不重编码，
+耗时数十毫秒，而全解码转码是数百毫秒到秒级。
+
+实现前先做了两轮 spike，因为这条路有两个命门必须先证伪：
+
+| Spike | 问题 | 实测结论 |
+|---|---|---|
+| `spike-remux.ps1` | 管道进管道出能否产 fMP4 | ✅ 可以，`-c copy` 无重编码，353K→354K |
+| | 输入 seek 在管道下可用吗 | ❌ **失效**，`Seek to desired resync point failed` |
+| | init segment 能否单独产出 | ✅ `-frames 0` 产出 1253 字节的 `ftyp`+`moov` |
+| `spike-mkv-seek.ps1` | 裸 Cluster 能否 demux | ❌ `Invalid data found`（缺 Tracks） |
+| | 头部+中间 Cluster 拼接呢 | ✅ **成功**，754 B 头部 + 第 30 个 Cluster → 可解码 |
+
+第二条决定了架构：**不能靠 FFmpeg 自己 seek**，必须由调用方先算出
+目标时间对应的字节区间，只喂那一段。这正好复用与 P1 完全相同的
+「解密某个字节区间」逻辑，与文档 §6.2 的设想一致。
+
+验证覆盖（真实 60 秒 MKV，60 个关键帧 / 60 个 Cluster）：
+
+| 分组 | 关键断言 |
+|---|---|
+| EBML 解析 | 60 个 Cluster、Tracks 识别、时长 60023 ms、头部 754 B |
+| **交叉验证** | 正规 EBML 解析与裸字节扫描的 Cluster 偏移**逐个一致** |
+| 时间定位 | 30.5s → 第 30 个（**向前取整**，不能往后跳） |
+| 裸 Cluster | **必须失败**——这是"头部不可省"的反证 |
+| 拼接 remux | 产物含 `moof`、2 条流、时长 2.02s、真解码通过 |
+| 多点 seek | 0/10/25/45/59 秒均产出可播放片段（63–133 KB） |
+| init segment | 1253 B、含 `ftyp`+`moov`、**不含 `moof`**（符合定义） |
+| 轨道映射 | 只映射 `0:v:0` 时产物只有 1 条流 |
+| 截断文件 | 解析出 31 个 Cluster（< 60），可用部分仍能播放 |
+
+#### ⚠️ 不要用管道探测去核对 fMP4 的时长
+
+这个坑让我误判了一次。`empty_moov` 让 `moov` 不含总时长，时长分散在
+各个 `moof` 里，ffprobe 走管道读不到末尾，只能报**第一个 fragment** 的时长。
+
+实测对照（`spikes/dbg-fmp4-duration.ps1`）：
+
+| 探测方式 | 报告时长 |
+|---|---|
+| fMP4 + 文件路径（可 seek） | 60.02s ✅ |
+| fMP4 + 管道（不可 seek） | **2.04s** ❌ |
+| 非分片 MP4 + 管道 | 60.00s ✅ |
+| 真解码全片 | 60.02s ✅ |
+
+产物其实完全正确——60 个 `moof`、真解码满 60 秒、尺寸 100.1%。
+是断言用错了探测方式。核对完整性应当**数 `moof` 数量**，或用文件路径探测。
+
 
 ## 本轮修复的真实缺陷
 
@@ -254,6 +310,18 @@ TLV 落盘、解密还原这条完整链路。本脚本用**真实编译出的�
 | 9 | 误把 FFmpeg 的 stderr 当成有效产物 | 诊断脚本用 `> out 2>&1` 把 stdout 与 stderr 混进同一文件，又只检查"长度 > 100"，于是 844 字节的错误文本被判定为成功抽帧，据此得出「尾部 moov 也能抽帧」的错误结论，并按错误结论改了实现 | 校验产物必须看**内容特征**：`image_decodable` 先验 WebP/JPEG/PNG 魔数再真实解码；诊断时 stdout 与 stderr 必须分开重定向 |
 | 10 | `cat --range -256` 在真实 CLI 下直接失败 | clap 默认把以 `-` 开头的值当短选项，`--range -256` 报 `unexpected argument '-2' found`。`parse_range` 的单测全部通过——因为它测的是**解析函数**，而 clap 在把参数交给它**之前**就拒绝了。修缺陷 #6 时我加了这条端到端断言却没验证它能通过，等于加了个从未真正跑绿的断言 | 给 `range` 加 `allow_hyphen_values = true`；补 `clap_accepts_suffix_range` 测试直接验证**解析层**（含空格式、等号式，并固定「跟着的选项会被吃成值但 `parse_range` 必报错」这一副作用行为） |
 | 11 | 验证脚本用陈旧二进制跑出假失败 | `verify-cli.ps1` 硬编码 `target\debug\omy.exe`，而修复后只重建了 release，脚本拿着 19 分钟前的旧 debug 跑，报出一条已经修好的失败。我据此以为新代码有缺陷，追查两轮才发现是产物陈旧 | 两个验证脚本都改为：取 debug/release 中**较新**者，并在**源码比二进制新**时直接拒绝运行并提示重新构建 |
+| 12 | 8 字节 VINT 解析会 panic | EBML 的大小字段要去掉标记位，实现写成 `0xFFu8 >> len`。`len == 8` 时（首字节 `0x01`，标记位占满整字节）触发**移位溢出 panic**——Rust 要求移位量小于位宽。而 8 字节 VINT 在真实 MKV 里很常见，muxer 常用最大宽度占位 | 改用 `checked_shr().unwrap_or(0)` 表达"移满即为 0"；补 `vint_encoding_roundtrip` 与 `unknown_size_does_not_hang` 覆盖 8 字节与未知长度两种边界 |
+
+## 文档纠错（实测推翻原描述）
+
+设计文档是实现前写的，有些描述被实测证伪。已在原文标注修正，此处汇总：
+
+| 文档 | 原描述 | 实测结论 |
+|---|---|---|
+| `04-media-playback.md` §5.3 | 「FLAC/Opus 虽然新版规范支持但很多播放器不认」 | ❌ **已过时**。FFmpeg 可将 FLAC `-c copy` 直接 remux 进 MP4（tag `fLaC`），音轨完整、可解码出 705678 字节 PCM；MDN 明确 FLAC 容器支持含 MP4，浏览器覆盖 Chrome/Edge/Firefox/Safari。`tier.rs` 的 `MP4_INCOMPATIBLE_AUDIO` 按实际能力编写，**不含** flac |
+
+发现方式：spike 里 FLAC 素材 remux "成功"了，与文档矛盾。没有默认文档
+正确，而是追查产物的真实流构成 + 真解码 + 查证 MDN，三者一致才下结论。
 
 ## 待办
 
@@ -287,8 +355,9 @@ TLV 落盘、解密还原这条完整链路。本脚本用**真实编译出的�
 - [x] `meta`：`MediaMeta` 独立序列化结构（**不直接序列化 `MediaInfo`**，见下）
 - [x] `prepare`：一站式入口，一次探测同时产出三个 TLV 的负载
 - [x] 与 core 打通：写入 `TLV_MEDIA_META` / `TLV_MOOV_CACHE` / `TLV_THUMBNAIL`
-- [ ] remux 到 MSE 可用的分片 MP4（P2 路径）
-- [ ] 转码选项（加密时可选转 web 原生格式）
+- [x] `mkv`：EBML 解析、Cluster 索引、时间→字节定位、头部拼接
+- [x] `remux`：**P2 转封装**，fMP4 产出、init segment、轨道映射
+- [ ] 转码选项（加密时可选转 web 原生格式，D-26）
 - [ ] 字幕轨提取（首期只做文本类，ASS/PGS 留接口）
 
 ### 后续
