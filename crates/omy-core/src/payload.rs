@@ -264,14 +264,34 @@ pub fn decrypt_payload(
 
 /// 读取明文的任意区间，只解密必要的块。
 ///
-/// 这是视频 seek 的实现基础。`fetch_ct` 回调按 `(相对载荷的偏移, 长度)` 提供密文，
-/// 使调用方能自由选择数据来源——本地文件、内存、局域网 HTTP Range 请求皆可，
-/// 而无需把整个文件载入内存。
+/// 这是视频 seek 的实现基础。
+///
+/// # `fetch_ct` 的偏移语义（**极易用错，务必注意**）
+///
+/// 回调收到的第一个参数是**相对载荷起点**的偏移，**不是文件绝对偏移**。
+/// 载荷起点即 `header.header_len`。若数据源是整个文件，必须自行加回：
+///
+/// ```ignore
+/// let header_len = u64::from(opened.header.header_len);
+/// read_range(&opened.header, opened.payload_key(), None, off, len,
+///     |payload_off, l| {
+///         let abs = payload_off + header_len;   // ← 这一步不能漏
+///         Ok(file_bytes[abs as usize..(abs + l) as usize].to_vec())
+///     })
+/// ```
+///
+/// 漏掉加回会取到偏移 `header_len` 的错误字节，AEAD 会以
+/// [`Error::ChunkAuthFailed`] 拒绝——**报错信息指向「数据损坏」，
+/// 容易误判成文件坏了或密钥不对**，实际是偏移用错。
+///
+/// 这样设计是为了让调用方自由选择数据来源：本地文件、内存、
+/// 局域网 HTTP Range 请求皆可，无需把整个文件载入内存。对只存载荷的
+/// 数据源（如分片、远程对象存储）而言，相对偏移正是它需要的形式。
 ///
 /// # Errors
 ///
 /// - [`Error::ChunkOutOfRange`]：区间超出文件范围
-/// - [`Error::ChunkAuthFailed`]：某块认证失败
+/// - [`Error::ChunkAuthFailed`]：某块认证失败（也可能是偏移用错，见上）
 /// - 回调返回的错误会向上传播
 pub fn read_range<F>(
     header: &FixedHeader,
@@ -374,4 +394,170 @@ pub fn payload_ct_size(header: &FixedHeader) -> u64 {
     header
         .plaintext_size
         .saturating_add(n.saturating_mul(TAG_LEN as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{Argon2Params, Kek};
+    use crate::file::{EncryptOptions, RandomMaterial, encrypt, open};
+    use crate::header::MIN_CHUNK_SIZE;
+
+    /// 造一个多块的加密文件。
+    fn make(plain: &[u8]) -> (Vec<u8>, Kek) {
+        let salt = [0x31u8; 16];
+        let params = Argon2Params::TEST_WEAK;
+        let kek = Kek::from_password(b"payload-test", &salt, params).unwrap();
+        let kek2 = Kek::from_password(b"payload-test", &salt, params).unwrap();
+        let opts = EncryptOptions {
+            chunk_size: MIN_CHUNK_SIZE,
+            argon2: params,
+            ..EncryptOptions::default()
+        };
+        let enc = encrypt(plain, &[kek], &salt, &opts, &RandomMaterial::generate()).unwrap();
+        (enc.bytes, kek2)
+    }
+
+    /// `fetch_ct` 收到的偏移是**相对载荷起点**，不是文件绝对偏移。
+    ///
+    /// 这个契约极易用错：把它当绝对偏移去索引整个文件，取到的字节会
+    /// 整体偏移 `header_len`，表现为「chunk 0 认证失败」，而报错信息
+    /// 指向数据损坏，很容易误判成文件坏了或密钥不对。
+    ///
+    /// 实现 spike 时就踩了这个坑，因此在此固化。
+    #[test]
+    fn fetch_ct_offset_is_payload_relative() {
+        let plain: Vec<u8> = (0..150_000u32).map(|i| (i % 253) as u8).collect();
+        let (bytes, kek) = make(&plain);
+        let opened = open(&bytes, &[kek]).unwrap();
+        let header_len = u64::from(opened.header.header_len);
+        assert!(header_len > 0, "头部长度应为正");
+
+        // 正确用法：加回 header_len 才能索引整个文件
+        let seen: std::cell::RefCell<Vec<(u64, u64)>> = std::cell::RefCell::new(Vec::new());
+        let got = read_range(
+            &opened.header,
+            opened.payload_key(),
+            None,
+            0,
+            plain.len() as u64,
+            |off, len| {
+                seen.borrow_mut().push((off, len));
+                let a = usize::try_from(off + header_len).unwrap();
+                let b = usize::try_from(off + header_len + len).unwrap();
+                Ok(bytes[a..b].to_vec())
+            },
+        )
+        .unwrap();
+        assert_eq!(got, plain, "正确加回 header_len 后应完整还原");
+
+        // 第一次回调的偏移必须是 0（载荷起点），而不是 header_len
+        let calls = seen.borrow();
+        assert_eq!(calls[0].0, 0, "首个 fetch_ct 偏移应为 0，即相对载荷起点");
+
+        // 错误用法必须被 AEAD 抓住，而不是静默返回错数据
+        let wrong = read_range(
+            &opened.header,
+            opened.payload_key(),
+            None,
+            0,
+            1000,
+            |off, len| {
+                // 故意当成绝对偏移
+                let a = usize::try_from(off).unwrap();
+                let b = usize::try_from(off + len).unwrap();
+                Ok(bytes[a..b].to_vec())
+            },
+        );
+        assert!(
+            matches!(wrong, Err(Error::ChunkAuthFailed { .. })),
+            "把偏移当绝对值使用必须触发认证失败，实际: {wrong:?}"
+        );
+    }
+
+    /// 只解密涉及的块——这是任意 seek 可行的前提。
+    #[test]
+    fn read_range_only_fetches_needed_chunks() {
+        let cs = u64::from(MIN_CHUNK_SIZE);
+        let plain: Vec<u8> = (0..(cs * 5) as u32).map(|i| (i % 251) as u8).collect();
+        let (bytes, kek) = make(&plain);
+        let opened = open(&bytes, &[kek]).unwrap();
+        let header_len = u64::from(opened.header.header_len);
+        assert_eq!(opened.header.n_chunks(), 5, "应为 5 块");
+
+        // 读第 4 块中间的 100 字节：只应取 1 块密文
+        let n_calls = std::cell::Cell::new(0u32);
+        let total_ct = std::cell::Cell::new(0u64);
+        let off = cs * 3 + 500;
+        let got = read_range(
+            &opened.header,
+            opened.payload_key(),
+            None,
+            off,
+            100,
+            |o, l| {
+                n_calls.set(n_calls.get() + 1);
+                total_ct.set(total_ct.get() + l);
+                let a = usize::try_from(o + header_len).unwrap();
+                let b = usize::try_from(o + header_len + l).unwrap();
+                Ok(bytes[a..b].to_vec())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(got, &plain[off as usize..(off + 100) as usize]);
+        assert_eq!(n_calls.get(), 1, "只跨 1 块就只该取 1 次");
+        // 取的密文量应约等于一个块，而不是整个文件
+        assert!(
+            total_ct.get() <= cs + TAG_LEN as u64,
+            "实读密文 {} 超过单块上限，说明退化成了多块读取",
+            total_ct.get()
+        );
+        assert!(
+            total_ct.get() < plain.len() as u64 / 2,
+            "实读密文不应接近整个文件"
+        );
+    }
+
+    /// 跨块边界的区间要能正确拼接。
+    #[test]
+    fn read_range_across_chunk_boundary() {
+        let cs = u64::from(MIN_CHUNK_SIZE);
+        let plain: Vec<u8> = (0..(cs * 3) as u32).map(|i| (i % 249) as u8).collect();
+        let (bytes, kek) = make(&plain);
+        let opened = open(&bytes, &[kek]).unwrap();
+        let header_len = u64::from(opened.header.header_len);
+
+        let fetch = |o: u64, l: u64| -> Result<Vec<u8>> {
+            let a = usize::try_from(o + header_len).unwrap();
+            let b = usize::try_from(o + header_len + l).unwrap();
+            Ok(bytes[a..b].to_vec())
+        };
+
+        // 恰好跨越第 1/2 块边界
+        let off = cs - 50;
+        let got = read_range(&opened.header, opened.payload_key(), None, off, 100, fetch).unwrap();
+        assert_eq!(got, &plain[off as usize..(off + 100) as usize]);
+
+        // 末尾不足一块
+        let off2 = cs * 3 - 30;
+        let got2 = read_range(&opened.header, opened.payload_key(), None, off2, 30, fetch).unwrap();
+        assert_eq!(got2, &plain[off2 as usize..]);
+
+        // 越界读取应被裁剪而非报错
+        let got3 = read_range(&opened.header, opened.payload_key(), None, off2, 9999, fetch).unwrap();
+        assert_eq!(got3, &plain[off2 as usize..], "超出部分应被裁剪");
+
+        // 起点超出明文长度返回空
+        let got4 = read_range(
+            &opened.header,
+            opened.payload_key(),
+            None,
+            plain.len() as u64,
+            10,
+            fetch,
+        )
+        .unwrap();
+        assert!(got4.is_empty(), "起点超界应返回空而非报错");
+    }
 }

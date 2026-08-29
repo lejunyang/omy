@@ -7,14 +7,7 @@
     "frontendDist": "dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "omy Spike S1 / S5",
-        "width": 900,
-        "height": 820,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

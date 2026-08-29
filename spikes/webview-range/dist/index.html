@@ -37,7 +37,12 @@
 <h1>Spike S1 / S5</h1>
 <div class="sub">S1：自定义协议能否支持 <code>&lt;video&gt;</code> 任意 seek　·　S5：解密数据是否被 WebView 缓存落盘</div>
 
-<video id="v" controls preload="metadata"></video>
+<!-- crossorigin="anonymous" 是 canvas 取帧的前提：
+     不加这个属性，即使服务端回了 Access-Control-Allow-Origin，
+     浏览器仍把视频当跨源资源，drawImage 后 getImageData 会抛
+     SecurityError（画布被污染）。而 canvas 取帧是验证「seek 后画面
+     真的变了」的唯一自动化手段，不能放弃。 -->
+<video id="v" controls preload="metadata" crossorigin="anonymous"></video>
 
 <div class="row">
   <button id="load" class="primary">1. 加载视频</button>

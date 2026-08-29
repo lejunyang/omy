@@ -23,7 +23,7 @@
 use omy_core::crypto::Kek;
 use omy_core::file::OpenedFile;
 use std::sync::{Arc, Mutex};
-use tauri::http::{Request, Response, StatusCode, header};
+use tauri::http::{Method, Request, Response, StatusCode, header};
 
 /// 加载好的加密视频，供协议处理器复用。
 struct Vault {
@@ -91,6 +91,17 @@ fn main() -> anyhow::Result<()> {
     });
     let vault_for_exit = Arc::clone(&vault);
 
+    // 开 CDP 以便自动化驱动，无需人工点击。
+    //
+    // 必须走 WebviewWindowBuilder::additional_browser_args，而不是
+    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 环境变量：
+    // - tauri 2.11.5 里并不存在 TAURI_REMOTE_DEBUGGING_PORT（已查源码确认，
+    //   网上流传的这个变量名对本版本无效）；
+    // - WebView2 Runtime >= 150 在宿主进程 elevated 时会丢弃该环境变量
+    //   （见 tauri-apps/wry#1782），只有 HKLM 策略与 WebView2 API 传参有效。
+    //   本机运行时是 151，走 API 传参最稳妥。
+    let debug_port = std::env::var("OMY_SPIKE_CDP_PORT").ok();
+
     tauri::Builder::default()
         // 关键：异步协议。同步版本会阻塞 WebView 线程，
         // 大文件解密时界面会卡死。
@@ -102,7 +113,36 @@ fn main() -> anyhow::Result<()> {
                 responder.respond(resp);
             });
         })
-        .setup(|_app| Ok(()))
+        .setup(move |app| {
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("omy Spike S1 / S5")
+            .inner_size(900.0, 820.0);
+
+            if let Some(port) = &debug_port {
+                // wry 对 additional_browser_args 用的是 unwrap_or_else：
+                // 一旦自定义就会丢掉它的默认参数，所以必须把默认值一并带上，
+                // 否则 mini menu 与 SmartScreen 的禁用会失效。
+                //
+                // --remote-allow-origins=* 是必需的：Chromium 会校验 WebSocket
+                // 握手的 Origin 头，不在允许列表时返回 403 Forbidden。
+                // 这里是本地一次性调试进程，放宽到 * 可接受。
+                let args = format!(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                     --remote-debugging-port={port} \
+                     --remote-allow-origins=* \
+                     --autoplay-policy=no-user-gesture-required"
+                );
+                println!("启用 CDP，端口 {port}");
+                builder = builder.additional_browser_args(&args);
+            }
+
+            builder.build()?;
+            Ok(())
+        })
         .run(tauri::generate_context!())?;
 
     // 退出时打印统计——这是 S1 的判定依据
@@ -117,11 +157,57 @@ fn main() -> anyhow::Result<()> {
 
 /// 处理一次协议请求。
 fn handle(v: &Vault, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    // 把请求的全貌打出来：调试 code=4（MEDIA_ERR_SRC_NOT_SUPPORTED）时，
+    // 必须先确认请求是否真的到达了这里，以及 URI 长什么样。
+    // 只看前端报错无法区分「协议没注册」与「响应内容不对」。
+    println!(
+        "→ 请求 method={} uri={} headers={:?}",
+        request.method(),
+        request.uri(),
+        request
+            .headers()
+            .iter()
+            .map(|(k, val)| (k.as_str(), val.to_str().unwrap_or("<非 ASCII>")))
+            .collect::<Vec<_>>()
+    );
+
     let range_header = request
         .headers()
         .get(header::RANGE)
         .and_then(|h| h.to_str().ok())
         .map(str::to_owned);
+
+    // ---- CORS 预检必须在任何解密之前处理 ----
+    //
+    // 实测发现：WebView 里页面的 origin 是 http://tauri.localhost，
+    // 而自定义协议是 omystream://localhost —— 两者不同源。
+    // <video> 标签不做 CORS 检查所以能播，但 fetch()/XHR 会被拦，
+    // 且 canvas.drawImage(video) 之后 getImageData 会因「画布被跨源
+    // 数据污染」抛 SecurityError。
+    //
+    // 这不是 spike 的特殊问题：产品里图片预览、文本读取、缩略图生成
+    // 都要走 fetch 或 canvas，所以 CORS 头是必需的，不是可选优化。
+    //
+    // 关键的是 Access-Control-Expose-Headers：不暴露的话，即使请求
+    // 成功，JS 也读不到 Content-Range，无法判断服务端是否真的支持 Range。
+    if request.method() == Method::OPTIONS {
+        // 早先版本没有这个分支，OPTIONS 被当成 GET 处理，
+        // 结果预检请求触发了整个文件的解密（日志里可见返回 4460362 字节）。
+        // 预检不该有响应体，也不该做任何解密工作。
+        println!("204 预检（不解密）");
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, OPTIONS")
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Range, Content-Type")
+            .header(
+                header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                "Content-Range, Content-Length, Accept-Ranges",
+            )
+            .header(header::ACCESS_CONTROL_MAX_AGE, "600")
+            .body(Vec::new())
+            .unwrap_or_else(|_| Response::new(Vec::new()));
+    }
 
     {
         // 先记账再处理，确保即使后面出错也留下痕迹
@@ -138,15 +224,47 @@ fn handle(v: &Vault, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         Some(h) => match parse_range(h, total) {
             Some(r) => (r.0, r.1, true),
             None => {
-                // Range 不合法必须回 416，且带 Content-Range 告知真实长度
+                // Range 不合法必须回 416，且带 Content-Range 告知真实长度。
+                // 这里要打日志：早先版本这条 return 是日志盲区，
+                // 导致越界请求在 stdout 里看不到任何对应的响应行，
+                // 一度误判成 416 分支没被执行。
+                println!("416 bytes */{total}  （Range 不可满足：{h}）");
                 return Response::builder()
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .header(
+                        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                        "Content-Range, Content-Length, Accept-Ranges",
+                    )
                     .body(Vec::new())
                     .unwrap_or_else(|_| Response::new(Vec::new()));
             }
         },
         None => (0u64, total.saturating_sub(1), false),
+    };
+
+    // ---- 限制单次响应的上限（重要的性能修正）----
+    //
+    // 实测发现 WebView 的 seek 请求是**开放结尾**的：`bytes=1572864-`。
+    // 若老实返回「起点到文件末尾」的全部数据，跳到 35% 就要解密 65%
+    // 的文件——按需解密的意义被完全抵消。日志实证：
+    //   206 bytes=1572864-4460361/4460362  实读密文 2887690 字节
+    //
+    // HTTP 允许服务端返回比请求更小的区间，只要 Content-Range 如实
+    // 描述返回了什么。播放器会在需要更多数据时继续发请求。
+    //
+    // 上限取 2 MiB：足够覆盖若干秒的播放缓冲，避免请求过于碎片化；
+    // 又不至于一次解密过多。产品实现应按码率和块大小调整，
+    // 并对齐到块边界以避免同一块被反复解密。
+    let end_inclusive = if is_partial {
+        const MAX_SPAN: u64 = 2 * 1024 * 1024;
+        let capped = start.saturating_add(MAX_SPAN).saturating_sub(1);
+        end_inclusive.min(capped)
+    } else {
+        // 无 Range 的请求必须返回完整内容，否则 200 响应会与
+        // Content-Length 不一致，播放器会认为文件被截断。
+        end_inclusive
     };
 
     let length = end_inclusive.saturating_sub(start).saturating_add(1);
@@ -155,8 +273,16 @@ fn handle(v: &Vault, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     // 只有涉及的块会被读取和解密。这正是任意 seek 可行的关键：
     // 跳到 90% 位置不需要解密前面 90% 的数据。
     //
+    // 关键契约：fetch_ct 收到的 off 是**相对载荷起点**的偏移，
+    // 不是文件绝对偏移——read_range 内部已经减掉了 header_len
+    // （见 payload.rs 中 `abs_off.checked_sub(header_len)`）。
+    // 所以这里必须加回 header_len 才能正确索引整个文件。
+    // 早先版本漏了这一步，导致取到的字节整体偏移 656 字节，
+    // 表现为 chunk 0 认证失败 → <video> 报 MEDIA_ERR_SRC_NOT_SUPPORTED。
+    //
     // 顺带统计闭包实际取了多少密文，作为「按需读取」的证据——
     // 若这个数字接近整个文件，说明实现退化成了全量解密。
+    let header_len = u64::from(v.opened.header.header_len);
     let ct_read = std::cell::Cell::new(0u64);
     let data = match omy_core::payload::read_range(
         &v.opened.header,
@@ -164,10 +290,11 @@ fn handle(v: &Vault, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         None, // 未压缩，无压缩索引
         start,
         length,
-        |off, len| {
+        |payload_off, len| {
             ct_read.set(ct_read.get().saturating_add(len));
-            let s = usize::try_from(off).unwrap_or(usize::MAX);
-            let e = usize::try_from(off.saturating_add(len)).unwrap_or(usize::MAX);
+            let abs = payload_off.saturating_add(header_len);
+            let s = usize::try_from(abs).unwrap_or(usize::MAX);
+            let e = usize::try_from(abs.saturating_add(len)).unwrap_or(usize::MAX);
             v.bytes
                 .get(s..e)
                 .map(<[u8]>::to_vec)
@@ -218,7 +345,15 @@ fn handle(v: &Vault, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         // 若不加这些头，WebView 可能把解密后的明文写入磁盘缓存。
         .header(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")
         .header(header::PRAGMA, "no-cache")
-        .header("X-Content-Type-Options", "nosniff");
+        .header("X-Content-Type-Options", "nosniff")
+        // 自定义协议与页面不同源（页面是 tauri.localhost），
+        // 没有这些头，fetch 会被 CORS 拦截、canvas 会被污染。
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        // 不暴露的话 JS 读不到 Content-Range，无法验证 Range 是否生效
+        .header(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            "Content-Range, Content-Length, Accept-Ranges",
+        );
 
     if is_partial {
         b = b

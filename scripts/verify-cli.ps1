@@ -155,11 +155,41 @@ if (Test-Path $catOut) {
     $cb = [System.IO.File]::ReadAllBytes($catOut)
     Check ($cb.Length -eq $srcBytes.Length) "cat 输出长度正确（$($cb.Length) vs $($srcBytes.Length)）"
 }
-# 范围读取
+# 范围读取。--range 按 HTTP 惯例是闭区间：0-99 应为 100 字节。
+# 早期这里写的是 0-100 期望 100 字节，与当时「终点当开区间」的实现同错，
+# 于是掩盖了每次少读一字节的缺陷（Spike S1 里视频报 code=4 才暴露）。
 $catRange = Join-Path $dir 'catr.bin'
-& $exe cat --password-file $pwFile --range 0-100 $encFile > $catRange 2>$null
+& $exe cat --password-file $pwFile --range 0-99 $encFile > $catRange 2>$null
 if (Test-Path $catRange) {
-    Check ((Get-Item $catRange).Length -eq 100) "cat --range 0-100 输出 100 字节"
+    Check ((Get-Item $catRange).Length -eq 100) "cat --range 0-99 输出 100 字节（闭区间）"
+}
+# 单字节区间：最容易暴露 off-by-one
+$catOne = Join-Path $dir 'cat1.bin'
+& $exe cat --password-file $pwFile --range 0-0 $encFile > $catOne 2>$null
+if (Test-Path $catOne) {
+    Check ((Get-Item $catOne).Length -eq 1) "cat --range 0-0 输出 1 字节"
+}
+# 末尾区间必须能取到最后一个字节
+$catTail = Join-Path $dir 'cattail.bin'
+$lastOff = $srcBytes.Length - 1
+& $exe cat --password-file $pwFile --range "$lastOff-$lastOff" $encFile > $catTail 2>$null
+if (Test-Path $catTail) {
+    $tb2 = [System.IO.File]::ReadAllBytes($catTail)
+    Check ($tb2.Length -eq 1 -and $tb2[0] -eq $srcBytes[$lastOff]) "cat 能读到最后一个字节"
+}
+# suffix 形式应取最后 N 字节（与 HTTP Range: bytes=-N 一致）
+$catSuffix = Join-Path $dir 'catsuf.bin'
+& $exe cat --password-file $pwFile --range -256 $encFile > $catSuffix 2>$null
+if (Test-Path $catSuffix) {
+    $sb = [System.IO.File]::ReadAllBytes($catSuffix)
+    $wantTail = $srcBytes[($srcBytes.Length - 256)..($srcBytes.Length - 1)]
+    $tailSame = ($sb.Length -eq 256)
+    if ($tailSame) {
+        for ($i = 0; $i -lt 256; $i++) {
+            if ($sb[$i] -ne $wantTail[$i]) { $tailSame = $false; break }
+        }
+    }
+    Check $tailSame "cat --range -256 取到最后 256 字节"
 }
 
 # ============ 5. 多密码 slot ============
