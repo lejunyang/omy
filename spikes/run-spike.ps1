@@ -1,8 +1,17 @@
 # 全自动运行 Spike S1 + S5：启动带 CDP 的 spike，用 CDP 驱动测试，
 # 然后检查缓存泄露。无需任何人工点击。
 #
-# WebView2 通过 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 接受 Chromium 参数，
-# 这是开启 CDP 的官方途径。
+# 调试端口的注入方式（已实测确认）：
+# 通过 OMY_SPIKE_CDP_PORT 让 spike 自己在代码里调
+# WebviewWindowBuilder::additional_browser_args 注入 --remote-debugging-port。
+#
+# 为什么不用 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 环境变量：
+#   1. wry 0.55.1 在 webview2/mod.rs 里用 unwrap_or_else 显式调用
+#      options.set_additional_browser_arguments(...)，WebView2 API 传参
+#      会覆盖环境变量，因此设了也不生效；
+#   2. WebView2 Runtime >= 150 在宿主进程 elevated 时会直接丢弃该环境变量
+#      （tauri-apps/wry#1782），只有 HKLM 策略与 API 传参被尊重。
+# 另外 TAURI_REMOTE_DEBUGGING_PORT 在 tauri 2.11.5 中并不存在（已查源码）。
 param(
     [int]$Port = 9333,
     [switch]$KeepOpen
@@ -28,8 +37,7 @@ Write-Output '=== S5 阶段一：记录缓存基线 ==='
 
 Write-Output ''
 Write-Output "=== 启动 spike（CDP 端口 $Port）==="
-# 关键：远程调试参数必须在进程启动前设好
-$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Port --remote-allow-origins=*"
+$env:OMY_SPIKE_CDP_PORT = "$Port"
 
 $log = Join-Path $repo 'spikes\fixtures\spike-stdout.log'
 if (Test-Path $log) { Remove-Item $log -Force }
@@ -41,7 +49,22 @@ $p = Start-Process -FilePath $exe `
     -PassThru
 Write-Output "进程 PID $($p.Id)"
 
-Start-Sleep -Seconds 4
+# 等端口真正进入监听，而不是盲等固定秒数：
+# 端口没开时 CDP 驱动的报错会把排查方向带偏
+$listening = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 500
+    if (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue) {
+        $listening = $true; break
+    }
+}
+Write-Output "调试端口 $Port 监听中: $listening"
+if (-not $listening) {
+    Write-Output '调试端口未打开，spike 输出：'
+    if (Test-Path $log) { Get-Content $log | Select-Object -Last 30 }
+    if (-not $p.HasExited) { $p | Stop-Process -Force }
+    exit 1
+}
 
 Write-Output ''
 Write-Output '=== S1：用 CDP 驱动测试 ==='
