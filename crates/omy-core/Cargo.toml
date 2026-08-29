@@ -1,0 +1,49 @@
+[package]
+name = "omy-core"
+description = "omy 加密文件格式的核心实现：格式读写、密钥体系、分块 AEAD。零 FFmpeg 依赖。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+chacha20poly1305.workspace = true
+aes-gcm.workspace = true
+argon2.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+blake2.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+zstd.workspace = true
+uuid.workspace = true
+crc32fast.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+proptest.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+# 加密代码必须避免这些模式：panic 会变成拒绝服务，静默截断会导致密钥/偏移错误。
+# 注意：这些 lint 只对库代码有意义。测试代码本就应该用 panic 断言，
+# 因此测试文件顶部会用 #![allow(...)] 局部关闭，而不是在这里放宽。
+[lints.clippy]
+indexing_slicing         = "warn"
+integer_division         = "warn"
+unwrap_used              = "warn"
+panic                    = "warn"
+arithmetic_side_effects  = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss           = "warn"
+expect_used              = "allow"
+missing_panics_doc       = "allow"

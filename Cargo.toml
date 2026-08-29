@@ -1,0 +1,62 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/omy-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# edition 2024 的最低要求即 1.85。omy-core 定位为可复用库，MSRV 保持低位是优点。
+# resolver="3" 会做 MSRV 感知的版本选择，因此依赖会解析到与 1.85 兼容的版本 ——
+# 这正好匹配下方刻意固定的 RustCrypto 0.10 系列 API。
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lejunyang/omy"
+authors = ["omy contributors"]
+
+[workspace.dependencies]
+# ---- 加密原语 ----
+# 刻意固定在 RustCrypto 0.10 系列：该系列 API 稳定且经充分审计。
+# 0.11 系列有破坏性变更（trait 重构、类型签名调整），升级需同步改代码并重跑全部
+# 测试向量验证字节级一致性，不能只改版本号。
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+aes-gcm          = { version = "0.10", default-features = false, features = ["alloc", "aes", "getrandom"] }
+argon2           = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+hkdf             = "0.12"
+hmac             = "0.12"
+sha2             = "0.10"
+blake2           = "0.10"
+zeroize          = { version = "1.8", features = ["derive"] }
+subtle           = "2.6"
+
+# ---- 压缩 ----
+zstd = { version = "0.13", default-features = false }
+
+# ---- 工具 ----
+uuid       = { version = "1.11", default-features = false, features = ["v4"] }
+crc32fast  = "1.4"
+rand_core  = { version = "0.6", features = ["getrandom"] }
+thiserror  = "2.0"
+
+# ---- 测试 ----
+hex        = "0.4"
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+proptest   = "1.5"
+
+# 发布配置：优化加解密吞吐
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+# 测试用发布配置：保留断言但有优化，跑属性测试更快
+[profile.test]
+opt-level = 1
+
+# 依赖始终带优化编译，避免 debug 模式下 Argon2 慢到无法接受
+[profile.dev.package."*"]
+opt-level = 3
