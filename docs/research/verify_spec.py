@@ -6,7 +6,7 @@
 """
 import os, re, sys, struct, json
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference"))
-from cvlt_ref import *
+from omy_ref import *
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SPEC = os.path.join(BASE, "02-file-format-spec.md")
@@ -65,7 +65,7 @@ pt = b"X" * 300000
 blob = encrypt(pt, "cross-check.dat", p)
 h = parse_header(blob)
 
-ck("magic 位于 [0:8]", blob[0:8] == b"CVAULT\x01\x00", blob[0:8].hex())
+ck("magic 位于 [0:8]", blob[0:8] == b"OMYFILE\x01", blob[0:8].hex())
 ck("version_major @8 == 1", struct.unpack_from("<H", blob, 8)[0] == 1)
 ck("version_minor @10 == 0", struct.unpack_from("<H", blob, 10)[0] == 0)
 ck("header_len @12 与解析一致", struct.unpack_from("<I", blob, 12)[0] == h.header_len,

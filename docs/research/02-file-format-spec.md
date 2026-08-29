@@ -1,4 +1,4 @@
-# 02 · 文件格式规范（.cvlt v1.0）
+# 02 · 文件格式规范（.omy v1.0）
 
 > 本规范完整到足以支持第三方独立实现。所有偏移量、字段长度均已通过[参考实现](reference/)验证，并附有[确定性测试向量](appendix/test-vectors.json)。
 
@@ -31,7 +31,7 @@
 
 | 偏移 | 长度 | 字段 | 类型 | 说明 |
 |-----:|-----:|------|------|------|
-| 0 | 8 | `magic` | bytes | `43 56 41 55 4C 54 01 00` = `"CVAULT"` + 0x01 + 0x00 |
+| 0 | 8 | `magic` | bytes | `4F 4D 59 46 49 4C 45 01` = `"OMYFILE"` + 0x01 |
 | 8 | 2 | `version_major` | u16 | 当前 `1`。**不认识则必须拒绝打开** |
 | 10 | 2 | `version_minor` | u16 | 当前 `0`。不认识可安全忽略 |
 | 12 | 4 | `header_len` | u32 | 从文件起始到载荷起始的总字节数 |
@@ -51,6 +51,13 @@
 | 87 | 1 | `chunk_version` | u8 | 保留给未来的就地编辑功能，当前必须为 `0` |
 | 88 | 4 | `tlv_len` | u32 | TLV 区总字节数 |
 | 92 | 4 | `reserved` | u32 | 必须为 `0`，读取时忽略 |
+
+> **magic 的构成**：8 字节 = 7 字节 ASCII `"OMYFILE"` + 1 字节格式世代号 `0x01`。
+> 不用 3 字节的 `"OMY"`，是因为过短的 magic 容易与其它格式偶然碰撞，削弱识别可靠性；
+> 7 字节可读标识兼顾辨识度与调试便利（`file`、`hexdump` 下肉眼可辨）。
+> 世代号与 `version_major` 是两个独立概念：前者标识 **magic 自身**的世代
+> （预留给未来彻底重构文件结构的场景），后者标识 **格式版本**。
+> 分片文件使用 `"OMYSHRD"` + `0x01`，同样是 8 字节，保证两种文件头等长、偏移表通用。
 
 > **为什么 KDF 参数必须存在 header 里**：换机器、换版本后仍需能解开文件。参数被 header MAC 覆盖，无法被篡改降级（威胁 T7）。
 
@@ -80,7 +87,7 @@
 
 ```
 slot[i] = AEAD_encrypt(
-    key   = HKDF-SHA256(KEK_i, salt=file_uuid, info="cvault/v1/slot" || u16le(i)),
+    key   = HKDF-SHA256(KEK_i, salt=file_uuid, info="omy/v1/slot" || u16le(i)),
     nonce = 0x000000000000000000000000,      // 12 字节全零
     pt    = FEK,                              // 32 字节
     aad   = none
@@ -170,7 +177,7 @@ portable slot 的独立 salt 存放于 `TLV_PORTABLE_SLOT`，仅在用户**手�
 ### 4.3 加密 TLV 的密钥派生
 
 ```
-key   = HKDF-SHA256(FEK, salt="", info="cvault/v1/tlv" || u16le(tlv_type))
+key   = HKDF-SHA256(FEK, salt="", info="omy/v1/tlv" || u16le(tlv_type))
 nonce = 0x000000000000000000000000
 value = AEAD_encrypt(key, nonce, plaintext, aad=none)
 ```
@@ -266,7 +273,7 @@ aad(i) = file_uuid(16B) || u32be(i)
 ### 5.4 载荷密钥
 
 ```
-payload_key = HKDF-SHA256(FEK, salt=file_uuid, info="cvault/v1/payload")
+payload_key = HKDF-SHA256(FEK, salt=file_uuid, info="omy/v1/payload")
 ```
 
 与 slot 包裹密钥、header MAC 密钥、TLV 密钥完全域分隔。
@@ -363,7 +370,7 @@ repeat entry_count times:
 ## 7. Header MAC
 
 ```
-mac_key = HKDF-SHA256(FEK, salt=file_uuid, info="cvault/v1/header-mac")
+mac_key = HKDF-SHA256(FEK, salt=file_uuid, info="omy/v1/header-mac")
 mac     = HMAC-SHA256(mac_key, fixed_header || slot_area || tlv_blob)
 ```
 
@@ -389,7 +396,7 @@ mac     = HMAC-SHA256(mac_key, fixed_header || slot_area || tlv_blob)
 
 | 偏移 | 长度 | 字段 | 说明 |
 |-----:|-----:|------|------|
-| 0 | 8 | `magic` | `"CVSHARD"` + 0x01 |
+| 0 | 8 | `magic` | `"OMYSHRD"` + 0x01 |
 | 8 | 16 | `file_uuid` | 与主文件一致，用于归属判定 |
 | 24 | 4 | `shard_index` | 从 0 开始 |
 | 28 | 4 | `shard_total` | 总片数 |
@@ -444,7 +451,7 @@ mac     = HMAC-SHA256(mac_key, fixed_header || slot_area || tlv_blob)
  3. 解析 fixed header，得到 header_len
  4. 读取完整 header（header_len 字节）
  5. 对每个候选 KEK × 每个 slot：
-       wk = HKDF(KEK, file_uuid, "cvault/v1/slot" || i)
+       wk = HKDF(KEK, file_uuid, "omy/v1/slot" || i)
        尝试 AEAD 解包 slot[i]
        成功 → 得到 FEK，跳出
     全部失败 → 该文件不属于当前解锁的任何密码
@@ -467,7 +474,7 @@ mac     = HMAC-SHA256(mac_key, fixed_header || slot_area || tlv_blob)
 加密写入必须保证崩溃/断电不产生"看似正常实则损坏"的文件：
 
 ```
-1. 写入 <target>.cvlt.tmp
+1. 写入 <target>.omy.tmp
 2. fsync(文件)
 3. fsync(父目录)          ← 容易遗漏，但在部分文件系统上必需
 4. rename(tmp → target)   ← 同文件系统内原子
@@ -477,7 +484,7 @@ mac     = HMAC-SHA256(mac_key, fixed_header || slot_area || tlv_blob)
 **分片写入**：全部分片写完后再统一 rename，避免出现"部分分片已就位"的中间态。
 
 **移动端中断恢复**：iOS/Android 可能在后台挂起进程。方案：
-- 采用可续传的分段提交，记录已完成的块数到 `.cvlt.progress` 文件
+- 采用可续传的分段提交，记录已完成的块数到 `.omy.progress` 文件
 - 下次启动检测到未完成任务 → 提示"继续 / 放弃"
 - 放弃时清理 `.tmp` 和 `.progress`
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CryptoVault (.cvlt) v1.0 参考实现 —— 用于验证格式设计与生成测试向量。
+omy (.omy) v1.0 参考实现 —— 用于验证格式设计与生成测试向量。
 
 本实现刻意追求"可读、可对照规范"，而非性能。Rust 生产实现应遵循同一份规范。
 
@@ -33,8 +33,8 @@ from cryptography.hazmat.primitives import hashes
 
 # ---------------------------------------------------------------- 常量
 
-MAGIC = b"CVAULT\x01\x00"          # 8 bytes
-SHARD_MAGIC = b"CVSHARD\x01"        # 8 bytes
+MAGIC = b"OMYFILE\x01"          # 8 bytes
+SHARD_MAGIC = b"OMYSHRD\x01"        # 8 bytes
 VERSION_MAJOR = 1
 VERSION_MINOR = 0
 
@@ -86,10 +86,10 @@ TLV_FLAG_CRITICAL = 1 << 0
 TLV_FLAG_ENCRYPTED = 1 << 1
 
 # HKDF info 标签（域分隔）
-INFO_SLOT = b"cvault/v1/slot"
-INFO_PAYLOAD = b"cvault/v1/payload"
-INFO_HEADER_MAC = b"cvault/v1/header-mac"
-INFO_TLV = b"cvault/v1/tlv"
+INFO_SLOT = b"omy/v1/slot"
+INFO_PAYLOAD = b"omy/v1/payload"
+INFO_HEADER_MAC = b"omy/v1/header-mac"
+INFO_TLV = b"omy/v1/tlv"
 
 # 生产环境 Argon2 档位
 ARGON2_PROFILES = {
@@ -369,7 +369,7 @@ class ParsedHeader:
     mac: bytes
 
 
-def is_cvault(prefix: bytes) -> bool:
+def is_omy(prefix: bytes) -> bool:
     return prefix[:8] == MAGIC
 
 

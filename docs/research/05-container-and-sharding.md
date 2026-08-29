@@ -6,7 +6,7 @@
 
 | 维度 | **模式 A：容器化** | **模式 B：树形** |
 |---|---|---|
-| 形态 | 整个文件夹 → **单个** `.cvlt` | 每个文件单独加密，目录名也加密 |
+| 形态 | 整个文件夹 → **单个** `.omy` | 每个文件单独加密，目录名也加密 |
 | 目录结构 | ✅ **完全隐藏** | ⚠️ 泄露文件数量、大小分布、树形深度 |
 | 增量修改 | ❌ 改一个文件要重写整个容器 | ✅ 只改单个文件 |
 | 单文件分享 | ❌ 必须整包给出 | ✅ 可单独发送某个文件 |
@@ -38,11 +38,11 @@
 
 ### 2.1 结构
 
-容器就是一个普通的 `.cvlt` 文件，`flags` 置位 `CONTAINER`，载荷内部是一个**迷你文件系统**：
+容器就是一个普通的 `.omy` 文件，`flags` 置位 `CONTAINER`，载荷内部是一个**迷你文件系统**：
 
 ```
 ┌──────────────────────────────────┐
-│  标准 .cvlt header               │
+│  标准 .omy header               │
 │    flags |= CONTAINER            │
 │    TLV_FOLDER_INDEX (CRITICAL+ENC)│  ← 目录索引
 ├──────────────────────────────────┤
@@ -124,12 +124,12 @@
 
 ```
 明文原始结构：              加密后：
-工作资料/                   MFZWIZLTOQ.cvlt/          ← 目录名也加密
-├── 文档/                   ├── NBSWY3DPFQ.cvlt/
-│   ├── 报告.docx           │   ├── ONXW2ZLUNBSGK.cvlt
-│   └── 草稿.txt            │   └── MJQXGZLDN5XA.cvlt
-└── 照片/                   └── PB2GK3TUN5XA.cvlt/
-    └── IMG_001.heic            └── L5XG64TFMQXGG.cvlt
+工作资料/                   MFZWIZLTOQ.omy/          ← 目录名也加密
+├── 文档/                   ├── NBSWY3DPFQ.omy/
+│   ├── 报告.docx           │   ├── ONXW2ZLUNBSGK.omy
+│   └── 草稿.txt            │   └── MJQXGZLDN5XA.omy
+└── 照片/                   └── PB2GK3TUN5XA.omy/
+    └── IMG_001.heic            └── L5XG64TFMQXGG.omy
 ```
 
 ### 3.2 加密目录名的编码
@@ -148,7 +148,7 @@
 - 超长名称：截断 + 追加哈希后缀，完整名存入该文件自己的 `TLV_FILENAME`
 
 ```
-超长文件名 → BASE32_PREFIX_120CHARS + "~" + BASE32(hash[0..6]) + ".cvlt"
+超长文件名 → BASE32_PREFIX_120CHARS + "~" + BASE32(hash[0..6]) + ".omy"
 ```
 
 - Windows 完整路径 260 字符限制：建议启用长路径支持，或提示用户缩短目录层级
@@ -158,7 +158,7 @@
 目录名不属于任何单个文件，用 **vault 级别的密钥**派生：
 
 ```
-dirname_key = HKDF(KEK, salt=vault_salt, info="cvault/v1/dirname")
+dirname_key = HKDF(KEK, salt=vault_salt, info="omy/v1/dirname")
 密文目录名   = base32(AEAD(dirname_key, nonce=随机(12B), 目录名))
               nonce 前置存储在密文中
 ```
@@ -297,9 +297,9 @@ dirname_key = HKDF(KEK, salt=vault_salt, info="cvault/v1/dirname")
 ### 6.3 命名与识别
 
 ```
-movie.mkv.cvlt.001
-movie.mkv.cvlt.002
-movie.mkv.cvlt.003
+movie.mkv.omy.001
+movie.mkv.omy.002
+movie.mkv.omy.003
 ```
 
 但**不依赖文件名识别**——归属判定完全基于分片头中的 `file_uuid`。用户改名、乱序、混在一堆文件里都能正确重组。
@@ -368,8 +368,8 @@ movie.mkv.cvlt.003
 ```
 对授权目录中的每个文件：
   1. 读前 8 字节 → 比对 magic
-     ├─ 匹配 CVAULT → 是 .cvlt 主文件
-     ├─ 匹配 CVSHARD → 是分片
+     ├─ 匹配 OMYFILE → 是 .omy 主文件
+     ├─ 匹配 OMYSHRD → 是分片
      └─ 都不匹配 → 检查是否伪装文件（读 footer 或宿主扩展区）
   2. 读完整 header
   3. 对每个已解锁的 KEK × 每个 slot 尝试解包（微秒级）
@@ -418,7 +418,7 @@ struct CachedEntry {
 ### 7.4 分片在扫描中的处理
 
 ```
-扫描到 CVSHARD magic
+扫描到 OMYSHRD magic
   → 读分片头，提取 file_uuid、shard_index、shard_total
   → 按 file_uuid 分组
   → 组内齐全 → 显示为一个完整文件（虚拟合并）
@@ -438,7 +438,7 @@ struct CachedEntry {
 |---|---|---|
 | **抹平时间戳** | 所有加密文件的 mtime 设为固定值 | 云盘同步可能反复触发；原始 mtime 仍存在加密索引中可还原 |
 | **大小填充** | 载荷尾部追加随机字节，填充到 2 的幂或固定桶 | 存储浪费最高 100% |
-| **诱饵文件** | 生成随机的假 .cvlt 文件 | 占用空间；扫描时会显示"无法打开" |
+| **诱饵文件** | 生成随机的假 .omy 文件 | 占用空间；扫描时会显示"无法打开" |
 
 **默认全部关闭**，因为威胁模型（N6）不要求隐藏元数据，而代价明显。
 

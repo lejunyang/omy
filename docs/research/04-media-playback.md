@@ -9,7 +9,7 @@
 正解是：**分块 AEAD + HTTP Range 自定义协议**。
 
 ```
-<video src="cvault://file/{id}">
+<video src="omy://file/{id}">
         │
         ▼ WebView 发出 Range: bytes=1048576-1310719
 ┌───────────────────────────────────────┐
@@ -95,7 +95,7 @@ fn chunk_index(plain_offset: u64, chunk_size: u32) -> u64 {
 
 ```rust
 tauri::Builder::default()
-    .register_asynchronous_uri_scheme_protocol("cvault", move |_ctx, request, responder| {
+    .register_asynchronous_uri_scheme_protocol("omy", move |_ctx, request, responder| {
         // 1. 从 URL 提取 file_id（不透明句柄，不是路径）
         // 2. 查会话表拿到 FEK（JS 永远拿不到）
         // 3. 解析 Range 头
@@ -497,14 +497,14 @@ Expires: 0
 
 **强制措施**：
 
-1. **只用 `<img src="cvault://...">` 渲染**，绝不 inline 到 DOM
+1. **只用 `<img src="omy://...">` 渲染**，绝不 inline 到 DOM
    - `<img>` 加载的 SVG 处于"安全静态模式"，脚本不执行、外部资源不加载
 2. **绝不使用** `innerHTML` / `dangerouslySetInnerHTML` / `<object>` / `<embed>` / `<iframe>` 加载 SVG
 3. **CSP 兜底**：
    ```
    default-src 'none';
-   img-src cvault: data:;
-   media-src cvault:;
+   img-src omy: data:;
+   media-src omy:;
    script-src 'self';
    object-src 'none';
    ```

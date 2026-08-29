@@ -128,7 +128,7 @@ faststart 已从设计中完全删除。
 
 **连锁后果**：
 - GUI 与 CLI 变为 GPL-3.0
-- 但 `cvault-core` 保持 MIT/Apache-2.0（零 FFmpeg 依赖）—— 这是刻意的架构约束，保证格式能被任何人集成
+- 但 `omy-core` 保持 MIT/Apache-2.0（零 FFmpeg 依赖）—— 这是刻意的架构约束，保证格式能被任何人集成
 - 移动端 FFmpeg 成为持续维护负担（FFmpegKit 2025-04 退役、Play 16 KB 页对齐）→ 促成 D-24
 
 详见 [10 号文档](10-licensing-and-patents.md)。

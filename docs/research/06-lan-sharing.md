@@ -63,7 +63,7 @@ struct ShardedSource { shards: Vec<ShardRef>, holes: Vec<Range<u64>> }
 ### 3.1 mDNS / DNS-SD
 
 ```
-服务类型：_cryptovault._tcp.local
+服务类型：_omy._tcp.local
 TXT 记录：
   v=1                          协议版本
   id=<设备公钥指纹前8字节>       用于识别，非敏感
@@ -297,7 +297,7 @@ if header_len > MAX_HEADER_LEN { return Err(Malformed); }
 ### 8.2 浏览方
 
 ```
-1. 侧栏「附近设备」自动显示局域网内的 CryptoVault 设备
+1. 侧栏「附近设备」自动显示局域网内的 omy 设备
 2. 点击 → 首次需输入配对码（对方屏幕上显示）
 3. 配对成功 → 浏览对方共享的文件
 4. 用自己的密码解锁 → 能打开的文件正常显示名称和缩略图

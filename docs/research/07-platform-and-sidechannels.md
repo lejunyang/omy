@@ -126,17 +126,17 @@ Tauri fs 插件会自动管理 security-scoped 资源的访问（`startAccessing
 
 ```bash
 # ❌ 绝对禁止 —— ps aux 可见，shell history 也会记录
-cvault decrypt --password "my-secret" file.cvlt
+omy decrypt --password "my-secret" file.omy
 
 # ✅ 交互式输入（默认）
-cvault decrypt file.cvlt
+omy decrypt file.omy
 Password: ********
 
 # ✅ 从 stdin 读取（脚本场景）
-echo "$PASSWORD" | cvault decrypt --password-stdin file.cvlt
+echo "$PASSWORD" | omy decrypt --password-stdin file.omy
 
 # ✅ 从文件读取（权限 0600）
-cvault decrypt --password-file ~/.cvault/pw file.cvlt
+omy decrypt --password-file ~/.omy/pw file.omy
 ```
 
 CLI **必须**在检测到 `--password` 参数时**直接报错退出**，并说明替代方式。
@@ -224,8 +224,8 @@ impl std::fmt::Debug for Fek {
 default-src 'none';
 script-src 'self';
 style-src 'self' 'unsafe-inline';
-img-src cvault: data: blob:;
-media-src cvault: blob:;
+img-src omy: data: blob:;
+media-src omy: blob:;
 font-src 'self';
 connect-src 'self' ipc: http://ipc.localhost;
 object-src 'none';
@@ -282,7 +282,7 @@ fn read_entry(handle: EntryHandle, offset: u64, len: u32) -> Vec<u8> {
   → Android: 可用 Foreground Service 延续
 
 方案：
-  1. 分段提交：每完成 N 个块，把进度写入 .cvlt.progress
+  1. 分段提交：每完成 N 个块，把进度写入 .omy.progress
   2. 下次启动检测未完成任务
   3. 提示"上次有 1 个文件未加密完成，继续 / 放弃？"
   4. 放弃时清理 .tmp 和 .progress
@@ -325,7 +325,7 @@ fn read_entry(handle: EntryHandle, offset: u64, len: u32) -> Vec<u8> {
 | 类别 | 示例 | 用户提示 | 可恢复 |
 |---|---|---|:---:|
 | **密码错误** | 所有 slot 解包失败 | "密码不正确，或此文件不属于当前密码" | ✅ |
-| **格式不识别** | magic 不匹配 | "这不是 CryptoVault 文件" | — |
+| **格式不识别** | magic 不匹配 | "这不是 omy 文件" | — |
 | **版本过新** | `version_major > 1` | "此文件由更新版本创建，请升级应用" | ✅ 升级 |
 | **未知 critical TLV** | 不认识的 CRITICAL 字段 | "此文件使用了当前版本不支持的功能" | ✅ 升级 |
 | **header 损坏** | MAC 校验失败 | "文件头已损坏或被篡改" | ⚠️ 见 §8.2 |

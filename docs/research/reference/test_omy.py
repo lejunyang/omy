@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CryptoVault 格式设计自测：验证规范中的每一条断言。"""
+"""omy 格式设计自测：验证规范中的每一条断言。"""
 
 import os, sys, time, json, struct, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cvlt_ref import *
+from omy_ref import *
 
 PASS, FAIL = [], []
 
@@ -223,7 +223,7 @@ print()
 print("=" * 72)
 print("§6  压缩 + 随机访问")
 print("=" * 72)
-text = ("CryptoVault 设计文档测试语料。" * 3000).encode("utf-8")
+text = ("omy 设计文档测试语料。" * 3000).encode("utf-8")
 raw = encrypt(text, "t.txt", EncryptParams(passwords=["pw"], chunk_size=65536))
 comp = encrypt(text, "t.txt", EncryptParams(passwords=["pw"], chunk_size=65536,
                                             compress=True, zstd_level=3))
@@ -267,7 +267,7 @@ check("乱序分片可自动重组", unshard(sh2) == blob)
 
 for i in [1, 2, 3]:
     rh = recover_header_from_shard(shards[i])
-    ok = rh is not None and is_cvault(rh)
+    ok = rh is not None and is_omy(rh)
     check(f"第 {i} 片含冗余头可独立识别", ok)
 
 try:

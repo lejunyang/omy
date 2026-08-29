@@ -1,4 +1,4 @@
-# CryptoVault 设计文档
+# omy 设计文档
 
 跨平台加密文件管理应用的完整技术设计。Rust + Tauri v2，覆盖桌面（Windows / macOS / Linux）与移动端（Android / iOS）。
 
@@ -9,7 +9,7 @@
 
 ## 这是什么
 
-一个把任意文件加密成自定义 `.cvlt` 格式的应用，核心差异点在于**加密后依然能直接用**：
+一个把任意文件加密成自定义 `.omy` 格式的应用，核心差异点在于**加密后依然能直接用**：
 
 - 视频加密后可在应用内**任意拖动播放**，无需先解密落盘
 - 图片/音频/文本同样支持内嵌预览
@@ -24,7 +24,7 @@
 | # | 文档 | 内容 | 主要读者 |
 |---|---|---|---|
 | 01 | [需求与威胁模型](01-requirements-and-threat-model.md) | 需求清单、威胁模型、**明确的非目标** | 所有人 |
-| 02 | [文件格式规范](02-file-format-spec.md) | `.cvlt` 二进制格式、TLV、分片格式、测试向量 | 实现者、第三方兼容实现 |
+| 02 | [文件格式规范](02-file-format-spec.md) | `.omy` 二进制格式、TLV、分片格式、测试向量 | 实现者、第三方兼容实现 |
 | 03 | [密钥体系](03-key-management.md) | 两级 KDF、key slot、生物识别、恢复方案、可否认性 | 实现者、安全审计 |
 | 04 | [媒体播放架构](04-media-playback.md) | 分块 AEAD、Range 映射、三条播放路径、字幕、转码 | 实现者 |
 | 05 | [文件夹与分片](05-container-and-sharding.md) | 容器模式 / 树形模式、元数据保留、分片合并 | 实现者 |
@@ -110,12 +110,12 @@
 ## 许可证结构
 
 ```
-cvault-core / cvault-format / cvault-cli    MIT OR Apache-2.0    零 FFmpeg 依赖
-cvault-media（FFmpeg 绑定）                  LGPL-2.1（动态链接）
-CryptoVault GUI                              GPL-3.0
+omy-core / omy-format / omy-cli    MIT OR Apache-2.0    零 FFmpeg 依赖
+omy-media（FFmpeg 绑定）                  LGPL-2.1（动态链接）
+omy GUI                              GPL-3.0
 ```
 
-第三方可以只取 `cvault-format` 实现自己的兼容工具，不受 GPL 约束。详见 [10-许可证与专利合规](10-licensing-and-patents.md)。
+第三方可以只取 `omy-format` 实现自己的兼容工具，不受 GPL 约束。详见 [10-许可证与专利合规](10-licensing-and-patents.md)。
 
 ---
 
@@ -126,7 +126,7 @@ CryptoVault GUI                              GPL-3.0
 ```bash
 cd reference
 pip install cryptography argon2-cffi zstandard
-python3 test_cvlt.py      # 运行 68 项自测
+python3 test_omy.py      # 运行 68 项自测
 python3 gen_vectors.py    # 重新生成测试向量
 ```
 

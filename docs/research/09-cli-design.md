@@ -1,7 +1,7 @@
 # 09 · CLI 设计
 
 > 对应决策 **D-22**（要 CLI）。
-> CLI 与 GUI 共享同一个 `cvault-core` crate，**行为完全一致**——CLI 能做的 GUI 都能做，反之亦然（除交互式浏览外）。
+> CLI 与 GUI 共享同一个 `omy-core` crate，**行为完全一致**——CLI 能做的 GUI 都能做，反之亦然（除交互式浏览外）。
 
 ## 1. 定位
 
@@ -14,14 +14,14 @@
 
 **CLI 是一等公民，不是 GUI 的附属品。** 但有两点例外：
 - 不提供交互式文件浏览器（那是 GUI 的价值）
-- 不提供媒体播放（CLI 用 `cvault mount` 或管道输出给外部播放器）
+- 不提供媒体播放（CLI 用 `omy mount` 或管道输出给外部播放器）
 
 ---
 
 ## 2. 命令总览
 
 ```
-cvault <命令> [选项]
+omy <命令> [选项]
 
 核心
   encrypt        加密文件或目录
@@ -30,7 +30,7 @@ cvault <命令> [选项]
   verify         验证完整性
 
 浏览
-  list           列出目录中的 .cvlt 文件
+  list           列出目录中的 .omy 文件
   scan           扫描目录，匹配密码并列出可解锁文件
   cat            解密并输出到 stdout（管道友好）
 
@@ -98,20 +98,20 @@ cvault <命令> [选项]
 | 方式 | 参数 | 说明 |
 |---|---|---|
 | **交互式提示**（默认） | 无 | 从 `/dev/tty` 读取，不回显 |
-| **环境变量** | `--password-env CVAULT_PW` | 传变量**名**而非值；仍需注意 `/proc/*/environ` |
+| **环境变量** | `--password-env OMY_PW` | 传变量**名**而非值；仍需注意 `/proc/*/environ` |
 | **文件** | `--password-file <PATH>` | 读取首行；建议 `chmod 600` |
 | **stdin** | `--password-stdin` | 管道传入，适合 CI secret |
 | **系统钥匙串** | `--keyring <NAME>` | 桌面平台，走 OS 凭据管理器 |
 
 ```bash
 # 推荐：CI 场景
-echo "$SECRET" | cvault encrypt --password-stdin file.mp4
+echo "$SECRET" | omy encrypt --password-stdin file.mp4
 
 # 推荐：本地脚本
-cvault encrypt --password-file ~/.cvault-pw file.mp4
+omy encrypt --password-file ~/.omy-pw file.mp4
 
 # 明确拒绝：不存在这样的参数
-cvault encrypt --password "mypass" file.mp4   # ✗ 报错并说明原因
+omy encrypt --password "mypass" file.mp4   # ✗ 报错并说明原因
 ```
 
 若用户尝试 `--password`，CLI 输出明确的错误说明而非静默失败：
@@ -135,10 +135,10 @@ error: 不支持 --password 参数
 ### 5.1 `encrypt`
 
 ```
-cvault encrypt [选项] <路径>...
+omy encrypt [选项] <路径>...
 
 输出
-  -o, --output <PATH>        输出路径（默认同目录同名 .cvlt）
+  -o, --output <PATH>        输出路径（默认同目录同名 .omy）
       --output-dir <DIR>     批量输出目录
 
 文件名（D-01）
@@ -206,17 +206,17 @@ KDF（档位见 03 号文档）
 
 ```bash
 # 基本
-cvault encrypt report.docx
+omy encrypt report.docx
 
 # 归档：大块 + 高压缩 + 双密码
-cvault encrypt --chunk-size 4M --compress --compress-level 12 \
+omy encrypt --chunk-size 4M --compress --compress-level 12 \
                --add-password --kdf-profile moderate  archive/
 
 # 分片到 U 盘容量
-cvault encrypt --shard-size 4095M bigfile.mkv
+omy encrypt --shard-size 4095M bigfile.mkv
 
 # 转码为 web 友好格式（会二次确认）
-cvault encrypt --transcode web movie.mkv
+omy encrypt --transcode web movie.mkv
 ```
 
 转码时的强制确认（对应 D-26 与 D-07 的冲突）：
@@ -235,12 +235,12 @@ cvault encrypt --transcode web movie.mkv
 ### 5.2 `decrypt`
 
 ```
-cvault decrypt [选项] <文件.cvlt>...
+omy decrypt [选项] <文件.omy>...
 
   -o, --output <PATH>      输出路径
       --output-dir <DIR>   批量输出目录
       --stdout             输出到标准输出
-      --keep-encrypted     保留 .cvlt   [默认]
+      --keep-encrypted     保留 .omy   [默认]
       --verify-only        只校验不写出
       --ignore-missing-shards   缺片时输出可用部分（D-18）
       --metadata-report <PATH>  元数据还原报告（D-20 / N3）
@@ -249,7 +249,7 @@ cvault decrypt [选项] <文件.cvlt>...
 **元数据还原报告**（对应 N3 决策：不支持的项**明确报告**而非静默丢弃）：
 
 ```
-$ cvault decrypt --metadata-report report.txt photos.cvlt
+$ omy decrypt --metadata-report report.txt photos.omy
 
 已还原 1,247 个文件。
 
@@ -266,7 +266,7 @@ $ cvault decrypt --metadata-report report.txt photos.cvlt
 ### 5.3 `info`
 
 ```
-cvault info [选项] <文件>
+omy info [选项] <文件>
 
       --no-password        仅显示无需密码的信息   [默认]
       --json
@@ -275,10 +275,10 @@ cvault info [选项] <文件>
 不提供密码时可见的信息（这些本就是明文，见 02 号文档）：
 
 ```
-$ cvault info movie.cvlt
+$ omy info movie.omy
 
-文件           movie.cvlt
-格式           CVAULT v1.0
+文件           movie.omy
+格式           OMYFILE v1.0
 UUID           7f3a2b91-...
 文件头长度     8,771 字节（含缩略图）
 加密算法       XChaCha20-Poly1305
@@ -302,7 +302,7 @@ Slot 占用      未知（设计上不可探测，见 03 号文档）
 对应 D-19（扫描缓存放内存）。
 
 ```
-cvault scan [选项] <目录>...
+omy scan [选项] <目录>...
 
   -r, --recursive
       --max-depth <N>
@@ -312,9 +312,9 @@ cvault scan [选项] <目录>...
 ```
 
 ```
-$ cvault scan -r ~/Documents --password-file pw1 --password-file pw2
+$ omy scan -r ~/Documents --password-file pw1 --password-file pw2
 
-扫描 3,891 个文件，找到 1,247 个 CryptoVault 文件…
+扫描 3,891 个文件，找到 1,247 个 omy 文件…
 
 密码 1 匹配 823 个：
   季度报告.docx              156 KB
@@ -336,13 +336,13 @@ $ cvault scan -r ~/Documents --password-file pw1 --password-file pw2
 
 ```bash
 # 直接播放，不产生临时明文文件
-cvault cat movie.cvlt --password-file pw | mpv -
+omy cat movie.omy --password-file pw | mpv -
 
 # 检查加密的日志
-cvault cat app.log.cvlt --password-stdin | grep ERROR
+omy cat app.log.omy --password-stdin | grep ERROR
 
 # 校验原始文件哈希
-cvault cat data.cvlt | sha256sum
+omy cat data.omy | sha256sum
 ```
 
 `cat` 采用流式解密，内存占用恒定（约 2 个块大小），不受文件大小影响。
@@ -350,10 +350,10 @@ cvault cat data.cvlt | sha256sum
 ### 5.6 `key`
 
 ```
-cvault key add <文件>       添加密码 slot（需已知一个现有密码）
-cvault key remove <文件>    移除 slot
-cvault key list <文件>      仅显示 "8 个 slot（内容不可探测）"
-cvault key change <文件>    修改密码
+omy key add <文件>       添加密码 slot（需已知一个现有密码）
+omy key remove <文件>    移除 slot
+omy key list <文件>      仅显示 "8 个 slot（内容不可探测）"
+omy key change <文件>    修改密码
 ```
 
 `key remove` 的必要警告：
@@ -372,7 +372,7 @@ cvault key change <文件>    修改密码
 对应 D-04（只传密文）、D-21（只读）。
 
 ```
-cvault serve [选项]
+omy serve [选项]
       --path <DIR>          共享目录（可重复）
       --name <NAME>         设备名
       --expire <DURATION>   有效期，如 24h / 7d / session
@@ -381,7 +381,7 @@ cvault serve [选项]
       --list-devices
       --access-log <PATH>
 
-cvault connect <设备>
+omy connect <设备>
       --list                列出局域网设备
       --password-file <P>
 ```
@@ -391,7 +391,7 @@ cvault connect <设备>
 ### 5.8 `bench` / `doctor`
 
 ```bash
-$ cvault bench
+$ omy bench
 Argon2id 基准（本机）：
   mobile      (32MiB, t=4)     124 ms
   interactive (64MiB, t=3)     180 ms   ← 默认
@@ -407,7 +407,7 @@ HKDF（每文件）                 13.2 µs
 ```
 
 ```bash
-$ cvault doctor
+$ omy doctor
 ✓ CPU AES-NI 支持
 ✓ 可用内存 15.4 GB（sensitive 档位需 1 GB）
 ✓ FFmpeg 6.1.1（LGPL 构建）
@@ -424,9 +424,9 @@ $ cvault doctor
 所有命令支持 `--json`，便于脚本消费：
 
 ```bash
-$ cvault info --json movie.cvlt
+$ omy info --json movie.omy
 {
-  "format": "CVAULT",
+  "format": "OMYFILE",
   "version": "1.0",
   "uuid": "7f3a2b91-...",
   "header_len": 8771,
@@ -454,7 +454,7 @@ $ cvault info --json movie.cvlt
 
 ## 7. 配置文件
 
-`~/.config/cvault/config.toml`（遵循 XDG）：
+`~/.config/omy/config.toml`（遵循 XDG）：
 
 ```toml
 [defaults]
@@ -489,7 +489,7 @@ language = "auto"    # auto | zh-CN | en
 CLI 与 GUI 共享同一套文案资源。语言检测：
 
 ```
-CVAULT_LANG 环境变量
+OMY_LANG 环境变量
   → 配置文件 [ui].language
   → 系统 locale（LC_ALL / LC_MESSAGES / LANG）
   → 英语兜底
@@ -502,13 +502,13 @@ CVAULT_LANG 环境变量
 ## 9. Shell 补全
 
 ```bash
-cvault completion bash > /etc/bash_completion.d/cvault
-cvault completion zsh  > ~/.zsh/completions/_cvault
-cvault completion fish > ~/.config/fish/completions/cvault.fish
-cvault completion powershell | Out-String | Invoke-Expression
+omy completion bash > /etc/bash_completion.d/omy
+omy completion zsh  > ~/.zsh/completions/_omy
+omy completion fish > ~/.config/fish/completions/omy.fish
+omy completion powershell | Out-String | Invoke-Expression
 ```
 
-补全应覆盖子命令、选项、枚举值（如 `--kdf-profile` 的四个档位），以及 `.cvlt` 文件路径。
+补全应覆盖子命令、选项、枚举值（如 `--kdf-profile` 的四个档位），以及 `.omy` 文件路径。
 
 ---
 
@@ -516,7 +516,7 @@ cvault completion powershell | Out-String | Invoke-Expression
 
 | 保证 | 实现方式 |
 |---|---|
-| 相同的格式行为 | 共用 `cvault-core`，CLI 与 GUI 都是薄封装 |
+| 相同的格式行为 | 共用 `omy-core`，CLI 与 GUI 都是薄封装 |
 | 相同的默认值 | 默认值定义在 core 中，两端不各自硬编码 |
 | 相同的警告 | 危险操作的警告文案来自同一套 i18n 资源 |
 | 互操作 | CLI 加密的文件 GUI 能打开，反之亦然；测试向量双向验证 |

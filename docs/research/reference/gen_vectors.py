@@ -3,7 +3,7 @@
 """生成确定性测试向量，供第三方实现对照验证。"""
 import os, sys, json, hashlib, struct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cvlt_ref import *
+from omy_ref import *
 
 class DetRNG:
     """确定性随机源：ChaCha 风格的 SHAKE 流，保证测试向量可复现。"""
@@ -22,10 +22,10 @@ def hx(b): return b.hex()
 vectors = []
 
 # ---- 向量 1：最小文件，单密码，无压缩
-rng = DetRNG(b"cvault-test-vector-001")
+rng = DetRNG(b"omy-test-vector-001")
 params = EncryptParams(passwords=["correct horse battery staple"],
                        argon2_profile="test", chunk_size=65536, rng=rng)
-pt = b"Hello, CryptoVault!"
+pt = b"Hello, omy!"
 blob = encrypt(pt, "hello.txt", params)
 h = parse_header(blob)
 kek = derive_kek_from_password("correct horse battery staple", h.vault_salt, *h.argon2)
@@ -60,10 +60,10 @@ vectors.append({
 })
 
 # ---- 向量 2：多密码 + 可否认性
-rng = DetRNG(b"cvault-test-vector-002")
+rng = DetRNG(b"omy-test-vector-002")
 vs = rng(16)
 params = EncryptParams(passwords=["alpha", "beta", "gamma"], vault_salt=vs,
-                       argon2_profile="test", rng=DetRNG(b"cvault-test-vector-002b"))
+                       argon2_profile="test", rng=DetRNG(b"omy-test-vector-002b"))
 blob2 = encrypt(b"multi-recipient payload", "shared.dat", params)
 h2 = parse_header(blob2)
 slot_info = []
@@ -87,7 +87,7 @@ vectors.append({
 })
 
 # ---- 向量 3：多块 + Range 随机访问
-rng = DetRNG(b"cvault-test-vector-003")
+rng = DetRNG(b"omy-test-vector-003")
 pt3 = bytes((i * 7 + 13) % 256 for i in range(10000))
 params = EncryptParams(passwords=["pw3"], argon2_profile="test",
                        chunk_size=4096, rng=rng)
@@ -121,8 +121,8 @@ vectors.append({
 })
 
 # ---- 向量 4：压缩 + 索引表
-rng = DetRNG(b"cvault-test-vector-004")
-pt4 = ("CryptoVault" * 500).encode()
+rng = DetRNG(b"omy-test-vector-004")
+pt4 = ("omy" * 500).encode()
 params = EncryptParams(passwords=["pw4"], argon2_profile="test",
                        chunk_size=2048, compress=True, zstd_level=3, rng=rng)
 blob4 = encrypt(pt4, "repeat.txt", params)
@@ -133,7 +133,7 @@ cr4 = ChunkReader(blob4, h4, fek4)
 vectors.append({
     "name": "v4-compressed-with-index",
     "description": "zstd 分块压缩；块长可变，故必须依赖加密索引表定位",
-    "input": {"password": "pw4", "plaintext": "'CryptoVault' 重复 500 次",
+    "input": {"password": "pw4", "plaintext": "'omy' 重复 500 次",
               "plaintext_size": len(pt4), "chunk_size": 2048, "zstd_level": 3},
     "derived": {"fek": hx(fek4), "n_chunks": cr4.n_chunks,
                 "index_entries": [{"ct_offset": e[0], "ct_len": e[1],
@@ -145,7 +145,7 @@ vectors.append({
 })
 
 # ---- 向量 5：分片
-rng = DetRNG(b"cvault-test-vector-005")
+rng = DetRNG(b"omy-test-vector-005")
 pt5 = bytes(range(256)) * 40
 params = EncryptParams(passwords=["pw5"], argon2_profile="test",
                        chunk_size=4096, rng=rng)
@@ -174,7 +174,7 @@ vectors.append({
 })
 
 out = {
-    "format": "CryptoVault .cvlt",
+    "format": "omy .omy",
     "spec_version": "1.0",
     "generated_by": "reference/gen_vectors.py",
     "warning": ("测试向量使用 Argon2 弱参数(m=64KiB,t=1,p=1)以便快速复现；"
@@ -192,8 +192,9 @@ out = {
 }
 path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "..", "appendix", "test-vectors.json")
-with open(path, "w", encoding="utf-8") as f:
+with open(path, "w", encoding="utf-8", newline="\n") as f:
     json.dump(out, f, indent=2, ensure_ascii=False)
+    f.write("\n")
 print(f"已写出 {len(vectors)} 组测试向量 -> {os.path.normpath(path)}")
 for v in vectors:
     print(f"  - {v['name']}")

@@ -31,20 +31,20 @@ GPL v3 第 11 条甚至专门处理这个：贡献者授予你其**自身持有*
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  cvault-gui  (Tauri 应用)              GPL-3.0      │
-│  ├── 依赖 cvault-media                              │
-│  └── 依赖 cvault-core                               │
+│  omy-gui  (Tauri 应用)              GPL-3.0      │
+│  ├── 依赖 omy-media                              │
+│  └── 依赖 omy-core                               │
 ├─────────────────────────────────────────────────────┤
-│  cvault-cli                            GPL-3.0      │
-│  （因为也链接 cvault-media）                         │
+│  omy-cli                            GPL-3.0      │
+│  （因为也链接 omy-media）                         │
 ├─────────────────────────────────────────────────────┤
-│  cvault-media  (FFmpeg 封装)           LGPL-2.1+    │
+│  omy-media  (FFmpeg 封装)           LGPL-2.1+    │
 │  └── 动态链接 FFmpeg (LGPL 构建)                     │
 ├─────────────────────────────────────────────────────┤
-│  cvault-core   (格式 + 加密)      MIT OR Apache-2.0 │
+│  omy-core   (格式 + 加密)      MIT OR Apache-2.0 │
 │  └── 零 FFmpeg 依赖，纯 Rust                         │
 ├─────────────────────────────────────────────────────┤
-│  cvault-format-spec  (格式规范文档)      CC BY 4.0  │
+│  omy-format-spec  (格式规范文档)      CC BY 4.0  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -52,17 +52,17 @@ GPL v3 第 11 条甚至专门处理这个：贡献者授予你其**自身持有*
 
 | 层 | 许可证 | 理由 |
 |---|---|---|
-| `cvault-core` | MIT OR Apache-2.0 | 双许可是 Rust 生态惯例。任何人（含闭源商业软件）都能集成 `.cvlt` 格式支持。**这是格式能被广泛采用的前提** |
-| `cvault-media` | LGPL-2.1+ | 与 FFmpeg 一致。动态链接，用户可替换 FFmpeg 库 |
-| `cvault-cli` / `cvault-gui` | GPL-3.0 | 最终产物包含 FFmpeg 且形成整体作品；GPL-3.0 有明确的专利条款与反 Tivoization 条款 |
+| `omy-core` | MIT OR Apache-2.0 | 双许可是 Rust 生态惯例。任何人（含闭源商业软件）都能集成 `.omy` 格式支持。**这是格式能被广泛采用的前提** |
+| `omy-media` | LGPL-2.1+ | 与 FFmpeg 一致。动态链接，用户可替换 FFmpeg 库 |
+| `omy-cli` / `omy-gui` | GPL-3.0 | 最终产物包含 FFmpeg 且形成整体作品；GPL-3.0 有明确的专利条款与反 Tivoization 条款 |
 | 格式规范 | CC BY 4.0 | 文档不是代码；鼓励第三方独立实现 |
 
-**关键设计约束**：`cvault-core` 必须**零 FFmpeg 依赖**。这不只是许可证考虑——它同时意味着：
+**关键设计约束**：`omy-core` 必须**零 FFmpeg 依赖**。这不只是许可证考虑——它同时意味着：
 - 第三方可以只用格式库做加解密，不背 GPL 包袱
 - 核心加密逻辑的攻击面不包含 FFmpeg（见 07 号文档 §4）
 - 移动端可以只编 core，不带 FFmpeg（iOS 尤其重要）
 
-CI 中应有一条硬性检查：`cvault-core` 的依赖树里出现任何 FFmpeg 相关 crate 即构建失败。
+CI 中应有一条硬性检查：`omy-core` 的依赖树里出现任何 FFmpeg 相关 crate 即构建失败。
 
 ### 2.2 FFmpeg 许可的关键事实
 
@@ -103,7 +103,7 @@ LGPL 要求最终用户能够**替换**该库。这在各平台的落地：
 
 **iOS 的处理**（结合 D-06：iOS 优先级最低，降级为导入式保险箱）：
 
-iOS 版**不包含 FFmpeg**。只用 AVFoundation 系统解码器 + `cvault-core`。
+iOS 版**不包含 FFmpeg**。只用 AVFoundation 系统解码器 + `omy-core`。
 这样 iOS 版可以是 **MIT/Apache-2.0**，同时规避了：
 - LGPL 静态链接的合规问题
 - FFmpegKit 已于 2025 年 4 月退役、二进制被删的维护风险
@@ -169,9 +169,9 @@ Access Advance 的许可初始期至 2025-12-31，之后自动续为不可终止
               UI 明确提示原因和解决办法
 ```
 
-**关键点：加密功能永远不受影响。** CryptoVault 的核心是加密，不是图像解码。任何格式都能被加密和还原（D-07 bit-for-bit），只是能否**预览**取决于解码器可用性。这个边界必须在 UI 上说清楚，避免用户误以为"不支持 HEIC"。
+**关键点：加密功能永远不受影响。** omy 的核心是加密，不是图像解码。任何格式都能被加密和还原（D-07 bit-for-bit），只是能否**预览**取决于解码器可用性。这个边界必须在 UI 上说清楚，避免用户误以为"不支持 HEIC"。
 
-`cvault doctor` 会检测并报告（见 09 号文档 §5.8）：
+`omy doctor` 会检测并报告（见 09 号文档 §5.8）：
 
 ```
 ⚠ HEIC 解码：系统解码器不可用，libheif 未编译进本构建
@@ -226,7 +226,7 @@ Access Advance 的许可初始期至 2025-12-31，之后自动续为不可终止
 
 ## 5. 依赖许可证清单
 
-`cvault-core`（必须全部为宽松许可，否则破坏 MIT/Apache 承诺）：
+`omy-core`（必须全部为宽松许可，否则破坏 MIT/Apache 承诺）：
 
 | Crate | 用途 | 许可证 |
 |---|---|---|
@@ -241,7 +241,7 @@ Access Advance 的许可初始期至 2025-12-31，之后自动续为不可终止
 
 ⚠️ **`zstd` 需要注意**：Zstandard 是 BSD-3-Clause 与 GPLv2 双许可，选 BSD 分支即可。但要确认所用 Rust binding 正确传递了这一点。
 
-`cvault-gui` 额外依赖：
+`omy-gui` 额外依赖：
 
 | 依赖 | 许可证 | 备注 |
 |---|---|---|
@@ -249,13 +249,13 @@ Access Advance 的许可初始期至 2025-12-31，之后自动续为不可终止
 | FFmpeg (LGPL 构建) | LGPL-2.1+ | 动态链接 |
 | 前端框架 | MIT 系 | |
 
-**CI 强制检查**：用 `cargo-deny` 配置许可证白名单，在 `cvault-core` 上禁止任何 copyleft 依赖：
+**CI 强制检查**：用 `cargo-deny` 配置许可证白名单，在 `omy-core` 上禁止任何 copyleft 依赖：
 
 ```toml
 # deny.toml
 [licenses]
 allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]
-# cvault-core 中出现 GPL/LGPL/AGPL 即失败
+# omy-core 中出现 GPL/LGPL/AGPL 即失败
 ```
 
 ---
@@ -264,8 +264,8 @@ allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]
 
 ```
 LICENSE                    # 顶层：GPL-3.0（GUI/CLI）
-LICENSE-MIT                # cvault-core
-LICENSE-APACHE             # cvault-core
+LICENSE-MIT                # omy-core
+LICENSE-APACHE             # omy-core
 THIRD-PARTY-NOTICES.md     # 全部依赖的许可证与版权声明
 FFMPEG-LICENSE.txt         # FFmpeg 的 LGPL 全文
 PATENTS.md                 # 专利声明（见下）

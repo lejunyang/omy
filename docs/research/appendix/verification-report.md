@@ -8,7 +8,7 @@
 
 | 套件 | 文件 | 断言数 | 结果 |
 |---|---|---|---|
-| 参考实现自测 | `reference/test_cvlt.py` | **68** | ✅ 68 通过 / 0 失败 |
+| 参考实现自测 | `reference/test_omy.py` | **68** | ✅ 68 通过 / 0 失败 |
 | 文档 ↔ 实现交叉验证 | `verify_spec.py` | **98** | ✅ 98 通过 / 0 失败 |
 
 **环境**：Python 3.10.12；`cryptography` 42.0.5、`argon2-cffi`、`zstandard` 0.25.0
@@ -110,8 +110,8 @@
 用正则解析 [02 号文档](../02-file-format-spec.md) 中的偏移表，与参考实现产生的实际字节逐字段比对：
 
 - Fixed Header 全部字段的偏移与长度
-- MAGIC = `43 56 41 55 4C 54 01 00`
-- SHARD_MAGIC = `"CVSHARD" + 0x01`
+- MAGIC = `4F 4D 59 46 49 4C 45 01`
+- SHARD_MAGIC = `"OMYSHRD" + 0x01`
 - slot 区起止（96 → 480）
 - `header_len = 96 + 384 + tlv_len + 32`
 - 字节序（全小端，唯一例外：nonce 中块序号为 u32be）
@@ -174,21 +174,21 @@
 ## 6. 复现方式
 
 ```bash
-cd cryptovault-design
+cd omy-design
 
 # 参考实现自测（68 项，含 Argon2 基准，约需数十秒）
-python3 reference/test_cvlt.py
+python3 reference/test_omy.py
 
 # 文档 ↔ 实现交叉验证（98 项）
 python3 verify_spec.py
 
-# 重新生成测试向量（修改 cvlt_ref.py 后必须执行）
+# 重新生成测试向量（修改 omy_ref.py 后必须执行）
 python3 reference/gen_vectors.py
 ```
 
 **依赖**：`pip3 install cryptography argon2-cffi zstandard`
 
-> ⚠️ 修改 `reference/cvlt_ref.py` 后必须重跑 `gen_vectors.py` 重新生成向量（哈希会变），再重跑 `test_cvlt.py` 与 `verify_spec.py` 回归。padding 修复时已走过该流程。
+> ⚠️ 修改 `reference/omy_ref.py` 后必须重跑 `gen_vectors.py` 重新生成向量（哈希会变），再重跑 `test_omy.py` 与 `verify_spec.py` 回归。padding 修复时已走过该流程。
 
 ---
 

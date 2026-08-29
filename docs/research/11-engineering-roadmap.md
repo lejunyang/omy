@@ -6,29 +6,29 @@
 ## 1. Crate 分层
 
 ```
-cvault/
+omy/
 ├── crates/
-│   ├── cvault-core/          MIT OR Apache-2.0 · 零 FFmpeg 依赖
-│   │   ├── format/           .cvlt 二进制读写
+│   ├── omy-core/          MIT OR Apache-2.0 · 零 FFmpeg 依赖
+│   │   ├── format/           .omy 二进制读写
 │   │   ├── crypto/           KDF / AEAD / slot
 │   │   ├── container/        目录容器与树形模式
 │   │   ├── shard/            分片切分与合并
 │   │   └── source/           BlockSource trait（本地 / 远程统一抽象）
 │   │
-│   ├── cvault-media/         LGPL-2.1+ · FFmpeg 封装
+│   ├── omy-media/         LGPL-2.1+ · FFmpeg 封装
 │   │   ├── probe/            格式探测与播放路径决策
 │   │   ├── remux/            P2 转封装
 │   │   ├── decode/           P3 全解码
 │   │   ├── thumbnail/        缩略图与自选帧
 │   │   └── transcode/        D-26 转码（可选 feature）
 │   │
-│   ├── cvault-net/           MIT OR Apache-2.0
+│   ├── omy-net/           MIT OR Apache-2.0
 │   │   ├── discovery/        mDNS
 │   │   ├── pairing/          SPAKE2
 │   │   └── transport/        Noise IK
 │   │
-│   ├── cvault-cli/           GPL-3.0
-│   └── cvault-gui/           GPL-3.0 · Tauri v2
+│   ├── omy-cli/           GPL-3.0
+│   └── omy-gui/           GPL-3.0 · Tauri v2
 │
 └── spec/                     CC BY 4.0 · 格式规范 + 测试向量
 ```
@@ -43,7 +43,7 @@ gui ──┬──> media ──> core
 cli ──┴──> （同上）
 ```
 
-**禁止反向依赖。** `cvault-core` 不得知道 media / net / gui 的存在。
+**禁止反向依赖。** `omy-core` 不得知道 media / net / gui 的存在。
 
 ### 1.2 `BlockSource` 是关键抽象
 
@@ -120,7 +120,7 @@ pub trait BlockSource: Send + Sync {
 
 | 套件 | 项数 | 结果 |
 |---|---|---|
-| `reference/test_cvlt.py` | 68 | ✅ 全部通过 |
+| `reference/test_omy.py` | 68 | ✅ 全部通过 |
 | `verify_spec.py`（文档 ↔ 实现交叉验证） | 98 | ✅ 全部通过 |
 
 详见 [appendix/verification-report.md](appendix/verification-report.md)。
@@ -174,7 +174,7 @@ pub trait BlockSource: Send + Sync {
 | 检查 | 失败即阻断 |
 |---|---|
 | `cargo-deny` 许可证白名单（core 禁 copyleft） | ✅ |
-| `cvault-core` 依赖树不含 FFmpeg | ✅ |
+| `omy-core` 依赖树不含 FFmpeg | ✅ |
 | 5 组测试向量逐字节比对 | ✅ |
 | `cargo-fuzz` 冒烟（畸形 header 不 panic） | ✅ |
 | `cargo audit` 无已知漏洞 | ✅ |
