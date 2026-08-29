@@ -51,6 +51,17 @@ pub struct EncryptOptions {
     pub thumbnail: Option<Vec<u8>>,
     /// 媒体元信息 JSON。
     pub media_meta: Option<Vec<u8>>,
+    /// MP4 的 `moov` box 副本，用于加速起播（规范 §4.4 的 `0x0006`）。
+    ///
+    /// 播放时先从这里取元数据，省掉「seek 到尾部读 moov」的两次额外往返。
+    /// 收益最大的两个场景：
+    ///
+    /// - **局域网远程播放**：省掉真实网络 RTT
+    /// - **缺片播放**：每个分片的冗余 header 都带一份，只要任意一片存在就能起播
+    ///   （文档 05 §7.4）
+    ///
+    /// 与 `TRANSCODED` 不同，这个副本**不改动载荷**，原文件仍可 bit-for-bit 还原。
+    pub moov_cache: Option<Vec<u8>>,
     /// 目录容器索引（`ContainerIndex::encode` 的输出）。
     ///
     /// 置位时会写入 CRITICAL+ENCRYPTED 的 `TLV_FOLDER_INDEX` 并设置
@@ -72,6 +83,7 @@ impl Default for EncryptOptions {
             write_content_hash: true,
             thumbnail: None,
             media_meta: None,
+            moov_cache: None,
             folder_index: None,
         }
     }
@@ -203,6 +215,11 @@ pub fn encrypt_with_fek(
     }
     if let Some(m) = &opts.media_meta {
         tlvs.push(encrypt_entry(types::MEDIA_META, 0, m, fek, opts.cipher)?);
+    }
+    if let Some(mv) = &opts.moov_cache {
+        // 非 CRITICAL：这纯粹是起播优化，不认识它的实现照样能正确解密播放，
+        // 只是要多做两次 seek。标 CRITICAL 会让旧版实现无谓地拒绝打开。
+        tlvs.push(encrypt_entry(types::MOOV_CACHE, 0, mv, fek, opts.cipher)?);
     }
     if let Some(idx) = &opts.folder_index {
         // CRITICAL：容器的载荷是多个文件的拼接，不认识索引就不该打开
@@ -387,6 +404,33 @@ impl OpenedFile {
     /// 条目不存在或解密失败时返回错误。
     pub fn media_meta(&self) -> Result<Vec<u8>> {
         self.tlvs.decrypt_value(types::MEDIA_META, &self.fek, self.header.cipher_id)
+    }
+
+    /// 解密 MP4 的 `moov` box 副本。
+    ///
+    /// 起播时优先用它，可省掉「seek 到文件尾部读 moov」的额外往返。
+    ///
+    /// # Errors
+    ///
+    /// 条目不存在或解密失败时返回错误。缺失是**正常情况**（非 MP4 文件、
+    /// 或加密时未启用该优化），调用方应把错误当作「无缓存」而非故障。
+    pub fn moov_cache(&self) -> Result<Vec<u8>> {
+        self.tlvs.decrypt_value(types::MOOV_CACHE, &self.fek, self.header.cipher_id)
+    }
+
+    /// 是否带有 `moov` 缓存。
+    ///
+    /// 与 [`Self::moov_cache`] 不同，这里只看条目存在性，不做解密，
+    /// 因此可用于列表页的快速判断。
+    #[must_use]
+    pub fn has_moov_cache(&self) -> bool {
+        self.tlvs.find(types::MOOV_CACHE).is_some()
+    }
+
+    /// 是否带有媒体元信息。
+    #[must_use]
+    pub fn has_media_meta(&self) -> bool {
+        self.tlvs.find(types::MEDIA_META).is_some()
     }
 
     /// 记录在 TLV 中的原始明文哈希。

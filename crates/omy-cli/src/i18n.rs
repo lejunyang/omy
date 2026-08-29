@@ -186,6 +186,15 @@ catalog! {
     "info.yes" => { zh: "有", en: "yes" },
     "info.no" => { zh: "无", en: "no" },
 
+    // ---- 媒体信息（解锁后才可见）----
+    "info.media_container" => { zh: "媒体容器", en: "Media container" },
+    "info.media_duration" => { zh: "时长", en: "Duration" },
+    "info.media_video" => { zh: "视频", en: "Video" },
+    "info.media_audio" => { zh: "音频", en: "Audio" },
+    "info.media_subtitles" => { zh: "字幕", en: "Subtitles" },
+    "info.media_tier" => { zh: "播放方式", en: "Playback" },
+    "info.moov_cache" => { zh: "moov 缓存", en: "moov cache" },
+
     // ---- 操作结果 ----
     "ok.encrypted" => { zh: "已加密", en: "Encrypted" },
     "ok.decrypted" => { zh: "已解密", en: "Decrypted" },

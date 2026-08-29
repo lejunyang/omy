@@ -16,6 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 omy-core = { path = "../omy-core" }
+# LGPL-2.1+ 依赖。GPL-3.0 兼容 LGPL-2.1+（后者可升级为 GPL-3.0），
+# 故这个方向的依赖是允许的；反向（core 依赖 media）则会让 MIT 的 core
+# 被 LGPL 传染，绝不可以。
+omy-media = { path = "../omy-media" }
 clap.workspace = true
 clap_complete.workspace = true
 anyhow.workspace = true

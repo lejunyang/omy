@@ -28,8 +28,13 @@ pub struct Args {
     /// 待输出的 .omy 文件
     pub file: PathBuf,
 
-    /// 只输出指定范围，格式 `起始-结束`（字节，含起始不含结束）
-    #[arg(long, value_name = "RANGE")]
+    /// 只输出指定范围，格式 `起始-结束`（字节，端点按 HTTP 惯例含两端）
+    ///
+    /// `allow_hyphen_values` 是必需的：suffix 形式 `--range -256`
+    /// 以 `-` 开头，clap 默认会把它当成短选项 `-2` 并报
+    /// `unexpected argument '-2' found`。用户按 HTTP Range 习惯这么写
+    /// 是很自然的，不该强迫他改写成 `--range=-256`。
+    #[arg(long, value_name = "RANGE", allow_hyphen_values = true)]
     pub range: Option<String>,
 
     /// 从环境变量读取密码（传变量名）
@@ -216,5 +221,49 @@ mod tests {
     #[test]
     fn empty_file_yields_empty_range() {
         assert_eq!(parse_range("0-100", 0).unwrap(), (0, 0));
+    }
+
+    /// clap 层必须接受以 `-` 开头的范围值。
+    ///
+    /// 只测 `parse_range` 是不够的：它接受 `"-256"` 没有任何问题，
+    /// 但 clap 在把参数交给它**之前**就会把 `-256` 当成短选项 `-2`
+    /// 并报 `unexpected argument '-2' found`。这个缺陷只有在
+    /// 端到端跑真实二进制时才暴露，所以这里补上解析层的回归测试。
+    #[test]
+    fn clap_accepts_suffix_range() {
+        use clap::Parser as _;
+
+        /// 最小包装：单测里没有完整的命令树，自己搭一个
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            inner: Args,
+        }
+
+        // 空格形式（用户按 HTTP Range 习惯最可能这么写）
+        let w = Wrap::try_parse_from(["cat", "--range", "-256", "f.omy"])
+            .expect("--range -256 应当被接受");
+        assert_eq!(w.inner.range.as_deref(), Some("-256"));
+
+        // 等号形式
+        let w = Wrap::try_parse_from(["cat", "--range=-256", "f.omy"])
+            .expect("--range=-256 应当被接受");
+        assert_eq!(w.inner.range.as_deref(), Some("-256"));
+
+        // 普通形式不受影响
+        let w = Wrap::try_parse_from(["cat", "--range", "0-999", "f.omy"])
+            .expect("--range 0-999 应当被接受");
+        assert_eq!(w.inner.range.as_deref(), Some("0-999"));
+
+        // allow_hyphen_values 的副作用：跟着的选项会被吃成值。
+        // 这不会造成静默误用——parse_range 会明确报错，
+        // 这里固定该行为以免日后误以为它能正常工作。
+        let w = Wrap::try_parse_from(["cat", "--range", "--json", "f.omy"])
+            .expect("clap 层会接受它");
+        assert_eq!(w.inner.range.as_deref(), Some("--json"));
+        assert!(
+            parse_range("--json", 1000).is_err(),
+            "被吃成值的选项必须在解析范围时报错，不能静默当成某个范围"
+        );
     }
 }

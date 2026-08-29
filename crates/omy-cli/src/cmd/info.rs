@@ -11,7 +11,7 @@
 
 use super::Ctx;
 use crate::i18n::t;
-use crate::output::{human_bytes, thousands};
+use crate::output::{human_bytes, human_duration, thousands};
 use crate::password::{PasswordSource, read_password};
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
@@ -66,6 +66,9 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     // 可选的密码解锁部分
     let mut filename: Option<String> = None;
     let mut unlocked = false;
+    // 媒体信息只有解锁后才能读——它存在加密的 TLV 里
+    let mut media: Option<omy_media::MediaMeta> = None;
+    let mut has_moov = false;
     if a.with_password
         || a.password_env.is_some()
         || a.password_file.is_some()
@@ -80,6 +83,13 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         let opened = omy_core::file::open_with_password(&data, &pw)?;
         unlocked = true;
         filename = opened.filename().ok();
+        has_moov = opened.has_moov_cache();
+        // 元信息读不出来不是错误：非媒体文件本来就没有，
+        // 旧版本写的也可能解析不了。这是非 CRITICAL TLV，降级即可。
+        media = opened
+            .media_meta()
+            .ok()
+            .and_then(|b| omy_media::MediaMeta::from_json_bytes(&b).ok());
     }
 
     let human = render_human(
@@ -91,6 +101,8 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         shard_info.as_deref(),
         filename.as_deref(),
         unlocked,
+        media.as_ref(),
+        has_moov,
     );
 
     let value = json!({
@@ -123,6 +135,25 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         // 恒为 null：slot 数量在设计上不可探测
         "slot_count": serde_json::Value::Null,
         "filename": filename,
+        // 未解锁时为 null，而不是 false——
+        // 「不知道」与「没有」是两件事，脚本要能区分
+        "has_moov_cache": if unlocked { json!(has_moov) } else { json!(null) },
+        "media": media.as_ref().map_or(json!(null), |m| {
+            json!({
+                "container": m.container,
+                "duration_ms": m.duration_ms,
+                "bit_rate": m.bit_rate,
+                "playback_tier": m.playback_tier.default,
+                "tier_reason": m.playback_tier.reason,
+                "video": m.video.as_ref().map(|v| json!({
+                    "codec": v.codec,
+                    "width": v.width,
+                    "height": v.height,
+                })),
+                "audio_tracks": m.audio.len(),
+                "subtitle_tracks": m.subtitles.len(),
+            })
+        }),
     });
 
     ctx.out.result(&human, &value);
@@ -140,6 +171,8 @@ fn render_human(
     shards: Option<&str>,
     filename: Option<&str>,
     unlocked: bool,
+    media: Option<&omy_media::MediaMeta>,
+    has_moov: bool,
 ) -> String {
     let mut s = String::new();
     let w = 14usize;
@@ -214,6 +247,57 @@ fn render_human(
     }
     // 关键：恒为「未知」，不泄露 slot 数量
     row(t("info.slots"), t("info.slots_unknown"));
+
+    // 媒体信息：只有解锁后才有，因为它存在加密 TLV 里
+    if let Some(m) = media {
+        row(t("info.media_container"), &m.container);
+        if let Some(ms) = m.duration_ms {
+            row(t("info.media_duration"), &human_duration(ms));
+        }
+        if let Some(v) = &m.video {
+            let res = match (v.width, v.height) {
+                (Some(w2), Some(h2)) => format!("{} {w2}×{h2}", v.codec),
+                _ => v.codec.clone(),
+            };
+            row(t("info.media_video"), &res);
+        }
+        if !m.audio.is_empty() {
+            // 列出编码与语言，这是选轨的依据
+            let list: Vec<String> = m
+                .audio
+                .iter()
+                .map(|a| match (&a.lang, a.channels) {
+                    (Some(l), Some(c)) => format!("{} {l} {c}ch", a.codec),
+                    (Some(l), None) => format!("{} {l}", a.codec),
+                    (None, Some(c)) => format!("{} {c}ch", a.codec),
+                    (None, None) => a.codec.clone(),
+                })
+                .collect();
+            row(t("info.media_audio"), &list.join(", "));
+        }
+        if !m.subtitles.is_empty() {
+            let list: Vec<String> = m
+                .subtitles
+                .iter()
+                .map(|x| match &x.lang {
+                    Some(l) => format!("{} {l}", x.codec),
+                    None => x.codec.clone(),
+                })
+                .collect();
+            row(t("info.media_subtitles"), &list.join(", "));
+        }
+        // 分级与理由一起显示：只给代号用户看不懂
+        row(
+            t("info.media_tier"),
+            &format!("{} — {}", m.playback_tier.default, m.playback_tier.reason),
+        );
+        for alt in &m.playback_tier.alternatives {
+            row("", &format!("↳ {} {}", alt.tier, alt.note));
+        }
+    }
+    if unlocked && has_moov {
+        row(t("info.moov_cache"), t("info.yes"));
+    }
 
     if !unlocked {
         s.push('\n');

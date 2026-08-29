@@ -3,19 +3,19 @@
 > 本文件是**跨会话的权威状态来源**。每完成一个可验证的阶段就更新，
 > 并随代码一起提交，以便任何时候都能接续。
 >
-> 最后更新：2026-08-29
+> 最后更新：2026-08-30
 
 ## 状态速览
 
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
-| `omy-core` | 🟢 格式核心可用 | 130 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource |
-| `omy-cli` | 🟢 12 个命令可用 | 46 项 + 76 项端到端 | 契约见 `docs/research/09-cli-design.md` |
-| `omy-media` | 🟢 探测/分级/moov/缩略图可用 | 71 项 + 36 项真实文件验证 | LGPL，FFmpeg 封装 |
+| `omy-core` | 🟢 格式核心可用 | 135 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
+| `omy-cli` | 🟢 12 个命令可用 | 50 项 + 79 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV |
+| `omy-media` | 🟢 探测/分级/moov/缩略图/prepare 可用 | 88 项 + 63 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
 | `omy-gui` | ⚪ 未开始 | — | Tauri v2；**播放方案已由 S1 验证可行** |
 
-合计 **253 项自动化测试 + 76 项 CLI 端到端断言 + 36 项 omy-media 真实文件断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **276 项自动化测试 + 79 项 CLI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -126,7 +126,7 @@
 
 ### CLI 端到端（本轮，`scripts/verify-cli.ps1`）
 
-用**真实编译出的二进制**走完整流程，76 项断言全通过。单元测试无法验证"命令行参数解析 + 进程退出码 + stdout/stderr 分工"，这些只能靠真实调用二进制。
+用**真实编译出的二进制**走完整流程，79 项断言全通过。单元测试无法验证"命令行参数解析 + 进程退出码 + stdout/stderr 分工"，这些只能靠真实调用二进制。
 
 覆盖：拒绝明文密码参数、加解密逐字节往返、退出码契约（2/3/4/6）、JSON 错误格式、cat 管道与范围读取、相同内容不同密码文件大小一致、list/scan、分片切分/缺片检测/合并哈希一致、目录容器嵌套与空目录还原、doctor/bench/completion、帮助与版本。
 
@@ -148,22 +148,27 @@
 ### 复现命令
 
 ```bash
-cargo test --workspace                            # 253 项
+cargo test --workspace                            # 276 项
 cargo clippy --workspace --all-targets -- -D warnings   # 零告警
-cargo build --release -p omy-cli
-pwsh -File scripts/verify-cli.ps1                 # 76 项端到端
+cargo build -p omy-cli && cargo build --release -p omy-cli
+pwsh -File scripts/verify-cli.ps1                 # 79 项端到端
+pwsh -File scripts/verify-media-tlv.ps1           # 46 项媒体 TLV 端到端
 ./target/release/omy bench                        # 本机性能
 cargo run --release --example bench_scan -- 300
 cargo run --release --example fuzz_parse -- 20000
 cargo run --release --example audit_mac_scope
 cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 
-# omy-media：先生成素材，再跑真实文件验证（36 项）
+# omy-media：先生成素材，再跑真实文件验证（63 项）
 pwsh -File spikes/make-media-fixtures.ps1
 cargo run --release --example verify_media -p omy-media
 ```
 
-### omy-media 真实文件验证（36 项）
+> ⚠️ 跑端到端脚本前**必须先重新构建**。两个脚本已内置陈旧产物检测
+> （源码比二进制新就拒绝运行），但仍建议养成先 build 的习惯——
+> 缺陷 #11 就是拿旧二进制跑出的假失败。
+
+### omy-media 真实文件验证（63 项）
 
 单元测试用的是**手写的 ffprobe JSON 样本**，只能验证"给定这段 JSON 能否正确解析"，
 无法验证"真实 ffprobe 的输出是否真的长这样"。两者同源时，对格式的误解会同时存在于
@@ -188,6 +193,50 @@ cargo run --release --example verify_media -p omy-media
 关键证据：尾部 moov 素材经纯 Rust 重排后抽帧得到 **4404 字节**，
 与直接用文件路径抽帧的结果**完全一致**——这是偏移修正正确的最强证据。
 
+### 媒体 TLV 端到端（46 项，`scripts/verify-media-tlv.ps1`）
+
+`examples/verify_media.rs` 是在**库内部**调用 API，验证不到 CLI 参数解析、
+TLV 落盘、解密还原这条完整链路。本脚本用**真实编译出的二进制**走
+`encrypt → info → decrypt`，覆盖：
+
+| 分组 | 关键断言 |
+|---|---|
+| MP4 三 TLV | `has_thumbnail` / `has_moov_cache` / `media` 段齐全，判为 P1、时长 8000 ms、h264 320 宽 |
+| **可还原性** | 加了媒体 TLV 后解密结果与原文件 **SHA-256 相同** |
+| MKV | 判为 P2，且**不应**有 moov 缓存 |
+| 纯音频 | 有 meta 无 moov、无视频轨，且**不刷缩略图失败警告** |
+| 非媒体 | 无 media 段、无缩略图、**不产生警告噪音** |
+| 三个开关 | `--thumbnail none` / `--no-media-meta` / `--no-moov-cache` **互不影响** |
+| 取帧写法 | `5` / `5.5` / `00:05` / `00:00:05` 均可用；`abc` 必须**非零退出且不产出文件** |
+| 冲突组合 | `--thumbnail none` + `--thumbnail-frame` 必须报错而非静默忽略 |
+| **不泄露** | 未解锁时 `media` 为 null、`has_moov_cache` 为 **null 而非 false** |
+
+最后一条是刻意设计的：「不知道」与「没有」是两件事，脚本要能区分。
+而 `has_thumbnail` 来自 header flag，本就无需密码即可读。
+
+#### moov 缓存存的是**原始**字节，不是重排后的
+
+这是最容易搞错的一点，`prepare::extract_moov` 的注释里也写明了：
+
+- 缓存 moov 是为了让播放器起播时不必 seek 到文件尾部；
+- 但 moov 里的 `stco` 偏移是相对**原始布局**的，播放时要与原始载荷配合才正确；
+- 若存了重排后的 moov，偏移就与实际载荷不符，会解析出错位的样本。
+
+验证时用「重排后的 moov 与缓存内容**不同**」作反证锁定这个区别。
+
+#### MediaMeta 为什么不直接序列化 `MediaInfo`
+
+三个理由，都不是风格问题：
+
+1. **体积**：完整探测结果远大于播放决策所需，而它要进每个文件的头部；
+2. **稳定性**：`MediaInfo` 随 ffprobe 版本漂移，旧文件的 meta 会解析不了；
+3. **隐私**：ffprobe 的 `tags` 里可能含拍摄设备、剪辑软件甚至 GPS 坐标——
+   把它原样写进加密文件的元信息区，等于把用户以为已加密的隐私换个地方存。
+
+`MediaMeta` 因此是独立定义的稳定结构，字段全部 `serde(default)` +
+`skip_serializing_if`，既兼容旧版也压体积。实测 MKV 素材的 meta 仅 **399 字节**。
+
+
 ## 本轮修复的真实缺陷
 
 端到端验证与 clippy 严格门禁各暴露出必须修的问题：
@@ -203,6 +252,8 @@ cargo run --release --example verify_media -p omy-media
 | 7 | 尾部 moov 的 MP4 探测与抽帧全部失败 | 管道输入无法 seek，FFmpeg 读到 mdat 就报 `partial file` + `Cannot determine format after EOF`，stdout 为空。让 FFmpeg 自己 `-movflags frag_keyframe+empty_moov` remux 也只产出 1301 字节空壳（它同样读不到 moov）。而录屏、相机直出、`-c copy` 输出**默认都是尾部 moov** | 新增 `mp4::to_faststart`：在主进程内用**纯 Rust** 把 moov 前移并修正 `stco`/`co64` 偏移，再喂管道。既解决问题又不违反文档 §14「FFmpeg 子进程无文件系统访问」 |
 | 8 | 同一个 stco 被登记 16 次，偏移累加 16 遍 | `collect_offset_tables` 递归进容器时**没有收窄搜索上界**，子调用一直扫到 moov 末尾，把容器之外的 stco 又扫一遍。嵌套 trak/mdia/minf/stbl 四层就重复多次。实测首项从应有的 4611 变成 63930，FFmpeg 报 `Invalid NAL unit size (1593407596 > 5369)`。**单元测试没抓到，因为手写样本只有一层嵌套、单条轨道** | 递归时传入 `end` 上界并收窄到当前容器末尾；补三条回归测试（不得重复登记、双轨恰好 2 个表、双轨端到端逐项核对偏移只加一次） |
 | 9 | 误把 FFmpeg 的 stderr 当成有效产物 | 诊断脚本用 `> out 2>&1` 把 stdout 与 stderr 混进同一文件，又只检查"长度 > 100"，于是 844 字节的错误文本被判定为成功抽帧，据此得出「尾部 moov 也能抽帧」的错误结论，并按错误结论改了实现 | 校验产物必须看**内容特征**：`image_decodable` 先验 WebP/JPEG/PNG 魔数再真实解码；诊断时 stdout 与 stderr 必须分开重定向 |
+| 10 | `cat --range -256` 在真实 CLI 下直接失败 | clap 默认把以 `-` 开头的值当短选项，`--range -256` 报 `unexpected argument '-2' found`。`parse_range` 的单测全部通过——因为它测的是**解析函数**，而 clap 在把参数交给它**之前**就拒绝了。修缺陷 #6 时我加了这条端到端断言却没验证它能通过，等于加了个从未真正跑绿的断言 | 给 `range` 加 `allow_hyphen_values = true`；补 `clap_accepts_suffix_range` 测试直接验证**解析层**（含空格式、等号式，并固定「跟着的选项会被吃成值但 `parse_range` 必报错」这一副作用行为） |
+| 11 | 验证脚本用陈旧二进制跑出假失败 | `verify-cli.ps1` 硬编码 `target\debug\omy.exe`，而修复后只重建了 release，脚本拿着 19 分钟前的旧 debug 跑，报出一条已经修好的失败。我据此以为新代码有缺陷，追查两轮才发现是产物陈旧 | 两个验证脚本都改为：取 debug/release 中**较新**者，并在**源码比二进制新**时直接拒绝运行并提示重新构建 |
 
 ## 待办
 
@@ -233,7 +284,9 @@ cargo run --release --example verify_media -p omy-media
 - [x] `mp4`：顶层 box 解析、moov 定位、**faststart 重排（含 stco/co64 偏移修正）**
 - [x] `tier`：P1/P2/P3 播放分级，区分真 WebM 与 MKV
 - [x] `thumbnail`：图片走纯 Rust `image`，视频走 FFmpeg 抽帧
-- [ ] 与 core 打通：写入 `TLV_MEDIA_META` / `TLV_MOOV_CACHE` / `TLV_THUMBNAIL`
+- [x] `meta`：`MediaMeta` 独立序列化结构（**不直接序列化 `MediaInfo`**，见下）
+- [x] `prepare`：一站式入口，一次探测同时产出三个 TLV 的负载
+- [x] 与 core 打通：写入 `TLV_MEDIA_META` / `TLV_MOOV_CACHE` / `TLV_THUMBNAIL`
 - [ ] remux 到 MSE 可用的分片 MP4（P2 路径）
 - [ ] 转码选项（加密时可选转 web 原生格式）
 - [ ] 字幕轨提取（首期只做文本类，ASS/PGS 留接口）
@@ -283,6 +336,21 @@ cargo run --release --example verify_media -p omy-media
    再做一次真实解码。退出码为 0 不代表产物有效，非零也不代表没产出。
 
 同理，FFmpeg 的退出码不可单独作为判据——需要 `stdout 非空` + `内容可解码` 双重确认。
+
+### 端到端脚本必须自证测的是最新构建
+
+修好 `--range -256` 后重跑 `verify-cli.ps1`，它仍然报同一条失败。
+我先怀疑 clap 配置没生效，又怀疑 PowerShell 的 `>` 重定向破坏了二进制流，
+写了两个诊断脚本分别验证——**两个假设都被实测推翻**（三种重定向方式全部正确）。
+最后在脚本内插桩打印 `exit=2`，才发现脚本硬编码 `target\debug\omy.exe`，
+而我只重建了 release，它拿着 19 分钟前的旧二进制在跑。
+
+教训：验证脚本报失败时，**先确认它测的是不是最新产物**，再去怀疑代码。
+两个脚本现在都会取 debug/release 中较新者，并在源码比二进制新时直接拒绝运行。
+
+顺带一提，那两个被推翻的假设也有价值：已确认 PowerShell 的 `>`、`cmd` 的 `>`
+和直接读 `StandardOutput.BaseStream` 三种方式对二进制 stdout **都是安全的**，
+下次不必再怀疑这一层。
 
 ### ffprobe 对 MKV 与 WebM 返回相同的 format_name
 

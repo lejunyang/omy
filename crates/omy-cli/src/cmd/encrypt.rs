@@ -89,6 +89,110 @@ pub struct Args {
     /// 删除原文件（需 --yes 或交互确认）
     #[arg(long)]
     pub delete_original: bool,
+
+    /// 缩略图模式：auto | none
+    ///
+    /// 契约见 `docs/research/09-cli-design.md`。`auto` 对图片缩放原图、
+    /// 对视频抽帧；`none` 完全不生成。
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub thumbnail: String,
+
+    /// 视频取帧时间点，如 `00:01:23` 或 `83` 或 `83.5`
+    ///
+    /// 只对视频有效。不指定则自动取时长 10% 处（避开片头黑帧）。
+    #[arg(long, value_name = "T")]
+    pub thumbnail_frame: Option<String>,
+
+    /// 不写入媒体元信息（`TLV_MEDIA_META`）
+    ///
+    /// 默认写入。它让列表页无需解密探测就能判断能否内嵌播放。
+    #[arg(long)]
+    pub no_media_meta: bool,
+
+    /// 不缓存 MP4 的 moov box（`TLV_MOOV_CACHE`）
+    ///
+    /// 默认缓存。缓存后起播可省掉两次 seek，局域网播放与缺片播放收益最大。
+    #[arg(long)]
+    pub no_moov_cache: bool,
+}
+
+/// 解析取帧时间点。
+///
+/// 接受三种写法，因为用户习惯不一：
+///
+/// - `83` / `83.5`：直接是秒
+/// - `01:23` / `01:23.5`：分:秒
+/// - `00:01:23`：时:分:秒
+///
+/// # Errors
+///
+/// 格式无法识别、含非数字字段或数值为负时返回错误。
+fn parse_timecode(s: &str) -> Result<f64> {
+    let t = s.trim();
+    if t.is_empty() {
+        bail!("取帧时间点不能为空");
+    }
+    let parts: Vec<&str> = t.split(':').collect();
+    // 逐段解析，任何一段非法都要报错而不是当成 0——
+    // 静默取 0 秒会让用户以为设置生效了，实际拿到的是首帧
+    let nums: Result<Vec<f64>> = parts
+        .iter()
+        .map(|p| {
+            p.parse::<f64>()
+                .map_err(|_| anyhow::anyhow!("时间点 `{s}` 含无法解析的字段 `{p}`"))
+        })
+        .collect();
+    let nums = nums?;
+
+    let secs = match nums.as_slice() {
+        [s] => *s,
+        [m, s] => m * 60.0 + s,
+        [h, m, s] => h * 3600.0 + m * 60.0 + s,
+        _ => bail!("时间点 `{s}` 格式不支持，请用 秒 / 分:秒 / 时:分:秒"),
+    };
+    if !secs.is_finite() || secs < 0.0 {
+        bail!("时间点 `{s}` 必须是非负数");
+    }
+    Ok(secs)
+}
+
+/// 由命令行参数构造媒体准备选项。
+///
+/// # 为什么 `auto` 用 `VideoAuto` 而非按扩展名分派
+///
+/// `omy_media::prepare` 内部会先尝试图片解码、再走 ffprobe，
+/// 自己就能分辨类型。按扩展名猜反而会错——用户完全可能把 PNG
+/// 命名成 `.dat`。所以这里只表达"要自动处理"，具体分派交给下层。
+///
+/// # Errors
+///
+/// `--thumbnail` 取值非法或 `--thumbnail-frame` 无法解析时返回错误。
+fn build_prepare_options(a: &Args) -> Result<omy_media::PrepareOptions> {
+    let thumb = match a.thumbnail.trim().to_ascii_lowercase().as_str() {
+        "none" => omy_media::ThumbSource::None,
+        "auto" => match &a.thumbnail_frame {
+            // 用户指定了帧：尊重它（需求确认项 B.2）
+            Some(tc) => omy_media::ThumbSource::VideoAt(parse_timecode(tc)?),
+            None => omy_media::ThumbSource::VideoAuto,
+        },
+        other => bail!(
+            "--thumbnail 只接受 auto | none，收到 `{other}`\n\
+             （指定图片路径作为封面的功能尚未实现）"
+        ),
+    };
+
+    // 指定了 --thumbnail-frame 却又 --thumbnail none：明确报错。
+    // 静默忽略会让用户以为设置生效了。
+    if a.thumbnail_frame.is_some() && thumb == omy_media::ThumbSource::None {
+        bail!("--thumbnail-frame 与 --thumbnail none 冲突：不生成缩略图时指定帧无意义");
+    }
+
+    Ok(omy_media::PrepareOptions {
+        media_meta: !a.no_media_meta,
+        moov_cache: !a.no_moov_cache,
+        thumbnail: thumb,
+        ..omy_media::PrepareOptions::default()
+    })
 }
 
 /// 目录加密模式，对应决策 D-05。
@@ -134,6 +238,10 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     if compress && !(1..=19).contains(&level) {
         bail!("压缩级别必须在 1–19 之间，当前为 {level}");
     }
+
+    // 媒体准备选项。在循环外算一次：解析时间点可能报错，
+    // 应当在读密码**之前**就失败——让用户白输一遍密码再报参数错误很糟。
+    let prep_opts = build_prepare_options(a)?;
 
     // 读密码。多个 slot 时逐个提示。
     let src = PasswordSource {
@@ -205,6 +313,23 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
         let out_path = resolve_output(p, a, meta.is_dir())?;
 
+        // 媒体准备：探测并产出 media_meta / moov_cache / thumbnail。
+        //
+        // 只对**单文件**做：容器模式的载荷是多个文件拼接，
+        // 整体探测毫无意义（会把第一个文件的头当成整体格式）。
+        //
+        // prepare 不返回 Err——媒体附加信息全是优化项，
+        // 任何一步失败都只降级并记警告，绝不阻断加密。
+        let prepared = if folder_index.is_some() {
+            omy_media::Prepared::default()
+        } else {
+            omy_media::prepare(&plaintext, &prep_opts)
+        };
+        // 警告要让用户看见，否则"为什么没有缩略图"无从排查
+        for w in &prepared.warnings {
+            ctx.out.warn(w);
+        }
+
         let opts = EncryptOptions {
             filename: match name_mode {
                 NameMode::Plain => None,
@@ -217,8 +342,9 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             cipher: cipher.id(),
             argon2: params,
             write_content_hash: true,
-            thumbnail: None,
-            media_meta: None,
+            thumbnail: prepared.thumbnail.clone(),
+            media_meta: prepared.media_meta.clone(),
+            moov_cache: prepared.moov_cache.clone(),
             folder_index: folder_index.clone(),
         };
 

@@ -12,10 +12,31 @@ $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
-$exe = Join-Path $repo 'target\debug\omy.exe'
-if (-not (Test-Path $exe)) {
-    Write-Output "FAIL: 未找到 $exe"
+# 选二进制：取 debug/release 中**较新**的那个。
+#
+# 曾经这里硬编码 debug，结果只重建了 release 时，脚本拿着旧 debug 跑出
+# 一条假失败（--range -256 报 exit=2），害我以为是新写的代码有缺陷，
+# 追了两轮才发现是陈旧产物。验证脚本必须自己保证测的是最新构建。
+$dbg = Join-Path $repo 'target\debug\omy.exe'
+$rel = Join-Path $repo 'target\release\omy.exe'
+$cands = @($dbg, $rel) | Where-Object { Test-Path $_ }
+if ($cands.Count -eq 0) {
+    Write-Output "FAIL: 未找到 omy.exe（debug 与 release 都不存在）"
     Write-Output "请先运行: cargo build -p omy-cli"
+    exit 1
+}
+$exe = ($cands | Sort-Object { (Get-Item $_).LastWriteTime } -Descending | Select-Object -First 1)
+Write-Output "使用二进制: $exe（$((Get-Item $exe).LastWriteTime.ToString('MM-dd HH:mm:ss'))）"
+
+# 源码比二进制新就是在测陈旧产物，直接拒绝跑
+$newestSrc = Get-ChildItem (Join-Path $repo 'crates') -Recurse -Filter *.rs |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($null -ne $newestSrc -and $newestSrc.LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
+    Write-Output ""
+    Write-Output "FAIL: 源码比二进制新，测的是陈旧产物"
+    Write-Output "  最新源码: $($newestSrc.Name) @ $($newestSrc.LastWriteTime.ToString('MM-dd HH:mm:ss'))"
+    Write-Output "  二进制:   $($exe) @ $((Get-Item $exe).LastWriteTime.ToString('MM-dd HH:mm:ss'))"
+    Write-Output "请先重新构建后再跑本脚本。"
     exit 1
 }
 

@@ -48,11 +48,15 @@
 
 pub mod error;
 pub mod ffprobe;
+pub mod meta;
 pub mod mp4;
+pub mod prepare;
 pub mod probe;
 pub mod thumbnail;
 pub mod tier;
 
 pub use error::{MediaError, Result};
+pub use meta::MediaMeta;
+pub use prepare::{PrepareOptions, Prepared, ThumbSource, prepare};
 pub use probe::{AudioStream, MediaInfo, SubtitleStream, VideoStream};
 pub use tier::{PlaybackTier, TierVerdict};

@@ -256,6 +256,23 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
+/// 把毫秒渲染成 `1:23:45` / `2:05` 形式。
+///
+/// 不足一小时时省略小时位——`0:02:05` 读起来比 `2:05` 累赘。
+/// 秒始终补零，因为 `2:5` 会被误读成 2 分 5 十秒。
+#[must_use]
+pub fn human_duration(ms: u64) -> String {
+    let total = ms / 1000;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// 解析人类书写的大小，如 `256K`、`4M`、`1G`、`65536`。
 ///
 /// # Errors

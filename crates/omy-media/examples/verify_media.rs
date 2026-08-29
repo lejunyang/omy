@@ -15,7 +15,7 @@
 //! 前置：`pwsh -File spikes/make-media-fixtures.ps1`
 
 use omy_media::{
-    ffprobe, mp4,
+    ffprobe, meta, mp4, prepare,
     probe::{self, Source},
     thumbnail,
     tier::{self, PlaybackTier},
@@ -415,6 +415,15 @@ fn main() {
         }
     }
 
+    // ---- 10. prepare 一站式产出媒体 TLV ----
+    // 这是加密流程真正调用的入口，必须用真实文件验证。
+    println!("\n--- 10. prepare：一次探测产出三个 TLV ---");
+    verify_prepare(&dir, &mut c);
+
+    // ---- 11. MediaMeta 的往返与内容 ----
+    println!("\n--- 11. MediaMeta JSON 往返（真实探测结果）---");
+    verify_meta(&dir, &mut c);
+
     // ---- 汇总 ----
     println!("\n{}", "=".repeat(64));
     println!("结果: {} 通过, {} 失败", c.pass, c.fail.len());
@@ -428,6 +437,172 @@ fn main() {
     if !c.fail.is_empty() {
         std::process::exit(1);
     }
+}
+
+/// 用真实文件验证 `prepare` 的产出。
+fn verify_prepare(dir: &Path, c: &mut Checker) {
+    let mp4_path = dir.join("h264_aac.mp4");
+    let Ok(bytes) = std::fs::read(&mp4_path) else {
+        c.check(false, "读取 h264_aac.mp4 失败");
+        return;
+    };
+
+    let out = prepare::prepare(&bytes, &prepare::PrepareOptions::default());
+    if !out.warnings.is_empty() {
+        println!("        警告: {:?}", out.warnings);
+    }
+
+    c.check(out.media_meta.is_some(), "产出 media_meta");
+    c.check(out.moov_cache.is_some(), "产出 moov_cache");
+    c.check(out.thumbnail.is_some(), "产出 thumbnail");
+    c.check(out.info.is_some(), "带回探测信息");
+    c.check(out.warnings.is_empty(), "正常 MP4 不该有警告");
+
+    // moov_cache 必须是**原始**字节，不是重排后的。
+    // 这是最容易搞错的一点：若存了重排后的 moov，其 stco 偏移
+    // 与实际载荷不符，播放时会解出乱码。
+    if let (Some(cached), Ok(Some(r))) = (out.moov_cache.as_ref(), mp4::find_moov(&bytes)) {
+        let s = usize::try_from(r.offset).unwrap_or(0);
+        let e = s + usize::try_from(r.size).unwrap_or(0);
+        c.check(
+            bytes.get(s..e) == Some(cached.as_slice()),
+            "moov_cache 与原文件对应区间逐字节相同（不是重排后的）",
+        );
+        c.check(
+            cached.get(4..8) == Some(b"moov"),
+            "moov_cache 开头是 'moov' 标签",
+        );
+
+        // 反证：重排后的 moov 与缓存必须不同，否则说明存错了
+        if let Ok(Some(re)) = mp4::to_faststart(&bytes) {
+            if let Ok(Some(r2)) = mp4::find_moov(&re) {
+                let s2 = usize::try_from(r2.offset).unwrap_or(0);
+                let e2 = s2 + usize::try_from(r2.size).unwrap_or(0);
+                let reordered = re.get(s2..e2).unwrap_or(&[]);
+                c.check(
+                    reordered != cached.as_slice(),
+                    "重排后的 moov 与缓存内容不同（证明缓存取的是原始版本）",
+                );
+            }
+        }
+    }
+
+    // 缩略图必须是可解码的真图片
+    if let Some(t) = &out.thumbnail {
+        c.check(image_decodable(t), "prepare 产出的缩略图可解码");
+        c.check(
+            t.len() <= thumbnail::SIZE_LIMIT,
+            &format!("缩略图 {} 字节未超 32 KiB 上限", t.len()),
+        );
+    }
+
+    // 纯音频：不该有 moov，也不该因为抽不到帧而报警告
+    if let Ok(ab) = std::fs::read(dir.join("audio_only.mp3")) {
+        let ao = prepare::prepare(&ab, &prepare::PrepareOptions::default());
+        c.check(ao.media_meta.is_some(), "纯音频也应产出 media_meta");
+        c.check(ao.moov_cache.is_none(), "MP3 不该有 moov_cache");
+        c.check(
+            ao.warnings.is_empty(),
+            &format!("纯音频不该有警告（抽帧应被跳过）：{:?}", ao.warnings),
+        );
+    }
+
+    // 带封面的 MP3：封面是 attached_pic，不该被当成视频去抽帧
+    if let Ok(cb) = std::fs::read(dir.join("with_cover.mp3")) {
+        let co = prepare::prepare(&cb, &prepare::PrepareOptions::default());
+        c.check(
+            co.warnings.is_empty(),
+            &format!("带封面 MP3 不该有警告：{:?}", co.warnings),
+        );
+    }
+
+    // 非媒体文件：静默降级，不刷警告
+    if let Ok(tb) = std::fs::read(dir.join("not_media.txt")) {
+        let to = prepare::prepare(&tb, &prepare::PrepareOptions::default());
+        c.check(to.is_empty(), "非媒体文件不该产出任何 TLV");
+        c.check(
+            to.warnings.is_empty(),
+            &format!("非媒体文件不该产生警告：{:?}", to.warnings),
+        );
+    }
+
+    // 全关时应完全不工作
+    let none = prepare::prepare(&bytes, &prepare::PrepareOptions::none());
+    c.check(none.is_empty(), "全部关闭时不产出任何 TLV");
+
+    // 用户指定特定帧（需求确认项 B.2）
+    let at = prepare::PrepareOptions {
+        thumbnail: prepare::ThumbSource::VideoAt(5.0),
+        ..prepare::PrepareOptions::default()
+    };
+    let ao = prepare::prepare(&bytes, &at);
+    match &ao.thumbnail {
+        Some(t) => c.check(image_decodable(t), "指定第 5 秒抽帧成功且可解码"),
+        None => c.check(false, &format!("指定帧抽取失败：{:?}", ao.warnings)),
+    }
+}
+
+/// 用真实探测结果验证 `MediaMeta`。
+fn verify_meta(dir: &Path, c: &mut Checker) {
+    // 用 MKV 双轨素材：字段最丰富
+    let Ok(info) = probe::probe(Source::Path(&dir.join("h264_aac.mkv"))) else {
+        c.check(false, "探测 h264_aac.mkv 失败");
+        return;
+    };
+
+    let m = meta::MediaMeta::from_probe(&info);
+    let Ok(json) = m.to_json_bytes() else {
+        c.check(false, "MediaMeta 序列化失败");
+        return;
+    };
+    println!("        JSON {} 字节", json.len());
+    if let Ok(s) = std::str::from_utf8(&json) {
+        let preview: String = s.chars().take(180).collect();
+        println!("        {preview}");
+    }
+
+    match meta::MediaMeta::from_json_bytes(&json) {
+        Ok(back) => {
+            c.check(back == m, "MediaMeta 往返完全一致");
+            // 与探测结果逐项核对，而非只看往返
+            c.check_eq(
+                back.container.as_str(),
+                info.container.as_str(),
+                "容器名一致",
+            );
+            c.check_eq(back.duration_ms, info.duration_ms, "时长一致");
+            c.check_eq(
+                back.video.as_ref().map(|v| v.codec.clone()),
+                info.video.first().map(|v| v.codec.clone()),
+                "视频编码一致",
+            );
+            c.check_eq(back.audio.len(), info.audio.len(), "音轨数量一致");
+            c.check(
+                back.tier() == Some(tier::classify(&info).tier),
+                "分级能从 JSON 还原且与重新计算一致",
+            );
+            c.check(
+                !back.playback_tier.reason.is_empty(),
+                "分级理由非空（UI 要展示）",
+            );
+        }
+        Err(e) => c.check(false, &format!("MediaMeta 反序列化失败: {e}")),
+    }
+
+    // 隐私：ffprobe 的 tags 不得进入 meta
+    if let Ok(s) = String::from_utf8(json.clone()) {
+        let low = s.to_lowercase();
+        c.check(
+            !low.contains("encoder") && !low.contains("lavf") && !low.contains("handler"),
+            "meta 不含 ffprobe 的 encoder/handler 等 tag",
+        );
+    }
+
+    // meta 应当足够小：10000 个文件都要常驻内存
+    c.check(
+        json.len() < 2048,
+        &format!("meta 体积 {} 字节，应远小于 2 KiB", json.len()),
+    );
 }
 
 /// 用独立手段确认字节是可解码的图片。

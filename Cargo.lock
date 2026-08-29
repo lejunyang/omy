@@ -2361,6 +2361,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "omy-core",
+ "omy-media",
  "rpassword",
  "serde",
  "serde_json",

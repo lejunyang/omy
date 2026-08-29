@@ -600,6 +600,142 @@ fn chunk_size_policy_bounds() {
     assert_eq!(err.exit_code(), ExitCode::Usage, "应映射为参数错误");
 }
 
+// ============================================================
+// 媒体 TLV：THUMBNAIL / MEDIA_META / MOOV_CACHE
+// ============================================================
+
+/// 三个媒体 TLV 都必须能原样往返。
+///
+/// 用三段**内容互不相同**的数据，以便发现「取错条目」这类串号缺陷——
+/// 若都用同样的字节，把 moov 读成 thumbnail 也测不出来。
+#[test]
+fn media_tlvs_roundtrip() {
+    let thumb = vec![0xAAu8; 1234];
+    let meta = br#"{"container":"mp4","duration_ms":8000}"#.to_vec();
+    let moov = vec![0x5Au8; 4563];
+
+    let opts = EncryptOptions {
+        thumbnail: Some(thumb.clone()),
+        media_meta: Some(meta.clone()),
+        moov_cache: Some(moov.clone()),
+        ..basic_opts()
+    };
+    let enc = encrypt(b"payload", &[test_kek(b"pw")], &SALT, &opts, &RandomMaterial::generate())
+        .expect("加密失败");
+    let opened = open(&enc.bytes, &[test_kek(b"pw")]).expect("打开失败");
+
+    assert_eq!(opened.thumbnail().expect("缩略图"), thumb);
+    assert_eq!(opened.media_meta().expect("元信息"), meta);
+    assert_eq!(opened.moov_cache().expect("moov 缓存"), moov);
+
+    // 存在性判断不需要解密，应与实际一致
+    assert!(opened.has_moov_cache());
+    assert!(opened.has_media_meta());
+
+    // 载荷不受这些 TLV 影响，仍须 bit-for-bit 还原
+    assert_eq!(opened.decrypt_all(&enc.bytes).expect("解密"), b"payload");
+}
+
+/// 不传媒体 TLV 时不应写入对应条目。
+///
+/// 这条防的是「默认就塞空条目」——空条目既占空间，
+/// 又会让 `has_moov_cache()` 误报 true。
+#[test]
+fn media_tlvs_absent_when_not_requested() {
+    let enc = encrypt(
+        b"payload",
+        &[test_kek(b"pw")],
+        &SALT,
+        &basic_opts(),
+        &RandomMaterial::generate(),
+    )
+    .expect("加密失败");
+    let opened = open(&enc.bytes, &[test_kek(b"pw")]).expect("打开失败");
+
+    assert!(!opened.has_moov_cache(), "未请求时不应有 moov 缓存");
+    assert!(!opened.has_media_meta(), "未请求时不应有元信息");
+    assert!(opened.moov_cache().is_err(), "缺失应返回错误而非空数据");
+    assert!(opened.thumbnail().is_err());
+}
+
+/// `MOOV_CACHE` 必须是非 CRITICAL。
+///
+/// 规范 §4.4 定它为 ENC 而非 CRITICAL+ENC，因为它纯属起播优化——
+/// 不认识它的实现照样能正确解密播放，只是多两次 seek。
+/// 若误标 CRITICAL，旧版实现会无谓地拒绝打开整个文件。
+#[test]
+fn moov_cache_is_not_critical() {
+    let opts = EncryptOptions {
+        moov_cache: Some(vec![1, 2, 3, 4]),
+        ..basic_opts()
+    };
+    let enc = encrypt(b"x", &[test_kek(b"pw")], &SALT, &opts, &RandomMaterial::generate())
+        .expect("加密失败");
+    let opened = open(&enc.bytes, &[test_kek(b"pw")]).expect("打开失败");
+
+    let entry = opened
+        .tlvs
+        .find(omy_core::tlv::types::MOOV_CACHE)
+        .expect("应存在 moov 条目");
+    assert!(!entry.is_critical(), "MOOV_CACHE 不得标记 CRITICAL");
+    assert!(entry.is_encrypted(), "MOOV_CACHE 必须加密");
+}
+
+/// 媒体 TLV 落在 header MAC 覆盖范围内，篡改必须被检出。
+#[test]
+fn tampered_moov_cache_detected() {
+    let moov = vec![0x11u8; 512];
+    let opts = EncryptOptions {
+        moov_cache: Some(moov),
+        ..basic_opts()
+    };
+    let enc = encrypt(b"x", &[test_kek(b"pw")], &SALT, &opts, &RandomMaterial::generate())
+        .expect("加密失败");
+
+    // 定位 moov 条目的 value 并改一个字节
+    let opened = open(&enc.bytes, &[test_kek(b"pw")]).expect("打开失败");
+    let target = opened
+        .tlvs
+        .find(omy_core::tlv::types::MOOV_CACHE)
+        .expect("应存在")
+        .value
+        .clone();
+    drop(opened);
+
+    let mut bad = enc.bytes.clone();
+    let at = bad
+        .windows(target.len())
+        .position(|w| w == target.as_slice())
+        .expect("应能在文件中定位到该条目的密文");
+    bad[at] ^= 0xFF;
+
+    // header MAC 覆盖整个 TLV 区，因此打开阶段就该失败
+    let err = open(&bad, &[test_kek(b"pw")]).expect_err("篡改必须被检出");
+    assert_eq!(err.exit_code(), ExitCode::Corrupted);
+}
+
+/// 32 KB 量级的缩略图与真实 moov 尺寸都应正常工作。
+///
+/// 文档建议缩略图 ≤ 32 KB；实测 8 秒 720p 视频的 moov 是 4563 字节，
+/// 但长视频的 moov 可达数 MB（每个采样都有记录），故一并验证大尺寸。
+#[test]
+fn media_tlvs_handle_realistic_sizes() {
+    let thumb = vec![0x7Eu8; 32 * 1024];
+    let moov = vec![0x3Cu8; 2 * 1024 * 1024];
+    let opts = EncryptOptions {
+        thumbnail: Some(thumb.clone()),
+        moov_cache: Some(moov.clone()),
+        ..basic_opts()
+    };
+    let enc = encrypt(b"x", &[test_kek(b"pw")], &SALT, &opts, &RandomMaterial::generate())
+        .expect("加密失败");
+    let opened = open(&enc.bytes, &[test_kek(b"pw")]).expect("打开失败");
+    assert_eq!(opened.thumbnail().expect("缩略图").len(), 32 * 1024);
+    assert_eq!(opened.moov_cache().expect("moov").len(), 2 * 1024 * 1024);
+    assert_eq!(moov.len(), 2 * 1024 * 1024);
+    assert_eq!(thumb.len(), 32 * 1024);
+}
+
 /// 内容哈希不符必须被检出。
 #[test]
 fn content_hash_mismatch_detected() {
