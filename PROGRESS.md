@@ -10,12 +10,12 @@
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
 | `omy-core` | 🟢 格式核心可用 | 135 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
-| `omy-cli` | 🟢 12 个命令可用 | 50 项 + 79 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV |
+| `omy-cli` | 🟢 12 个命令可用 | 50 项 + 88 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV；新增 `--vault` |
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
-| `omy-gui` | ⚪ 未开始 | — | Tauri v2；**P1 播放已由 S1 验证，P2 链路已打通** |
+| `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 | Tauri v2；解锁/扫描/预览/播放/多语言/锁定全通，视频真实 seek |
 
-合计 **299 项自动化测试 + 79 项 CLI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **330 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -153,6 +153,10 @@ cargo clippy --workspace --all-targets -- -D warnings   # 零告警
 cargo build -p omy-cli && cargo build --release -p omy-cli
 pwsh -File scripts/verify-cli.ps1                 # 79 项端到端
 pwsh -File scripts/verify-media-tlv.ps1           # 46 项媒体 TLV 端到端
+
+# GUI 端到端（需 Node 跑 CDP 驱动脚本；会自动启动并关闭 GUI）
+pwsh -File spikes/make-gui-vault.ps1              # 造测试库（4 个文件同库 + 1 个异库）
+pwsh -File scripts/verify-gui.ps1                 # 43 项 GUI 端到端
 ./target/release/omy bench                        # 本机性能
 cargo run --release --example bench_scan -- 300
 cargo run --release --example fuzz_parse -- 20000
@@ -293,6 +297,41 @@ P2 是「容器不支持但编码支持」的播放路径：只换容器不重�
 是断言用错了探测方式。核对完整性应当**数 `moof` 数量**，或用文件路径探测。
 
 
+### GUI 端到端（43 项，`scripts/verify-gui.ps1`）
+
+GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的 Range 行为、
+视频能否真的播放与 seek、锁定后密钥是否真的抹掉——这些都只在**真实 WebView
+进程**里才成立。因此用 CDP（Chrome DevTools Protocol）驱动真实 GUI，
+全自动无需人工点击。
+
+**这一轮 GUI 验证抓出 4 个缺陷（#13–#16），其中 #13 会让 Windows 上
+所有内容加载全部失败，而编译、330 项单测、clippy 全部通过。**
+
+覆盖：
+
+| 阶段 | 关键断言 |
+|---|---|
+| 启动 | 未解锁时**不渲染主界面**，DOM 里不含任何文件信息 |
+| 解锁 | 读取多库参数、密码正确时 100ms 内进入主界面 |
+| 列表 | 5 个文件扫到 5 个，4 个解开、1 个保持锁定（异库） |
+| **锁定态不泄露** | 锁定文件的原名、磁盘名、大小、缩略图**一律不出现** |
+| 协议 | 200 / 206 / 416 / suffix Range / 2 MiB 上限 / `no-store` / MIME / 404 |
+| **播放** | 双击加载元数据；5 次乱序 seek 全成功，落点偏差 **0.00s**，耗时 1–3 ms |
+| **画面真实性** | canvas 在多个时间点取到帧，最少 195 种颜色，且各帧互不相同 |
+| 预览 | 图片尺寸正确；文本命中哨兵字符串；多字节字符正确解码 |
+| 多语言 | zh-CN ↔ en 切换后文案确实改变 |
+| 锁定 | 回到解锁界面、无卡片残留、协议立即返回 404 |
+| 网络观察 | `fromDiskCache` 全程为 0 |
+
+「画面真实性」是刻意加的：只断言 `seeked` 事件会放过「seek 报成功但画面
+卡在同一帧」。取帧比对颜色分布才能排除这种假通过。
+
+#### 验证脚本自身也会有断言错误
+
+「控制台无错误」最初把测试**自己触发**的 416（越界 Range 用例）和 404
+（未知 id、锁定后访问用例）当成缺陷报出来——那恰恰是断言通过的证据。
+已改为只放行这两个特定状态码，其余错误一律照报；整条规则放宽会让真问题溜过去。
+
 ## 本轮修复的真实缺陷
 
 端到端验证与 clippy 严格门禁各暴露出必须修的问题：
@@ -311,6 +350,10 @@ P2 是「容器不支持但编码支持」的播放路径：只换容器不重�
 | 10 | `cat --range -256` 在真实 CLI 下直接失败 | clap 默认把以 `-` 开头的值当短选项，`--range -256` 报 `unexpected argument '-2' found`。`parse_range` 的单测全部通过——因为它测的是**解析函数**，而 clap 在把参数交给它**之前**就拒绝了。修缺陷 #6 时我加了这条端到端断言却没验证它能通过，等于加了个从未真正跑绿的断言 | 给 `range` 加 `allow_hyphen_values = true`；补 `clap_accepts_suffix_range` 测试直接验证**解析层**（含空格式、等号式，并固定「跟着的选项会被吃成值但 `parse_range` 必报错」这一副作用行为） |
 | 11 | 验证脚本用陈旧二进制跑出假失败 | `verify-cli.ps1` 硬编码 `target\debug\omy.exe`，而修复后只重建了 release，脚本拿着 19 分钟前的旧 debug 跑，报出一条已经修好的失败。我据此以为新代码有缺陷，追查两轮才发现是产物陈旧 | 两个验证脚本都改为：取 debug/release 中**较新**者，并在**源码比二进制新**时直接拒绝运行并提示重新构建 |
 | 12 | 8 字节 VINT 解析会 panic | EBML 的大小字段要去掉标记位，实现写成 `0xFFu8 >> len`。`len == 8` 时（首字节 `0x01`，标记位占满整字节）触发**移位溢出 panic**——Rust 要求移位量小于位宽。而 8 字节 VINT 在真实 MKV 里很常见，muxer 常用最大宽度占位 | 改用 `checked_shr().unwrap_or(0)` 表达"移满即为 0"；补 `vint_encoding_roundtrip` 与 `unknown_size_does_not_hang` 覆盖 8 字节与未知长度两种边界 |
+| 13 | Windows 上所有 `omystream://` 请求全部失败 | WebView2 **不支持自定义 scheme**，Tauri 在 Windows/Android 上把它映射成 `http://<scheme>.localhost/`；macOS/Linux 才用原生形式。前端写死 `omystream://localhost/` 导致 `fetch` 报 `URL scheme not supported`、`<video>` 报静默的 `ERR_UNKNOWN_URL_SCHEME`。**编译、单测、clippy 全部通过**——这类平台差异只有真机跑 GUI 才暴露 | 新增 `stream_base` 命令由后端按编译目标下发前缀（后端本就知道自己编到哪个目标，比前端嗅探 UA 可靠）；CSP 与 CDP 脚本同步改为从应用取前缀而非硬编码 |
+| 14 | 目录含多个 vault 时只解开其中一个 | `vault_params_of` 取第一个能解析的文件的 salt 就返回。但一个文件夹里混着多个库是常态（分批加密、从别处拷入）。实测 5 个文件只解开 1 个，而用户密码明明是对的 | 改为收集**全部去重后**的 `(salt, 参数)` 逐个派生；`UnlockResult` 增加 `vaults_unlocked` 让前端能区分「全解开」与「部分解开」。有 N 个库就跑 N 次 Argon2，这是正确性的必需开销 |
+| 15 | canvas 取帧报 `SecurityError: canvas has been tainted` | 页面在 `tauri.localhost`、协议在 `omystream.localhost`，两者不同源。服务端虽已发 `Access-Control-Allow-Origin`，但 `<video>`/`<img>` 未声明 `crossorigin` 时浏览器**根本不走 CORS 校验**，直接判为跨源污染。影响的不只是测试——应用内截图、缩略图生成都要读像素 | `<video>`/`<audio>`/`<img>` 全部补 `crossorigin="anonymous"`。S1 spike 的页面本来就有这个属性，实现时漏抄了 |
+| 16 | 图片被标成「🐌 需重新编码」 | 播放分级对图片没有意义，但 `scan` 无条件取 `playback_tier`。PNG 走 ffprobe 会被识别成「单帧视频」从而落到 P3，界面上就成了一张 PNG 挂着重编码警告 | 仅当 kind 为 video/audio 时才写入 tier 与 duration |
 
 ## 文档纠错（实测推翻原描述）
 
@@ -342,6 +385,7 @@ P2 是「容器不支持但编码支持」的播放路径：只换容器不重�
 - [x] `--json` 输出；`code` 恒为英文常量
 - [x] i18n 简中 + 英文
 - [x] 配置文件
+- [x] `--vault`：加入已有库，复用 salt 与 KDF 参数
 - [ ] `serve` / `connect`（依赖 omy-net）
 - [ ] 进度条（`indicatif` 已在 workspace deps 但未接入；大文件加密目前无进度反馈）
 
@@ -363,7 +407,7 @@ P2 是「容器不支持但编码支持」的播放路径：只换容器不重�
 ### 后续
 
 - [ ] `omy-net`：mDNS + SPAKE2 + Noise IK
-- [ ] `omy-gui`：Tauri v2
+- [x] `omy-gui`：Tauri v2（解锁/扫描/预览/播放/多语言/锁定）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 
 ## 已定决定

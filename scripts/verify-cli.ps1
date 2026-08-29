@@ -357,6 +357,116 @@ foreach ($sub in @('encrypt','decrypt','info','verify','list','scan','cat','key'
 & $exe --version 2>&1 | Out-Null
 Check ($LASTEXITCODE -eq 0) "--version 退出码 0"
 
+# ============ --vault：加入已有库 ============
+#
+# 不带 --vault 时每次调用都生成新的随机 salt，产出的文件自成一库。
+# 后果是用户分批加密后，同一个密码要为每一批各跑一次 Argon2——
+# 这正是 GUI 端到端验证最初暴露出来的问题。
+Write-Output ""
+Write-Output "--- --vault 加入已有库 ---"
+
+$vdir = Join-Path $dir 'vaulttest'
+New-Item -ItemType Directory -Path $vdir -Force | Out-Null
+foreach ($n in 1..3) {
+    Set-Content -Path (Join-Path $vdir "v$n.txt") -Value "vault member $n" -NoNewline
+}
+
+# 本段用环境变量传密码。脚本前面的用例走的是别的密码来源，
+# 这个变量此前并未设置过——漏掉它会让所有 encrypt 静默失败，
+# 而失败症状是后面读文件时报 "null-valued expression"，
+# 完全看不出根因在这里
+$env:OMY_TEST_PASS = 'vault-join-test-pw'
+# 第一个文件建库
+& $exe encrypt (Join-Path $vdir 'v1.txt') -o (Join-Path $vdir 'v1.omy') `
+    --password-env OMY_TEST_PASS --kdf-profile mobile 2>&1 | Out-Null
+$vaultOk = ($LASTEXITCODE -eq 0)
+
+# 后两个用 --vault 加入
+foreach ($n in 2..3) {
+    & $exe encrypt (Join-Path $vdir "v$n.txt") -o (Join-Path $vdir "v$n.omy") `
+        --password-env OMY_TEST_PASS --vault (Join-Path $vdir 'v1.omy') 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { $vaultOk = $false }
+}
+Check $vaultOk "--vault 加密成功"
+
+# 直接从文件字节读 salt 与 KDF 参数，绕开 CLI 自己的说法。
+# 偏移取自 docs/research/02-file-format-spec.md 第 2 节的固定头布局表：
+#   0  magic(8)      | 8  version_major(2) | 10 version_minor(2)
+#   12 header_len(4) | 16 file_uuid(16)    | 32 vault_salt(16)
+#   48 flags(4)      | 52 cipher/kdf/compress/slot_count(各 1)
+#   56 argon2_m_kib(4) | 60 argon2_t(4)    | 64 argon2_p(4)
+# 全部小端序。注意 vault_salt 在 32 而非 16——16 是 file_uuid。
+function Get-HeaderInfo([string]$path) {
+    $fs = [System.IO.File]::OpenRead($path)
+    try {
+        $buf = New-Object byte[] 96
+        $n = $fs.Read($buf, 0, 96)
+        if ($n -lt 96) { throw "文件不足 96 字节: $path" }
+        # 先确认 magic，否则后面读到的全是垃圾却看不出来
+        $magic = [System.Text.Encoding]::ASCII.GetString($buf, 0, 7)
+        if ($magic -ne 'OMYFILE') { throw "magic 不是 OMYFILE 而是 '$magic': $path" }
+        return [pscustomobject]@{
+            Salt = -join ($buf[32..47] | ForEach-Object { $_.ToString('x2') })
+            MKib = [BitConverter]::ToUInt32($buf, 56)
+            T    = [BitConverter]::ToUInt32($buf, 60)
+            P    = [BitConverter]::ToUInt32($buf, 64)
+        }
+    } finally { $fs.Dispose() }
+}
+
+$h1 = Get-HeaderInfo (Join-Path $vdir 'v1.omy')
+$h2 = Get-HeaderInfo (Join-Path $vdir 'v2.omy')
+$h3 = Get-HeaderInfo (Join-Path $vdir 'v3.omy')
+Check ($h1.Salt -eq $h2.Salt -and $h2.Salt -eq $h3.Salt) `
+    "--vault 让三个文件共用同一个 salt" $h1.Salt.Substring(0, 12)
+
+# salt 相同还不够：KDF 参数不同的话，同一密码照样派生出不同的 KEK，
+# 症状是「密码正确却解不开」，极难排查
+$paramsSame = ($h1.MKib -eq $h3.MKib) -and ($h1.T -eq $h3.T) -and ($h1.P -eq $h3.P)
+Check $paramsSame "--vault 同时沿用了 KDF 参数" "m=$($h1.MKib) t=$($h1.T) p=$($h1.P)"
+
+# 反证：不带 --vault 必须得到不同的 salt。
+# 少了这条，即便 --vault 完全没生效（比如 salt 恒定）上面也会通过
+& $exe encrypt (Join-Path $vdir 'v1.txt') -o (Join-Path $vdir 'alone.omy') `
+    --password-env OMY_TEST_PASS --kdf-profile mobile 2>&1 | Out-Null
+$hAlone = Get-HeaderInfo (Join-Path $vdir 'alone.omy')
+Check ($hAlone.Salt -ne $h1.Salt) "不带 --vault 时 salt 确实不同（反证）" `
+    "$($hAlone.Salt.Substring(0,12)) vs $($h1.Salt.Substring(0,12))"
+
+# 加入库的文件必须真的能解开
+$outDec = Join-Path $vdir 'dec3.txt'
+& $exe decrypt (Join-Path $vdir 'v3.omy') -o $outDec --password-env OMY_TEST_PASS 2>&1 | Out-Null
+$decOk = ($LASTEXITCODE -eq 0) -and ((Get-Content $outDec -Raw) -eq 'vault member 3')
+Check $decOk "加入库的文件能正确解密"
+
+# --vault 指向目录：目录里只有一个库时应当直接可用。
+# 用干净的子目录测，因为 $vdir 里此刻已混入 alone.omy（另一个库）
+$single = Join-Path $vdir 'single'
+New-Item -ItemType Directory -Path $single -Force | Out-Null
+Copy-Item (Join-Path $vdir 'v1.omy') (Join-Path $single 'a.omy')
+Copy-Item (Join-Path $vdir 'v2.omy') (Join-Path $single 'b.omy')
+& $exe encrypt (Join-Path $vdir 'v2.txt') -o (Join-Path $vdir 'v4.omy') `
+    --password-env OMY_TEST_PASS --vault $single 2>&1 | Out-Null
+$s4 = if ($LASTEXITCODE -eq 0) { (Get-HeaderInfo (Join-Path $vdir 'v4.omy')).Salt } else { 'x' }
+Check ($s4 -eq $h1.Salt) "--vault 接受目录参数（目录内单一库）"
+
+# 目录里有多个库时必须报错，而不是静默挑一个。
+# 静默挑选的后果是用户以为加入了 A 库、实际进了 B 库，
+# 直到换台机器用另一个密码打不开才会发现
+$multiOut = & $exe encrypt (Join-Path $vdir 'v3.txt') -o (Join-Path $vdir 'v6.omy') `
+    --password-env OMY_TEST_PASS --vault $vdir 2>&1
+$multiRejected = ($LASTEXITCODE -ne 0)
+Check $multiRejected "--vault 指向含多个库的目录时报错"
+# 报错必须说清怎么办，否则用户只知道失败、不知道下一步
+Check (($multiOut -join "`n") -match '指定具体文件') "多库报错给出了可操作的建议"
+
+# 冲突必须报错而不是静默选一个：
+# 沿用旧参数会让 --kdf-profile 失效，用新参数则文件进不了那个库
+& $exe encrypt (Join-Path $vdir 'v3.txt') -o (Join-Path $vdir 'v5.omy') `
+    --password-env OMY_TEST_PASS --vault (Join-Path $vdir 'v1.omy') `
+    --kdf-profile sensitive 2>&1 | Out-Null
+Check ($LASTEXITCODE -ne 0) "--vault 与冲突的 --kdf-profile 同时给出时报错"
+
 # ============ 汇总 ============
 Write-Output ""
 Write-Output ("=" * 64)

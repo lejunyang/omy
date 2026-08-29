@@ -606,40 +606,69 @@ fn verify_then_delete(ctx: &Ctx<'_>, orig: &Path, enc: &[u8], keks: &[Kek]) -> R
 /// 只读文件开头一小段：头部就在最前面，为了取 16 字节的盐
 /// 去读一个 800 MB 的视频没有道理。
 fn read_vault_params(p: &Path) -> Result<([u8; 16], omy_core::crypto::Argon2Params)> {
-    let candidates: Vec<PathBuf> = if p.is_dir() {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(p)
-            .with_context(|| format!("无法读取目录 {}", p.display()))?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|q| q.is_file())
-            .collect();
-        // 排序让结果可复现：目录遍历顺序在不同文件系统上不保证一致，
-        // 「取第一个」若每次不同会让问题难以复现
-        v.sort();
-        v
-    } else {
-        vec![p.to_path_buf()]
-    };
-
-    if candidates.is_empty() {
-        bail!("{} 中没有文件", p.display());
+    if p.is_file() {
+        let bytes = read_header_prefix(p)?;
+        let h = omy_core::file::peek_header(&bytes)
+            .with_context(|| format!("{} 不是可识别的 omy 文件", p.display()))?;
+        return Ok((h.vault_salt, h.argon2_params()));
     }
 
-    for c in &candidates {
+    if !p.is_dir() {
+        bail!("{} 不存在", p.display());
+    }
+
+    // 目录：收集其中出现的所有不同的 vault，而不是取第一个。
+    //
+    // 一个文件夹里混着多个库是常态（分批加密、从别处拷进来的文件）。
+    // 若静默取第一个，用户以为加入了 A 库、实际进了 B 库，
+    // 而且直到换台机器用另一个密码打不开时才会发现。
+    // 这种错误必须在加密前就拦下来。
+    let mut found: Vec<([u8; 16], omy_core::crypto::Argon2Params)> = Vec::new();
+    let mut sample: Vec<PathBuf> = Vec::new();
+
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(p)
+        .with_context(|| format!("无法读取目录 {}", p.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|q| q.is_file())
+        .collect();
+    entries.sort();
+
+    for c in &entries {
         let Ok(bytes) = read_header_prefix(c) else {
             continue;
         };
-        if let Ok(h) = omy_core::file::peek_header(&bytes) {
-            return Ok((h.vault_salt, h.argon2_params()));
+        let Ok(h) = omy_core::file::peek_header(&bytes) else {
+            continue;
+        };
+        if !found.iter().any(|(s, _)| *s == h.vault_salt) {
+            found.push((h.vault_salt, h.argon2_params()));
+            sample.push(c.clone());
         }
     }
 
-    bail!(
-        "{} 中没有可识别的 omy 文件，无法取得 vault salt",
-        p.display()
-    )
+    match found.len() {
+        0 => bail!(
+            "{} 中没有可识别的 omy 文件，无法取得 vault salt",
+            p.display()
+        ),
+        1 => Ok(found.swap_remove(0)),
+        n => {
+            // 列出每个库的一个代表文件，用户据此改成指定具体文件
+            let list = sample
+                .iter()
+                .take(4)
+                .map(|q| format!("  --vault {}", q.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!(
+                "{} 中存在 {n} 个不同的库，无法确定要加入哪一个。\n\
+                 请改为指定具体文件，例如：\n{list}",
+                p.display()
+            )
+        }
+    }
 }
-
 /// 只读文件开头的头部区域。
 fn read_header_prefix(p: &Path) -> Result<Vec<u8>> {
     use std::io::Read as _;

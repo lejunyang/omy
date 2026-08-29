@@ -35,10 +35,16 @@ src-tauri/target/
 /spikes/**/gen/schemas/
 /crates/**/gen/schemas/
 
-# 一次性调试脚本（precommit-check、peek-tail 之类，用完即弃）
+# 一次性调试与改文件脚本（用完即弃，不代表可复用的验证能力）
 /spikes/peek-tail.ps1
 /spikes/precommit-check.ps1
 /spikes/probe-vault-salt.ps1
+/spikes/probe-header-layout.ps1
+/spikes/probe-verify-ctx.ps1
+/spikes/probe-vault-flag.ps1
+/spikes/fix-*.ps1
+/spikes/update-progress*.ps1
+/spikes/check-progress.ps1
 
 # 编辑器与操作系统
 .vscode/*
