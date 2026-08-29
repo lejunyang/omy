@@ -514,7 +514,7 @@ mod tests {
             total_ct.get()
         );
         assert!(
-            total_ct.get() < plain.len() as u64 / 2,
+            total_ct.get() * 2 < plain.len() as u64,
             "实读密文不应接近整个文件"
         );
     }

@@ -1,0 +1,25 @@
+[package]
+name = "omy-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "omy 的媒体探测、分级与缩略图生成"
+
+# 许可证与其他 crate 不同：本 crate 通过子进程调用 FFmpeg。
+# 决策见 docs/research/10-licensing-and-patents.md：
+# core/net 为 MIT OR Apache-2.0，media 为 LGPL-2.1+，cli/gui 为 GPL-3.0。
+#
+# 注意：本 crate 自身代码不链接 FFmpeg，只通过管道与独立子进程通信
+# （docs/research/04-media-playback.md §14 的强制隔离要求）。
+# 采用 LGPL 是为了在未来若改为动态链接 libav* 时不必再改授权。
+license = "LGPL-2.1-or-later"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]

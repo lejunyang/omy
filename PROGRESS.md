@@ -11,11 +11,11 @@
 |---|---|---|---|
 | `omy-core` | 🟢 格式核心可用 | 130 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource |
 | `omy-cli` | 🟢 12 个命令可用 | 46 项 + 76 项端到端 | 契约见 `docs/research/09-cli-design.md` |
-| `omy-media` | ⚪ 未开始 | — | LGPL，FFmpeg 封装 |
+| `omy-media` | 🟢 探测/分级/moov/缩略图可用 | 71 项 + 36 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
 | `omy-gui` | ⚪ 未开始 | — | Tauri v2；**播放方案已由 S1 验证可行** |
 
-合计 **176 项自动化测试 + 76 项 CLI 端到端断言 + 16 项 Spike 断言**，`cargo clippy --all-targets -- -D warnings` 零告警。
+合计 **253 项自动化测试 + 76 项 CLI 端到端断言 + 36 项 omy-media 真实文件断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -148,8 +148,8 @@
 ### 复现命令
 
 ```bash
-cargo test                                        # 173 项
-cargo clippy --all-targets -- -D warnings         # 零告警
+cargo test --workspace                            # 253 项
+cargo clippy --workspace --all-targets -- -D warnings   # 零告警
 cargo build --release -p omy-cli
 pwsh -File scripts/verify-cli.ps1                 # 76 项端到端
 ./target/release/omy bench                        # 本机性能
@@ -157,7 +157,36 @@ cargo run --release --example bench_scan -- 300
 cargo run --release --example fuzz_parse -- 20000
 cargo run --release --example audit_mac_scope
 cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
+
+# omy-media：先生成素材，再跑真实文件验证（36 项）
+pwsh -File spikes/make-media-fixtures.ps1
+cargo run --release --example verify_media -p omy-media
 ```
+
+### omy-media 真实文件验证（36 项）
+
+单元测试用的是**手写的 ffprobe JSON 样本**，只能验证"给定这段 JSON 能否正确解析"，
+无法验证"真实 ffprobe 的输出是否真的长这样"。两者同源时，对格式的误解会同时存在于
+样本和实现里——这正是缺陷 #6 漏过 76 项端到端验证的原因。
+
+因此 `examples/verify_media.rs` 用**真实媒体文件 + 真实 ffprobe** 独立验证，
+每个断言的期望值按文档 §5.2 人工判定，而非"实现算出什么就认什么"。
+
+素材（`spikes/make-media-fixtures.ps1` 生成 10 个）刻意覆盖易错组合：
+
+| 素材 | 验证点 |
+|---|---|
+| `h264_aac.mp4` | P1 基线；且**moov 在 99% 处**，是缺陷 #7/#8 的触发源 |
+| `h264_aac.mkv` | 容器不被 `<video>` 支持但可 remux → P2 |
+| `vp9_opus.webm` | 真 WebM 可直通 → P1 |
+| `mpeg4_mp3.avi` | MPEG-4 ASP 两端都不支持 → P3 |
+| `h264_flac.mkv` | FLAC 原生可解但进不了 MP4 |
+| `with_cover.mp3` | 带封面 → 必须**不**被判成视频（`attached_pic`） |
+| `not_media.txt` | 必须返回可降级的 `NOT_MEDIA` 而非崩溃 |
+| `h264_aac_faststart.mp4` | 与尾部 moov 版本对照，锁定重排正确性 |
+
+关键证据：尾部 moov 素材经纯 Rust 重排后抽帧得到 **4404 字节**，
+与直接用文件路径抽帧的结果**完全一致**——这是偏移修正正确的最强证据。
 
 ## 本轮修复的真实缺陷
 
@@ -170,6 +199,10 @@ cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 | 3 | 缺片时 `shard check` 报格式错误而非缺片 | `load_parts` 遇缺失序号立刻 `break`，只读到缺口之前的片，`shard_total` 与片数矛盾 | 改为容忍连续 64 个缺号；`decrypt` 里同一处一并修正 |
 | 4 | 盘符校验漏判且逻辑不对 | `c.as_bytes()[1] == b':'` 只看第 2 字节，多字节 UTF-8 下冒号不在下标 1 就漏过 | 改用字符迭代判断；并**拒绝任意位置的冒号**（Windows 上 `a.txt:hidden` 会创建 NTFS 备用数据流） |
 | 5 | 超长多字节字符串编码会 panic | `&root[..root_len]` 在 65535 处按字节切，切断多字节字符即 panic（中文每字符 3 字节，必然命中） | 新增 `truncate_utf8` 按字符边界回退；root / 路径组件 / target / xattr key 全部改用；补测试实际触发验证 |
+| 6 | `cat --range` 每个区间少一个字节 | `parse_range` 返回 `(start, end)` 却未定义开闭区间，调用处按开区间处理，用户按 HTTP Range 惯例期望闭区间。**76 项端到端验证没抓到**，因为断言写成"`0-100` 输出 100 字节"，恰好用开区间的期望值匹配了开区间的实现——测试与实现同错、互相掩护 | `parse_range` 改为返回 `(offset, length)` 让调用方不可能弄错；同时修正 `-N` 语义（原为"前 N 字节"，与 HTTP `bytes=-N` 的"最后 N 字节"相反）；污染的断言改为 `0-99 → 100 字节`，补单字节/末字节/suffix 三类边界 |
+| 7 | 尾部 moov 的 MP4 探测与抽帧全部失败 | 管道输入无法 seek，FFmpeg 读到 mdat 就报 `partial file` + `Cannot determine format after EOF`，stdout 为空。让 FFmpeg 自己 `-movflags frag_keyframe+empty_moov` remux 也只产出 1301 字节空壳（它同样读不到 moov）。而录屏、相机直出、`-c copy` 输出**默认都是尾部 moov** | 新增 `mp4::to_faststart`：在主进程内用**纯 Rust** 把 moov 前移并修正 `stco`/`co64` 偏移，再喂管道。既解决问题又不违反文档 §14「FFmpeg 子进程无文件系统访问」 |
+| 8 | 同一个 stco 被登记 16 次，偏移累加 16 遍 | `collect_offset_tables` 递归进容器时**没有收窄搜索上界**，子调用一直扫到 moov 末尾，把容器之外的 stco 又扫一遍。嵌套 trak/mdia/minf/stbl 四层就重复多次。实测首项从应有的 4611 变成 63930，FFmpeg 报 `Invalid NAL unit size (1593407596 > 5369)`。**单元测试没抓到，因为手写样本只有一层嵌套、单条轨道** | 递归时传入 `end` 上界并收窄到当前容器末尾；补三条回归测试（不得重复登记、双轨恰好 2 个表、双轨端到端逐项核对偏移只加一次） |
+| 9 | 误把 FFmpeg 的 stderr 当成有效产物 | 诊断脚本用 `> out 2>&1` 把 stdout 与 stderr 混进同一文件，又只检查"长度 > 100"，于是 844 字节的错误文本被判定为成功抽帧，据此得出「尾部 moov 也能抽帧」的错误结论，并按错误结论改了实现 | 校验产物必须看**内容特征**：`image_decodable` 先验 WebP/JPEG/PNG 魔数再真实解码；诊断时 stdout 与 stderr 必须分开重定向 |
 
 ## 待办
 
@@ -193,12 +226,23 @@ cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 - [ ] `serve` / `connect`（依赖 omy-net）
 - [ ] 进度条（`indicatif` 已在 workspace deps 但未接入；大文件加密目前无进度反馈）
 
+### omy-media
+
+- [x] `ffprobe`：探测 ffprobe/ffmpeg 可用性、管道运行、超时强杀
+- [x] `probe`：容器/流解析，容忍字符串-数字-缺失-`N/A` 四态；排除 `attached_pic`
+- [x] `mp4`：顶层 box 解析、moov 定位、**faststart 重排（含 stco/co64 偏移修正）**
+- [x] `tier`：P1/P2/P3 播放分级，区分真 WebM 与 MKV
+- [x] `thumbnail`：图片走纯 Rust `image`，视频走 FFmpeg 抽帧
+- [ ] 与 core 打通：写入 `TLV_MEDIA_META` / `TLV_MOOV_CACHE` / `TLV_THUMBNAIL`
+- [ ] remux 到 MSE 可用的分片 MP4（P2 路径）
+- [ ] 转码选项（加密时可选转 web 原生格式）
+- [ ] 字幕轨提取（首期只做文本类，ASS/PGS 留接口）
+
 ### 后续
 
-- [ ] `omy-media`：探测/remux/解码/缩略图/转码
 - [ ] `omy-net`：mDNS + SPAKE2 + Noise IK
 - [ ] `omy-gui`：Tauri v2
-- [ ] **Spike S1**（Tauri 自定义协议 206 + Content-Range 可 seek）与 **S5**（WebView 是否把解密数据缓存落盘）——路线图标为最高优先级，尚未开始
+- [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 
 ## 已定决定
 
@@ -224,6 +268,32 @@ cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 - 测试代码用 `#![cfg_attr(test, allow(...))]` 在 crate 根统一放宽 `unwrap_used` / `indexing_slicing`；**库代码不放宽**——库处理不可信输入，任何 panic 路径都是拒绝服务缺陷。
 - `cargo search` 在当前网络下必然超时（镜像的 `source.crates-io.replace-with` 只作用于依赖解析，不影响 registry API）。查版本走 rsproxy sparse 索引 `https://rsproxy.cn/index/<按名长分层路径>`，不影响正常构建。
 - PowerShell 内联嵌套引号构造 Rust 代码字符串极易 ParserError。改文件请用 Write/Edit 工具，不要用 shell 拼字符串。
+
+### 校验外部命令产物：只看长度会自证成功
+
+排查尾部 moov 抽帧时，诊断脚本用 `> out 2>&1` 把 stdout 与 stderr 混进同一文件，
+再用"长度 > 100"判定成功。结果 844 字节的 FFmpeg **错误文本**被当成 WebP 图片，
+据此得出「尾部 moov 也能抽帧」的错误结论，并按这个错误结论改了实现——
+绕了两轮才发现前 16 字节是 `[in#0/mov,...`。
+
+由此定下两条硬规矩：
+
+1. **诊断时 stdout 与 stderr 必须分开重定向**，绝不用 `2>&1` 混流；
+2. **校验产物必须看内容特征**：验图片先验 WebP(`RIFF....WEBP`)/JPEG(`FFD8FF`)/PNG 魔数，
+   再做一次真实解码。退出码为 0 不代表产物有效，非零也不代表没产出。
+
+同理，FFmpeg 的退出码不可单独作为判据——需要 `stdout 非空` + `内容可解码` 双重确认。
+
+### ffprobe 对 MKV 与 WebM 返回相同的 format_name
+
+两者都是 `matroska,webm`（WebM 是 Matroska 子集、共用 demuxer），
+但 `<video>` 支持 WebM、不支持 MKV。**只靠容器名判断必然把所有 MKV 误判为 P1**。
+`tier::container_natively_supported()` 改为按内容判断：只有视频全在 vp8/vp9/av1
+且音频全在 vorbis/opus 才算真 WebM。已有 `mkv_and_webm_share_format_name_but_differ_in_tier` 锁定。
+
+另：`format_name` 是**逗号分隔多值**（MP4 返回 `mov,mp4,m4a,3gp,3g2,mj2`），不能当单值比较。
+数值字段类型也不统一——`duration`/`size`/`bit_rate` 是字符串，`channels`/`width`/`index` 是数字，
+还可能是 `"N/A"`，故用自定义 `LooseNumber` 容忍四态。
 
 ### `payload::read_range` 的 `fetch_ct` 偏移语义（最易踩）
 

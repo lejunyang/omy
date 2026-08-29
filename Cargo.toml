@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/omy-core",
     "crates/omy-cli",
+    "crates/omy-media",
     # spike 是一次性的可行性验证程序，不是产品代码。
     # 放进 workspace 以复用依赖解析与 target 目录，但 publish = false。
     "spikes/webview-range",
@@ -61,6 +62,12 @@ walkdir       = "2.5"
 sys-locale    = "0.3"
 toml          = "1.1"
 dirs          = "6.0"
+
+# ---- 媒体（仅 omy-media 使用）----
+# 缩略图缩放与编码。默认关掉全部格式再按需开启：
+# image 默认会拉进十几个解码器，每个都是解析不可信输入的攻击面。
+# 版本经镜像 sparse 索引核实，非凭记忆填写。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "ico"] }
 
 # 发布配置：优化加解密吞吐
 [profile.release]
