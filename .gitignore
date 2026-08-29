@@ -1,0 +1,45 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Python（参考实现）
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 前端 / Tauri
+node_modules/
+dist/
+dist-ssr/
+.vite/
+src-tauri/target/
+
+# 编辑器与操作系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 构建与临时产物
+/build/
+*.log
+*.tmp
+
+# 本项目加密产物（避免误提交测试用的加密文件）
+*.omy
+*.omy.[0-9][0-9][0-9]
+
+# 密钥与凭据（绝不入库）
+*.key
+*.pem
+secrets.toml
+.env
+.env.*
+!.env.example

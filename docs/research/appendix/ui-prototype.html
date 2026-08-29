@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoVault · 界面原型</title>
+<style>
+:root{
+  --bg:#0D1117; --bg2:#161B22; --bg3:#1C2128; --border:#30363D;
+  --fg:#E6EDF3; --fg2:#8B949E; --accent:#4493F8; --ok:#3FB950;
+  --warn:#D29922; --danger:#F85149; --r-s:4px; --r-m:8px; --r-l:12px;
+}
+[data-theme="light"]{
+  --bg:#FFFFFF; --bg2:#F7F8FA; --bg3:#EEF0F3; --border:#E5E7EB;
+  --fg:#1F2328; --fg2:#656D76; --accent:#2563EB; --ok:#16A34A;
+  --warn:#D97706; --danger:#DC2626;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font:14px/1.45 -apple-system,"Segoe UI Variable","PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
+  background:var(--bg);color:var(--fg);
+  -webkit-font-smoothing:antialiased;padding:24px;
+}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:20px;font-weight:600;margin-bottom:4px}
+.sub{color:var(--fg2);font-size:13px;margin-bottom:20px}
+.toolbar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
+.btn{
+  height:32px;padding:0 14px;border:1px solid var(--border);background:var(--bg2);
+  color:var(--fg);border-radius:var(--r-m);cursor:pointer;font-size:13px;
+  display:inline-flex;align-items:center;gap:6px;transition:.15s;
+}
+.btn:hover{background:var(--bg3);border-color:var(--accent)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.sec{font-size:12px;color:var(--fg2);text-transform:uppercase;letter-spacing:.06em;
+  margin:28px 0 10px;font-weight:600}
+
+/* ---------- 应用窗口 ---------- */
+.app{
+  border:1px solid var(--border);border-radius:var(--r-l);overflow:hidden;
+  background:var(--bg);box-shadow:0 8px 32px rgba(0,0,0,.35);
+}
+.titlebar{
+  height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+}
+.dots{display:flex;gap:7px}
+.dot{width:11px;height:11px;border-radius:50%}
+.d1{background:#FF5F57}.d2{background:#FEBC2E}.d3{background:#28C840}
+.brand{font-weight:600;font-size:13px}
+.search{
+  flex:1;max-width:320px;height:28px;background:var(--bg3);border:1px solid var(--border);
+  border-radius:var(--r-m);padding:0 10px;color:var(--fg2);font-size:12px;
+  display:flex;align-items:center;gap:6px;
+}
+.spacer{flex:1}
+.pill{
+  height:26px;padding:0 10px;border-radius:13px;font-size:12px;
+  display:inline-flex;align-items:center;gap:5px;background:var(--bg3);
+  border:1px solid var(--border);
+}
+.pill.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+
+.body{display:flex;height:440px}
+.side{
+  width:210px;background:var(--bg2);border-right:1px solid var(--border);
+  padding:10px 8px;overflow:auto;flex-shrink:0;
+}
+.sgrp{font-size:11px;color:var(--fg2);padding:8px 8px 4px;font-weight:600}
+.sitem{
+  height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;
+  border-radius:var(--r-s);cursor:pointer;font-size:13px;
+}
+.sitem:hover{background:var(--bg3)}
+.sitem.sel{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.sitem.ind{padding-left:22px;font-size:12.5px}
+.online{width:7px;height:7px;border-radius:50%;background:var(--ok);margin-left:auto}
+.offline{width:7px;height:7px;border-radius:50%;background:var(--fg2);margin-left:auto;opacity:.5}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.crumb{
+  height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;
+  border-bottom:1px solid var(--border);font-size:13px;color:var(--fg2);
+}
+.crumb b{color:var(--fg);font-weight:500}
+.vtoggle{margin-left:auto;display:flex;gap:4px}
+.vbtn{
+  width:26px;height:26px;border:1px solid var(--border);background:var(--bg2);
+  border-radius:var(--r-s);cursor:pointer;color:var(--fg2);font-size:12px;
+  display:flex;align-items:center;justify-content:center;
+}
+.vbtn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+.grid{
+  flex:1;overflow:auto;padding:14px;display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;align-content:start;
+}
+.card{border-radius:var(--r-m);overflow:hidden;cursor:pointer;transition:.15s;
+  border:1px solid transparent}
+.card:hover{background:var(--bg2);border-color:var(--border)}
+.thumb{
+  height:104px;border-radius:var(--r-s);background:var(--bg3);
+  display:flex;align-items:center;justify-content:center;font-size:32px;
+  position:relative;overflow:hidden;
+}
+.thumb.g1{background:linear-gradient(135deg,#4493F8,#A371F7)}
+.thumb.g2{background:linear-gradient(135deg,#3FB950,#4493F8)}
+.thumb.g3{background:linear-gradient(135deg,#D29922,#F85149)}
+.thumb.lock{background:repeating-linear-gradient(45deg,var(--bg3),var(--bg3) 8px,var(--bg2) 8px,var(--bg2) 16px)}
+.tier{
+  position:absolute;right:5px;bottom:5px;height:19px;padding:0 6px;border-radius:10px;
+  background:rgba(0,0,0,.68);font-size:10.5px;display:flex;align-items:center;gap:3px;color:#fff;
+  backdrop-filter:blur(4px);
+}
+.badge{
+  position:absolute;left:5px;top:5px;height:19px;padding:0 6px;border-radius:var(--r-s);
+  background:rgba(0,0,0,.68);font-size:10.5px;display:flex;align-items:center;color:#fff;
+  backdrop-filter:blur(4px);
+}
+.cname{font-size:12.5px;margin-top:7px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;padding:0 2px}
+.cmeta{font-size:11px;color:var(--fg2);padding:0 2px;margin-top:1px}
+
+.statusbar{
+  height:32px;display:flex;align-items:center;gap:14px;padding:0 14px;
+  background:var(--bg2);border-top:1px solid var(--border);font-size:12px;color:var(--fg2);
+}
+
+/* ---------- 列表视图 ---------- */
+.list{flex:1;overflow:auto}
+.lrow{
+  height:40px;display:flex;align-items:center;gap:10px;padding:0 14px;
+  border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent);
+  font-size:13px;cursor:pointer;
+}
+.lrow:hover{background:var(--bg2)}
+.lrow .ic{width:22px;text-align:center}
+.lrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .sz{width:80px;text-align:right;color:var(--fg2);font-size:12px}
+.lrow .tg{width:70px;text-align:right;font-size:11px;color:var(--fg2)}
+
+/* ---------- 对话框 ---------- */
+.dlg{
+  border:1px solid var(--border);border-radius:var(--r-l);background:var(--bg2);
+  padding:18px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.4);
+}
+.dlg h3{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:7px}
+.field{margin-bottom:13px}
+.flabel{font-size:12px;color:var(--fg2);margin-bottom:5px}
+.radio{display:flex;align-items:flex-start;gap:7px;padding:5px 0;font-size:13px;cursor:pointer}
+.radio input{margin-top:2px;accent-color:var(--accent)}
+.radio .d{font-size:11.5px;color:var(--fg2);margin-top:1px}
+.hr{height:1px;background:var(--border);margin:14px 0}
+.note{
+  font-size:11.5px;padding:9px 11px;border-radius:var(--r-m);line-height:1.5;
+  background:color-mix(in srgb,var(--warn) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--warn) 32%,transparent);color:var(--warn);
+}
+.note.dg{background:color-mix(in srgb,var(--danger) 12%,transparent);
+  border-color:color-mix(in srgb,var(--danger) 32%,transparent);color:var(--danger)}
+.note.if{background:color-mix(in srgb,var(--accent) 10%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 28%,transparent);color:var(--accent)}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.slider{width:100%;accent-color:var(--accent)}
+.sliderv{display:flex;justify-content:space-between;font-size:11px;color:var(--fg2);margin-top:3px}
+.meter{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin:6px 0}
+.meter i{display:block;height:100%;border-radius:3px}
+.mono{font-family:"SF Mono","Cascadia Code","JetBrains Mono",monospace}
+
+/* ---------- 播放器 ---------- */
+.player{border:1px solid var(--border);border-radius:var(--r-l);overflow:hidden;background:#000}
+.screen{height:230px;background:linear-gradient(135deg,#1a1f2e,#2d1f3d);
+  display:flex;align-items:center;justify-content:center;color:#4a5568;font-size:38px}
+.pctl{background:rgba(0,0,0,.9);padding:10px 14px}
+.pbar{height:4px;background:rgba(255,255,255,.18);border-radius:2px;position:relative;
+  margin-bottom:10px;cursor:pointer}
+.pbar i{display:block;height:100%;background:var(--accent);border-radius:2px;width:27%}
+.pbar .kn{position:absolute;left:27%;top:50%;transform:translate(-50%,-50%);
+  width:11px;height:11px;border-radius:50%;background:#fff}
+.pbar.holes{background:repeating-linear-gradient(90deg,
+  var(--accent) 0,var(--accent) 22%,rgba(255,255,255,.12) 22%,rgba(255,255,255,.12) 32%,
+  var(--accent) 32%,var(--accent) 60%,rgba(255,255,255,.12) 60%,rgba(255,255,255,.12) 70%,
+  var(--accent) 70%,var(--accent) 100%)}
+.prow{display:flex;align-items:center;gap:12px;color:#ccc;font-size:12px}
+.prow .t{margin-left:auto;font-size:11.5px}
+.tierbtn{padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.13);
+  font-size:11px;cursor:pointer}
+
+/* ---------- 移动端 ---------- */
+.phone{
+  width:280px;border:1px solid var(--border);border-radius:22px;overflow:hidden;
+  background:var(--bg);box-shadow:0 8px 32px rgba(0,0,0,.35);
+}
+.ptop{height:42px;display:flex;align-items:center;gap:10px;padding:0 14px;
+  background:var(--bg2);border-bottom:1px solid var(--border);font-size:13px;font-weight:500}
+.pgrid{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:9px;height:300px;
+  align-content:start;overflow:auto}
+.pnav{height:52px;display:flex;background:var(--bg2);border-top:1px solid var(--border)}
+.pnavi{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;font-size:10px;color:var(--fg2);cursor:pointer}
+.pnavi.on{color:var(--accent)}
+
+.row2{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.cap{font-size:11.5px;color:var(--fg2);margin-top:8px;text-align:center}
+.hide{display:none!important}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{color:var(--fg2);font-weight:600;font-size:11.5px}
+.sw{width:15px;height:15px;border-radius:3px;display:inline-block;vertical-align:-3px;
+  margin-right:7px;border:1px solid rgba(128,128,128,.3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CryptoVault · 界面原型</h1>
+  <p class="sub">配套 08-ui-ux-design.md。点击按钮切换主题与视图，观察各状态下的界面表现。</p>
+
+  <div class="toolbar">
+    <button class="btn on" id="themeBtn" onclick="toggleTheme()">🌙 深色</button>
+    <button class="btn" onclick="setView('grid')" id="vg">⊞ 网格</button>
+    <button class="btn" onclick="setView('list')" id="vl">☰ 列表</button>
+    <button class="btn" onclick="setLock(false)" id="bu">🔓 已解锁</button>
+    <button class="btn" onclick="setLock(true)" id="bl">🔒 锁定态</button>
+  </div>
+
+  <!-- 主界面 -->
+  <div class="app">
+    <div class="titlebar">
+      <div class="dots"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span></div>
+      <span class="brand">CryptoVault</span>
+      <div class="search">🔍 搜索文件…</div>
+      <div class="spacer"></div>
+      <span class="pill ok" id="lockPill">🔓 3 个密码已解锁</span>
+      <span class="pill">⚙️</span>
+    </div>
+    <div class="body">
+      <div class="side">
+        <div class="sgrp">我的库</div>
+        <div class="sitem sel">📂 工作资料</div>
+        <div class="sitem ind">📁 视频</div>
+        <div class="sitem ind">📁 文档</div>
+        <div class="sitem">📂 私人照片</div>
+        <div class="sitem">📦 影视归档.cvlt</div>
+        <div class="sgrp">附近设备</div>
+        <div class="sitem">💻 书房台式机 <span class="online"></span></div>
+        <div class="sitem">📱 我的手机 <span class="online"></span></div>
+        <div class="sitem">💻 笔记本 <span class="offline"></span></div>
+        <div class="sgrp">快捷</div>
+        <div class="sitem">🕐 最近</div>
+        <div class="sitem">⭐ 收藏</div>
+      </div>
+      <div class="main">
+        <div class="crumb">
+          📂 工作资料 <span>›</span> <b>视频</b>
+          <div class="vtoggle">
+            <div class="vbtn on" id="tg">⊞</div><div class="vbtn" id="tl">☰</div>
+          </div>
+        </div>
+
+        <div class="grid" id="gridView">
+          <div class="card"><div class="thumb g1">🖼️<span class="tier">⚡ 直通</span></div>
+            <div class="cname" data-lk="设计稿_v3.png">设计稿_v3.png</div><div class="cmeta">2.3 MB · PNG</div></div>
+          <div class="card"><div class="thumb g2">🎬<span class="tier">⚡ 直通</span></div>
+            <div class="cname" data-lk="产品演示.mp4">产品演示.mp4</div><div class="cmeta">847 MB · 12:34</div></div>
+          <div class="card"><div class="thumb g3">🎬<span class="tier">🔄 转封装</span><span class="badge">🧩 3片</span></div>
+            <div class="cname" data-lk="纪录片S01E03.mkv">纪录片S01E03.mkv</div><div class="cmeta">4.2 GB · 45:20</div></div>
+          <div class="card"><div class="thumb">🎬<span class="tier">🐌 全解码</span></div>
+            <div class="cname" data-lk="蓝光原盘.mkv">蓝光原盘.mkv</div><div class="cmeta">18 GB · DTS-HD</div></div>
+          <div class="card"><div class="thumb lock">🔒</div>
+            <div class="cname" data-lk="加密文件">🔒 加密文件</div><div class="cmeta">1.2 GB · 密码不匹配</div></div>
+          <div class="card"><div class="thumb g1">📄</div>
+            <div class="cname" data-lk="季度报告.docx">季度报告.docx</div><div class="cmeta">156 KB · 已压缩</div></div>
+          <div class="card"><div class="thumb g2">🎵<span class="tier">⚡ 直通</span></div>
+            <div class="cname" data-lk="会议录音.m4a">会议录音.m4a</div><div class="cmeta">32 MB · 58:12</div></div>
+          <div class="card"><div class="thumb g3">🎬<span class="tier">⚡ 直通</span><span class="badge">🌐 远程</span></div>
+            <div class="cname" data-lk="培训视频.mp4">培训视频.mp4</div><div class="cmeta">1.1 GB · 书房台式机</div></div>
+          <div class="card"><div class="thumb g1">🖼️<span class="badge">🎭 伪装</span></div>
+            <div class="cname" data-lk="照片_0912.jpg">照片_0912.jpg</div><div class="cmeta">8.4 MB · 伪装为JPEG</div></div>
+          <div class="card"><div class="thumb g2">📦</div>
+            <div class="cname" data-lk="素材库.cvlt">素材库.cvlt</div><div class="cmeta">3.2 GB · 1,247 文件</div></div>
+          <div class="card"><div class="thumb g3">🎬<span class="tier">⚡ 直通</span><span class="badge">⚠️ 已转码</span></div>
+            <div class="cname" data-lk="老片重制.mp4">老片重制.mp4</div><div class="cmeta">2.8 GB · 不可还原</div></div>
+          <div class="card"><div class="thumb lock">🔒</div>
+            <div class="cname" data-lk="加密文件2">🔒 加密文件</div><div class="cmeta">640 MB · 密码不匹配</div></div>
+        </div>
+
+        <div class="list hide" id="listView">
+          <div class="lrow"><span class="ic">🖼️</span><span class="nm" data-lk="设计稿_v3.png">设计稿_v3.png</span><span class="sz">2.3 MB</span><span class="tg">⚡</span></div>
+          <div class="lrow"><span class="ic">🎬</span><span class="nm" data-lk="产品演示.mp4">产品演示.mp4</span><span class="sz">847 MB</span><span class="tg">⚡</span></div>
+          <div class="lrow"><span class="ic">🎬</span><span class="nm" data-lk="纪录片S01E03.mkv">纪录片S01E03.mkv</span><span class="sz">4.2 GB</span><span class="tg">🔄 🧩</span></div>
+          <div class="lrow"><span class="ic">🎬</span><span class="nm" data-lk="蓝光原盘.mkv">蓝光原盘.mkv</span><span class="sz">18 GB</span><span class="tg">🐌</span></div>
+          <div class="lrow"><span class="ic">🔒</span><span class="nm" data-lk="加密文件">🔒 加密文件</span><span class="sz">1.2 GB</span><span class="tg">—</span></div>
+          <div class="lrow"><span class="ic">📄</span><span class="nm" data-lk="季度报告.docx">季度报告.docx</span><span class="sz">156 KB</span><span class="tg">—</span></div>
+          <div class="lrow"><span class="ic">🎵</span><span class="nm" data-lk="会议录音.m4a">会议录音.m4a</span><span class="sz">32 MB</span><span class="tg">⚡</span></div>
+          <div class="lrow"><span class="ic">🎬</span><span class="nm" data-lk="培训视频.mp4">培训视频.mp4</span><span class="sz">1.1 GB</span><span class="tg">⚡ 🌐</span></div>
+          <div class="lrow"><span class="ic">🖼️</span><span class="nm" data-lk="照片_0912.jpg">照片_0912.jpg</span><span class="sz">8.4 MB</span><span class="tg">🎭</span></div>
+          <div class="lrow"><span class="ic">📦</span><span class="nm" data-lk="素材库.cvlt">素材库.cvlt</span><span class="sz">3.2 GB</span><span class="tg">—</span></div>
+        </div>
+
+        <div class="statusbar">
+          <span id="stCount">1,247 个文件 · 3.2 GB</span>
+          <span id="stLock">🔓 3 个密码已解锁</span>
+          <span class="spacer" style="flex:1"></span>
+          <span>⏳ 加密中 2/5</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 播放器 -->
+  <div class="sec">播放器 · 路径指示与缺片降级</div>
+  <div class="row2">
+    <div style="flex:1;min-width:330px">
+      <div class="player">
+        <div class="screen">▶</div>
+        <div class="pctl">
+          <div class="pbar"><i></i><span class="kn"></span></div>
+          <div class="prow">
+            <span>⏸</span><span>🔊 ▁▃▅</span>
+            <span class="tierbtn">⚡ 直通</span>
+            <span>字幕 ▾</span>
+            <span class="t">12:34 / 45:20</span><span>⛶</span>
+          </div>
+        </div>
+      </div>
+      <div class="cap">正常播放 · P1 直通，seek &lt;100ms</div>
+    </div>
+    <div style="flex:1;min-width:330px">
+      <div class="player">
+        <div class="screen" style="background:linear-gradient(135deg,#2d1f1f,#3d2a1f)">▶</div>
+        <div class="pctl">
+          <div class="pbar holes"><span class="kn" style="left:15%"></span></div>
+          <div class="prow">
+            <span>⏸</span><span>🔊 ▁▃▅</span>
+            <span class="tierbtn">🔄 转封装</span>
+            <span class="t">06:48 / 45:20</span><span>⛶</span>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:var(--warn)">
+            ⚠️ 缺少第 3、5 片，灰色区段不可播放　[查找分片]
+          </div>
+        </div>
+      </div>
+      <div class="cap">缺片降级播放 · 可用区段正常，空洞跳过</div>
+    </div>
+  </div>
+
+  <!-- 对话框 -->
+  <div class="sec">关键对话框</div>
+  <div class="row2">
+    <div class="dlg" style="flex:1;min-width:330px">
+      <h3>加密 3 个文件</h3>
+      <div style="font-size:12.5px;color:var(--fg2);line-height:1.9;margin-bottom:12px">
+        📄 季度报告.docx　<span style="float:right">2.3 MB</span><br>
+        🎬 演示视频.mp4　<span style="float:right">847 MB</span><br>
+        📁 素材/ (128 文件)　<span style="float:right">1.2 GB</span>
+      </div>
+      <div class="hr"></div>
+      <div class="field">
+        <div class="flabel">文件名</div>
+        <label class="radio"><input type="radio" name="fn" checked><span>加密（推荐）</span></label>
+        <label class="radio"><input type="radio" name="fn"><span>加密但保留后缀
+          <div class="d">便于识别类型，但会泄露文件格式</div></span></label>
+      </div>
+      <div class="field">
+        <div class="flabel">文件夹「素材/」处理方式</div>
+        <label class="radio"><input type="radio" name="fd" checked><span>打包成单个文件
+          <div class="d">完全隐藏目录结构，适合归档分享</div></span></label>
+        <label class="radio"><input type="radio" name="fd"><span>逐个加密（保持结构）
+          <div class="d">支持增量修改和云盘同步</div></span></label>
+      </div>
+      <div class="field">
+        <div class="flabel">分块大小 · 256 KiB</div>
+        <input class="slider" type="range" min="0" max="8" value="2">
+        <div class="sliderv"><span>64 KiB</span><span>压缩率 ↔ seek 精度 ↔ 内存</span><span>16 MiB</span></div>
+      </div>
+      <div class="field">
+        <div class="flabel">加密后原文件</div>
+        <label class="radio"><input type="radio" name="og" checked><span>保留（推荐）</span></label>
+        <label class="radio"><input type="radio" name="og"><span>移到回收站</span></label>
+        <label class="radio"><input type="radio" name="og"><span>直接删除</span></label>
+      </div>
+      <div class="note if">ℹ️ 本应用不提供「安全擦除」。SSD 的 wear leveling 使覆写擦除无法保证彻底清除，提供该功能会给出虚假的安全感。</div>
+      <div class="acts"><button class="btn">取消</button><button class="btn on">开始加密</button></div>
+    </div>
+
+    <div style="flex:1;min-width:330px;display:flex;flex-direction:column;gap:16px">
+      <div class="dlg">
+        <h3>⚠️ 转码后无法还原原始文件</h3>
+        <p style="font-size:13px;line-height:1.6;color:var(--fg2)">
+          加密后保存的是转码产物，不是你的原始文件。</p>
+        <ul style="font-size:12.5px;color:var(--fg2);margin:10px 0 12px 18px;line-height:1.8">
+          <li>画质、音轨、字幕可能有损失</li>
+          <li>解密后得到 MP4，不是原始的 MKV</li>
+          <li>此操作不可逆</li>
+        </ul>
+        <div class="note dg">原始文件哈希会被记录，但仅供核对，无法据此还原。</div>
+        <div class="acts">
+          <button class="btn">取消</button>
+          <button class="btn">改用双存储</button>
+          <button class="btn on" style="background:var(--danger);border-color:var(--danger)">我了解，继续</button>
+        </div>
+      </div>
+
+      <div class="dlg">
+        <h3>🔍 检测到 3 个关联字幕</h3>
+        <div style="font-size:12.5px;line-height:2.1">
+          <label><input type="checkbox" checked style="accent-color:var(--accent)"> movie.srt
+            <span style="color:var(--fg2);float:right">简体中文 · 45 KB</span></label><br>
+          <label><input type="checkbox" checked style="accent-color:var(--accent)"> movie.chs.ass
+            <span style="color:var(--fg2);float:right">特效字幕 · 128 KB</span></label><br>
+          <label><input type="checkbox" checked style="accent-color:var(--accent)"> movie.eng.srt
+            <span style="color:var(--fg2);float:right">English · 41 KB</span></label>
+        </div>
+        <div class="note" style="margin-top:11px">若不加密，字幕文件名和内容会泄露视频信息。</div>
+        <div class="acts"><button class="btn">全不选</button><button class="btn on">确定</button></div>
+      </div>
+
+      <div class="dlg">
+        <h3>密码强度</h3>
+        <div class="flabel">密码</div>
+        <div style="height:30px;background:var(--bg3);border:1px solid var(--border);
+          border-radius:var(--r-m);padding:0 10px;display:flex;align-items:center;
+          font-size:13px;letter-spacing:2px">••••••••</div>
+        <div class="meter"><i style="width:38%;background:var(--warn)"></i></div>
+        <div style="font-size:12px;color:var(--warn);margin-bottom:9px">弱 (2/4)</div>
+        <div style="font-size:11.5px;color:var(--fg2);line-height:1.8" class="mono">
+          Argon2id m=64MiB t=3<br>
+          单张 RTX 4090　　　约 3 天<br>
+          1000 GPU 集群　　　约 4 小时
+        </div>
+        <div class="note" style="margin-top:10px">估算仅供参考，实际取决于攻击者算力及密码是否在字典中。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移动端 + 配色 -->
+  <div class="sec">移动端 · 配色规范</div>
+  <div class="row2">
+    <div>
+      <div class="phone">
+        <div class="ptop">☰　工作资料 <span class="spacer" style="flex:1"></span> 🔓 ⋮</div>
+        <div class="pgrid">
+          <div class="card"><div class="thumb g1" style="height:88px">🖼️<span class="tier">⚡</span></div>
+            <div class="cname">设计稿.png</div><div class="cmeta">2.3 MB</div></div>
+          <div class="card"><div class="thumb g2" style="height:88px">🎬<span class="tier">⚡</span></div>
+            <div class="cname">演示.mp4</div><div class="cmeta">847 MB</div></div>
+          <div class="card"><div class="thumb lock" style="height:88px">🔒</div>
+            <div class="cname">🔒 加密文件</div><div class="cmeta">1.2 GB</div></div>
+          <div class="card"><div class="thumb g3" style="height:88px">📄</div>
+            <div class="cname">报告.docx</div><div class="cmeta">156 KB</div></div>
+          <div class="card"><div class="thumb g2" style="height:88px">🎵<span class="tier">⚡</span></div>
+            <div class="cname">录音.m4a</div><div class="cmeta">32 MB</div></div>
+          <div class="card"><div class="thumb g1" style="height:88px">📦</div>
+            <div class="cname">素材库</div><div class="cmeta">3.2 GB</div></div>
+        </div>
+        <div class="pnav">
+          <div class="pnavi on"><span style="font-size:16px">📂</span>文件</div>
+          <div class="pnavi"><span style="font-size:16px">🌐</span>设备</div>
+          <div class="pnavi"><span style="font-size:16px">🕐</span>最近</div>
+          <div class="pnavi"><span style="font-size:16px">⚙️</span>设置</div>
+        </div>
+      </div>
+      <div class="cap">移动端 · 2 列网格 + 底部导航</div>
+    </div>
+
+    <div style="flex:1;min-width:330px">
+      <table>
+        <tr><th>用途</th><th>深色</th><th>浅色</th></tr>
+        <tr><td>背景</td><td><span class="sw" style="background:#0D1117"></span><span class="mono">#0D1117</span></td>
+            <td><span class="sw" style="background:#FFFFFF"></span><span class="mono">#FFFFFF</span></td></tr>
+        <tr><td>次级背景</td><td><span class="sw" style="background:#161B22"></span><span class="mono">#161B22</span></td>
+            <td><span class="sw" style="background:#F7F8FA"></span><span class="mono">#F7F8FA</span></td></tr>
+        <tr><td>边框</td><td><span class="sw" style="background:#30363D"></span><span class="mono">#30363D</span></td>
+            <td><span class="sw" style="background:#E5E7EB"></span><span class="mono">#E5E7EB</span></td></tr>
+        <tr><td>主文字</td><td><span class="sw" style="background:#E6EDF3"></span><span class="mono">#E6EDF3</span></td>
+            <td><span class="sw" style="background:#1F2328"></span><span class="mono">#1F2328</span></td></tr>
+        <tr><td>次要文字</td><td><span class="sw" style="background:#8B949E"></span><span class="mono">#8B949E</span></td>
+            <td><span class="sw" style="background:#656D76"></span><span class="mono">#656D76</span></td></tr>
+        <tr><td>强调</td><td><span class="sw" style="background:#4493F8"></span><span class="mono">#4493F8</span></td>
+            <td><span class="sw" style="background:#2563EB"></span><span class="mono">#2563EB</span></td></tr>
+        <tr><td>成功/解锁</td><td><span class="sw" style="background:#3FB950"></span><span class="mono">#3FB950</span></td>
+            <td><span class="sw" style="background:#16A34A"></span><span class="mono">#16A34A</span></td></tr>
+        <tr><td>警告</td><td><span class="sw" style="background:#D29922"></span><span class="mono">#D29922</span></td>
+            <td><span class="sw" style="background:#D97706"></span><span class="mono">#D97706</span></td></tr>
+        <tr><td>危险</td><td><span class="sw" style="background:#F85149"></span><span class="mono">#F85149</span></td>
+            <td><span class="sw" style="background:#DC2626"></span><span class="mono">#DC2626</span></td></tr>
+      </table>
+      <div style="margin-top:14px">
+        <table>
+          <tr><th>图标</th><th>含义</th><th>图标</th><th>含义</th></tr>
+          <tr><td>⚡</td><td>P1 直通</td><td>🌐</td><td>远程文件</td></tr>
+          <tr><td>🔄</td><td>P2 转封装</td><td>📦</td><td>容器</td></tr>
+          <tr><td>🐌</td><td>P3 全解码</td><td>🧩</td><td>分片</td></tr>
+          <tr><td>🔒/🔓</td><td>锁定/解锁</td><td>🎭</td><td>伪装文件</td></tr>
+          <tr><td>⚠️</td><td>已转码/缺片</td><td>👆</td><td>生物识别</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let dark=true, locked=false, view='grid';
+function toggleTheme(){
+  dark=!dark;
+  document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+  document.getElementById('themeBtn').textContent=dark?'🌙 深色':'☀️ 浅色';
+}
+function setView(v){
+  view=v;
+  document.getElementById('gridView').classList.toggle('hide',v!=='grid');
+  document.getElementById('listView').classList.toggle('hide',v!=='list');
+  document.getElementById('vg').classList.toggle('on',v==='grid');
+  document.getElementById('vl').classList.toggle('on',v==='list');
+  document.getElementById('tg').classList.toggle('on',v==='grid');
+  document.getElementById('tl').classList.toggle('on',v==='list');
+}
+function setLock(l){
+  locked=l;
+  document.getElementById('bu').classList.toggle('on',!l);
+  document.getElementById('bl').classList.toggle('on',l);
+  const pill=document.getElementById('lockPill');
+  pill.textContent=l?'🔒 已锁定':'🔓 3 个密码已解锁';
+  pill.classList.toggle('ok',!l);
+  document.getElementById('stLock').textContent=l?'🔒 已锁定':'🔓 3 个密码已解锁';
+  document.getElementById('stCount').textContent=l?'1,247 个文件 · 全部加密':'1,247 个文件 · 3.2 GB';
+  // 锁定态：文件名与缩略图全部隐藏
+  document.querySelectorAll('.cname[data-lk]').forEach(e=>{
+    e.textContent=l?'🔒 加密文件':e.dataset.lk;
+  });
+  document.querySelectorAll('.nm[data-lk]').forEach(e=>{
+    e.textContent=l?'🔒 加密文件':e.dataset.lk;
+  });
+  document.querySelectorAll('#gridView .thumb').forEach(t=>{
+    if(l){ t.dataset.oc=t.className; t.className='thumb lock';
+           t.dataset.ot=t.innerHTML; t.innerHTML='🔒'; }
+    else if(t.dataset.oc){ t.className=t.dataset.oc; t.innerHTML=t.dataset.ot; }
+  });
+  document.querySelectorAll('#gridView .cmeta').forEach(e=>{
+    if(l){ if(!e.dataset.o) e.dataset.o=e.textContent; e.textContent='密码未解锁'; }
+    else if(e.dataset.o){ e.textContent=e.dataset.o; }
+  });
+}
+setView('grid');
+</script>
+</body>
+</html>

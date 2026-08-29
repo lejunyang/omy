@@ -1,0 +1,273 @@
+{
+  "format": "CryptoVault .cvlt",
+  "spec_version": "1.0",
+  "generated_by": "reference/gen_vectors.py",
+  "warning": "测试向量使用 Argon2 弱参数(m=64KiB,t=1,p=1)以便快速复现；生产实现必须使用 §KDF 档位表中的参数。",
+  "primitives": {
+    "aead_reference": "ChaCha20-Poly1305 (RFC 8439)",
+    "aead_production": "XChaCha20-Poly1305 (默认) / AES-256-GCM (可选)",
+    "kdf_slow": "Argon2id (RFC 9106)",
+    "kdf_fast": "HKDF-SHA256 (RFC 5869)",
+    "header_mac": "HMAC-SHA256",
+    "content_hash": "BLAKE2b-256",
+    "shard_checksum": "CRC-32 (IEEE)"
+  },
+  "vectors": [
+    {
+      "name": "v1-minimal-single-password",
+      "description": "最小文件，单密码，ChaCha20-Poly1305，无压缩，文件名加密",
+      "input": {
+        "plaintext_utf8": "Hello, CryptoVault!",
+        "plaintext_hex": "48656c6c6f2c2043727970746f5661756c7421",
+        "filename": "hello.txt",
+        "password": "correct horse battery staple",
+        "argon2": {
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "note": "测试用弱参数，生产环境禁用"
+        },
+        "cipher": "XChaCha20-Poly1305(参考实现用ChaCha20-Poly1305)",
+        "chunk_size": 65536
+      },
+      "derived": {
+        "file_uuid": "e2158a9edea05087060d19e99b3f5c31",
+        "vault_salt": "93377b3b810de76f0850ff0f05148cb9",
+        "base_nonce": "21612c6d7ce54c",
+        "kek": "49c3e11548627f1a12e9e25fe1f9ce48d1df04b2725f6b26d3cb26f8622d01ec",
+        "fek": "ad09675b2aa82beea5602b4fc365fd4703b390c0edbd8e9c149c33d97cec5e59",
+        "slot_index_hit": 0,
+        "payload_key": "23eb36584fcf61b8e4699ae4a45f3ca568ed40b124966b60c0b5736ea31441cd",
+        "header_mac_key": "045281527688fc878e372f81eeb2c0c2887dd91153425a3c488c32336fbd2aab",
+        "chunk0_nonce": "21612c6d7ce54c0000000001",
+        "chunk0_aad": "e2158a9edea05087060d19e99b3f5c3100000000"
+      },
+      "output": {
+        "total_size": 691,
+        "header_len": 656,
+        "tlv_len": 144,
+        "full_file_hex": "435641554c5401000100000090020000e2158a9edea05087060d19e99b3f5c3193377b3b810de76f0850ff0f05148cb9010000000101000840000000010000000100000000000100130000000000000021612c6d7ce54c0090000000000000001792272cf67a5570181b619764b67e8af2ace7b069c27155fa45cb105d1e50e421c3be2c72644d29b4d0dcabc243cc6105aac216e8debcb760c7f317e8d9a75ec60f0a080bbdf251f3afd8de1687fe60f4d29ec638ef5fe38fbffcab511ffa84732642808613fa4c35e6abdb2e74458aecfea8c26a784b0800bcf9732c6f7da286ac16f6d50b658be3ba5e211f13706d02efd6544832d078a065c1bc8938e5c930a1e9759d142f8bc4fbe0c2838d4a447c8b63069ecf56d3e5606561f2521e1e83fe03ffce3008366a213440c00c75b6bf78c34130f4e6a8ee2cf669821955ccc9f40b217d8f327c8864e9991067089173ffafbe14fd5c918522dd55ccc1f41eb8842c171bdb803795244830837b79458f20cfca88d05fe0e3907fbe747b2080a27aa542d000b4288d6df5f28b5c10cbd48074af086ef250f85aa5f757e999fe179fa6967f45f4d1602bc1e4dd2c1d20d6d8fe1dfee5f177b06c986d2b7860ab512800a532103aae17518fb5f676c1c8fadc6ceb8cbcb0687b54f4fca9d55518010003005000000036808117fb94a509d91f1952bccf224b0593673f6c0b61ccd722132aaac8c0e9551a125edc85690e2d9d1218da88a8fa2f8724ed8363cd9dd0d3fd7780917ef74fed25222e1123ab3088d72035e222bc090002003000000048cc5ecac2b06091ed511c5b83f81008bbf647b908709e7c8b9c57c83c4f5f5b9912a58e9da317d9b54be40e678d4de164c8c046f1ad06ee9315b1202178456070e98f020c71ef074facb6259659b4e18d8d3941e74f60f8faf6fa35394f3906dfd0e12890549e28ecde45834ea7549dcbaefd",
+        "blake2b256": "21f91beb06b7fa59e8372192a12dd7c252ffd71b28c6d302779e010834647242"
+      }
+    },
+    {
+      "name": "v2-multi-password-deniable",
+      "description": "3 个密码共享同一 FEK；slot 区固定 8 槽，空槽填随机，外部不可区分",
+      "input": {
+        "passwords": [
+          "alpha",
+          "beta",
+          "gamma"
+        ],
+        "filename": "shared.dat",
+        "plaintext_utf8": "multi-recipient payload"
+      },
+      "derived": {
+        "vault_salt": "6bc7213c5f8f85899d1ba984ff328a64",
+        "file_uuid": "5fc1b59cfea20d7c8fbe816e2d9c5cc3",
+        "slot_results": [
+          {
+            "password": "alpha",
+            "kek": "a35be09b9b7298329adb5ee05fb0904334454e6370d87246f48b5d4d96017b82",
+            "unlocked": true,
+            "slot_index": 0
+          },
+          {
+            "password": "beta",
+            "kek": "0135ee0fb16b9d8970d67b552ab7df5b24fc1284cf97ab1eec5e5073d30db3ad",
+            "unlocked": true,
+            "slot_index": 1
+          },
+          {
+            "password": "gamma",
+            "kek": "b03f981ab71bb50a165b030794a1f686ed63ec7c2bb92a58f4c71a5de7e971f1",
+            "unlocked": true,
+            "slot_index": 2
+          },
+          {
+            "password": "wrong",
+            "kek": "384e9ede09d9f6a60d56005f53feaefaf6e9718e1e0c7fb4b58d88ba1df979f6",
+            "unlocked": false,
+            "slot_index": null
+          }
+        ],
+        "slot_area_hex": "f660611913aa0a511c29843db67e9de77a30a0ac10d9f0e502721d79b6efd5e24b9e0a3abdf09080c9d65b22c87e7c660ce6712cf444082495eb4c3ab43aee0a03c3ea57af4b1ede2f34f147285b31787fed612fa6f1b0e9fc21f3c7ad8533110cf1fc00ec4315d8282ac635d09810ffadf4b52afb6aaedacb061db3a25c6a7c254f1e55d5f0ee482cb3a3d56709d1c7535e75175afe5ee24938e932132b7d868ae03cc3903f53f1fafff374f91ed65949b0c6c5662335d4b16691a8bc19a465fd9ed89d647354b7b234be720e2e8b2182b2ac94b3151b6f2a3c4f6531c9633e4716fdf44ec25e6ee16db94cc9b434160b49fbe6a0650abe31a88c0803ab1e5d89ede611c1b26fff7821c6cfbe08906cb721bf3e87b12913e640421423e96d33ac8df0f7fe3dcaed65ec4ba57f61164e9c4bb06f1f5dbf0a4eddc8b7a2d8ddab2bbda9d1f705af00e3156c7ec138975c2d117f0aeacbc97a04ab9071864a7e483a709c069a9a09b0ae63a325b50d107a92e634faa64589f483623cacea08dd3c"
+      },
+      "output": {
+        "total_size": 695,
+        "header_len": 656,
+        "full_file_hex": "435641554c54010001000000900200005fc1b59cfea20d7c8fbe816e2d9c5cc36bc7213c5f8f85899d1ba984ff328a64010000000101000840000000010000000100000000000400170000000000000079b138d64bd1a8009000000000000000f660611913aa0a511c29843db67e9de77a30a0ac10d9f0e502721d79b6efd5e24b9e0a3abdf09080c9d65b22c87e7c660ce6712cf444082495eb4c3ab43aee0a03c3ea57af4b1ede2f34f147285b31787fed612fa6f1b0e9fc21f3c7ad8533110cf1fc00ec4315d8282ac635d09810ffadf4b52afb6aaedacb061db3a25c6a7c254f1e55d5f0ee482cb3a3d56709d1c7535e75175afe5ee24938e932132b7d868ae03cc3903f53f1fafff374f91ed65949b0c6c5662335d4b16691a8bc19a465fd9ed89d647354b7b234be720e2e8b2182b2ac94b3151b6f2a3c4f6531c9633e4716fdf44ec25e6ee16db94cc9b434160b49fbe6a0650abe31a88c0803ab1e5d89ede611c1b26fff7821c6cfbe08906cb721bf3e87b12913e640421423e96d33ac8df0f7fe3dcaed65ec4ba57f61164e9c4bb06f1f5dbf0a4eddc8b7a2d8ddab2bbda9d1f705af00e3156c7ec138975c2d117f0aeacbc97a04ab9071864a7e483a709c069a9a09b0ae63a325b50d107a92e634faa64589f483623cacea08dd3c010003005000000032ea0d7e24b6b6cf246d85e36863df4cd47de92f7e4cdcc64f2b676576c9e4c3b846b7fc15f83f5e0c332af04bf98b31eae43638e9d5e084a1d78741a8e3b6d6c839e1cc459c6439946f3e418b0e154d09000200300000009b2700ff85c1cc9de9f4ad71a7fbcea253f7e17ae1ce7cc30f0a3bdc209f3462ed7904e348859aa62c2123d4dcad2c15b63f30605194f0ddf1d3031bcb4c1e96050b5122de5df84d8e586c751dc41444dd715d26c96f358059b6718410e29e0b7866d1a3f69aadc8cab6968894a56510411500c30969d3",
+        "blake2b256": "9b3d4b5703bd324547a5f4168cd4fb60a6d3bb534b1575ec5c442de6bcc37273"
+      }
+    },
+    {
+      "name": "v3-multichunk-random-access",
+      "description": "10000B / 4096B 块 = 3 块；验证明文偏移→密文偏移的 O(1) 线性映射",
+      "input": {
+        "password": "pw3",
+        "filename": "pattern.bin",
+        "plaintext_rule": "byte[i] = (i*7+13) mod 256, i in [0,10000)",
+        "plaintext_blake2b256": "2d2770db364fb1521707288cd80d69871cd6968f7e7872ad79327325f5dd22de",
+        "chunk_size": 4096
+      },
+      "derived": {
+        "file_uuid": "9b3d92d7fd04b2fbbfe380b7372cb369",
+        "fek": "b5713dd9e7304aab43900c863355ee045451f9effbe5c9058965eed7bdfe4c91",
+        "n_chunks": 3,
+        "formula": "ct_offset(i) = header_len + i*(chunk_size+16)",
+        "header_len": 656
+      },
+      "range_tests": [
+        {
+          "plain_offset": 0,
+          "length": 16,
+          "expected_hex": "0d141b222930373e454c535a61686f76",
+          "chunks_touched": [
+            0
+          ],
+          "first_chunk_ct_offset": 656,
+          "first_chunk_ct_len": 4112
+        },
+        {
+          "plain_offset": 4095,
+          "length": 2,
+          "expected_hex": "060d",
+          "chunks_touched": [
+            0,
+            1
+          ],
+          "first_chunk_ct_offset": 656,
+          "first_chunk_ct_len": 4112
+        },
+        {
+          "plain_offset": 4096,
+          "length": 16,
+          "expected_hex": "0d141b222930373e454c535a61686f76",
+          "chunks_touched": [
+            1
+          ],
+          "first_chunk_ct_offset": 4768,
+          "first_chunk_ct_len": 4112
+        },
+        {
+          "plain_offset": 8192,
+          "length": 100,
+          "expected_hex": "0d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2",
+          "chunks_touched": [
+            2
+          ],
+          "first_chunk_ct_offset": 8880,
+          "first_chunk_ct_len": 1824
+        },
+        {
+          "plain_offset": 9990,
+          "length": 10,
+          "expected_hex": "373e454c535a61686f76",
+          "chunks_touched": [
+            2
+          ],
+          "first_chunk_ct_offset": 8880,
+          "first_chunk_ct_len": 1824
+        }
+      ],
+      "output": {
+        "total_size": 10704,
+        "blake2b256": "4d370b86b6e05db3ed67c9a162b7e5096b16d95c0d364f060ced3c45da02fc22"
+      }
+    },
+    {
+      "name": "v4-compressed-with-index",
+      "description": "zstd 分块压缩；块长可变，故必须依赖加密索引表定位",
+      "input": {
+        "password": "pw4",
+        "plaintext": "'CryptoVault' 重复 500 次",
+        "plaintext_size": 5500,
+        "chunk_size": 2048,
+        "zstd_level": 3
+      },
+      "derived": {
+        "fek": "6442e2692f56adc63ecc678f1a01d7ecdf09dcf70f88cce1a5e1f2ec6d013298",
+        "n_chunks": 3,
+        "index_entries": [
+          {
+            "ct_offset": 0,
+            "ct_len": 44,
+            "plain_len": 2048
+          },
+          {
+            "ct_offset": 44,
+            "ct_len": 44,
+            "plain_len": 2048
+          },
+          {
+            "ct_offset": 88,
+            "ct_len": 44,
+            "plain_len": 1404
+          }
+        ]
+      },
+      "output": {
+        "total_size": 864,
+        "compression_ratio": "0.1571",
+        "roundtrip_ok": true,
+        "blake2b256": "fc54f04fb6421a905665ab69c231f52671e1440b6d8412b64aa0e31d9aa07b22"
+      }
+    },
+    {
+      "name": "v5-sharding",
+      "description": "分片格式；每片 56B 片头 + 可选冗余主头；乱序/缺片可检测",
+      "input": {
+        "password": "pw5",
+        "plaintext_size": 10240,
+        "shard_size": 4000,
+        "redundant_header": true
+      },
+      "output": {
+        "original_ct_size": 10944,
+        "shard_count": 3,
+        "shards": [
+          {
+            "index": 0,
+            "total_size": 4056,
+            "magic": "CVSHARD\u0001",
+            "file_uuid": "fcfda23df05f69689761d613389f7c17",
+            "shard_index": 0,
+            "shard_total": 3,
+            "data_offset": 0,
+            "data_len": 4000,
+            "crc32": "15e0d6c2",
+            "redundant_header_len": 0,
+            "blake2b256": "6dcb3d61db7ad8daf21a7b0eb0d94fdd6bc6803846b9513d92b33fcdecb96b94"
+          },
+          {
+            "index": 1,
+            "total_size": 4712,
+            "magic": "CVSHARD\u0001",
+            "file_uuid": "fcfda23df05f69689761d613389f7c17",
+            "shard_index": 1,
+            "shard_total": 3,
+            "data_offset": 4000,
+            "data_len": 4000,
+            "crc32": "be589e72",
+            "redundant_header_len": 656,
+            "blake2b256": "aba0ece2e6a2fff6d466fb0915a9143b6084945c4679959f58a65b4dff117e56"
+          },
+          {
+            "index": 2,
+            "total_size": 3656,
+            "magic": "CVSHARD\u0001",
+            "file_uuid": "fcfda23df05f69689761d613389f7c17",
+            "shard_index": 2,
+            "shard_total": 3,
+            "data_offset": 8000,
+            "data_len": 2944,
+            "crc32": "1ab9c46e",
+            "redundant_header_len": 656,
+            "blake2b256": "c6efb8b408a3d8ced6fd2e7b54650c2dd7dc7b6f1f84912a819b5436de4c32fd"
+          }
+        ],
+        "merge_ok": true
+      }
+    }
+  ]
+}

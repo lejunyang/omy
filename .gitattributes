@@ -1,0 +1,39 @@
+# 默认：让 git 自动判断文本文件，检出时使用平台原生换行
+* text=auto
+
+# 明确按 LF 存储的文本（跨平台工具链读取，避免 CRLF 干扰）
+*.md        text eol=lf
+*.py        text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.rs        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+
+# Windows 脚本保持 CRLF
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# 二进制：禁止任何换行转换与 diff
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.ico       binary
+*.heic      binary
+*.mp4       binary
+*.mkv       binary
+*.mov       binary
+*.m4a       binary
+*.zip       binary
+*.omy       binary
+
+# 测试向量：内容为十六进制字符串，必须逐字节稳定
+appendix/test-vectors.json  text eol=lf
