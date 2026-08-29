@@ -17,6 +17,18 @@ dist/
 dist-ssr/
 .vite/
 src-tauri/target/
+# 例外：spike 的前端页面是手写源码，不是构建产物，必须入库
+!/spikes/webview-range/dist/
+!/spikes/webview-range/dist/**
+
+# 开发期工具（便携版 ffmpeg 等，体积大且可脚本重建）
+/tools/
+
+# spike 的测试素材（视频与加密样本，可由 make-fixture.ps1 重建）
+/spikes/fixtures/
+
+# tauri-build 自动生成的 ACL schema，每次构建重新产出
+/spikes/**/gen/schemas/
 
 # 编辑器与操作系统
 .vscode/*

@@ -1,0 +1,27 @@
+[package]
+name = "omy-spike-webview"
+description = "Spike S1/S5：验证 Tauri v2 自定义协议的 Range 206 支持与 WebView 缓存落盘行为。不是产品代码。"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "omy-spike-webview"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+omy-core = { path = "../../crates/omy-core" }
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+# spike 代码不受主 workspace 的严格 lint 约束：
+# 它的目的是尽快得到「行 / 不行」的结论，不是长期维护的产品代码。
+[lints.rust]
+unsafe_code = "forbid"

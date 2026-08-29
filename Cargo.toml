@@ -3,6 +3,9 @@ resolver = "3"
 members = [
     "crates/omy-core",
     "crates/omy-cli",
+    # spike 是一次性的可行性验证程序，不是产品代码。
+    # 放进 workspace 以复用依赖解析与 target 目录，但 publish = false。
+    "spikes/webview-range",
 ]
 
 [workspace.package]

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>omy Spike S1 / S5</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 20px;
+    font: 14px/1.6 "Segoe UI", system-ui, sans-serif;
+    background: #16181d; color: #e6e8ec;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: #8b93a1; font-size: 12px; margin-bottom: 16px; }
+  video { width: 100%; max-height: 42vh; background: #000; border-radius: 6px; }
+  .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+  button {
+    padding: 7px 14px; border: 1px solid #3a4150; border-radius: 5px;
+    background: #232833; color: #e6e8ec; cursor: pointer; font-size: 13px;
+  }
+  button:hover:not(:disabled) { background: #2c3340; border-color: #4d566a; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: #2563eb; border-color: #2563eb; }
+  button.primary:hover:not(:disabled) { background: #1d4ed8; }
+  #log {
+    background: #0e1014; border: 1px solid #262b35; border-radius: 6px;
+    padding: 10px; height: 200px; overflow-y: auto;
+    font: 12px/1.5 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap;
+  }
+  .ok { color: #4ade80; } .bad { color: #f87171; }
+  .warn { color: #fbbf24; } .dim { color: #6b7280; }
+  .grid { display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-size: 12px; margin: 10px 0; }
+  .grid dt { color: #8b93a1; } .grid dd { margin: 0; font-family: "Cascadia Mono", monospace; }
+</style>
+</head>
+<body>
+<h1>Spike S1 / S5</h1>
+<div class="sub">S1：自定义协议能否支持 <code>&lt;video&gt;</code> 任意 seek　·　S5：解密数据是否被 WebView 缓存落盘</div>
+
+<video id="v" controls preload="metadata"></video>
+
+<div class="row">
+  <button id="load" class="primary">1. 加载视频</button>
+  <button id="autoseek" disabled>2. 自动 seek 测试</button>
+  <button id="probe" disabled>3. 探测 Range 行为</button>
+  <button id="clear">清空日志</button>
+</div>
+
+<dl class="grid">
+  <dt>时长</dt><dd id="dur">—</dd>
+  <dt>当前位置</dt><dd id="cur">—</dd>
+  <dt>已缓冲区间</dt><dd id="buf">—</dd>
+  <dt>seek 完成次数</dt><dd id="seeks">0</dd>
+  <dt>视频尺寸</dt><dd id="dim">—</dd>
+</dl>
+
+<div id="log"></div>
+
+<script>
+const v = document.getElementById('v');
+const logEl = document.getElementById('log');
+let seekCount = 0;
+
+function log(msg, cls) {
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const span = document.createElement('div');
+  if (cls) span.className = cls;
+  span.textContent = `[${t}] ${msg}`;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function fmt(n) {
+  return Number.isFinite(n) ? n.toFixed(2) + 's' : '—';
+}
+
+function refresh() {
+  document.getElementById('dur').textContent = fmt(v.duration);
+  document.getElementById('cur').textContent = fmt(v.currentTime);
+  document.getElementById('seeks').textContent = String(seekCount);
+  document.getElementById('dim').textContent =
+    v.videoWidth ? `${v.videoWidth}×${v.videoHeight}` : '—';
+  const parts = [];
+  for (let i = 0; i < v.buffered.length; i++) {
+    parts.push(`${v.buffered.start(i).toFixed(1)}–${v.buffered.end(i).toFixed(1)}`);
+  }
+  document.getElementById('buf').textContent = parts.join(', ') || '—';
+}
+
+document.getElementById('load').onclick = () => {
+  // Windows 上自定义协议的 origin 形如 http://<scheme>.localhost/
+  // 这一点已在 Tauri 文档中确认，各平台不同。
+  const url = 'http://omystream.localhost/video';
+  log('设置 src = ' + url);
+  v.src = url;
+  v.load();
+};
+
+document.getElementById('autoseek').onclick = async () => {
+  if (!Number.isFinite(v.duration) || v.duration <= 0) {
+    log('时长未知，无法 seek', 'bad');
+    return;
+  }
+  // 刻意乱序且跨度大，逼出真正的随机访问；
+  // 顺序递增的 seek 可能被顺序读取蒙对，证明不了 Range 支持。
+  const fracs = [0.85, 0.15, 0.60, 0.05, 0.95, 0.35];
+  log(`开始自动 seek，共 ${fracs.length} 个位置（乱序）`);
+  for (const f of fracs) {
+    const target = +(v.duration * f).toFixed(2);
+    const ok = await seekTo(target);
+    log(`  seek → ${target}s (${(f*100).toFixed(0)}%) ${ok ? '成功' : '超时'}`,
+        ok ? 'ok' : 'bad');
+  }
+  log('自动 seek 序列结束。请查看终端输出的 206 统计。', 'warn');
+};
+
+function seekTo(t) {
+  return new Promise(resolve => {
+    let done = false;
+    const onSeeked = () => {
+      if (done) return;
+      done = true;
+      v.removeEventListener('seeked', onSeeked);
+      resolve(true);
+    };
+    v.addEventListener('seeked', onSeeked);
+    v.currentTime = t;
+    // 5 秒没 seeked 就算失败——真实 seek 应在数百毫秒内完成
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      v.removeEventListener('seeked', onSeeked);
+      resolve(false);
+    }, 5000);
+  });
+}
+
+// 直接用 fetch 探测协议层行为，绕开 <video>，
+// 这样能确定地看到状态码与响应头，而不是靠推断。
+document.getElementById('probe').onclick = async () => {
+  const url = 'http://omystream.localhost/video';
+  log('— 用 fetch 直接探测 Range 行为 —', 'warn');
+
+  const cases = [
+    ['bytes=0-1023',      '开头 1 KiB'],
+    ['bytes=1024-2047',   '中段 1 KiB'],
+    ['bytes=-512',        '末尾 512 B'],
+    ['bytes=999999999-',  '越界（应 416）'],
+  ];
+  for (const [range, desc] of cases) {
+    try {
+      const r = await fetch(url, { headers: { Range: range } });
+      const cr = r.headers.get('content-range') || '(无)';
+      const ar = r.headers.get('accept-ranges') || '(无)';
+      const cc = r.headers.get('cache-control') || '(无)';
+      const buf = await r.arrayBuffer();
+      const cls = (r.status === 206 || r.status === 416) ? 'ok' : 'bad';
+      log(`  ${desc}: HTTP ${r.status}, ${buf.byteLength} B`, cls);
+      log(`      Content-Range: ${cr}`, 'dim');
+      log(`      Accept-Ranges: ${ar} | Cache-Control: ${cc}`, 'dim');
+    } catch (e) {
+      log(`  ${desc}: fetch 失败 ${e}`, 'bad');
+    }
+  }
+  log('探测结束。206 与 416 都出现即说明协议层 Range 完整可用。', 'warn');
+};
+
+document.getElementById('clear').onclick = () => { logEl.textContent = ''; };
+
+v.addEventListener('loadedmetadata', () => {
+  log(`loadedmetadata: 时长 ${fmt(v.duration)}, 尺寸 ${v.videoWidth}×${v.videoHeight}`, 'ok');
+  document.getElementById('autoseek').disabled = false;
+  document.getElementById('probe').disabled = false;
+  refresh();
+});
+v.addEventListener('seeked', () => { seekCount++; refresh(); });
+v.addEventListener('error', () => {
+  const e = v.error;
+  log(`video error: code=${e ? e.code : '?'} ${e ? e.message : ''}`, 'bad');
+});
+v.addEventListener('progress', refresh);
+v.addEventListener('timeupdate', refresh);
+
+log('就绪。依次点击 1 → 2 → 3。');
+log('S1 判定看终端打印的 206 次数与不同起点数量。', 'dim');
+</script>
+</body>
+</html>
