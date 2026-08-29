@@ -51,6 +51,12 @@ pub struct EncryptOptions {
     pub thumbnail: Option<Vec<u8>>,
     /// 媒体元信息 JSON。
     pub media_meta: Option<Vec<u8>>,
+    /// 目录容器索引（`ContainerIndex::encode` 的输出）。
+    ///
+    /// 置位时会写入 CRITICAL+ENCRYPTED 的 `TLV_FOLDER_INDEX` 并设置
+    /// `CONTAINER` flag。CRITICAL 是必需的：不认识该 TLV 的实现必须拒绝打开，
+    /// 否则会把容器误当作普通文件解出一堆拼接的字节。
+    pub folder_index: Option<Vec<u8>>,
 }
 
 impl Default for EncryptOptions {
@@ -66,6 +72,7 @@ impl Default for EncryptOptions {
             write_content_hash: true,
             thumbnail: None,
             media_meta: None,
+            folder_index: None,
         }
     }
 }
@@ -163,6 +170,9 @@ pub fn encrypt_with_fek(
     if opts.thumbnail.is_some() {
         file_flags |= flags::HAS_THUMBNAIL;
     }
+    if opts.folder_index.is_some() {
+        file_flags |= flags::CONTAINER;
+    }
 
     // 先构造不含索引的 TLV，算出载荷，再回填压缩索引。
     // 压缩索引的长度取决于块数，而块数与 TLV 无关，所以两趟即可收敛——
@@ -193,6 +203,16 @@ pub fn encrypt_with_fek(
     }
     if let Some(m) = &opts.media_meta {
         tlvs.push(encrypt_entry(types::MEDIA_META, 0, m, fek, opts.cipher)?);
+    }
+    if let Some(idx) = &opts.folder_index {
+        // CRITICAL：容器的载荷是多个文件的拼接，不认识索引就不该打开
+        tlvs.push(encrypt_entry(
+            types::FOLDER_INDEX,
+            tlv_flags::CRITICAL,
+            idx,
+            fek,
+            opts.cipher,
+        )?);
     }
     if opts.write_content_hash {
         let h = content_hash(plaintext);
@@ -397,6 +417,30 @@ impl OpenedFile {
         let raw =
             self.tlvs.decrypt_value(types::COMPRESSION_INDEX, &self.fek, self.header.cipher_id)?;
         decode_compression_index(&raw)
+    }
+
+    /// 目录容器索引（仅容器文件存在）。
+    ///
+    /// 解析时会校验路径安全与载荷区间自洽——见
+    /// [`ContainerIndex::parse`](crate::container::ContainerIndex::parse)。
+    ///
+    /// # Errors
+    ///
+    /// 非容器文件返回 [`Error::MissingTlv`]；索引内容非法时返回解析错误。
+    pub fn folder_index(&self) -> Result<crate::container::ContainerIndex> {
+        if !self.header.has_flag(flags::CONTAINER) {
+            return Err(Error::MissingTlv { tlv_type: types::FOLDER_INDEX });
+        }
+        let raw = self
+            .tlvs
+            .decrypt_value(types::FOLDER_INDEX, &self.fek, self.header.cipher_id)?;
+        crate::container::ContainerIndex::parse(&raw)
+    }
+
+    /// 是否为目录容器。
+    #[must_use]
+    pub const fn is_container(&self) -> bool {
+        self.header.has_flag(flags::CONTAINER)
     }
 
     /// 解密全部载荷。

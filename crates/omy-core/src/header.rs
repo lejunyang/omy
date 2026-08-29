@@ -404,6 +404,19 @@ impl FixedHeader {
         self.flags & flag != 0
     }
 
+    /// 头部记录的 Argon2 参数。
+    ///
+    /// 解密时必须用**文件里记录的**参数派生 KEK，不能用当前的默认档位——
+    /// 文件可能是用别的档位加密的，用错参数会得到完全不同的 KEK。
+    #[must_use]
+    pub const fn argon2_params(&self) -> crate::crypto::Argon2Params {
+        crate::crypto::Argon2Params {
+            m_kib: self.argon2_m_kib,
+            t: self.argon2_t,
+            p: self.argon2_p,
+        }
+    }
+
     /// 未压缩载荷中第 `index` 块密文的 `(偏移, 长度)`。
     ///
     /// 这是视频任意 seek 的数学基础：无需索引表，O(1) 定位。

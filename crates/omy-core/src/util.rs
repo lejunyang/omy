@@ -21,6 +21,22 @@ pub fn random_16() -> [u8; 16] {
     b
 }
 
+/// BLAKE2b-256 摘要。
+///
+/// 用于内容哈希与容器内逐文件校验。公开出来是为了让上层（CLI、GUI）
+/// 与 core 内部使用**同一个实现**——若各写一遍，哈希算法或参数一旦不一致，
+/// 校验会在解密时才失败，且难以定位。
+#[must_use]
+pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
+    use blake2::digest::{Digest, consts::U32};
+    let mut h = blake2::Blake2b::<U32>::new();
+    h.update(data);
+    let out = h.finalize();
+    let mut r = [0u8; 32];
+    r.copy_from_slice(&out);
+    r
+}
+
 /// 顺序读取小端序整数的游标。
 ///
 /// 每个方法都做边界检查并返回结构化错误，避免 panic —— 解析不可信输入时这点很重要。

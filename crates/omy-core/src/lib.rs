@@ -42,7 +42,20 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// 测试代码中 unwrap 与索引是合理的：失败即测试失败，且下标均为已知常量。
+// 只对 cfg(test) 编译单元放宽，库代码仍受严格 lint 约束——
+// 库代码处理不可信输入，任何 panic 路径都是拒绝服务缺陷。
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        clippy::arithmetic_side_effects
+    )
+)]
 
+pub mod container;
 pub mod crypto;
 pub mod error;
 pub mod file;
@@ -53,9 +66,11 @@ pub mod scan;
 pub mod session;
 pub mod shard;
 pub mod slot;
+pub mod source;
 pub mod tlv;
 pub mod util;
 
+pub use container::{ContainerBuilder, ContainerEntry, ContainerIndex, EntryKind, EntryMeta};
 pub use crypto::{Argon2Params, CipherId, Fek, Kek, SecretKey};
 pub use error::{Error, ExitCode, Result};
 pub use file::{
@@ -67,6 +82,7 @@ pub use header::{FixedHeader, MAGIC_FILE, MAGIC_SHARD, flags};
 pub use scan::{ScanHit, ScanOptions, ScanResult, UnlockOutcome, probe_file, scan_dir};
 pub use session::{CredentialKind, SessionKeys};
 pub use shard::{ShardHeader, merge, split};
+pub use source::{BlockSource, ContainerEntryView, LocalFileSource, MemorySource, read_source_range};
 pub use tlv::{TlvEntry, TlvSet};
 
 /// 本 crate 实现的格式版本。

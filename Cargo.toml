@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/omy-core",
+    "crates/omy-cli",
 ]
 
 [workspace.package]
@@ -44,6 +45,19 @@ hex        = "0.4"
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 proptest   = "1.5"
+
+# ---- CLI（仅 omy-cli 使用；版本经镜像 sparse 索引核实，非凭记忆填写）----
+clap          = { version = "4.6", features = ["derive", "wrap_help", "env"] }
+clap_complete = "4.6"
+anyhow        = "1.0"
+# 从 /dev/tty 或 Windows 控制台读密码且不回显。命令行明文参数是旁路 L12，
+# 交互式输入是默认且最推荐的通道。
+rpassword     = "7.5"
+walkdir       = "2.5"
+# 系统 locale 检测，用于 D-29 的语言自动识别
+sys-locale    = "0.3"
+toml          = "1.1"
+dirs          = "6.0"
 
 # 发布配置：优化加解密吞吐
 [profile.release]

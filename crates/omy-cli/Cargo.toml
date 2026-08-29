@@ -1,0 +1,46 @@
+[package]
+name = "omy-cli"
+description = "omy 命令行工具：加解密、扫描、分片、密钥管理。与 GUI 共享 omy-core，行为一致。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+# CLI 是 GPL-3.0（决策 D-25 的分层许可策略）：
+# core/net 用 MIT OR Apache-2.0 保持可复用，cli/gui 用 GPL-3.0 保障用户自由。
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "omy"
+path = "src/main.rs"
+
+[dependencies]
+omy-core = { path = "../omy-core" }
+clap.workspace = true
+clap_complete.workspace = true
+anyhow.workspace = true
+rpassword.workspace = true
+walkdir.workspace = true
+sys-locale.workspace = true
+toml.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+# CLI 处理不可信输入（文件、参数、配置），同样不允许 panic 类模式。
+# 但 CLI 允许 integer_division 与算术：它大量做人类可读的单位换算，
+# 且这些计算不参与密钥派生或偏移寻址。
+[lints.clippy]
+indexing_slicing        = "warn"
+unwrap_used             = "warn"
+panic                   = "warn"
+arithmetic_side_effects = "allow"
+integer_division        = "allow"
+cast_possible_truncation = "warn"
+cast_sign_loss          = "warn"
+expect_used             = "allow"
+missing_panics_doc      = "allow"
