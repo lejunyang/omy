@@ -9,13 +9,41 @@
 
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
-| `omy-core` | 🟢 格式核心可用 | 127 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource |
+| `omy-core` | 🟢 格式核心可用 | 130 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource |
 | `omy-cli` | 🟢 12 个命令可用 | 46 项 + 76 项端到端 | 契约见 `docs/research/09-cli-design.md` |
 | `omy-media` | ⚪ 未开始 | — | LGPL，FFmpeg 封装 |
 | `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
-| `omy-gui` | ⚪ 未开始 | — | Tauri v2 |
+| `omy-gui` | ⚪ 未开始 | — | Tauri v2；**播放方案已由 S1 验证可行** |
 
-合计 **173 项自动化测试 + 76 项 CLI 端到端断言**，`cargo clippy --all-targets -- -D warnings` 零告警。
+合计 **176 项自动化测试 + 76 项 CLI 端到端断言 + 16 项 Spike 断言**，`cargo clippy --all-targets -- -D warnings` 零告警。
+
+### Spike 结论
+
+| Spike | 结论 | 影响 |
+|---|---|---|
+| S1 自定义协议 206 + seek | ✅ **通过**（16/16） | 不需要本地 HTTP server，省掉端口占用与 CORS 复杂度 |
+| S5 WebView 缓存泄露 | ✅ **通过**（有前提） | 必须保留 `Cache-Control: no-store` 等响应头 |
+| S2/S3/S4/S6/S7/S8 | ⚪ 未开始 | — |
+
+复现：`pwsh -NoProfile -ExecutionPolicy Bypass -File spikes\run-spike.ps1`
+（全自动，无需人工点击；需先 `cargo build --release -p omy-spike-webview`）
+
+#### S1 实测数据
+
+- 6 次乱序 seek（85%/15%/60%/5%/95%/35%）全部触发 `seeked`，落点偏差 **0.00s**，耗时 1~129 ms，`readyState` 均为 4
+- canvas 在 5/30/50 秒取到 503/538/529 种颜色，三帧特征互不相同 → 排除「seek 报成功但画面卡住」的假通过
+- Range 语义：无 Range → 200；`bytes=0-1023` → 206/1024B；`bytes=-512` → 206/512B 且 `Content-Range: bytes 4459850-4460361/4460362`；越界 → 416 + `bytes */total`
+- `fromDiskCache` 全程为 0
+
+#### 产品实现必须遵守的约束（由 S1/S5 实测得出）
+
+1. **响应头必须带 `Cache-Control: no-store, no-cache, must-revalidate` 与 `Pragma: no-cache`**。S5 只证明「带上时不落盘」，未证明「不带也不落盘」。
+2. **必须回 CORS 头**。页面 origin 是 `http://tauri.localhost`，自定义协议是 `omystream://localhost`，不同源。`<video>` 不检查 CORS 所以能播，但 `fetch` 会被拦、canvas 会被污染——图片预览、文本读取、缩略图生成都依赖这两者。且必须 `Access-Control-Expose-Headers: Content-Range`，否则 JS 读不到它。
+3. **`<video>` / `<img>` 要加 `crossorigin="anonymous"`**，否则即使服务端放行，canvas 取帧仍报污染。
+4. **必须提前处理 `OPTIONS` 预检并返回 204**，不能落入解密路径——实测预检曾触发整个文件解密。
+5. **必须限制单次响应上限**。WebView 的 seek 请求是开放结尾（`bytes=1572864-`），返回到文件末尾等于近全量解密。当前上限 2 MiB；产品应按码率与块大小调整，并考虑对齐块边界避免同块重复解密。无 Range 的 200 响应仍须返回完整内容。
+6. **协议处理器必须用异步版**（`register_asynchronous_uri_scheme_protocol`），同步版会阻塞 WebView 线程。
+
 
 ## 已完成
 
@@ -196,3 +224,29 @@ cargo build --example crash_writer && pwsh -File scripts/verify-atomic-write.ps1
 - 测试代码用 `#![cfg_attr(test, allow(...))]` 在 crate 根统一放宽 `unwrap_used` / `indexing_slicing`；**库代码不放宽**——库处理不可信输入，任何 panic 路径都是拒绝服务缺陷。
 - `cargo search` 在当前网络下必然超时（镜像的 `source.crates-io.replace-with` 只作用于依赖解析，不影响 registry API）。查版本走 rsproxy sparse 索引 `https://rsproxy.cn/index/<按名长分层路径>`，不影响正常构建。
 - PowerShell 内联嵌套引号构造 Rust 代码字符串极易 ParserError。改文件请用 Write/Edit 工具，不要用 shell 拼字符串。
+
+### `payload::read_range` 的 `fetch_ct` 偏移语义（最易踩）
+
+回调收到的偏移是**相对载荷起点**的，不是文件绝对偏移——`read_range`
+内部已经减掉了 `header_len`。数据源若是整个文件，必须自己加回：
+
+```rust
+let header_len = u64::from(opened.header.header_len);
+read_range(&opened.header, opened.payload_key(), None, off, len,
+    |payload_off, l| {
+        let abs = payload_off + header_len;   // ← 漏掉这步就出错
+        Ok(bytes[abs as usize..(abs + l) as usize].to_vec())
+    })
+```
+
+漏掉会取到偏移 `header_len` 的字节，报 `ChunkAuthFailed`。**错误信息
+指向「数据损坏或被篡改」，极易误判成文件坏了或密码不对**，实际是偏移
+用错。实现 spike 时踩过一次，已在 `payload.rs` 补测试固化——其中一项
+专门断言错误用法必然触发 `ChunkAuthFailed`。
+
+之所以此前没被发现：往返测试都走 `decrypt_all`，它内部自己算偏移，
+完全绕过了 `fetch_ct` 契约。这类「只有外部调用方才会踩」的接口坑，
+自测同源的用例覆盖不到，必须有独立调用方（如 spike）才能暴露。
+
+对只存载荷的数据源（分片、远程对象存储）而言，相对偏移正是它需要的
+形式，所以这个设计本身是对的，只是文档要写得更醒目。
