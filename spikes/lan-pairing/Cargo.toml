@@ -1,0 +1,23 @@
+[package]
+name = "omy-spike-lan"
+description = "Spike：验证 SPAKE2 配对 + Noise IK 信道 + 密文块服务的完整链路。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "spike-lan"
+path = "src/main.rs"
+
+[dependencies]
+# SPAKE2：稳定版是 0.4（0.5 只有 pre 版）。magic-wormhole 等在用同一版本。
+# ⚠️ 该 crate 自述「未经第三方审计」且「可能不是常量时间」。
+# 对配对场景可接受：PIN 是一次性随机值，用完即弃，攻击者无从积累时序信息。
+spake2 = "0.4"
+# Noise Protocol 实现，实现了除 fallback 外的全部模式
+snow = "0.10"
+rand = "0.8"
+hex = "0.4"
+anyhow = "1.0"
