@@ -400,6 +400,143 @@ async fn run() {
         );
     }
 
+    // ================= 7. 真实服务端主循环 =================
+    println!("\n=== 7. 通过 serve() 真实入口访问 ===");
+    {
+        use omy_net::server_loop::{ConnOutcome, ServeConfig, serve};
+        use omy_net::store::{DeviceRecord, Store};
+        use std::sync::{Arc, Mutex};
+
+        // 前几组都是手写的 accept 循环，测不到真实入口的超时、
+        // 并发限制、授权检查是否接对了线。
+        // 命名避开上面第 5 组的 host_kp2，免得看代码时以为是同一个
+        let loop_host = StaticKeypair::generate().expect("生成应成功");
+        let loop_host_pub = loop_host.public.clone();
+        let guest2 = StaticKeypair::generate().expect("生成应成功");
+
+        let mut store = Store::create("书房台式机").expect("创建应成功");
+        store.upsert(DeviceRecord {
+            public_key: guest2.public.clone(),
+            name: "客厅笔记本".into(),
+            paired_at: 0,
+            expires_at: 0,
+        });
+
+        // 用独立目录：第 6 组把 devices.omy 写进了 dir，
+        // 在这里重新扫描会看到 2 个文件。测试之间不该互相污染
+        let dir7 = dir.join("serve-loop");
+        std::fs::create_dir_all(&dir7).expect("建目录应成功");
+        std::fs::copy(dir.join(secret_name), dir7.join(secret_name)).expect("复制应成功");
+
+        let share2 = Share::from_dir(&dir7).expect("扫描应成功");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev = Arc::clone(&events);
+
+        let cfg = ServeConfig {
+            bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            advertise_as: None, // 不污染真实局域网
+            ..ServeConfig::default()
+        };
+        let running = serve(
+            cfg,
+            Arc::new(Server::new(share2)),
+            Arc::new(store),
+            Arc::new(loop_host),
+            move |o| {
+                if let Ok(mut g) = ev.lock() {
+                    g.push(o);
+                }
+            },
+        )
+        .await
+        .expect("启动服务应成功");
+
+        check!(running.local_addr().port() != 0, "serve() 报告真实端口",
+            running.local_addr().port().to_string());
+
+        let sock = tokio::net::TcpStream::connect(running.local_addr())
+            .await
+            .expect("连接应成功");
+        let mut ch = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Channel::connect(sock, &guest2, &loop_host_pub),
+        )
+        .await
+        .expect("不应超时")
+        .expect("握手应成功");
+        check!(true, "通过 serve() 入口完成握手");
+
+        // 走完整流程：LIST 再把文件读回来解密
+        let entries2 = match ch.request(&Request::List).await {
+            Ok(Response::ListOk { entries }) => entries,
+            other => {
+                check!(false, "LIST 应成功", format!("{other:?}"));
+                Vec::new()
+            }
+        };
+        check!(entries2.len() == 1, "serve() 入口下 LIST 正常");
+
+        if let Some(e) = entries2.first() {
+            let mut buf = Vec::with_capacity(e.size as usize);
+            while (buf.len() as u64) < e.size {
+                let want = MAX_READ_LEN
+                    .min(u32::try_from(e.size - buf.len() as u64).unwrap_or(MAX_READ_LEN));
+                match ch
+                    .request(&Request::Read {
+                        handle: e.handle,
+                        offset: buf.len() as u64,
+                        len: want,
+                    })
+                    .await
+                {
+                    Ok(Response::ReadOk { data }) if !data.is_empty() => {
+                        buf.extend_from_slice(&data);
+                    }
+                    _ => break,
+                }
+            }
+            let ok = omy_core::file::open(&buf, std::slice::from_ref(&kek))
+                .and_then(|o| o.decrypt_all(&buf))
+                .map(|p| p == content)
+                .unwrap_or(false);
+            check!(ok, "serve() 入口下取回的密文能解密还原");
+        }
+
+        // 反证：陌生设备走真实入口也应被拒
+        let stranger2 = StaticKeypair::generate().expect("生成应成功");
+        let sock2 = tokio::net::TcpStream::connect(running.local_addr())
+            .await
+            .expect("TCP 连接本身会成功");
+        let denied = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            async {
+                let mut c = Channel::connect(sock2, &stranger2, &loop_host_pub).await.ok()?;
+                c.request(&Request::List).await.ok()
+            },
+        )
+        .await;
+        let leaked = matches!(&denied, Ok(Some(_)));
+        check!(!leaked, "陌生设备走 serve() 入口读不到文件列表");
+
+        drop(ch);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // 取快照再断言：MutexGuard 绝不能跨 await 持有
+        let log: Vec<ConnOutcome> =
+            events.lock().map(|g| g.clone()).unwrap_or_default();
+        check!(
+            log.iter().any(|o| matches!(o, ConnOutcome::Served { .. })),
+            "访问日志记录了已服务的连接"
+        );
+        check!(
+            log.iter().any(|o| matches!(o, ConnOutcome::Unauthorized { .. })),
+            "访问日志记录了未授权尝试（可提示用户是否要配对）"
+        );
+
+        running.shutdown().await.expect("停止应成功");
+        check!(true, "serve() 能干净停止");
+    }
+
     drop(cli);
     // 服务端在客户端 drop 后 recv 会失败并退出 loop。加超时兜底：
     // 验证程序绝不该因为某一步没退出而永远挂着

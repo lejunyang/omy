@@ -52,6 +52,7 @@ pub mod error;
 pub mod handshake;
 pub mod pairing;
 pub mod serve;
+pub mod server_loop;
 pub mod store;
 pub mod wire;
 
