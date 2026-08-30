@@ -12,10 +12,10 @@
 | `omy-core` | 🟢 格式核心可用 | 135 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
 | `omy-cli` | 🟢 12 个命令可用 | 50 项 + 88 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV；新增 `--vault` |
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
-| `omy-net` | ⚪ 未开始 | — | mDNS + SPAKE2 + Noise IK |
+| `omy-net` | 🟡 协议层可用 | 45 项 + 16 项真实 TCP | 线路编解码、SPAKE2 配对、零密钥服务端；mDNS 与 Noise 信道待接线 |
 | `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 | Tauri v2；解锁/扫描/预览/播放/多语言/锁定全通，视频真实 seek |
 
-合计 **330 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **375 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 26 项局域网 Spike/验证断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -23,6 +23,7 @@
 |---|---|---|
 | S1 自定义协议 206 + seek | ✅ **通过**（16/16） | 不需要本地 HTTP server，省掉端口占用与 CORS 复杂度 |
 | S5 WebView 缓存泄露 | ✅ **通过**（有前提） | 必须保留 `Cache-Control: no-store` 等响应头 |
+| LAN 协议栈（SPAKE2 + Noise IK） | ✅ **通过**（10/10） | 见下方「局域网 spike 的三个硬结论」 |
 | S2/S3/S4/S6/S7/S8 | ⚪ 未开始 | — |
 
 复现：`pwsh -NoProfile -ExecutionPolicy Bypass -File spikes\run-spike.ps1`
@@ -111,6 +112,44 @@
 - `i18n.rs`：用 `catalog!` 宏同时生成两语言查表以保证 key 不漏；缺失 key 返回 key 本身而非 panic。
 - `config.rs`：`deny_unknown_fields` 让拼错的键报错而非静默忽略；显式 `--config` 读不到必须报错，默认路径不存在则用内置默认。
 
+### omy-net 协议层（本轮）
+
+| 模块 | 职责 | 测试 |
+|---|---|---|
+| `wire` | 请求/响应的二进制编解码 | 17 项 |
+| `pairing` | SPAKE2 配对 + **密钥确认** | 12 项 |
+| `serve` | 零密钥服务端：handle → 密文字节 | 14 项 |
+| `error` | 结构化错误码 | 2 项 |
+
+#### 局域网 spike 的三个硬结论
+
+实现前先跑了 `spikes/lan-pairing`（10 项断言），三个结论直接决定了实现：
+
+1. **SPAKE2 在 PIN 不同时不报错**。`finish()` 照常返回 `Ok`，只是双方
+   拿到不同的密钥。很容易误以为「PAKE 会自己检测错误密码」从而漏掉
+   确认步骤——那样攻击者用任意 PIN 都能"成功"握手，直到通信全是乱码
+   才暴露，而连接已经建立、静态公钥已经交换。因此 `pairing` 强制跑一轮
+   **密钥确认**，且两侧用不同的 tag 串（否则可以把 A 的确认值反射给 A）。
+2. **Noise 单条消息明文上限 65519 字节**（65535 密文上限 − 16 字节 tag）。
+   `MAX_FRAME` 取该值，`MAX_READ_LEN` 取 60 KiB 为响应头留余量，
+   并有测试锁定「按 MAX_READ_LEN 读满时响应必须能编码」。
+3. IK 握手 2 条消息完成，单会话跑 64 轮请求-响应正常，满足连接复用。
+
+#### 零密钥由类型系统保证，不是靠注释
+
+DEC-16 要求「服务端绝不允许持有 KEK/FEK/明文」。写在文档里没用——
+半年后有人为了"顺便显示个文件名"就会把 KEK 传进来。
+
+因此服务端读数据的唯一入口是 `CiphertextSource` trait，它只有
+`len()` 与 `read_at()` 两个方法，**没有任何途径拿到密钥或明文**。
+想让服务端解密，必须先改 trait 定义——那是 code review 里看得见的改动。
+
+#### 路径穿越：让它无法表达，而非拦截
+
+客户端用 16 字节随机 `Handle` 指代文件，与磁盘路径无任何可推导关系。
+客户端**根本没有表达路径的手段**，也就谈不上构造 `../`。
+这比"收到路径再校验"可靠——后者依赖校验没有疏漏，前者从表达能力上
+就排除了整类问题。handle 必须随机而非顺序：顺序会泄露文件数量并可被枚举。
 ## 验证
 
 ### 独立验证通道（提交 `217df52`）
@@ -132,6 +171,18 @@
 
 **这一轮端到端验证发现了 3 个单元测试没发现的真实缺陷**（见下节）。
 
+### 局域网真实 TCP 验证（16 项，`examples/verify_lan.rs`）
+
+`serve.rs` 的单元测试直接调用 `Server::handle`，走同一进程同一份内存，
+验证不到：编码 → TCP → 解码后是否仍正确、分帧是否正确（TCP 是字节流，
+不保证一次 read 拿到整条消息）、大文件跨多次 READ 拼接后能否**真正解密还原**。
+
+最后一条最关键：**前面所有测试都只验证"字节搬运正确"，没有一条验证过
+"搬过去的字节真的能解密成原文"**——那才是用户实际关心的事。
+
+实测：500 KB 文件经 9 次 READ 拼回，与磁盘逐字节相同；用正确密码打开后
+文件名解密为 `big.omy`、内容与原文逐字节相同；错误密码必定失败（反证）。
+错误路径三项（未知 handle / 超限 / 越界）均返回预期错误码。
 ### 本机实测性能（release，2026-08-29）
 
 | 项 | 数值 |
@@ -168,6 +219,11 @@ pwsh -File spikes/make-media-fixtures.ps1
 pwsh -File spikes/make-seek-fixtures.ps1          # P2 需要 60s/60 关键帧素材
 cargo run --release --example verify_media -p omy-media    # 63 项
 cargo run --release --example verify_remux -p omy-media    # 42 项 P2 转封装
+
+# omy-net：协议栈 spike + 真实 TCP 全链路
+cargo run --release -p omy-spike-lan                       # 10 项协议栈 spike
+cargo run --release --example verify_lan -p omy-net        # 16 项真实 TCP
+cargo run --release --example verify_keyless_serve -p omy-core  # 5 项零密钥反证
 
 # P2 的两轮 spike（实现前的可行性验证，产物保留供人工核对）
 pwsh -File spikes/spike-remux.ps1
@@ -406,7 +462,12 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 
 ### 后续
 
-- [ ] `omy-net`：mDNS + SPAKE2 + Noise IK
+- [x] `omy-net` 线路协议编解码（防御性解析，拒绝超长/截断/尾部垃圾）
+- [x] `omy-net` SPAKE2 配对 + 密钥确认
+- [x] `omy-net` 零密钥服务端（LIST/STAT/READ）
+- [ ] `omy-net` mDNS 设备发现
+- [ ] `omy-net` Noise IK 信道接线（spike 已验证可行）
+- [ ] `omy-net` 会话有效期与吊销的持久化
 - [x] `omy-gui`：Tauri v2（解锁/扫描/预览/播放/多语言/锁定）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 

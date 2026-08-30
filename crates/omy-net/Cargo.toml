@@ -1,0 +1,38 @@
+[package]
+name = "omy-net"
+description = "omy 局域网共享：设备发现、SPAKE2 配对、Noise IK 加密信道、密文块服务。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+omy-core = { path = "../omy-core" }
+
+# Noise Protocol：IK 模式，1-RTT 且提供前向保密
+snow = "0.10"
+# SPAKE2 配对。稳定版只有 0.4（0.5 仅 pre）。
+# ⚠️ 该 crate 自述未经第三方审计、可能非常量时间。
+# 配对场景可接受：PIN 一次性随机、用完即弃，攻击者无从积累时序信息。
+spake2 = "0.4"
+
+# mDNS 服务发现（纯 Rust，不依赖系统 Bonjour/Avahi）
+mdns-sd = "0.21"
+
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+
+rand = "0.8"
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+# 密钥确认的 MAC。omy-core 已依赖 HMAC（HKDF 内部就用它），不额外引入原语
+hmac = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "test-util"] }
