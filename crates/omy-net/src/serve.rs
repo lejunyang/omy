@@ -328,6 +328,67 @@ pub fn check_response(r: Response) -> Result<Response> {
     Ok(r)
 }
 
+/// 已通过身份核对的会话。
+///
+/// # 为什么要有这个类型
+///
+/// [`Server::handle`] 本身不知道请求来自谁——它只管把 handle 变成字节。
+/// 身份核对是**另一件事**，很容易漏掉：握手成功只证明对方持有某个私钥，
+/// 不证明那是已配对的设备。
+///
+/// 把「核对」做成构造函数、「服务」做成方法，就让"未核对就服务"在类型
+/// 上无法表达：拿不到 `Session` 就调不到 [`Self::handle`]。
+///
+/// ```ignore
+/// // 编译不过：没有 Session 就没有 handle 可用
+/// let resp = server.handle_for(&channel, &req);
+///
+/// // 唯一路径：先核对，再服务
+/// let session = Session::authorize(&store, channel.peer_public())?;
+/// let resp = session.handle(&server, &req);
+/// ```
+pub struct Session {
+    /// 对方公钥，仅用于日志与吊销时匹配。
+    peer_public: Vec<u8>,
+}
+
+impl Session {
+    /// 核对对方身份，通过则建立会话。
+    ///
+    /// 同时检查「是已配对设备」与「授权未过期」——分成两步判断
+    /// 容易漏掉后者。
+    ///
+    /// # Errors
+    /// 对方不是已配对设备，或授权已过期时返回 [`NetError::SessionInvalid`]。
+    pub fn authorize(store: &crate::store::Store, peer_public: &[u8]) -> Result<Self> {
+        if !store.is_authorized(peer_public) {
+            return Err(NetError::SessionInvalid);
+        }
+        Ok(Self { peer_public: peer_public.to_vec() })
+    }
+
+    /// 对方公钥。
+    #[must_use]
+    pub fn peer_public(&self) -> &[u8] {
+        &self.peer_public
+    }
+
+    /// 对方指纹，用于访问日志。
+    ///
+    /// 日志里记指纹而非设备名：设备名由对方自称，可以随时改，
+    /// 用它做审计记录没有意义。
+    #[must_use]
+    pub fn peer_fingerprint(&self) -> [u8; 8] {
+        crate::discovery::fingerprint(&self.peer_public)
+    }
+
+    /// 在本会话中处理一个请求。
+    #[must_use]
+    pub fn handle(&self, server: &Server, req: &Request) -> Response {
+        server.handle(req)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,5 +676,88 @@ mod tests {
         let e = check_response(r).expect_err("错误响应应转成 Err");
         assert_eq!(e.code(), "NO_SUCH_HANDLE");
         assert!(check_response(Response::Pong).is_ok());
+    }
+
+    /// 只有已配对且未过期的设备才能建立会话。
+    #[test]
+    fn session_requires_authorized_peer() {
+        use crate::store::{DeviceRecord, Store};
+
+        let mut store = Store::create("本机").expect("创建应成功");
+        let known = vec![0x11u8; 32];
+        let expired = vec![0x22u8; 32];
+        let stranger = vec![0x33u8; 32];
+
+        store.upsert(DeviceRecord {
+            public_key: known.clone(),
+            name: "已配对".into(),
+            paired_at: 0,
+            expires_at: 0, // 永不过期
+        });
+        store.upsert(DeviceRecord {
+            public_key: expired.clone(),
+            name: "已过期".into(),
+            paired_at: 0,
+            expires_at: 1, // 1970 年就过期了
+        });
+
+        assert!(
+            Session::authorize(&store, &known).is_ok(),
+            "已配对且未过期的设备应能建立会话"
+        );
+        assert!(
+            Session::authorize(&store, &expired).is_err(),
+            "过期设备必须拒绝——握手成功不等于授权仍然有效"
+        );
+        assert!(
+            Session::authorize(&store, &stranger).is_err(),
+            "陌生设备必须拒绝"
+        );
+    }
+
+    /// 吊销后立即失效。
+    #[test]
+    fn revoked_device_cannot_open_session() {
+        use crate::store::{DeviceRecord, Store};
+
+        let mut store = Store::create("本机").expect("创建应成功");
+        let pk = vec![0x44u8; 32];
+        store.upsert(DeviceRecord {
+            public_key: pk.clone(),
+            name: "设备".into(),
+            paired_at: 0,
+            expires_at: 0,
+        });
+        assert!(Session::authorize(&store, &pk).is_ok(), "吊销前应可用");
+
+        assert!(store.revoke(&pk), "应确实吊销");
+        assert!(
+            Session::authorize(&store, &pk).is_err(),
+            "吊销后必须立即无法建立新会话"
+        );
+    }
+
+    /// 会话上的请求处理与直接调用等价。
+    #[test]
+    fn session_handle_matches_direct() {
+        use crate::store::{DeviceRecord, Store};
+
+        let d = tmpdir("session");
+        make_omy(&d, "x.omy", b"data", b"pw");
+        let srv = Server::new(Share::from_dir(&d).expect("扫描应成功"));
+
+        let mut store = Store::create("本机").expect("创建应成功");
+        let pk = vec![0x55u8; 32];
+        store.upsert(DeviceRecord {
+            public_key: pk.clone(),
+            name: "设备".into(),
+            paired_at: 0,
+            expires_at: 0,
+        });
+        let sess = Session::authorize(&store, &pk).expect("授权应成功");
+
+        assert_eq!(sess.handle(&srv, &Request::Ping), srv.handle(&Request::Ping));
+        assert_eq!(sess.peer_fingerprint().len(), 8);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

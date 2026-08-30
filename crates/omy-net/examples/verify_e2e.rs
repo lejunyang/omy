@@ -109,6 +109,15 @@ async fn run() {
 
     // ================= 2. Noise 信道 =================
     println!("\n=== 2. 用配对得来的公钥建立 Noise IK 信道 ===");
+
+    // 第 6 步（持久化验证）还要用这两样，但下面它们会被 move 进信道。
+    // 先留副本——StaticKeypair 有意不实现 Clone（私钥不该被随手复制），
+    // 所以从字节重建一个
+    let guest_learned_for_store = host_learned.clone();
+    let guest_kp_for_store = StaticKeypair::from_parts(
+        guest_kp.public.clone(),
+        guest_kp.private_bytes().to_vec(),
+    );
     let share = Share::from_dir(&dir).expect("扫描应成功");
     check!(share.len() == 1, "共享点识别到文件");
     let server = Server::new(share);
@@ -281,6 +290,115 @@ async fn run() {
         "用错误公钥握手必定失败（服务端确实在监听）"
     );
     let _ = srv2.await;
+
+    // ================= 6. 持久化：重启后仍能连接 =================
+    println!("\n=== 6. 持久化：模拟重启后用保存的身份重连 ===");
+    {
+        use omy_net::store::{DeviceRecord, Store};
+
+        let store_path = dir.join("devices.omy");
+        let store_pw = b"store-password";
+
+        // 共享方保存自己的身份与已配对的访问方
+        let mut host_store = Store::create("书房台式机").expect("创建应成功");
+        let host_saved_pub = host_store.public_key().to_vec();
+        host_store.upsert(DeviceRecord::from_pairing(
+            &guest_learned_for_store,
+            Some(std::time::Duration::from_secs(86400)),
+        ));
+        host_store.save(&store_path, store_pw).expect("保存应成功");
+
+        // —— 模拟重启：从磁盘重新加载 ——
+        let reloaded = Store::load(&store_path, store_pw).expect("重新加载应成功");
+        check!(
+            reloaded.public_key() == host_saved_pub,
+            "重启后本机公钥不变（否则所有已配对设备都连不上）"
+        );
+        check!(
+            reloaded.keypair().private_bytes() == host_store.keypair().private_bytes(),
+            "重启后本机**私钥**不变"
+        );
+        check!(reloaded.devices().len() == 1, "重启后已配对设备仍在");
+        check!(
+            reloaded.device_name() == "书房台式机",
+            "重启后设备名不变",
+            reloaded.device_name().to_owned()
+        );
+
+        // 用重新加载的身份真的建一条信道
+        let listener3 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("监听应成功");
+        let addr3 = listener3.local_addr().expect("取地址应成功");
+        let reloaded_pub = reloaded.public_key().to_vec();
+
+        let srv3 = tokio::spawn(async move {
+            let (sock, _) = listener3.accept().await.expect("accept 应成功");
+            let ch = Channel::accept(sock, reloaded.keypair()).await?;
+            // 用重新加载的 store 做授权判断
+            let sess = omy_net::serve::Session::authorize(&reloaded, ch.peer_public())?;
+            Ok::<_, omy_net::NetError>(sess.peer_fingerprint())
+        });
+
+        let sock = tokio::net::TcpStream::connect(addr3).await.expect("连接应成功");
+        let ch = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Channel::connect(sock, &guest_kp_for_store, &reloaded_pub),
+        )
+        .await;
+        check!(
+            matches!(&ch, Ok(Ok(_))),
+            "用重新加载的身份能与原已配对设备建立信道"
+        );
+
+        let authed = tokio::time::timeout(std::time::Duration::from_secs(5), srv3).await;
+        check!(
+            matches!(&authed, Ok(Ok(Ok(_)))),
+            "服务端用重新加载的 store 完成身份核对"
+        );
+
+        // 反证：吊销后立即无法通过授权
+        let mut after_revoke = Store::load(&store_path, store_pw).expect("加载应成功");
+        let guest_pub = guest_learned_for_store.public_key.clone();
+        check!(
+            after_revoke.is_authorized(&guest_pub),
+            "吊销前应授权通过"
+        );
+        check!(after_revoke.revoke(&guest_pub), "吊销应确实移除记录");
+        check!(
+            !after_revoke.is_authorized(&guest_pub),
+            "吊销后必须立即拒绝"
+        );
+        check!(
+            omy_net::serve::Session::authorize(&after_revoke, &guest_pub).is_err(),
+            "吊销后无法建立新会话"
+        );
+
+        // 反证：过期的授权同样被拒
+        let mut expired_store = Store::create("x").expect("创建应成功");
+        expired_store.upsert(DeviceRecord {
+            public_key: guest_pub.clone(),
+            name: "过期设备".into(),
+            paired_at: 0,
+            expires_at: 1, // 1970 年就过期
+        });
+        check!(
+            !expired_store.is_authorized(&guest_pub),
+            "过期授权必须拒绝（只查'认识'会放过它）"
+        );
+
+        // 反证：存储文件确实是加密的
+        let raw = std::fs::read(&store_path).expect("读文件应成功");
+        let priv_bytes = host_store.keypair().private_bytes().to_vec();
+        check!(
+            !raw.windows(priv_bytes.len()).any(|w| w == priv_bytes.as_slice()),
+            "静态私钥不得明文落盘"
+        );
+        check!(
+            Store::load(&store_path, b"wrong-password").is_err(),
+            "错误密码打不开存储文件"
+        );
+    }
 
     drop(cli);
     // 服务端在客户端 drop 后 recv 会失败并退出 loop。加超时兜底：

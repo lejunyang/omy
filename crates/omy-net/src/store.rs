@@ -1,0 +1,745 @@
+//! 已配对设备与本机身份的持久化。
+//!
+//! # 存的东西里有私钥，所以整个文件必须加密
+//!
+//! 需要落盘的有两类：
+//!
+//! | 内容 | 泄露后果 |
+//! |---|---|
+//! | 本机静态**私钥** | 攻击者可冒充本设备连接他人 |
+//! | 已配对设备列表 | 暴露"这台机器和哪些设备配过对"的关系图 |
+//!
+//! 第一条决定了不能明文存。既然项目本身就是加密工具，直接复用
+//! `omy_core` 的文件格式——不另造一套密钥管理，也让这份文件享受
+//! 同样的两级 KDF 与 AEAD 保护。
+//!
+//! 落盘走 [`omy_core::fsatomic::write_atomic`]：写配对表的时刻正好是
+//! 用户刚配对完的时刻，此时崩溃或断电若留下半个文件，用户会失去
+//! 全部已配对设备且不知情。原子写保证要么是旧的完整内容，要么是新的。
+//!
+//! # 为什么不用 JSON
+//!
+//! 与 `omy_core::container` 同样的理由：手写紧凑二进制，解析时每个
+//! 长度字段都立刻对照剩余字节校验，不给 `Vec::with_capacity` 传入
+//! 未经检查的数字。这份文件虽然来自本地磁盘而非网络，但磁盘上的
+//! 字节同样可能被篡改或损坏。
+
+use crate::error::{NetError, Result};
+use crate::handshake::PairedDevice;
+use std::path::{Path, PathBuf};
+
+/// 存储文件的格式版本。
+///
+/// 与线路协议版本分开：存储格式的演进节奏和协议不同，
+/// 混用一个版本号会导致"改了存储格式就得升协议版本"。
+const STORE_VERSION: u8 = 1;
+
+/// 单个设备记录允许的最大字节数。
+///
+/// 公钥 32 + 名字最多 63 + 时间戳 8 + 长度前缀若干，128 足够。
+/// 设一个紧的上限，让畸形数据尽早失败。
+const MAX_RECORD: usize = 128;
+
+/// 一台已配对设备的完整记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRecord {
+    /// 对方静态公钥，Noise IK 用它。
+    pub public_key: Vec<u8>,
+    /// 对方设备名。**由对方自称，不可信**，仅用于界面显示。
+    pub name: String,
+    /// 配对时间（Unix 秒）。
+    pub paired_at: u64,
+    /// 会话到期时间（Unix 秒）。`0` 表示永不过期。
+    ///
+    /// 到期后需要重新配对。默认 24 小时（文档 §5.3）。
+    pub expires_at: u64,
+}
+
+impl DeviceRecord {
+    /// 从刚完成的配对创建记录。
+    #[must_use]
+    pub fn from_pairing(d: &PairedDevice, valid_for: Option<std::time::Duration>) -> Self {
+        let now = now_secs();
+        let expires_at = valid_for.map_or(0, |dur| now.saturating_add(dur.as_secs()));
+        Self {
+            public_key: d.public_key.clone(),
+            name: d.name.clone(),
+            paired_at: now,
+            expires_at,
+        }
+    }
+
+    /// 设备指纹。
+    #[must_use]
+    pub fn fingerprint(&self) -> [u8; 8] {
+        crate::discovery::fingerprint(&self.public_key)
+    }
+
+    /// 在给定时刻是否已过期。
+    ///
+    /// 显式传入时刻而不是内部取当前时间：这样测试可以验证过期逻辑
+    /// 本身，而不必真的等上 24 小时或去改系统时钟。
+    #[must_use]
+    pub fn is_expired_at(&self, now: u64) -> bool {
+        self.expires_at != 0 && now >= self.expires_at
+    }
+
+    /// 现在是否已过期。
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        self.is_expired_at(now_secs())
+    }
+}
+
+/// 本机身份与已配对设备的集合。
+pub struct Store {
+    /// 本机静态密钥对。
+    keypair: crate::channel::StaticKeypair,
+    /// 本机设备名，会广播给局域网。
+    device_name: String,
+    /// 已配对设备，按指纹索引。
+    devices: Vec<DeviceRecord>,
+}
+
+impl Store {
+    /// 新建一份身份（首次运行时）。
+    ///
+    /// # Errors
+    /// 设备名非法或随机源不可用时返回错误。
+    pub fn create(device_name: &str) -> Result<Self> {
+        crate::discovery::validate_device_name(device_name)?;
+        Ok(Self {
+            keypair: crate::channel::StaticKeypair::generate()?,
+            device_name: device_name.to_owned(),
+            devices: Vec::new(),
+        })
+    }
+
+    /// 本机公钥。
+    #[must_use]
+    pub fn public_key(&self) -> &[u8] {
+        &self.keypair.public
+    }
+
+    /// 本机密钥对，用于建立信道。
+    #[must_use]
+    pub fn keypair(&self) -> &crate::channel::StaticKeypair {
+        &self.keypair
+    }
+
+    /// 本机设备名。
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// 改设备名。
+    ///
+    /// # Errors
+    /// 名字非法时返回错误。
+    pub fn set_device_name(&mut self, name: &str) -> Result<()> {
+        crate::discovery::validate_device_name(name)?;
+        // clear + push_str 复用已有分配，避免丢弃旧 String 再分配新的
+        self.device_name.clear();
+        self.device_name.push_str(name);
+        Ok(())
+    }
+
+    /// 本机指纹。
+    #[must_use]
+    pub fn fingerprint(&self) -> [u8; 8] {
+        self.keypair.fingerprint()
+    }
+
+    /// 全部已配对设备（含已过期的）。
+    #[must_use]
+    pub fn devices(&self) -> &[DeviceRecord] {
+        &self.devices
+    }
+
+    /// 仍然有效的设备。
+    #[must_use]
+    pub fn active_devices(&self) -> Vec<&DeviceRecord> {
+        let now = now_secs();
+        self.devices.iter().filter(|d| !d.is_expired_at(now)).collect()
+    }
+
+    /// 添加或更新一台设备。
+    ///
+    /// 同一公钥重复配对时**覆盖**旧记录而非追加：重新配对的语义就是
+    /// "刷新这台设备的授权"，留两条记录会让吊销时漏掉一条。
+    pub fn upsert(&mut self, rec: DeviceRecord) {
+        if let Some(slot) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.public_key == rec.public_key)
+        {
+            *slot = rec;
+        } else {
+            self.devices.push(rec);
+        }
+    }
+
+    /// 按指纹查设备。
+    #[must_use]
+    pub fn find_by_fingerprint(&self, fp: &[u8; 8]) -> Option<&DeviceRecord> {
+        self.devices.iter().find(|d| &d.fingerprint() == fp)
+    }
+
+    /// 按公钥查设备。
+    ///
+    /// 服务端在握手后**必须**用这个方法核对对方身份。握手成功只证明
+    /// 对方持有某个私钥，不证明那是已配对的设备。
+    #[must_use]
+    pub fn find_by_public_key(&self, pk: &[u8]) -> Option<&DeviceRecord> {
+        self.devices.iter().find(|d| d.public_key == pk)
+    }
+
+    /// 判断对方是否为**当前有效**的已配对设备。
+    ///
+    /// 这是服务端应当调用的唯一授权判断入口：同时检查"认识"与"没过期"。
+    /// 分成两步调用容易漏掉过期检查。
+    #[must_use]
+    pub fn is_authorized(&self, public_key: &[u8]) -> bool {
+        self.find_by_public_key(public_key)
+            .is_some_and(|d| !d.is_expired())
+    }
+
+    /// 吊销一台设备。
+    ///
+    /// 返回是否确实移除了记录。
+    pub fn revoke(&mut self, public_key: &[u8]) -> bool {
+        let before = self.devices.len();
+        self.devices.retain(|d| d.public_key != public_key);
+        self.devices.len() != before
+    }
+
+    /// 吊销全部设备。
+    pub fn revoke_all(&mut self) {
+        self.devices.clear();
+    }
+
+    /// 清掉已过期的记录，返回清掉的条数。
+    pub fn purge_expired(&mut self) -> usize {
+        let now = now_secs();
+        let before = self.devices.len();
+        self.devices.retain(|d| !d.is_expired_at(now));
+        before.saturating_sub(self.devices.len())
+    }
+
+    /// 编码为明文字节（随后会被加密）。
+    fn encode(&self) -> Result<Vec<u8>> {
+        let mut out = vec![STORE_VERSION];
+
+        // 本机身份
+        push_bytes(&mut out, &self.keypair.public)?;
+        push_bytes(&mut out, self.keypair.private_bytes())?;
+        push_bytes(&mut out, self.device_name.as_bytes())?;
+
+        // 设备列表
+        let n = u32::try_from(self.devices.len()).map_err(|_| NetError::MalformedFrame)?;
+        out.extend_from_slice(&n.to_le_bytes());
+        for d in &self.devices {
+            push_bytes(&mut out, &d.public_key)?;
+            push_bytes(&mut out, d.name.as_bytes())?;
+            out.extend_from_slice(&d.paired_at.to_le_bytes());
+            out.extend_from_slice(&d.expires_at.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    /// 从明文字节解码。
+    fn decode(buf: &[u8]) -> Result<Self> {
+        let mut r = Cursor { buf, pos: 0 };
+
+        let ver = r.u8()?;
+        if ver != STORE_VERSION {
+            return Err(NetError::VersionMismatch {
+                theirs: u16::from(ver),
+                ours: u16::from(STORE_VERSION),
+            });
+        }
+
+        let public = r.bytes()?;
+        let private = r.bytes()?;
+        if public.len() != 32 || private.len() != 32 {
+            return Err(NetError::MalformedFrame);
+        }
+        let name_raw = r.bytes()?;
+        let device_name =
+            String::from_utf8(name_raw).map_err(|_| NetError::MalformedFrame)?;
+        crate::discovery::validate_device_name(&device_name)
+            .map_err(|_| NetError::MalformedFrame)?;
+
+        let n = r.u32()?;
+        // 不按 n 预分配：它来自文件内容。每轮的 bytes() 会自然限制真实
+        // 条目数——声称有 40 亿条但只剩几字节的文件会在第一轮就失败
+        let mut devices = Vec::new();
+        for _ in 0..n {
+            let public_key = r.bytes()?;
+            if public_key.len() != 32 {
+                return Err(NetError::MalformedFrame);
+            }
+            let nm = r.bytes()?;
+            if nm.len() > crate::discovery::MAX_DEVICE_NAME {
+                return Err(NetError::MalformedFrame);
+            }
+            let dev_name = String::from_utf8(nm).map_err(|_| NetError::MalformedFrame)?;
+            crate::discovery::validate_device_name(&dev_name)
+                .map_err(|_| NetError::MalformedFrame)?;
+            let paired_at = r.u64()?;
+            let expires_at = r.u64()?;
+            devices.push(DeviceRecord {
+                public_key,
+                name: dev_name,
+                paired_at,
+                expires_at,
+            });
+        }
+        r.finish()?;
+
+        Ok(Self {
+            keypair: crate::channel::StaticKeypair::from_parts(public, private),
+            device_name,
+            devices,
+        })
+    }
+
+    /// 加密保存到文件。
+    ///
+    /// # Errors
+    /// 编码、加密或写盘失败时返回错误。
+    pub fn save(&self, path: &Path, password: &[u8]) -> Result<()> {
+        use omy_core::crypto::{Argon2Params, Kek};
+        use omy_core::file::{EncryptOptions, RandomMaterial, encrypt};
+
+        let plain = self.encode()?;
+        // 每次保存都换新 salt：这份文件会被反复重写，
+        // 固定 salt 会让多个版本共享同一 KEK
+        let mut salt = [0u8; 16];
+        {
+            use rand::RngCore as _;
+            rand::thread_rng().fill_bytes(&mut salt);
+        }
+        let params = Argon2Params::INTERACTIVE;
+        let kek = Kek::from_password(password, &salt, params)
+            .map_err(|e| NetError::Discovery(e.to_string()))?;
+        let opts = EncryptOptions {
+            // 不存文件名：这份文件的名字是固定的，存了反而多一处冗余。
+            // 更重要的是它不该被当成用户数据在库里列出来
+            filename: None,
+            argon2: params,
+            ..EncryptOptions::default()
+        };
+        let enc = encrypt(&plain, &[kek], &salt, &opts, &RandomMaterial::generate())
+            .map_err(|e| NetError::Discovery(e.to_string()))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // 原子写：写配对表的时刻正好是刚配对完的时刻，
+        // 此时留下半个文件会让用户静默失去全部已配对设备
+        omy_core::fsatomic::write_atomic(path, &enc.bytes)
+            .map_err(|e| NetError::Discovery(e.to_string()))?;
+        // 尽力收紧权限。失败不致命——文件本身是加密的，
+        // 权限只是纵深防御的一层
+        let _ = omy_core::fsatomic::restrict_permissions(path);
+        Ok(())
+    }
+
+    /// 从文件解密加载。
+    ///
+    /// # Errors
+    /// 文件不存在、密码错误或内容损坏时返回错误。
+    pub fn load(path: &Path, password: &[u8]) -> Result<Self> {
+        let data = std::fs::read(path)?;
+        let opened = omy_core::file::open_with_password(&data, password)
+            .map_err(|_| NetError::SessionInvalid)?;
+        let plain = opened
+            .decrypt_all(&data)
+            .map_err(|_| NetError::SessionInvalid)?;
+        Self::decode(&plain)
+    }
+
+    /// 加载已有身份，不存在则新建并保存。
+    ///
+    /// # Errors
+    /// 读写失败、密码错误或内容损坏时返回错误。
+    pub fn load_or_create(path: &Path, password: &[u8], device_name: &str) -> Result<Self> {
+        if path.exists() {
+            return Self::load(path, password);
+        }
+        let s = Self::create(device_name)?;
+        s.save(path, password)?;
+        Ok(s)
+    }
+}
+
+/// 默认的存储路径。
+///
+/// 放在用户配置目录下的 `omy/devices.omy`。
+#[must_use]
+pub fn default_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("omy").join("devices.omy"))
+}
+
+/// 当前 Unix 秒。
+///
+/// 系统时间早于纪元时返回 0——那种情况下过期判断本就没有意义，
+/// 但绝不能 panic。
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn push_bytes(out: &mut Vec<u8>, v: &[u8]) -> Result<()> {
+    let len = u16::try_from(v.len()).map_err(|_| NetError::MalformedFrame)?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(v);
+    Ok(())
+}
+
+/// 逐字段前进的读取器，全程边界检查。
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self.pos.checked_add(n).ok_or(NetError::MalformedFrame)?;
+        let s = self.buf.get(self.pos..end).ok_or(NetError::MalformedFrame)?;
+        self.pos = end;
+        Ok(s)
+    }
+    fn u8(&mut self) -> Result<u8> {
+        Ok(*self.take(1)?.first().ok_or(NetError::MalformedFrame)?)
+    }
+    fn u32(&mut self) -> Result<u32> {
+        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| NetError::MalformedFrame)?;
+        Ok(u32::from_le_bytes(b))
+    }
+    fn u64(&mut self) -> Result<u64> {
+        let b: [u8; 8] = self.take(8)?.try_into().map_err(|_| NetError::MalformedFrame)?;
+        Ok(u64::from_le_bytes(b))
+    }
+    fn bytes(&mut self) -> Result<Vec<u8>> {
+        let b: [u8; 2] = self.take(2)?.try_into().map_err(|_| NetError::MalformedFrame)?;
+        let len = usize::from(u16::from_le_bytes(b));
+        if len > MAX_RECORD {
+            return Err(NetError::MalformedFrame);
+        }
+        Ok(self.take(len)?.to_vec())
+    }
+    fn finish(self) -> Result<()> {
+        if self.pos == self.buf.len() {
+            Ok(())
+        } else {
+            Err(NetError::MalformedFrame)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpfile(tag: &str) -> PathBuf {
+        use rand::RngCore as _;
+        let r = rand::thread_rng().next_u64();
+        std::env::temp_dir().join(format!("omy-store-{tag}-{r:016x}.omy"))
+    }
+
+    fn dev(name: &str, pk: u8, expires_at: u64) -> DeviceRecord {
+        DeviceRecord {
+            public_key: vec![pk; 32],
+            name: name.to_owned(),
+            paired_at: 1000,
+            expires_at,
+        }
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let mut s = Store::create("我的电脑").expect("创建应成功");
+        s.upsert(dev("设备甲", 1, 0));
+        s.upsert(dev("设备乙", 2, 99999));
+
+        let enc = s.encode().expect("编码应成功");
+        let back = Store::decode(&enc).expect("解码应成功");
+
+        assert_eq!(back.device_name(), "我的电脑");
+        assert_eq!(back.public_key(), s.public_key(), "本机公钥应保持");
+        assert_eq!(
+            back.keypair().private_bytes(),
+            s.keypair().private_bytes(),
+            "本机私钥应保持——丢了就等于换了身份，所有已配对设备都连不上"
+        );
+        assert_eq!(back.devices().len(), 2);
+        assert_eq!(back.devices()[0].name, "设备甲");
+        assert_eq!(back.devices()[1].expires_at, 99999);
+    }
+
+    #[test]
+    fn save_load_roundtrip() {
+        let p = tmpfile("roundtrip");
+        let mut s = Store::create("台式机").expect("创建应成功");
+        s.upsert(dev("笔记本", 7, 0));
+        s.save(&p, b"store-password").expect("保存应成功");
+
+        let back = Store::load(&p, b"store-password").expect("加载应成功");
+        assert_eq!(back.device_name(), "台式机");
+        assert_eq!(back.devices().len(), 1);
+        assert_eq!(back.keypair().private_bytes(), s.keypair().private_bytes());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 落盘的文件必须是加密的——这是整个模块存在的理由。
+    #[test]
+    fn saved_file_does_not_leak_private_key_or_names() {
+        let p = tmpfile("noleak");
+        let mut s = Store::create("秘密设备名").expect("创建应成功");
+        s.upsert(dev("另一台秘密设备", 9, 0));
+        s.save(&p, b"pw").expect("保存应成功");
+
+        let raw = std::fs::read(&p).expect("读文件应成功");
+
+        // 私钥不得出现在磁盘字节里
+        let priv_bytes = s.keypair().private_bytes().to_vec();
+        assert!(
+            !raw.windows(priv_bytes.len()).any(|w| w == priv_bytes.as_slice()),
+            "静态私钥绝不能明文落盘——泄露后攻击者可冒充本设备"
+        );
+        // 设备名同样不得出现
+        for needle in ["秘密设备名", "另一台秘密设备"] {
+            let n = needle.as_bytes();
+            assert!(
+                !raw.windows(n.len()).any(|w| w == n),
+                "设备名不得明文落盘: {needle}"
+            );
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        let p = tmpfile("wrongpw");
+        let s = Store::create("x").expect("创建应成功");
+        s.save(&p, b"right").expect("保存应成功");
+        assert!(
+            Store::load(&p, b"wrong").is_err(),
+            "错误密码必须打不开，否则加密形同虚设"
+        );
+        assert!(Store::load(&p, b"right").is_ok(), "正确密码应能打开");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn load_or_create_is_idempotent() {
+        let p = tmpfile("loadcreate");
+        let a = Store::load_or_create(&p, b"pw", "首次").expect("首次应创建");
+        let b = Store::load_or_create(&p, b"pw", "忽略").expect("再次应加载");
+        assert_eq!(
+            a.keypair().private_bytes(),
+            b.keypair().private_bytes(),
+            "第二次调用必须加载已有身份，而不是生成新的——否则每次启动都换身份"
+        );
+        assert_eq!(b.device_name(), "首次", "已存在时不应用新名字覆盖");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn upsert_replaces_not_appends() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(dev("旧名字", 5, 100));
+        s.upsert(dev("新名字", 5, 200));
+        assert_eq!(s.devices().len(), 1, "同一公钥应覆盖而非追加");
+        assert_eq!(s.devices()[0].name, "新名字");
+        assert_eq!(s.devices()[0].expires_at, 200);
+    }
+
+    #[test]
+    fn revoke_works() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(dev("甲", 1, 0));
+        s.upsert(dev("乙", 2, 0));
+        assert!(s.revoke(&[1u8; 32]), "应确实移除");
+        assert_eq!(s.devices().len(), 1);
+        assert!(!s.revoke(&[1u8; 32]), "重复吊销应返回 false");
+        s.revoke_all();
+        assert!(s.devices().is_empty());
+    }
+
+    #[test]
+    fn expiry_logic() {
+        let never = dev("永久", 1, 0);
+        assert!(!never.is_expired_at(u64::MAX), "expires_at=0 表示永不过期");
+
+        let d = dev("限时", 2, 5000);
+        assert!(!d.is_expired_at(4999), "到期前应有效");
+        assert!(d.is_expired_at(5000), "到期时刻应判为过期");
+        assert!(d.is_expired_at(5001), "过期后应无效");
+    }
+
+    #[test]
+    fn active_devices_excludes_expired() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(dev("有效", 1, 0));
+        s.upsert(dev("过期", 2, 1)); // 1970 年就过期了
+        assert_eq!(s.devices().len(), 2, "全部列表应含过期项");
+        assert_eq!(s.active_devices().len(), 1, "有效列表应排除过期项");
+        assert_eq!(s.active_devices()[0].name, "有效");
+    }
+
+    /// 授权判断必须同时检查"认识"与"没过期"。
+    #[test]
+    fn is_authorized_checks_both_identity_and_expiry() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(dev("有效", 1, 0));
+        s.upsert(dev("过期", 2, 1));
+
+        assert!(s.is_authorized(&[1u8; 32]), "有效设备应授权");
+        assert!(
+            !s.is_authorized(&[2u8; 32]),
+            "过期设备必须拒绝——只查'认识'会放过过期的"
+        );
+        assert!(!s.is_authorized(&[3u8; 32]), "陌生设备应拒绝");
+    }
+
+    #[test]
+    fn purge_expired_counts() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(dev("甲", 1, 0));
+        s.upsert(dev("乙", 2, 1));
+        s.upsert(dev("丙", 3, 1));
+        assert_eq!(s.purge_expired(), 2, "应清掉两条过期记录");
+        assert_eq!(s.devices().len(), 1);
+    }
+
+    #[test]
+    fn from_pairing_sets_expiry() {
+        let d = PairedDevice {
+            public_key: vec![4u8; 32],
+            name: "对方".into(),
+        };
+        let rec = DeviceRecord::from_pairing(&d, Some(std::time::Duration::from_secs(3600)));
+        assert!(rec.expires_at > rec.paired_at, "应设置未来的到期时间");
+        assert!(!rec.is_expired(), "刚创建不应过期");
+
+        let forever = DeviceRecord::from_pairing(&d, None);
+        assert_eq!(forever.expires_at, 0, "None 表示永不过期");
+    }
+
+    #[test]
+    fn find_by_fingerprint_works() {
+        let mut s = Store::create("x").expect("创建应成功");
+        let rec = dev("甲", 1, 0);
+        let fp = rec.fingerprint();
+        s.upsert(rec);
+        assert!(s.find_by_fingerprint(&fp).is_some());
+        assert!(s.find_by_fingerprint(&[0xFF; 8]).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_malformed() {
+        let cases: Vec<Vec<u8>> = vec![
+            vec![],                        // 空
+            vec![STORE_VERSION],           // 只有版本
+            vec![99, 1, 2, 3],             // 版本不对
+            {
+                let mut v = vec![STORE_VERSION];
+                v.extend_from_slice(&16u16.to_le_bytes());
+                v.extend_from_slice(&[0u8; 16]); // 公钥长度不是 32
+                v
+            },
+        ];
+        for c in cases {
+            assert!(Store::decode(&c).is_err(), "畸形输入应拒绝: {c:?}");
+        }
+    }
+
+    /// 声称有海量设备时必须拒绝，而不是尝试预分配。
+    ///
+    /// 用**空设备列表**的 store：此时 encode 的最后 4 字节正好是设备
+    /// 计数，改它才真正改到了目标字段。若用有设备的 store，最后 4 字节
+    /// 是末条记录的 `expires_at` 高位，改了根本测不到计数校验。
+    #[test]
+    fn decode_rejects_huge_count() {
+        let s = Store::create("x").expect("创建应成功");
+        assert!(s.devices().is_empty(), "本测试依赖空设备列表");
+        let mut enc = s.encode().expect("编码应成功");
+
+        // 先确认末 4 字节确实是计数 0
+        let tail_start = enc.len().checked_sub(4).expect("编码应至少 4 字节");
+        assert_eq!(
+            enc.get(tail_start..),
+            Some(&0u32.to_le_bytes()[..]),
+            "空列表时末 4 字节应为计数 0；布局若变了本测试需同步更新"
+        );
+
+        let tail = enc.get_mut(tail_start..).expect("上一步已确认存在");
+        tail.copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert!(
+            Store::decode(&enc).is_err(),
+            "声称 40 亿条设备必须拒绝而非尝试分配"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_trailing_garbage() {
+        let s = Store::create("x").expect("创建应成功");
+        let mut enc = s.encode().expect("编码应成功");
+        enc.push(0xFF);
+        assert!(Store::decode(&enc).is_err(), "尾部多余字节应拒绝");
+    }
+
+    #[test]
+    fn decode_rejects_control_chars_in_name() {
+        let mut s = Store::create("x").expect("创建应成功");
+        s.upsert(DeviceRecord {
+            public_key: vec![1u8; 32],
+            name: "正常".into(),
+            paired_at: 0,
+            expires_at: 0,
+        });
+        let mut enc = s.encode().expect("编码应成功");
+
+        // 必须确认真的定位到了目标。用 if let 静默跳过的话，
+        // 哪天编码布局变了，这条测试会"通过"但什么都没测
+        let pos = enc
+            .windows(6)
+            .position(|w| w == "正常".as_bytes())
+            .expect("应能在编码中找到设备名");
+        *enc.get_mut(pos).expect("上一步已确认位置有效") = 0x07;
+
+        assert!(
+            Store::decode(&enc).is_err(),
+            "含控制字符的设备名应拒绝——可用于伪造界面显示"
+        );
+    }
+
+    #[test]
+    fn create_rejects_bad_name() {
+        assert!(Store::create("").is_err());
+        assert!(Store::create(&"x".repeat(100)).is_err());
+        assert!(Store::create("含\u{0}空字符").is_err());
+    }
+
+    #[test]
+    fn set_device_name_validates() {
+        let mut s = Store::create("好名字").expect("创建应成功");
+        assert!(s.set_device_name("新名字").is_ok());
+        assert_eq!(s.device_name(), "新名字");
+        assert!(s.set_device_name("").is_err());
+        assert_eq!(s.device_name(), "新名字", "失败时不应改动");
+    }
+
+    #[test]
+    fn default_path_ends_correctly() {
+        if let Some(p) = default_path() {
+            assert!(p.ends_with("omy/devices.omy") || p.ends_with("omy\\devices.omy"));
+        }
+    }
+}

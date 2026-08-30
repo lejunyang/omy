@@ -33,6 +33,8 @@ sha2 = { workspace = true }
 # 配对时加密交换静态公钥。明文发不影响安全性，但会让被动观察者
 # 记录"这两台设备配过对"，长期积累可画出设备关系图
 chacha20poly1305 = { workspace = true }
+# 默认存储路径（用户配置目录）
+dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
