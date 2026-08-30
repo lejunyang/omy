@@ -10,12 +10,12 @@
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
 | `omy-core` | 🟢 格式核心可用 | 135 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
-| `omy-cli` | 🟢 12 个命令可用 | 50 项 + 88 项端到端 | 契约见 `docs/research/09-cli-design.md`；已接入媒体 TLV；新增 `--vault` |
+| `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
 | `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 | Tauri v2；解锁/扫描/预览/播放/多语言/锁定全通，视频真实 seek |
 
-合计 **444 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 65 项局域网 Spike/验证断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **453 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -165,6 +165,33 @@ mDNS 是**局域网内明文广播**，同网段任何设备都能收到。TXT �
 
 公钥加密传输不是因为公钥是秘密（明文发也不影响 Noise 安全性），
 而是防止被动观察者记录「这两台设备配过对」，长期积累可画出设备关系图。
+#### CLI 只在网络命令内部起 runtime
+
+CLI 整体是同步的。把 `main` 改成 `#[tokio::main]` 会让加解密命令
+为一个用不到的运行时付出启动开销，也会把 async 传染到全部子命令。
+所以 `share` 各命令在自己内部 `Builder::new_multi_thread()`。
+
+`serve` 的连接事件回调要求 `'static`，而 `ctx.out` 是借用，不能直接
+塞进去。用 mpsc 把事件送回命令函数打印：输出仍然走统一的 `Out`
+（尊重 `--json` / `--quiet`），也不必给 `Out` 加 `Arc`。
+
+#### connect 用指纹而不是地址定位设备
+
+mDNS 广播的 TXT 记录里**只有指纹，没有完整公钥**。这是有意的：
+任何人都能广播任意内容，如果从广播里取公钥，攻击者广播自己的公钥
+配上别人的名字就能冒充。
+
+所以 `share connect <指纹>` 拿指纹去**本地设备库**反查公钥，
+广播只用来回答"这台设备现在在哪个 IP"。
+
+#### 远端不给明文文件名，这不是缺陷
+
+服务端零密钥，它自己也不知道文件叫什么（决策 D-30）。`Entry` 里
+只有加密过的 header。所以 `connect` 列出的是 handle 短标识与大小，
+取回后要用 `omy info` / `omy decrypt` 才能看到真名。
+
+顺带解决了路径穿越：落盘文件名由**本地** handle 生成，不含任何
+远端字符串。不是"过滤危险字符"，而是根本不用远端给的名字。
 #### 主循环第一次面对敌意的并发环境
 
 前面的模块都是"给定输入算出输出"的纯逻辑。主循环要处理的是别人
@@ -302,6 +329,18 @@ Noise IK 1-RTT 握手 → LIST → 5 次 READ 取回 300688 B → 用正确密�
 测不到真实入口的超时、并发限制、授权检查是否接对了线。这一组确认
 真实端口上报正确、握手到解密还原的完整链路通畅、陌生设备读不到
 文件列表，以及访问日志同时记下了已服务与未授权两类连接。
+
+### CLI 端到端实测（19 项，`spikes/verify-cli-share.ps1`）
+
+把 `omy.exe` 当成两台设备真的跑起来：A 生成配对码、B 用
+`--pin-file` 完成配对、A `share serve`、B `share connect --fetch`
+取回密文、再用 `omy decrypt` 还原，最后比对 SHA-256。
+
+配套两条反证：未配对设备连接必须失败、吊销后设备库里不再有记录。
+
+这一层抓到了单测抓不到的东西：第一版脚本用 `--kdf` 而正确的参数名
+是 `--kdf-profile`，跑一次才发现。也暴露了 `pair` 缺少非交互配对码
+通道——自动化和开机自启都需要，于是补了 `--pin-file`。
 
 #### 验证程序自己挂死过一次
 
@@ -615,7 +654,8 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `omy-net` 已配对设备的加密持久化（原子写 + 权限收紧）
 - [x] `omy-net` 会话有效期与吊销（`Session` 授权入口）
 - [x] `omy-net` 服务端主循环（accept + 多连接并发 + 超时 + 访问日志）
-- [ ] `omy-cli` `serve` / `connect` 子命令
+- [x] `omy-cli` `share` 命令组（serve / discover / pair / connect / devices）
+- [ ] GUI 的设备发现与配对界面
 - [ ] `omy-net` 真实双机 mDNS 实测（当前只在单机验证协议逻辑）
 - [x] `omy-gui`：Tauri v2（解锁/扫描/预览/播放/多语言/锁定）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）

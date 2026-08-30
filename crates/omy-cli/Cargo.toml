@@ -20,6 +20,10 @@ omy-core = { path = "../omy-core" }
 # 故这个方向的依赖是允许的；反向（core 依赖 media）则会让 MIT 的 core
 # 被 LGPL 传染，绝不可以。
 omy-media = { path = "../omy-media" }
+# 局域网共享。omy-net 是 MIT OR Apache-2.0，被 GPL-3.0 的 CLI 依赖，
+# 方向正确（宽松许可可被 GPL 吸收，反过来不行）
+omy-net = { path = "../omy-net" }
+tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 anyhow.workspace = true

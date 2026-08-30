@@ -21,7 +21,7 @@ spake2 = "0.4"
 # mDNS 服务发现（纯 Rust，不依赖系统 Bonjour/Avahi）
 mdns-sd = "0.21"
 
-tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+tokio = { workspace = true }
 
 rand = "0.8"
 thiserror = { workspace = true }
@@ -40,4 +40,5 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "test-util"] }
+# 继承 workspace 版本，只额外加测试用的 test-util（时钟控制）
+tokio = { workspace = true, features = ["test-util"] }

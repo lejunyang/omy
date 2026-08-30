@@ -66,6 +66,11 @@ sys-locale    = "0.3"
 toml          = "1.1"
 dirs          = "6.0"
 
+# ---- 异步运行时（omy-net 与 omy-cli 共用）----
+# 提到 workspace 统一版本：两处各自声明迟早会漂移，
+# 而 tokio 的版本不一致会导致 runtime 类型不兼容这种难查的问题
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
+
 # ---- 媒体（仅 omy-media 使用）----
 # 缩略图缩放与编码。默认关掉全部格式再按需开启：
 # image 默认会拉进十几个解码器，每个都是解析不可信输入的攻击面。

@@ -89,6 +89,9 @@ enum Command {
     /// 分片切分与合并
     #[command(subcommand)]
     Shard(cmd::shard::Cmd),
+    /// 局域网共享与访问
+    #[command(subcommand)]
+    Share(cmd::share::Cmd),
     /// KDF 与加解密性能基准
     Bench(cmd::bench::Args),
     /// 环境自检
@@ -159,6 +162,7 @@ fn dispatch(cli: &Cli, cfg: &config::Config, out: &Out) -> Result<()> {
         Command::Cat(a) => cmd::cat::run(&ctx, a),
         Command::Key(c) => cmd::key::run(&ctx, c),
         Command::Shard(c) => cmd::shard::run(&ctx, c),
+        Command::Share(c) => cmd::share::run(&ctx, c),
         Command::Bench(a) => cmd::bench::run(&ctx, a),
         Command::Doctor(a) => cmd::doctor::run(&ctx, a),
         Command::Completion(a) => cmd::completion::run::<Cli>(&ctx, a),

@@ -15,6 +15,7 @@ pub mod key;
 pub mod list;
 pub mod scan;
 pub mod shard;
+pub mod share;
 pub mod verify;
 
 use crate::config::Config;
