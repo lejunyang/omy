@@ -30,6 +30,9 @@ subtle = { workspace = true }
 # 密钥确认的 MAC。omy-core 已依赖 HMAC（HKDF 内部就用它），不额外引入原语
 hmac = { workspace = true }
 sha2 = { workspace = true }
+# 配对时加密交换静态公钥。明文发不影响安全性，但会让被动观察者
+# 记录"这两台设备配过对"，长期积累可画出设备关系图
+chacha20poly1305 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }

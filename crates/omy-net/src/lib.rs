@@ -46,7 +46,10 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
 )]
 
+pub mod channel;
+pub mod discovery;
 pub mod error;
+pub mod handshake;
 pub mod pairing;
 pub mod serve;
 pub mod wire;

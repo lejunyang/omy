@@ -9,6 +9,16 @@
 //! 本程序用真实加密文件验证到底哪个对：全程不构造任何 Kek，
 //! 看看还能不能完成 LIST / STAT / READ 三种服务端操作。
 
+// 验证程序不是库代码：它跑在受控输入上，计数、取整、索引都不涉及
+// 不可信数据。库代码不放宽这些——那里处理网络与磁盘上的任意字节，
+// 任何 panic 路径都是缺陷。
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing
+)]
+
 use std::path::Path;
 
 fn main() {

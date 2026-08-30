@@ -64,8 +64,7 @@ fn main() {
     // 服务端线程：真实 TCP，长度前缀分帧
     let handle = std::thread::spawn(move || {
         let Ok((mut sock, _)) = listener.accept() else { return };
-        loop {
-            let Some(req_bytes) = read_frame(&mut sock) else { break };
+        while let Some(req_bytes) = read_frame(&mut sock) {
             let Ok(req) = Request::decode(&req_bytes) else { break };
             let resp = server.handle(&req);
             let Ok(enc) = resp.encode() else { break };
