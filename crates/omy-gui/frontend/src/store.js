@@ -446,13 +446,19 @@ async function refreshKnown() {
     for (const f of files) map[f.path] = f;
     state.known = map;
 
-    // 把 entry_id 补回列表，让预览能找到对应条目
+    // 把解锁信息补回列表，让预览能找到对应条目。
+    //
+    // 后端 `annotate_unlocked` 做的是同一件事。两处都要改是重复，
+    // 但这条路径（扫描后回填）与那条（列目录时标注）触发时机不同，
+    // 目前无法合并——**新增字段时两边都得加**，漏了就会出现
+    // 「后端算对了、界面上却没生效」。
     for (const e of state.entries) {
       const f = map[e.path];
       if (f && f.unlocked) {
         e.unlocked = true;
         e.real_name = f.name;
         e.entry_id = f.id;
+        e.is_container = f.is_container;
       }
     }
   } catch {

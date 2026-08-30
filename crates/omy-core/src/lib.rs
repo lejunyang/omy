@@ -61,6 +61,7 @@ pub mod error;
 pub mod file;
 pub mod fsatomic;
 pub mod header;
+pub mod pack;
 pub mod payload;
 pub mod scan;
 pub mod session;

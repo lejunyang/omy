@@ -17,7 +17,7 @@ use crate::output::{human_bytes, parse_size};
 use crate::password::{PasswordSource, read_password};
 use anyhow::{Context as _, Result, bail};
 use clap::Args as ClapArgs;
-use omy_core::container::{ContainerBuilder, EntryMeta};
+use omy_core::pack::SkipReason;
 use omy_core::crypto::Kek;
 use omy_core::file::{EncryptOptions, RandomMaterial, encrypt as core_encrypt};
 use serde_json::json;
@@ -431,112 +431,47 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
 /// 把目录打包成容器的明文载荷。
 ///
+/// 遍历逻辑本身在 `omy_core::pack`——GUI 也要做文件夹加密，
+/// 两个入口必须产出**完全一样**的容器。这里只负责把结果讲给用户听。
+///
 /// 返回 `(载荷字节, 索引编码, 根目录名)`。
 fn build_container(ctx: &Ctx<'_>, root: &Path) -> Result<(Vec<u8>, Vec<u8>, String)> {
-    let root_name = root
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| String::from("folder"));
+    let mut on_file = |name: &str, size: u64| {
+        ctx.out.trace(&format!("  文件 {} （{}）", name, human_bytes(size)));
+    };
 
-    let mut builder = ContainerBuilder::new(root_name.clone());
-    let mut payload = Vec::new();
-    let mut n_files = 0usize;
-    let mut n_dirs = 0usize;
+    let packed = omy_core::pack::pack_folder(root, Some(&mut on_file))
+        .with_context(|| format!("打包 {} 失败", root.display()))?;
 
-    for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
-        let entry = entry.with_context(|| format!("遍历 {} 失败", root.display()))?;
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .unwrap_or(entry.path());
-        if rel.as_os_str().is_empty() {
-            continue; // 根自身
-        }
-        let comps: Vec<String> = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect();
-
-        let md = entry.metadata().ok();
-        let meta = md.as_ref().map_or_else(EntryMeta::default, meta_from_fs);
-
-        if entry.file_type().is_dir() {
-            builder.add_dir(comps.clone(), meta)?;
-            n_dirs += 1;
-            ctx.out.trace(&format!("  目录 {}", comps.join("/")));
-        } else if entry.file_type().is_file() {
-            let data = std::fs::read(entry.path())
-                .with_context(|| format!("读取 {} 失败", entry.path().display()))?;
-            let hash = blake2_256(&data);
-            let size = data.len() as u64;
-            builder.add_file(comps.clone(), size, Some(hash), meta)?;
-            payload.extend_from_slice(&data);
-            n_files += 1;
-            ctx.out.trace(&format!(
-                "  文件 {} （{}）",
-                comps.join("/"),
-                human_bytes(size)
-            ));
-        } else {
-            // 符号链接等：WalkDir 默认不跟随。
-            // 明确告知用户而非静默丢弃——用户需要知道有东西没被打包。
-            ctx.out.warn(&format!(
-                "跳过非常规文件 {}（符号链接等暂不支持，见设计文档 05 号 §4.2）",
-                entry.path().display()
-            ));
-        }
+    // 跳过的条目必须逐条报出来。静默丢弃最坏的后果是：用户以为整个
+    // 目录都加密了，删掉原件，解密时才发现少东西
+    for sk in &packed.skipped {
+        let why = match sk.reason {
+            SkipReason::Symlink => "符号链接暂不支持，见设计文档 05 号 §4.2",
+            SkipReason::NotRegular => "非常规文件（设备/管道/套接字）",
+            SkipReason::Unreadable => "读取失败（权限不足，或文件正被占用）",
+            SkipReason::TooDeep => "目录层级超过上限",
+        };
+        ctx.out.warn(&format!("跳过 {}：{}", sk.path, why));
     }
 
-    let index = builder.finish()?;
-    if index.entries.len() > omy_core::container::RECOMMENDED_MAX_ENTRIES {
+    if packed.index.entries.len() > omy_core::container::RECOMMENDED_MAX_ENTRIES {
         ctx.out.warn(&format!(
             "容器含 {} 个条目，超过建议上限 {}。\n\
              大容器修改任一文件都需重写整包，建议改用 --mode tree。",
-            index.entries.len(),
+            packed.index.entries.len(),
             omy_core::container::RECOMMENDED_MAX_ENTRIES
         ));
     }
 
     ctx.out.detail(&format!(
-        "容器：{n_files} 个文件、{n_dirs} 个目录，载荷 {}",
-        human_bytes(payload.len() as u64)
+        "容器：{} 个文件、{} 个目录，载荷 {}",
+        packed.file_count,
+        packed.dir_count,
+        human_bytes(packed.payload.len() as u64)
     ));
 
-    Ok((payload, index.encode(), root_name))
-}
-
-/// 从文件系统元数据提取可移植的元数据。
-fn meta_from_fs(md: &std::fs::Metadata) -> EntryMeta {
-    let mut m = EntryMeta::default();
-    if let Ok(t) = md.modified() {
-        m.mtime_ns = system_time_to_ns(t);
-    }
-    if let Ok(t) = md.created() {
-        m.btime_ns = system_time_to_ns(t);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        m.mode = Some(md.mode());
-        m.uid = Some(md.uid());
-        m.gid = Some(md.gid());
-    }
-    m
-}
-
-fn system_time_to_ns(t: std::time::SystemTime) -> Option<i128> {
-    match t.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => i128::try_from(d.as_nanos()).ok(),
-        Err(e) => {
-            // 1970 之前的时间
-            i128::try_from(e.duration().as_nanos()).ok().map(|v| -v)
-        }
-    }
-}
-
-fn blake2_256(data: &[u8]) -> [u8; 32] {
-    use omy_core::util::blake2b_256;
-    blake2b_256(data)
+    Ok((packed.payload, packed.index.encode(), packed.root_name))
 }
 
 /// 决定输出路径。

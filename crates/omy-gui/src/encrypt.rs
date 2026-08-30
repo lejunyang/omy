@@ -73,6 +73,12 @@ pub struct EncryptedItem {
     pub original_size: u64,
     /// 加密后字节数。
     pub encrypted_size: u64,
+    /// 打包时跳过的条目（符号链接、读不出来的文件等）。
+    ///
+    /// 必须报给用户：静默丢弃会让人以为整个文件夹都进去了，
+    /// 删掉原件后才发现少东西。单文件加密时恒为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<String>,
 }
 
 /// 整批加密的结果。
@@ -166,14 +172,15 @@ fn run_encrypt(req: &EncryptRequest) -> CmdResult<EncryptSummary> {
     // 输出目录取第一个输入所在的目录。批量加密时所有产物放一起，
     // 而不是散落在各自源目录——后者会让「刚加密的文件去哪了」很难回答
     let first = PathBuf::from(req.paths.first().ok_or_else(|| CmdError::code("empty_selection"))?);
-    let out_dir = if first.is_dir() {
-        first.clone()
-    } else {
-        first
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
-    };
+    // 一律取**父目录**，文件夹也不例外。
+    //
+    // 早先这里对目录返回目录自身，于是加密 `D:\\photos` 会把
+    // `photos.omy` 写进 `D:\\photos\\` —— 产物落在正被打包的目录里。
+    // 轻则下次加密把上次的产物也打包进去，重则边写边读。
+    let out_dir = first
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // 同一个库必须共用 vault salt，否则同一密码派生出不同 KEK
     let (vault_salt, params) = match existing_vault(&out_dir) {
@@ -211,14 +218,24 @@ fn encrypt_one(
     params: Argon2Params,
     req: &EncryptRequest,
 ) -> Result<EncryptedItem, String> {
-    if src.is_dir() {
-        // 目录打包成容器是另一条路径（CLI 的 build_container），
-        // 涉及索引构建与递归遍历。首期 GUI 先不做，明确报错而不是
-        // 假装成功——静默跳过会让用户以为文件夹已经加密了
-        return Err(String::from("folder_not_supported"));
-    }
-
-    let data = std::fs::read(src).map_err(|_| String::from("read_failed"))?;
+    // 目录打包成容器：单文件读内容，目录走 pack_folder。
+    //
+    // 遍历逻辑在 `omy_core::pack`，与 CLI 共用同一份实现——
+    // 两个入口必须产出完全一样的容器，否则同一个目录在 CLI 和 GUI
+    // 加密会得到不同的结果，解密方还得猜是谁打的包。
+    let (data, folder_index, skipped) = if src.is_dir() {
+        let packed = omy_core::pack::pack_folder(src, None)
+            .map_err(|_| String::from("pack_failed"))?;
+        let skipped: Vec<String> = packed
+            .skipped
+            .iter()
+            .map(|sk| format!("{}: {}", sk.path, sk.reason.code()))
+            .collect();
+        (packed.payload, Some(packed.index.encode()), skipped)
+    } else {
+        let d = std::fs::read(src).map_err(|_| String::from("read_failed"))?;
+        (d, None, Vec::new())
+    };
     let original_size = data.len() as u64;
 
     let filename = src
@@ -231,6 +248,7 @@ fn encrypt_one(
         preserve_extension: req.preserve_extension,
         compress: req.compress,
         chunk_size: req.chunk_size,
+        folder_index,
         // 必须显式传入！头部记录的 KDF 参数取自这里，而 KEK 是用
         // 外面那份 `params` 派生的。两者不一致时，解密方读头部按错误的
         // 参数派生，就得到一个**永远打不开这个文件的 KEK**——
@@ -274,6 +292,7 @@ fn encrypt_one(
         output: out_path.to_string_lossy().into_owned(),
         original_size,
         encrypted_size: enc.bytes.len() as u64,
+        skipped,
     })
 }
 
@@ -410,16 +429,122 @@ mod tests {
     }
 
     #[test]
-    fn folder_is_rejected_not_silently_skipped() {
-        // 静默跳过会让用户以为文件夹已经加密了
-        let dir = std::env::temp_dir().join("omy-enc-folder-test");
-        let _ = std::fs::create_dir_all(&dir);
-        let req = req_with(vec![]);
-        let salt = [0u8; 16];
-        let kek = Kek::from_password(b"x", &salt, Argon2Params::INTERACTIVE).unwrap();
-        let r = encrypt_one(&dir, &dir, &[kek], &salt, Argon2Params::INTERACTIVE, &req);
-        assert_eq!(r.err().as_deref(), Some("folder_not_supported"));
-        let _ = std::fs::remove_dir(&dir);
+    fn folder_encrypts_into_a_openable_container() {
+        // 文件夹加密的完整往返。光看「返回了 Ok」不够——
+        // 要证明产物真能打开，且里面的文件内容原样还在
+        let root = std::env::temp_dir().join("omy-enc-folder-rt");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/sub")).unwrap();
+        std::fs::write(root.join("src/one.txt"), b"hello").unwrap();
+        std::fs::write(root.join("src/sub/two.txt"), b"world!!").unwrap();
+
+        let out_dir = root.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let mut req = req_with(vec![]);
+        req.password = String::from("pw-folder");
+        let salt = [7u8; 16];
+        let params = Argon2Params::INTERACTIVE;
+        let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
+
+        let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req)
+            .expect("文件夹加密应当成功");
+
+        assert_eq!(item.original_size, 12, "载荷是 5 + 7 字节");
+        assert!(item.skipped.is_empty(), "普通目录不该有跳过项");
+
+        // 产物必须真的能用这个密码打开
+        let bytes = std::fs::read(&item.output).unwrap();
+        let opened = omy_core::file::open_with_password(&bytes, req.password.as_bytes())
+            .expect("产出的容器必须能打开");
+
+        // 容器标志与索引都要在
+        let idx = opened
+            .folder_index()
+            .expect("容器必须带 FOLDER_INDEX，否则解密方会把它当普通文件");
+        assert_eq!(idx.file_count(), 2, "两个文件都要在索引里");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn container_flag_is_visible_right_after_scan() {
+        // 「这是不是个文件夹」必须在列表刚出来时就知道。
+        //
+        // 早先它只在 `enrich_file`（预览时才调）里填，于是双击加密
+        // 文件夹会走进单文件预览，把整个容器的载荷当成一个文件——
+        // 用户看到的是一堆首尾相接的字节。
+        //
+        // 这条测试从真实产物出发：加密一个文件夹，再按扫描路径
+        // 读它的头部，确认容器标志就在那里、不需要解密载荷
+        let root = std::env::temp_dir().join("omy-flag-after-scan");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data/f.txt"), b"x").unwrap();
+
+        let out_dir = root.join("o");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let mut req = req_with(vec![]);
+        req.password = String::from("flag-pw");
+        let salt = [3u8; 16];
+        let params = Argon2Params::INTERACTIVE;
+        let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
+
+        let item = encrypt_one(&root.join("data"), &out_dir, &[kek], &salt, params, &req)
+            .expect("加密应当成功");
+
+        // 只读头部——扫描就是这么做的，不解密载荷
+        let prefix = read_prefix(Path::new(&item.output), 256).unwrap();
+        let header = omy_core::file::peek_header(&prefix).unwrap();
+        assert!(
+            header.has_flag(omy_core::header::flags::CONTAINER),
+            "容器标志必须能从文件头直接读出来，不需要解密"
+        );
+
+        // 反证：单文件加密不能带这个标志，否则普通文件会被当成文件夹
+        let plain = root.join("plain.txt");
+        std::fs::write(&plain, b"just a file").unwrap();
+        // Kek 有意不实现 Clone（密钥不该随手复制），重新派生一个
+        let kek2 = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
+        let item2 = encrypt_one(&plain, &out_dir, &[kek2], &salt, params, &req)
+            .expect("单文件加密应当成功");
+        let prefix2 = read_prefix(Path::new(&item2.output), 256).unwrap();
+        let header2 = omy_core::file::peek_header(&prefix2).unwrap();
+        assert!(
+            !header2.has_flag(omy_core::header::flags::CONTAINER),
+            "普通文件绝不能带容器标志"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_output_never_lands_inside_itself() {
+        // 加密 D:\photos 时产物若写进 D:\photos\，下次加密会把上次的
+        // 产物也打包进去，而且是边写边读同一棵目录树
+        let root = std::env::temp_dir().join("omy-enc-out-dir");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/a.txt"), b"a").unwrap();
+
+        let req = EncryptRequest {
+            paths: vec![root.join("target").to_string_lossy().into_owned()],
+            password: String::from("x"),
+            ..req_with(vec![])
+        };
+
+        // run_encrypt 内部算出的 out_dir 必须是 target 的父目录
+        let first = std::path::PathBuf::from(req.paths.first().unwrap());
+        let out_dir = first
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        assert_eq!(out_dir, root, "产物应落在被加密目录的父级");
+        assert_ne!(out_dir, first, "绝不能写进正被打包的目录里");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

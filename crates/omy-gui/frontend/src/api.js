@@ -78,6 +78,9 @@ export const scanDirectory = (dir, recursive = true) =>
 export const listFiles = () => invoke('list_files');
 
 /** 补齐单个文件的媒体元信息。 */
+/** 列出目录容器里的条目。文件必须已解锁。 */
+export const listContainer = (id) => invoke("list_container", { id });
+
 export const enrichFile = (id) => invoke('enrich_file', { id });
 
 /** 已扫描过的根目录。 */

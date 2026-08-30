@@ -385,21 +385,25 @@ pub async fn enrich_file(state: State<'_, Shared>, id: String) -> CmdResult<Opti
         })?;
         let opened = omy_core::file::open(&bytes, &keks).ok()?;
         let has_thumb = opened.thumbnail().is_ok();
+        // 目录容器的载荷是多个文件拼接。不认出来的话，前端会把整包
+        // 当成单个文件送去预览，得到一堆拼在一起的字节
+        let is_container = opened.folder_index().is_ok();
         let meta = opened
             .media_meta()
             .ok()
             .and_then(|raw| omy_media::MediaMeta::from_json_bytes(&raw).ok());
-        Some((meta, has_thumb))
+        Some((meta, has_thumb, is_container))
     })
     .await
     .map_err(|_| CmdError::code("internal"))?;
 
-    if let Some((meta, has_thumb)) = found {
+    if let Some((meta, has_thumb, is_container)) = found {
         // 文件名的后缀参与 MIME 推导：容器名不足以区分
         // （比如 ffprobe 对 mp4 报的是 "mov,mp4,m4a,3gp,3g2,mj2"）
         let name = entry.name.clone();
         state.update_file(&id, |e| {
             e.has_thumbnail = has_thumb;
+            e.is_container = is_container;
             e.needs_transcode = crate::mime::image_needs_transcode(&crate::mime::extension_of(&name));
             if let Some(m) = &meta {
                 let (kind, mime) = crate::mime::classify(&name, m);
@@ -426,6 +430,109 @@ pub async fn enrich_file(state: State<'_, Shared>, id: String) -> CmdResult<Opti
         });
     }
     Ok(state.file(&id))
+}
+
+/// 容器内的一个条目。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContainerItem {
+    /// 相对容器根的路径组件，用 `/` 连接后展示。
+    pub path: String,
+    /// 末级名称。
+    pub name: String,
+    /// 是否是目录。
+    pub is_dir: bool,
+    /// 字节数；目录为 `None`。
+    pub size: Option<u64>,
+    /// 在明文载荷中的起始偏移。目录为 `None`。
+    ///
+    /// 前端预览容器内文件时要靠它定位，`read_range` 按这个偏移取数据。
+    pub offset: Option<u64>,
+    /// 预览类别，按文件名后缀判断。
+    pub kind: String,
+    /// MIME。
+    pub mime: String,
+}
+
+/// 列出一个目录容器里的条目。
+///
+/// 只在文件已解锁时可用——容器里有什么本身就是要保护的内容。
+///
+/// # Errors
+///
+/// - `file_not_found`：id 不存在
+/// - `locked`：文件未解锁
+/// - `not_a_container`：这个文件不是目录容器
+#[tauri::command]
+pub async fn list_container(
+    state: State<'_, Shared>,
+    id: String,
+) -> CmdResult<Vec<ContainerItem>> {
+    let Some(entry) = state.file(&id) else {
+        return Err(CmdError::code("file_not_found"));
+    };
+    if !entry.unlocked {
+        return Err(CmdError::code("locked"));
+    }
+
+    let handle: Shared = Arc::clone(&state);
+    let path = entry.path.clone();
+
+    let idx = tauri::async_runtime::spawn_blocking(move || {
+        // 索引在 TLV 区，读头部就够，不必把整个容器载荷读进来。
+        // 大容器的索引可达 MB 量级，给 4 MiB 上限
+        let bytes = read_prefix(Path::new(&path), 4 << 20).ok()?;
+        let h = omy_core::file::peek_header(&bytes).ok()?;
+        let keks: Vec<omy_core::crypto::Kek> = handle.with_session(|s| {
+            s.all_for(&h.vault_salt)
+                .into_iter()
+                .map(|c| c.kek)
+                .collect()
+        })?;
+        let opened = omy_core::file::open(&bytes, &keks).ok()?;
+        opened.folder_index().ok()
+    })
+    .await
+    .map_err(|_| CmdError::code("internal"))?;
+
+    let Some(idx) = idx else {
+        return Err(CmdError::code("not_a_container"));
+    };
+
+    Ok(items_from_index(&idx))
+}
+
+/// 把容器索引转成前端条目。
+///
+/// 单独提出来是为了能测：这段映射（偏移、目录判定、MIME 推导）才是
+/// 会出错的地方，而 `list_container` 的其余部分是取状态和解密，
+/// 那些在别处已有覆盖。
+fn items_from_index(idx: &omy_core::container::ContainerIndex) -> Vec<ContainerItem> {
+    idx.entries
+        .iter()
+        .map(|e| {
+            let name = e.path.last().cloned().unwrap_or_default();
+            // 用 range() 判断而不是比较 kind：range() 是「有没有载荷区间」
+            // 的权威答案，符号链接之类的非文件条目也会正确地落到 None
+            let range = e.range();
+            let is_dir = range.is_none();
+            // 目录不需要 MIME，但给个稳定值比留空更好处理
+            let (kind, mime) = if is_dir {
+                (String::from("folder"), String::new())
+            } else {
+                let (k, m) = crate::mime::by_extension(&name);
+                (k.to_owned(), m)
+            };
+            ContainerItem {
+                path: e.path.join("/"),
+                name,
+                is_dir,
+                size: range.map(|(_, len)| len),
+                offset: range.map(|(off, _)| off),
+                kind,
+                mime,
+            }
+        })
+        .collect()
 }
 
 /// 当前界面语言。
@@ -679,6 +786,71 @@ pub async fn probe_one(state: State<'_, Shared>, path: String) -> CmdResult<Prob
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 造一个真容器索引：两个文件 + 一个目录。
+    fn sample_index() -> omy_core::container::ContainerIndex {
+        use omy_core::container::{ContainerBuilder, EntryMeta};
+        let mut b = ContainerBuilder::new(String::from("root"));
+        b.add_dir(vec![String::from("pics")], EntryMeta::default())
+            .unwrap();
+        b.add_file(
+            vec![String::from("pics"), String::from("a.png")],
+            100,
+            None,
+            EntryMeta::default(),
+        )
+        .unwrap();
+        b.add_file(
+            vec![String::from("notes.txt")],
+            42,
+            None,
+            EntryMeta::default(),
+        )
+        .unwrap();
+        b.finish().unwrap()
+    }
+
+    #[test]
+    fn container_items_carry_offsets_and_kinds() {
+        let items = items_from_index(&sample_index());
+        assert_eq!(items.len(), 3);
+
+        let dir = items.iter().find(|i| i.name == "pics").unwrap();
+        assert!(dir.is_dir, "目录必须标成目录");
+        assert!(dir.offset.is_none(), "目录没有载荷区间");
+        assert!(dir.size.is_none());
+
+        let png = items.iter().find(|i| i.name == "a.png").unwrap();
+        assert!(!png.is_dir);
+        assert_eq!(png.size, Some(100));
+        assert_eq!(png.kind, "image", "按后缀推出图片类别");
+        assert_eq!(png.path, "pics/a.png", "路径要能显示层级");
+
+        let txt = items.iter().find(|i| i.name == "notes.txt").unwrap();
+        assert_eq!(txt.kind, "text");
+        // 偏移必须真的不同，否则预览会全部指向同一段数据
+        assert_ne!(png.offset, txt.offset, "两个文件的偏移不能相同");
+    }
+
+    #[test]
+    fn container_offsets_are_contiguous_and_ordered() {
+        // 容器载荷是拼接的，所有文件区间必须首尾相接、不重叠。
+        // 错了的话预览会读到别的文件的字节——而且往往「能显示，
+        // 只是内容不对」，最难发现
+        let items = items_from_index(&sample_index());
+        let mut spans: Vec<(u64, u64)> = items
+            .iter()
+            .filter_map(|i| Some((i.offset?, i.size?)))
+            .collect();
+        spans.sort_unstable();
+
+        let mut cursor = 0u64;
+        for (off, len) in spans {
+            assert_eq!(off, cursor, "区间之间不能有空隙或重叠");
+            cursor += len;
+        }
+        assert_eq!(cursor, 142, "总长度应为 100 + 42");
+    }
 
     #[test]
     fn salt_parsing() {

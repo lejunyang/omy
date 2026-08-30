@@ -43,5 +43,6 @@
   "remote_error": "The device returned an error. Try again.",
   "verify_failed": "Post-encryption self-check failed; nothing was saved. Please report this.",
   "open_failed": "Couldn't open this file — there may be no associated app.",
-  "unknown_file": "This file is no longer available. Try refreshing."
+  "unknown_file": "This file is no longer available. Try refreshing.",
+  "container_failed": "Could not read the folder contents"
 }

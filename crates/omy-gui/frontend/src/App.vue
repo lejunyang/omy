@@ -48,6 +48,7 @@ import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
+import ContainerPanel from './components/ContainerPanel.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 
@@ -56,6 +57,9 @@ const showUnlock = ref(false);
 const showDevices = ref(false);
 const unlockError = ref('');
 const previewEntry = ref(null);
+
+/** 正在浏览的目录容器：`{ name, items }`。 */
+const container = ref(null);
 /** 远端预览目标。与本机预览分开存：两者的对象结构不同，
  * 混在一个 ref 里迟早会出现「用本机的字段去读远端对象」。 */
 const remotePreview = ref(null);
@@ -89,6 +93,12 @@ async function onOpen(entry) {
     return;
   }
   if (entry.unlocked && entry.entry_id) {
+    // 容器是一整个文件夹，载荷为多个文件拼接。当成单个文件预览
+    // 只会得到一堆首尾相接的字节，所以先分流出去
+    if (entry.is_container) {
+      await openContainer(entry);
+      return;
+    }
     await openPreview(entry);
     return;
   }
@@ -124,6 +134,16 @@ async function openPlain(entry) {
     return;
   }
   await openWithSystem(entry);
+}
+
+/** 打开一个目录容器，列出里面的条目。 */
+async function openContainer(entry) {
+  const items = await api.listContainer(entry.entry_id).catch(() => null);
+  if (!items) {
+    state.error = i18n.te('container_failed');
+    return;
+  }
+  container.value = { name: entry.real_name || entry.name, items };
 }
 
 async function openPreview(entry) {
@@ -172,6 +192,8 @@ async function doLock() {
   // 明文预览也要关：后端 lock 会清空 token 表，
   // 留着的话画面会突然变成加载失败，很莫名其妙
   plainPreview.value = null;
+  // 容器面板同样要关：里面列的是文件名，锁定后不该继续可见
+  container.value = null;
   showDevices.value = false;
   // 断开远端由**后端**的 lock 负责，这里不再重复调用。
   // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
@@ -292,6 +314,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     :file="remotePreview"
     remote
     @close="remotePreview = null"
+  />
+
+  <ContainerPanel
+    v-if="container"
+    :name="container.name"
+    :items="container.items"
+    @close="container = null"
   />
 
   <PreviewOverlay

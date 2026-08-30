@@ -85,6 +85,7 @@ fn main() {
             commands::scan_directory,
             commands::list_files,
             commands::enrich_file,
+            commands::list_container,
             commands::get_language,
             commands::set_language,
             commands::list_roots,

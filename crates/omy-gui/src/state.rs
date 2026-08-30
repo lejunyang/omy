@@ -67,6 +67,12 @@ pub struct FileEntry {
     pub needs_transcode: bool,
     /// 命中的凭据名称，用于状态栏显示「N 个密码已解锁」。
     pub credential: Option<String>,
+    /// 是否是目录容器（一整个文件夹被打包进单个 .omy）。
+    ///
+    /// 前端据此把它显示成文件夹图标、双击进入而不是尝试预览——
+    /// 容器的载荷是多个文件拼接，当成单个文件预览只会得到一堆乱码。
+    /// 锁定时恒为 `false`：这个事实本身也属于内容信息。
+    pub is_container: bool,
 }
 
 impl FileEntry {
@@ -119,6 +125,17 @@ impl FileEntry {
             has_thumbnail: false,
             needs_transcode: false,
             credential,
+            // 容器标志就在文件头的 flags 里，扫描时已经解析过头部，
+            // 读它不需要再打开文件。
+            //
+            // 不能等 `enrich_file` 再填：那个只在预览时才调用，而
+            // 「这是不是个文件夹」在**列表刚出来时**就要知道——
+            // 否则用户双击会走进单文件预览，看到一堆拼接的字节。
+            //
+            // 锁定的文件恒为 false：`unlocked` 为假时前端不显示任何
+            // 内容信息，「这是个文件夹」也属于内容信息
+            is_container: unlocked
+                && hit.header.has_flag(omy_core::header::flags::CONTAINER),
         }
     }
 }
@@ -347,6 +364,8 @@ mod tests {
             has_thumbnail: false,
             needs_transcode: false,
             credential: Some(String::from("main")),
+            // 设成 true 顺带验证容器标记也随锁定一起消失
+            is_container: true,
         }]);
         assert_eq!(s.files().len(), 1);
 
@@ -377,6 +396,7 @@ mod tests {
             has_thumbnail: false,
             needs_transcode: false,
             credential: None,
+            is_container: false,
         };
         s.set_files(vec![mk("z"), mk("a"), mk("m")]);
         let names: Vec<String> = s.files().into_iter().map(|e| e.id).collect();

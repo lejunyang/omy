@@ -67,6 +67,11 @@ pub struct DirEntry {
     pub preview: Option<String>,
     /// 未加密文件的 MIME，供 `<video>` / `<img>` 使用。
     pub mime: Option<String>,
+    /// 这个加密文件是不是一整个文件夹（目录容器）。
+    ///
+    /// 双击它应当进入容器浏览，而不是当作单个文件预览。
+    /// 未解锁时恒为 `false`——「这是个文件夹」也是内容信息。
+    pub is_container: bool,
 }
 
 /// 浏览一个目录。
@@ -124,6 +129,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
                 token: None,
                 preview: None,
                 mime: None,
+                is_container: false,
             });
             continue;
         }
@@ -164,6 +170,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
             token,
             preview,
             mime,
+            is_container: false,
         });
     }
 
@@ -212,6 +219,7 @@ fn annotate_unlocked(entries: &mut [DirEntry], state: &Shared) {
             e.unlocked = true;
             e.real_name = Some(f.name.clone());
             e.entry_id = Some(f.id.clone());
+            e.is_container = f.is_container;
         }
     }
 }
@@ -325,6 +333,7 @@ pub fn list_places() -> Vec<DirEntry> {
                 token: None,
                 preview: None,
                 mime: None,
+                is_container: false,
             });
         }
     }
@@ -355,6 +364,7 @@ fn drive_roots() -> Vec<DirEntry> {
                 token: None,
                 preview: None,
                 mime: None,
+                is_container: false,
             })
         })
         .collect()
