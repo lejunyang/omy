@@ -1,19 +1,30 @@
 /** 多语言。
  *
- * 首期只有简中和英文（决策 D-29），所以没有引入 i18next——
- * 那会带来 40 KB 依赖和一套构建流程，而我们只需要查表和插值。
- * 语言超过四种、或出现复杂复数规则时再换。
+ * # 相比重构前的变化
  *
- * 复数：英文有单复数，中文没有。这里用 `_one` / `_other` 后缀，
- * 与 i18next 的键名约定一致，将来迁移时文案文件不用改。
+ * 逻辑几乎原样保留（查表、插值、复数、locale 格式化），
+ * 只把「当前语言」和「文案表」改成 Vue 的响应式引用。
+ *
+ * 收益是切语言不再需要手动调 `render()`：所有用到 `t()` 的组件
+ * 会自动重算。重构前那一版必须记得在 `switchLanguage` 末尾补一次
+ * 全量重绘，漏了就是半个界面还是旧语言。
+ *
+ * 首期只有简中和英文（决策 D-29），所以仍然没有引入 vue-i18n——
+ * 那是 40 KB 依赖加一套编译期提取流程，而我们只需要查表和插值。
+ * 语言超过四种、或出现复杂复数规则时再换。
  */
 
-/** 已加载的文案。 */
-let bundle = {};
-/** 已加载的错误文案。 */
-let errors = {};
-/** 当前语言。 */
-let current = 'en';
+import { ref, computed } from 'vue';
+
+/** 支持的语言。顺序决定「切换语言」按钮的轮转次序。 */
+export const LANGS = ['zh-CN', 'en'];
+
+const bundle = ref({});
+const errors = ref({});
+const current = ref('en');
+
+/** 当前语言标签（响应式）。 */
+export const lang = computed(() => current.value);
 
 /** 载入某个语言的文案。 */
 export async function load(lang) {
@@ -21,15 +32,16 @@ export async function load(lang) {
     fetch(`locales/${lang}.json`).then((r) => r.json()),
     fetch(`locales/${lang}.errors.json`).then((r) => r.json()),
   ]);
-  bundle = common;
-  errors = errs;
-  current = lang;
+  bundle.value = common;
+  errors.value = errs;
+  current.value = lang;
   document.documentElement.lang = lang;
 }
 
-/** 当前语言标签。 */
-export function lang() {
-  return current;
+/** 轮转到下一种语言。 */
+export function nextLang() {
+  const i = LANGS.indexOf(current.value);
+  return LANGS[(i + 1) % LANGS.length];
 }
 
 /** 按点分路径取文案，缺失时返回键名本身。
@@ -38,7 +50,7 @@ export function lang() {
  * 这样的字符串一眼就能看出是漏翻译，而空白会被当成布局问题查半天。
  */
 export function t(key, params) {
-  let node = bundle;
+  let node = bundle.value;
   for (const part of key.split('.')) {
     if (node == null || typeof node !== 'object') return key;
     node = node[part];
@@ -60,8 +72,8 @@ export function tn(key, count, params) {
 
 /** 翻译后端返回的错误码。 */
 export function te(code, fallback) {
-  if (typeof code === 'string' && errors[code]) return errors[code];
-  return fallback || errors.internal || code || '';
+  if (typeof code === 'string' && errors.value[code]) return errors.value[code];
+  return fallback || errors.value.internal || code || '';
 }
 
 /** `{{name}}` 插值。 */
@@ -88,7 +100,7 @@ export function formatSize(bytes) {
   }
   // 数字部分随 locale 变化：中文用 1,234.5，德语用 1.234,5
   const digits = i === 0 ? 0 : v < 10 ? 1 : 0;
-  const num = v.toLocaleString(current, {
+  const num = v.toLocaleString(current.value, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -115,5 +127,5 @@ export function formatDuration(ms) {
  * 字典序会把 `10` 排在 `2` 前，这在文件列表里非常刺眼。
  */
 export function collator() {
-  return new Intl.Collator(current, { numeric: true, sensitivity: 'base' });
+  return new Intl.Collator(current.value, { numeric: true, sensitivity: 'base' });
 }

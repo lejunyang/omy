@@ -13,7 +13,7 @@
 | `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
-| `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 | Tauri v2；解锁/扫描/预览/播放/多语言/锁定全通，视频真实 seek |
+| `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 + 19 项前端构建/运行时 | Tauri v2；界面重构为 Vue 3 + Vite，产物不入库由 build.rs 自动构建 |
 
 合计 **453 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
@@ -165,6 +165,45 @@ mDNS 是**局域网内明文广播**，同网段任何设备都能收到。TXT �
 
 公钥加密传输不是因为公钥是秘密（明文发也不影响 Noise 安全性），
 而是防止被动观察者记录「这两台设备配过对」，长期积累可画出设备关系图。
+#### GUI 前端重构为 Vue 3 + Vite
+
+原来是手写的 `index.html` + `app.js` + `i18n.js` 直接放 `dist/`，
+无打包步骤。到 20 KB 单文件时三个问题同时出现：
+
+- 所有渲染都是字符串拼 HTML，每处动态文本都要记得手动 `esc()`
+- 搜索框每敲一个字整页重绘会失焦，只能手写「只重绘内容区」的特例，
+  再重新绑定其中的事件
+- 切语言必须记得末尾补一次全量重绘，漏了就是半个界面还是旧语言
+
+这些都是模板引擎解决过的问题。加打包步骤后 `{{ }}` 天然转义、
+diff 保持焦点、响应式自动重渲染，那些特例连同注释一起删掉了。
+
+#### 严格 CSP 决定了构建配置
+
+应用的 CSP 是 `script-src 'self'`，不允许 eval 与内联脚本。所以：
+
+- **必须预编译模板**。Vue 的运行时编译器内部用 `new Function`，
+  在这个 CSP 下直接抛错。SFC 由 `@vitejs/plugin-vue` 编译成渲染函数，
+  运行时只需 `vue.runtime.*`——这正是加构建步骤换来的东西
+- `assetsInlineLimit: 0` 关掉小文件转 data URI
+- `modulePreload.polyfill: false`，那是段内联脚本
+
+`base: './'` 也是必需的：i18n 用 `fetch('locales/...')` 是相对路径，
+脚本若用绝对 `/app.js`，页面不在根路径时两者会失配。
+
+#### dist 不入库，build.rs 兜底
+
+产物入库会让每次改前端都在 diff 里混进压缩后的 JS。改为不入库，
+由 `build.rs` 在产物缺失时自动跑一次前端构建——全新 clone 后
+`cargo run -p omy-gui` 直接可用，不需要先记得手动 `pnpm build`。
+
+`cargo:rerun-if-changed` 只盯 `src` / `public` / 三个配置文件，
+不盯整个 `frontend/`，否则 node_modules 任何变动都会触发重建。
+
+构建脚本里用了 `panic!`，与 crate 级别的 `clippy::panic = warn` 冲突。
+没有改 lint 配置，而是在 build.rs 局部 `#![allow]` 并写明理由：
+构建脚本不是运行期代码，cargo 的约定就是构建失败即 panic，
+返回 Result 不会让构建停下来，只会静默产出坏掉的二进制。
 #### CLI 只在网络命令内部起 runtime
 
 CLI 整体是同步的。把 `main` 改成 `#[tokio::main]` 会让加解密命令
@@ -330,6 +369,20 @@ Noise IK 1-RTT 握手 → LIST → 5 次 READ 取回 300688 B → 用正确密�
 真实端口上报正确、握手到解密还原的完整链路通畅、陌生设备读不到
 文件列表，以及访问日志同时记下了已服务与未授权两类连接。
 
+### GUI 前端验证（19 项）
+
+分两层，因为「构建通过」和「界面能用」是两回事。
+
+**产物静态检查**（8 项，`spikes/verify-gui-build.ps1`）：
+产物里不能出现 `eval` / `new Function`（CSP 会拦）、不能打进完整版
+Vue（含模板编译器）、index.html 不能有内联脚本、locales 要随产物复制。
+
+**运行时实测**（11 项，`spikes/verify-gui-runtime.ps1` +
+`probe-gui-vue.mjs`）：启动真实 GUI 进程，通过 CDP 连上 WebView，
+确认 Vue 已挂载、文案真的翻译成了中文而不是键名、v-model 双向绑定
+生效、控制台无错误、无 CSP 违规。
+
+第二层抓到过第一层抓不到的东西——CSP 拦截和 IPC 不可用只在运行时暴露。
 ### CLI 端到端实测（19 项，`spikes/verify-cli-share.ps1`）
 
 把 `omy.exe` 当成两台设备真的跑起来：A 生成配对码、B 用

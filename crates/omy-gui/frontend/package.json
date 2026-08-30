@@ -1,0 +1,20 @@
+{
+  "name": "omy-gui-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "omy 图形界面前端。Vue 3 + Vite，产物输出到 ../dist 供 Tauri 加载。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "vue": "^3.5.42"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vite": "^8.2.2"
+  }
+}

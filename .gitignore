@@ -20,10 +20,9 @@ src-tauri/target/
 # 例外：spike 的前端页面是手写源码，不是构建产物，必须入库
 !/spikes/webview-range/dist/
 !/spikes/webview-range/dist/**
-# 例外：GUI 的 dist/ 同样是手写源码（无打包步骤，运行时直接读取），
-# 若被上面的 dist/ 规则吞掉，应用启动就是一片空白
-!/crates/omy-gui/dist/
-!/crates/omy-gui/dist/**
+# 注意：GUI 的 dist/ 现在是 Vite 的构建产物（源码在 crates/omy-gui/frontend/），
+# 所以**不再入库**——产物入库会让每次改前端都在 diff 里混进压缩后的 JS。
+# build.rs 会在产物缺失时自动构建，全新 clone 后 `cargo run -p omy-gui` 直接可用。
 
 # 开发期工具（便携版 ffmpeg 等，体积大且可脚本重建）
 /tools/
@@ -54,6 +53,11 @@ src-tauri/target/
 /spikes/dbg-patch2.ps1
 /spikes/update-progress*.ps1
 /spikes/check-progress.ps1
+/spikes/ls-gui.ps1
+/spikes/gui-install.ps1
+/spikes/gui-build.ps1
+/spikes/gui-cargo.ps1
+/spikes/gui-cleanup.ps1
 
 # 编辑器与操作系统
 .vscode/*
@@ -87,3 +91,5 @@ secrets.toml
 .env
 .env.*
 !.env.example
+/spikes/gui-git.ps1
+/spikes/gui-git.ps1
