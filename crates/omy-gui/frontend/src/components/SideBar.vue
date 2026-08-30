@@ -1,18 +1,10 @@
 <script setup>
-/** 侧栏：位置 + 附近设备。
- *
- * # 设备区目前是什么状态
- *
- * 局域网共享的完整能力已经在 `omy-net` 里实现并通过端到端验证，
- * 但只有 CLI 接上了（`omy share pair / serve / connect`）。
- * GUI 这一侧还没接，所以这里**如实说明**并给出 CLI 用法，
- * 而不是画一个点了没反应的假按钮。
- */
+/** 侧栏：位置 + 附近设备。 */
 
 import * as i18n from '../i18n.js';
 import { state, navigate } from '../store.js';
 
-defineEmits(['pick']);
+defineEmits(['pick', 'devices']);
 
 /** 常用目录的标签要翻译，磁盘根用原名。 */
 function labelOf(place) {
@@ -54,9 +46,22 @@ function iconOf(place) {
     </button>
 
     <div class="sgrp">{{ i18n.t('places.devices') }}</div>
-    <div class="sidenote">
-      {{ i18n.t('device.not_implemented') }}
-      <code>{{ i18n.t('device.cli_hint') }}</code>
-    </div>
+
+    <!-- 已配对设备直接列出来，点一下打开面板。
+         数量为 0 时也要有入口，否则用户找不到从哪开始配对 -->
+    <button class="sitem" @click="$emit('devices')">
+      <span aria-hidden="true">📡</span>
+      <span class="stext">{{ i18n.t('device.manage') }}</span>
+      <span v-if="state.pairedCount" class="badge">{{ state.pairedCount }}</span>
+    </button>
+
+    <button
+      v-if="state.shareRunning"
+      class="sitem sharing"
+      @click="$emit('devices')"
+    >
+      <span aria-hidden="true">🟢</span>
+      <span class="stext">{{ i18n.t('device.sharing_now') }}</span>
+    </button>
   </aside>
 </template>

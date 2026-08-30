@@ -240,9 +240,18 @@ fn parse_salt(hex: &str) -> Option<[u8; 16]> {
 }
 
 /// 锁定：抹掉所有密钥并清空文件列表。
+///
+/// # 为什么设备库也要一起关
+///
+/// 用户按 Ctrl+L 的心智是「把这个应用锁上」，不是「锁上文件但设备
+/// 身份继续留在内存里」。只锁一半会让锁定成为**假象**：本机静态私钥
+/// 仍在内存中，攻击者拿到进程内存后可以冒充这台设备去连别人。
+///
+/// 两者同生共死，就不会出现「以为锁了其实没锁」的状态差。
 #[tauri::command]
-pub fn lock(state: State<'_, Shared>) {
+pub fn lock(state: State<'_, Shared>, devices: State<'_, crate::device_cmds::SharedDevices>) {
     state.lock();
+    devices.close();
 }
 
 /// 当前是否已解锁。

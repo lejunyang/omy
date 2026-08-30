@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 omy-core = { path = "../omy-core" }
 omy-media = { path = "../omy-media" }
+# 局域网共享：设备发现、配对、零密钥服务端
+omy-net = { path = "../omy-net" }
 # 不启用 protocol-asset：所有内容都走自定义的 omystream:// 协议。
 # asset 协议会直接暴露文件系统路径，与「明文不落盘」的目标相悖。
 tauri = { version = "2", features = [] }
@@ -33,6 +35,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 sys-locale.workspace = true
 dirs.workspace = true
+# 配对与共享要在后台等待，需要异步运行时。
+# 版本必须与 omy-net 一致，否则 runtime 类型不兼容
+tokio = { workspace = true }
+# 设备库密码留在会话里以免反复询问，Drop 时必须抹掉
+zeroize = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -30,14 +30,17 @@ import {
   selectAll,
   enrich,
   encryptable,
+  refreshDeviceOverview,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
+import DevicePanel from './components/DevicePanel.vue';
 
 const showEncrypt = ref(false);
 const showUnlock = ref(false);
+const showDevices = ref(false);
 const unlockError = ref('');
 const previewEntry = ref(null);
 
@@ -116,7 +119,14 @@ async function onPick() {
 
 async function doLock() {
   previewEntry.value = null;
+  showDevices.value = false;
   await lock();
+}
+
+/** 关掉设备面板时刷新概览：面板里可能配了新设备或开了共享。 */
+async function onDevicePanelClose() {
+  showDevices.value = false;
+  await refreshDeviceOverview();
 }
 
 function onKey(e) {
@@ -138,6 +148,7 @@ function onKey(e) {
 onMounted(async () => {
   document.addEventListener('keydown', onKey);
   await loadPlaces();
+  await refreshDeviceOverview();
 });
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 </script>
@@ -150,7 +161,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
     @pick="onPick"
     @lang="switchLanguage"
+    @devices="showDevices = true"
   />
+
+  <DevicePanel v-if="showDevices" @close="onDevicePanelClose" />
 
   <EncryptDialog
     v-if="showEncrypt"

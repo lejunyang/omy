@@ -8,6 +8,8 @@
 //! | [`protocol`] | `omystream://` 按需解密，继承 Spike S1/S5 的全部约束 |
 //! | [`commands`] | 前端唯一入口，只返回错误码不返回文案 |
 //! | [`mime`] | MIME 推导，含 SVG / HTML 的安全处理 |
+//! | [`devices`] | 设备库会话：本机身份与已配对设备 |
+//! | [`lan`] | 局域网发现、配对、共享服务 |
 //!
 //! # 明文不落盘
 //!
@@ -27,7 +29,10 @@
 
 mod browse;
 mod commands;
+mod device_cmds;
+mod devices;
 mod encrypt;
+mod lan;
 mod mime;
 mod protocol;
 mod state;
@@ -38,6 +43,9 @@ use std::sync::Arc;
 fn main() {
     let shared: commands::Shared = Arc::new(AppState::new());
     let for_protocol = Arc::clone(&shared);
+    let device_session: device_cmds::SharedDevices = Arc::new(devices::DeviceSession::new());
+    let pair_task: device_cmds::SharedPair = Arc::new(lan::PairTask::new());
+    let share_task: device_cmds::SharedShare = Arc::new(lan::ShareTask::new());
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -47,6 +55,9 @@ fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::clone(&shared))
+        .manage(Arc::clone(&device_session))
+        .manage(Arc::clone(&pair_task))
+        .manage(Arc::clone(&share_task))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
@@ -77,6 +88,20 @@ fn main() {
             browse::list_places,
             browse::parent_of,
             encrypt::encrypt_paths,
+            device_cmds::device_status,
+            device_cmds::open_device_store,
+            device_cmds::close_device_store,
+            device_cmds::paired_devices,
+            device_cmds::rename_device,
+            device_cmds::revoke_device,
+            device_cmds::discover_devices,
+            device_cmds::pair_listen,
+            device_cmds::pair_with,
+            device_cmds::pair_status,
+            device_cmds::pair_cancel,
+            device_cmds::start_share,
+            device_cmds::stop_share,
+            device_cmds::share_status,
         ])
         .setup(move |app| {
             let mut builder = tauri::WebviewWindowBuilder::new(

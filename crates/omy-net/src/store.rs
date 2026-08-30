@@ -227,6 +227,33 @@ impl Store {
         before.saturating_sub(self.devices.len())
     }
 
+    /// 复制一份，用于交给服务端主循环。
+    ///
+    /// # 为什么不 `derive(Clone)`
+    ///
+    /// `Store` 含**静态私钥**。让它随手可 clone，等于邀请调用方到处
+    /// 复制私钥而不自知——每一份副本都是一处泄露面，而且 `Drop` 时
+    /// 各自擦除的时机也不受控。
+    ///
+    /// 但服务端主循环确实需要独立持有一份（它要在另一个任务里查授权，
+    /// 生命周期与调用方无关）。与其让调用方用 `from_parts` 手工拼一个
+    /// ——那样很容易漏掉设备列表，症状是「已配对的设备连不上」——
+    /// 不如给一个名字**明确说明用途**的方法。
+    ///
+    /// 名字里带 `for_serve` 是刻意的：看到调用点就知道这份副本要
+    /// 交给谁，而不是一个语义模糊的 `clone()`。
+    #[must_use]
+    pub fn duplicate_for_serve(&self) -> Self {
+        Self {
+            keypair: crate::channel::StaticKeypair::from_parts(
+                self.keypair.public.clone(),
+                self.keypair.private_bytes().to_vec(),
+            ),
+            device_name: self.device_name.clone(),
+            devices: self.devices.clone(),
+        }
+    }
+
     /// 编码为明文字节（随后会被加密）。
     fn encode(&self) -> Result<Vec<u8>> {
         let mut out = vec![STORE_VERSION];
@@ -377,9 +404,41 @@ impl Store {
 
 /// 默认的存储路径。
 ///
-/// 放在用户配置目录下的 `omy/devices.omy`。
+/// 优先读环境变量 `OMY_DEVICE_STORE`，否则用用户配置目录下的
+/// `omy/devices.omy`。
+///
+/// # 为什么要有环境变量这条路
+///
+/// 加这个开关的直接原因是一次真实的事故：端到端测试想用改写
+/// `APPDATA` 的办法隔离测试环境，结果**没有隔离住**——
+/// `dirs::config_dir()` 在 Windows 上走的是 `SHGetKnownFolderPath`
+/// 系统调用，不看环境变量。测试身份于是被写进了开发者的真实配置目录。
+///
+/// 那次事故暴露的是一个更普遍的问题：这个路径此前**完全不可控**。
+/// 除了测试，至少还有两种正当需求需要它可控：
+///
+/// - **便携模式**：把设备库放在 U 盘上随身带
+/// - **多身份**：同一台机器上用不同身份连不同的设备组
+///
+/// 环境变量是这三者共同的、最小的解法。
 #[must_use]
 pub fn default_path() -> Option<PathBuf> {
+    resolve_store_path(std::env::var("OMY_DEVICE_STORE").ok().as_deref())
+}
+
+/// 由给定的环境变量值决定设备库路径。
+///
+/// 抽成纯函数是为了可测：读进程环境变量的版本没法在
+/// `unsafe_code = "forbid"` 的 crate 里测（`set_var` 是 unsafe），
+/// 而且依赖进程全局状态的测试在并行执行下本就不可靠。
+fn resolve_store_path(env_value: Option<&str>) -> Option<PathBuf> {
+    // 空白值当没设：误设成空串时若照单全收，设备库会写到当前工作目录，
+    // 位置随启动方式漂移，用户根本找不到自己的身份文件
+    if let Some(p) = env_value
+        && !p.trim().is_empty()
+    {
+        return Some(PathBuf::from(p));
+    }
     dirs::config_dir().map(|d| d.join("omy").join("devices.omy"))
 }
 
@@ -482,8 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_roundtrip() {
-        let p = tmpfile("roundtrip");
+    fn save_load_roundtrip() {        let p = tmpfile("roundtrip");
         let mut s = Store::create("台式机").expect("创建应成功");
         s.upsert(dev("笔记本", 7, 0));
         s.save(&p, b"store-password").expect("保存应成功");
@@ -549,9 +607,76 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
+    /// 环境变量指定的路径要被采纳，空白值要退回默认。
+    ///
+    /// 这条测试来自一次真实事故：端到端测试改写 `APPDATA` 想隔离环境，
+    /// 但 `dirs::config_dir()` 在 Windows 上走 `SHGetKnownFolderPath`
+    /// 系统调用，根本不看环境变量，于是测试身份被写进了开发者的
+    /// 真实配置目录。
+    ///
+    /// 这里测的是纯函数 [`resolve_store_path`] 而不是 [`default_path`]：
+    /// 后者要读进程环境变量，而 `set_var` 在 Rust 2024 里是 unsafe，
+    /// 本 crate 又是 `unsafe_code = "forbid"`。把「怎么决定路径」的
+    /// 逻辑抽成纯函数，既守住了那条禁令，也让测试不必依赖进程全局状态
+    /// ——后者在并行测试下本来就不可靠。
     #[test]
-    fn upsert_replaces_not_appends() {
-        let mut s = Store::create("x").expect("创建应成功");
+    fn env_value_overrides_store_path() {
+        assert_eq!(
+            resolve_store_path(Some("/tmp/custom/my-devices.omy")),
+            Some(PathBuf::from("/tmp/custom/my-devices.omy"))
+        );
+
+        // 空白值要被忽略——否则误设成空串会让设备库写到当前工作目录，
+        // 位置随启动方式漂移
+        for blank in ["", "   ", "\t", "\n"] {
+            let got = resolve_store_path(Some(blank));
+            assert!(
+                got.is_none_or(|p| p.ends_with("devices.omy")),
+                "{blank:?} 应退回默认路径"
+            );
+        }
+    }
+
+    /// 没有环境变量时，路径落在用户配置目录下。
+    #[test]
+    fn default_path_lands_in_config_dir() {
+        if let Some(path) = resolve_store_path(None) {
+            assert!(path.ends_with("devices.omy"), "实得 {}", path.display());
+            let s = path.to_string_lossy();
+            assert!(s.contains("omy"), "应在 omy 子目录下：{s}");
+        }
+    }
+
+    /// 交给服务端的副本必须**完整**：身份和设备列表都要带上。    ///
+    /// 漏掉设备列表的话，服务端谁都不认识，所有已配对设备连上来都被
+    /// 判为未授权。症状是「配对明明成功了却连不上」，而日志只会说
+    /// `Unauthorized`——排查时很容易怀疑到握手或配对上去。
+    #[test]
+    fn duplicate_for_serve_is_complete() {
+        let mut s = Store::create("原始设备").expect("创建应成功");
+        s.upsert(dev("甲", 1, 0));
+        s.upsert(dev("乙", 2, 99999));
+
+        let copy = s.duplicate_for_serve();
+
+        assert_eq!(copy.device_name(), "原始设备");
+        assert_eq!(copy.public_key(), s.public_key());
+        assert_eq!(
+            copy.keypair().private_bytes(),
+            s.keypair().private_bytes(),
+            "私钥必须一致，否则对方用已配对的公钥握不上手"
+        );
+        assert_eq!(copy.devices().len(), 2, "设备列表不能漏");
+        // 最关键的一条：副本必须能做出与原件相同的授权判断
+        assert!(
+            copy.is_authorized(&[1u8; 32]),
+            "副本必须认识原件认识的设备"
+        );
+        assert!(!copy.is_authorized(&[9u8; 32]), "陌生设备仍应拒绝");
+    }
+
+    #[test]
+    fn upsert_replaces_not_appends() {        let mut s = Store::create("x").expect("创建应成功");
         s.upsert(dev("旧名字", 5, 100));
         s.upsert(dev("新名字", 5, 200));
         assert_eq!(s.devices().len(), 1, "同一公钥应覆盖而非追加");

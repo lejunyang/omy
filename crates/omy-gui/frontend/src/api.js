@@ -101,3 +101,55 @@ export const pickFolder = (title) => invoke('pick_folder', { title });
 
 /** 弹出文件选择器。用户取消时返回 null。 */
 export const pickFiles = (title) => invoke('pick_files', { title });
+
+/* ---------------- 设备库 ---------------- */
+
+/** 设备库状态。未打开时也能问——界面据此决定显示「设置」还是「输入」密码。 */
+export const deviceStatus = () => invoke('device_status');
+
+/** 打开或创建设备库。首次调用会创建本机身份。 */
+export const openDeviceStore = (password) => invoke('open_device_store', { password });
+
+/** 关闭设备库，抹掉内存里的身份。 */
+export const closeDeviceStore = () => invoke('close_device_store');
+
+/** 已配对设备列表。 */
+export const pairedDevices = () => invoke('paired_devices');
+
+/** 改本机设备名。这个名字会广播到局域网。 */
+export const renameDevice = (name) => invoke('rename_device', { name });
+
+/** 吊销一台设备。对方**下次连接**才会被拒绝。 */
+export const revokeDevice = (fingerprint) => invoke('revoke_device', { fingerprint });
+
+/* ---------------- 局域网 ---------------- */
+
+/** 搜索局域网设备。 */
+export const discoverDevices = (timeoutSecs = 4) =>
+  invoke('discover_devices', { timeoutSecs });
+
+/** 开始等待对方连入，立刻返回配对码。 */
+export const pairListen = (port = 0, expiresDays = 0) =>
+  invoke('pair_listen', { port, expiresDays });
+
+/** 主动连接对方完成配对。 */
+export const pairWith = (addr, pin, expiresDays = 0) =>
+  invoke('pair_with', { addr, pin, expiresDays });
+
+/** 查询配对进展。配对要等人操作，所以轮询这个。 */
+export const pairStatus = () => invoke('pair_status');
+
+/** 取消配对，配对码立即作废。 */
+export const pairCancel = () => invoke('pair_cancel');
+
+/* ---------------- 共享 ---------------- */
+
+/** 开始共享一个目录。**不需要文件密码**：服务端只搬运密文。 */
+export const startShare = (dir, port = 0, advertise = true) =>
+  invoke('start_share', { dir, port, advertise });
+
+/** 停止共享。会注销 mDNS 广播。 */
+export const stopShare = () => invoke('stop_share');
+
+/** 共享服务状态。 */
+export const shareStatus = () => invoke('share_status');

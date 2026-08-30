@@ -13,9 +13,9 @@
 | `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
-| `omy-gui` | 🟢 桌面端可用 | 47 项 + 43 项端到端 + 45 项前端构建/运行时 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门 |
+| `omy-gui` | 🟢 桌面端可用 | 68 项 + 43 项端到端 + 45 项前端构建/运行时 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门；**设备发现/配对/共享已接入** |
 
-合计 **470 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **496 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言 + 35 项 GUI 设备与共享实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -256,6 +256,72 @@ KDF 参数；没有才新生成。
 
 两者都有测试守护「必须报错而不是静默做别的事」，其中
 `trash_reports_error_instead_of_deleting` 会验证文件确实还在。
+
+#### GUI 接入设备发现、配对与共享
+
+底层能力早就在 `omy-net` 里跑通了，但只有 CLI 接着。这一轮把它接进
+界面，过程中撞出三个真实缺陷，都不是靠读代码发现的。
+
+**设备库会话：不要每次操作都问密码**
+
+CLI 每条命令都是独立进程，问一次密码做一件事，所以 `omy share pair`
+问两次密码可以接受。GUI 是长驻的，用户会连续操作：看看有谁在线 →
+配对 → 改名字 → 再配一台。沿用 CLI 的做法要输七八次同一个密码，
+用户很快就会把它设成 `1`。**让安全措施难用，结果是用户绕过它**，
+所以解开的 `Store` 留在会话里，密码用 `Zeroizing` 持有。
+
+`lock()` 时**一并关闭设备库**。只锁一半会让锁定成为假象：
+静态私钥还在内存里，攻击者可以冒充这台设备。
+
+**Store::duplicate_for_serve：不 derive(Clone) 但要有明确的复制口**
+
+服务端主循环需要独立持有一份身份与设备列表。让 `Store` 随手可 clone
+等于邀请调用方到处复制私钥；但让调用方用 `from_parts` 手工拼一个，
+又极易漏掉设备列表——症状是「配对明明成功了却连不上」，
+日志只说 `Unauthorized`，排查时容易怀疑到握手上去。
+`duplicate_for_serve_is_complete` 直接断言副本能做出与原件相同的
+授权判断。
+
+#### 三个只有实测才能发现的缺陷
+
+**其一：改写 `APPDATA` 隔离不住测试环境**
+
+端到端测试想用改写 `APPDATA` 的办法隔离，结果测试身份被写进了
+开发者的真实配置目录——`dirs::config_dir()` 在 Windows 上走
+`SHGetKnownFolderPath` 系统调用，**不看环境变量**。
+
+修法不是给测试打补丁，而是承认这个路径本来就该可控：新增
+`OMY_DEVICE_STORE`，同时服务于便携模式（设备库放 U 盘）和
+多身份（同机不同身份连不同设备组）。验证脚本现在会主动检查
+「用户真实配置目录未被触碰」。
+
+决策逻辑抽成纯函数 `resolve_store_path`，因为 `omy-net` 是
+`unsafe_code = "forbid"`，而 `set_var` 在 Rust 2024 里是 unsafe。
+**没有为了测试去破坏那条禁令**——依赖进程全局状态的测试在并行
+执行下本来也不可靠。
+
+**其二：任何人连一下端口，配对就作废了**
+
+原来的实现里，配对期间只 accept 一次。实测中我用一条 TCP 连接
+验证「端口真的在监听」，那条连接被 accept 了，握手失败，整轮配对
+就此结束——而屏幕上还显示着配对码，用户在另一台设备上怎么输都没用，
+且没有任何提示。端口扫描器同样能触发。
+
+改为单次握手失败只跳过这个连接，继续等下一个。结束条件只有三个：
+成功、总时限到、用户取消。这不削弱安全性——PAKE 的抗猜测能力
+本来就不依赖「只允许试一次」，总时限仍限制着尝试次数。
+
+**其三：点了取消，却弹出「配对失败」**
+
+后台任务收尾时无条件写入 `Failed`，覆盖了 `cancel()` 刚设的 `Idle`。
+用户明明是自己点的取消，却被告知失败了。新增 `DeviceError::Cancelled`
+让收尾逻辑能区分这两种结束方式。
+
+顺带修了错误码混淆：握手失败原本报 `store_wrong_password`
+（设备库密码错），用户会去改设备库密码，而真正该重试的是配对码。
+现在分成 `pair_failed` 与 `connect_failed`——前者改配对码，后者改地址。
+`pair_with` 失败时也**同时**返回 `Err`，不能只写进 task：
+否则前端 `await` 正常返回，界面会先显示成功，要等下一次轮询才暴露。
 #### CLI 只在网络命令内部起 runtime
 
 CLI 整体是同步的。把 `main` 改成 `#[tokio::main]` 会让加解密命令
@@ -461,6 +527,32 @@ Vue（含模板编译器）、index.html 不能有内联脚本、locales 要随�
 
 `probe_one` 的两条断言覆盖「双击已解锁文件不该再问密码」这条
 交互路径——它在界面上表现为"没有弹窗"，很容易被当成没生效。
+
+### GUI 设备与共享实测（35 项）
+
+`spikes/verify-gui-devices.ps1` + `probe-gui-devices.mjs`。
+设备库路径用 `OMY_DEVICE_STORE` 隔离，并在结束时验证
+**用户真实配置目录未被触碰**——这条断言本身就来自一次真实事故。
+
+不满足于「命令返回成功」，端口类断言一律**真的建一条 TCP 连接**：
+
+| 断言 | 若只看返回值会漏掉 |
+|---|---|
+| 配对端口真的在监听 | 后端返回一个假端口号也能"通过" |
+| 共享端口真的在监听 | 服务报告启动成功但根本没绑定 |
+| 取消后端口已释放 | 配对码作废了但端口还占着 |
+| 停止后端口已释放 | 服务停了但 socket 泄漏 |
+
+四条关键反证：
+
+- **陌生连接不会让配对作废**——直接守护上面那个真实缺陷
+- **锁定后设备库也关了**，且不再泄露本机身份
+- **未打开时不泄露身份**（`device_name` / `fingerprint` 必须为 null）
+- **设备名未明文落盘**（直接读文件字节找中文设备名）
+
+还有一条容易被忽略但很关键：**重复打开保持同一身份**。
+每次开库都换身份的话，已配对的设备会全部失效，而现象是
+「昨天还能连，今天连不上了」。
 ### CLI 端到端实测（19 项，`spikes/verify-cli-share.ps1`）
 
 把 `omy.exe` 当成两台设备真的跑起来：A 生成配对码、B 用
@@ -523,6 +615,7 @@ pwsh -File spikes/make-gui-vault.ps1              # 造测试库（4 个文件�
 pwsh -File scripts/verify-gui.ps1                 # 43 项 GUI 端到端
 pwsh -File spikes/verify-gui-filemanager.ps1      # 15 项 文件管理器交互
 pwsh -File spikes/verify-gui-crypto.ps1           # 11 项 加密/解锁链路
+pwsh -File spikes/verify-gui-devices.ps1          # 35 项 设备/配对/共享（含隔离验证）
 ./target/release/omy bench                        # 本机性能
 cargo run --release --example bench_scan -- 300
 cargo run --release --example fuzz_parse -- 20000
@@ -788,10 +881,12 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `omy-net` 会话有效期与吊销（`Session` 授权入口）
 - [x] `omy-net` 服务端主循环（accept + 多连接并发 + 超时 + 访问日志）
 - [x] `omy-cli` `share` 命令组（serve / discover / pair / connect / devices）
-- [ ] GUI 的设备发现与配对界面（侧栏分区已就位，如实说明「请用 CLI」；后端未暴露 Tauri 命令）
+- [x] GUI 的设备发现与配对界面
 - [ ] `omy-net` 真实双机 mDNS 实测（当前只在单机验证协议逻辑）
 - [x] `omy-gui`：Tauri v2（解锁/扫描/预览/播放/多语言/锁定）
 - [x] `omy-gui`：文件管理器式交互（浏览/选中加密/双击解锁/统一密码）
+- [x] `omy-gui`：设备库、局域网发现、配对、共享服务
+- [ ] `omy-gui`：连接远端设备浏览其共享文件（服务端已通，客户端未接 GUI）
 - [ ] `omy-gui`：文件夹加密（当前如实报 `folder_not_supported`）
 - [ ] `omy-gui`：移到回收站（当前如实报 `trash_not_supported`，**不退化为永久删除**）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）

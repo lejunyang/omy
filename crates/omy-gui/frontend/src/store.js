@@ -54,7 +54,28 @@ export const state = reactive({
   notice: '',
   /** 协议前缀，由后端按平台下发。 */
   streamBase: 'omystream://localhost',
+  /** 已配对设备数，侧栏角标用。 */
+  pairedCount: 0,
+  /** 是否正在共享，侧栏据此显示指示灯。 */
+  shareRunning: false,
 });
+
+/** 刷新设备相关的概览状态（侧栏角标与共享指示）。
+ *
+ * 只取计数不取明细：侧栏不需要设备名，而少取一层就少一处泄露面。
+ */
+export async function refreshDeviceOverview() {
+  try {
+    const st = await api.deviceStatus();
+    state.pairedCount = st.opened ? st.paired_count : 0;
+    const sh = await api.shareStatus();
+    state.shareRunning = sh.running;
+  } catch {
+    // 设备库不可用不该影响文件浏览
+    state.pairedCount = 0;
+    state.shareRunning = false;
+  }
+}
 
 /** 拼出某个文件的内容 URL。 */
 export function fileUrl(id) {
@@ -276,14 +297,20 @@ async function refreshKnown() {
   }
 }
 
-/** 锁定：抹掉所有凭据。 */
+/** 锁定：抹掉所有凭据。
+ *
+ * 后端的 `lock` 会**同时关闭设备库**，所以这里也要把设备概览清掉——
+ * 否则侧栏还挂着「已配对 3 台」的角标，而设备库其实已经锁上了。
+ */
 export async function lock() {
   await api.lock();
   state.credentials = 0;
   state.known = {};
+  state.pairedCount = 0;
   // 重新载入让加密文件回到锁定显示。
   // 不能只改本地字段——那样万一漏改一处就是信息泄露
   await reload();
+  await refreshDeviceOverview();
 }
 
 /** 切换语言。 */

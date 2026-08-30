@@ -26,7 +26,7 @@ import { toggleTheme } from '../theme.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
 
-defineEmits(['open', 'encrypt', 'lock', 'quick-unlock', 'pick', 'lang']);
+defineEmits(['open', 'encrypt', 'lock', 'quick-unlock', 'pick', 'lang', 'devices']);
 
 const totalSize = computed(() =>
   state.entries.reduce((s, e) => s + (e.size || 0), 0),
@@ -121,7 +121,7 @@ function onSelect(entry, ev) {
   </div>
 
   <div class="body">
-    <SideBar @pick="$emit('pick')" />
+    <SideBar @pick="$emit('pick')" @devices="$emit('devices')" />
 
     <div class="main">
       <div class="crumb">

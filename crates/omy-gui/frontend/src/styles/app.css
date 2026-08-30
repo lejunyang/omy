@@ -865,3 +865,187 @@ input {
   font-size: 14px;
   opacity: 0.85;
 }
+
+/* ---------- 设备面板 ---------- */
+
+.dlg.wide {
+  width: 560px;
+}
+
+.dlg h3 .spacer {
+  flex: 1;
+}
+
+.badge {
+  margin-inline-start: auto;
+  min-width: 18px;
+  height: 18px;
+  padding-inline: 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.sitem.sharing {
+  color: var(--ok);
+}
+
+.selfbox {
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  padding: calc(var(--sp) * 2.5) calc(var(--sp) * 3);
+  background: var(--bg3);
+  margin-block-end: calc(var(--sp) * 3);
+}
+
+.selfbox .row {
+  display: flex;
+  gap: calc(var(--sp) * 2);
+  align-items: center;
+  font-size: 13px;
+  padding-block: 2px;
+}
+
+.selfbox .lbl {
+  color: var(--fg2);
+  font-size: 12px;
+  width: 56px;
+  flex: 0 0 auto;
+}
+
+.fp {
+  font: 12px/1.5 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  word-break: break-all;
+}
+
+.fp.small {
+  font-size: 11px;
+  color: var(--fg2);
+  letter-spacing: 0.04em;
+  display: block;
+}
+
+/* 配对码要显眼——用户要念给另一台设备的操作者听，
+   或者自己在两台机器之间对照着敲 */
+.pairbox {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--r-m);
+  padding: calc(var(--sp) * 3);
+  text-align: center;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  margin-block-end: calc(var(--sp) * 3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+}
+
+.pairbox.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+
+.pairbox.err {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+}
+
+.pairbox .pin {
+  font: 700 30px/1.2 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+  letter-spacing: 0.32em;
+  color: var(--accent);
+  /* 让用户能选中复制 */
+  user-select: all;
+  /* 字距是右侧留白，视觉上会偏左，补回去 */
+  padding-inline-start: 0.32em;
+}
+
+.pairbox .cmp {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.pairbox .cmp code {
+  color: var(--fg);
+  font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+}
+
+.sect {
+  margin-block-end: calc(var(--sp) * 2);
+}
+
+.sect-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--fg2);
+  font-weight: 600;
+  margin-block-end: calc(var(--sp) * 2);
+}
+
+.muted {
+  font-size: 12.5px;
+  color: var(--fg2);
+  padding-block: calc(var(--sp) * 1.5);
+}
+
+.drow {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 1.75) calc(var(--sp) * 1.5);
+  border-radius: var(--r-s);
+  font-size: 13px;
+}
+
+.drow:hover {
+  background: var(--bg3);
+}
+
+.drow.clickable {
+  cursor: pointer;
+}
+
+.drow .ic {
+  width: 20px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.drow .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--fg2);
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.tag.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+
+.tag.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
