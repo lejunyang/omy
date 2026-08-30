@@ -56,8 +56,8 @@ export const unlock = (label, password, vaults) =>
   invoke('unlock', { label, password, vaults });
 
 /** 对一个目录直接试密码：探测 vault + 派生，一步到位。 */
-export const unlockDirectory = (dir, label, password) =>
-  invoke('unlock_directory', { dir, label, password });
+export const unlockDirectory = (dir, password) =>
+  invoke('unlock_directory', { dir, password });
 
 /** 锁定。后端会清空文件列表与会话密钥。 */
 export const lock = () => invoke('lock');

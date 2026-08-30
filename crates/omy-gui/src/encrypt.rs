@@ -29,9 +29,6 @@ pub struct EncryptRequest {
     pub paths: Vec<String>,
     /// 密码。
     pub password: String,
-    /// 凭据名称，用于状态栏显示。
-    #[serde(default = "default_label")]
-    pub label: String,
     /// 是否加密文件名。
     #[serde(default = "default_true")]
     pub encrypt_filename: bool,
@@ -52,9 +49,6 @@ pub struct EncryptRequest {
     pub original: String,
 }
 
-fn default_label() -> String {
-    String::from("main")
-}
 fn default_true() -> bool {
     true
 }
@@ -149,11 +143,12 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
     let Ok(header) = omy_core::file::peek_header(&prefix) else {
         return;
     };
-    let label = if req.label.is_empty() {
-        "main"
-    } else {
-        &req.label
-    };
+    // 与 unlock 用同一个 label，否则「加密后自动装入的凭据」和
+    // 「用户手动输同一个密码解锁的凭据」会被算成两条，
+    // 状态栏就显示「2 个密码已解锁」——而其实只有一个密码。
+    //
+    // 缓存键是 (vault_salt, kind, label)，label 不一致就是两条记录。
+    let label = "main";
     state.with_session(|s| {
         // 失败不影响加密结果本身：文件已经写好了，
         // 装不进会话只是列表里还显示成锁定，用户再输一次密码即可
@@ -195,7 +190,7 @@ fn run_encrypt(req: &EncryptRequest) -> CmdResult<EncryptSummary> {
 
     for raw in &req.paths {
         let src = PathBuf::from(raw);
-        match encrypt_one(&src, &out_dir, &keks, &vault_salt, req) {
+        match encrypt_one(&src, &out_dir, &keks, &vault_salt, params, req) {
             Ok(item) => {
                 handle_original(&src, &req.original, &mut failed);
                 items.push(item);
@@ -213,6 +208,7 @@ fn encrypt_one(
     out_dir: &Path,
     keks: &[Kek],
     vault_salt: &[u8; 16],
+    params: Argon2Params,
     req: &EncryptRequest,
 ) -> Result<EncryptedItem, String> {
     if src.is_dir() {
@@ -235,11 +231,39 @@ fn encrypt_one(
         preserve_extension: req.preserve_extension,
         compress: req.compress,
         chunk_size: req.chunk_size,
+        // 必须显式传入！头部记录的 KDF 参数取自这里，而 KEK 是用
+        // 外面那份 `params` 派生的。两者不一致时，解密方读头部按错误的
+        // 参数派生，就得到一个**永远打不开这个文件的 KEK**——
+        // 文件当场变成无法恢复的数据。
+        //
+        // 早先漏了这行，走 `..Default::default()` 取到 INTERACTIVE
+        // (m=64MiB/t=3)，而用户选 moderate 时 KEK 实际用的是
+        // MODERATE (m=256MiB/t=4)。症状极具迷惑性：第一次加密的文件
+        // 打不开，第二次却好了——因为第二次沿用了第一个文件头里那份
+        // （错误但自洽的）参数，反而和 default 对上了。
+        argon2: params,
         ..EncryptOptions::default()
     };
 
     let enc = core_encrypt(&data, keks, vault_salt, &opts, &RandomMaterial::generate())
         .map_err(|_| String::from("encrypt_failed"))?;
+
+    // 写盘前自检：产物必须真的能用刚才那个密码打开。
+    //
+    // 为什么值得多花这点时间：这条路径一旦出错，产出的是**永久无法
+    // 恢复**的文件，而且当场看不出来——用户以为加密成功了，原文件
+    // 可能还被删了，等发现打不开时已经无法补救。
+    //
+    // 曾经就有过一次：KEK 用用户选的档位派生，头部却写着 default 的
+    // 参数，两边对不上。文件写得好好的，只是永远打不开。
+    //
+    // 开销是一次 Argon2（几十到几百毫秒）。相比「文件打不开」这个
+    // 后果，这个代价完全可以接受——何况加密本身已经是重活了。
+    //
+    // 注意必须用 `open_with_password` 而不是复用手上的 `keks`：
+    // 后者会跳过「按头部参数重新派生」这一步，恰好绕过要防的问题。
+    omy_core::file::open_with_password(&enc.bytes, req.password.as_bytes())
+        .map_err(|_| String::from("verify_failed"))?;
 
     let out_path = unique_output(out_dir, &filename, req);
     omy_core::fsatomic::write_atomic(&out_path, &enc.bytes)
@@ -346,7 +370,6 @@ mod tests {
         EncryptRequest {
             paths,
             password: String::from("test-password"),
-            label: String::from("main"),
             encrypt_filename: true,
             preserve_extension: false,
             compress: true,
@@ -394,7 +417,7 @@ mod tests {
         let req = req_with(vec![]);
         let salt = [0u8; 16];
         let kek = Kek::from_password(b"x", &salt, Argon2Params::INTERACTIVE).unwrap();
-        let r = encrypt_one(&dir, &dir, &[kek], &salt, &req);
+        let r = encrypt_one(&dir, &dir, &[kek], &salt, Argon2Params::INTERACTIVE, &req);
         assert_eq!(r.err().as_deref(), Some("folder_not_supported"));
         let _ = std::fs::remove_dir(&dir);
     }
@@ -494,6 +517,104 @@ mod tests {
         let h1 = omy_core::file::peek_header(&std::fs::read(&s1.items[0].output).unwrap()).unwrap();
         let h2 = omy_core::file::peek_header(&std::fs::read(&s2.items[0].output).unwrap()).unwrap();
         assert_eq!(h1.vault_salt, h2.vault_salt, "同目录必须共用 vault salt");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 每个强度档位加密出来的文件，都必须能用同一个密码打开。
+    ///
+    /// # 这条测试对应一个真实事故
+    ///
+    /// `EncryptOptions.argon2` 曾经漏传，走 `..Default::default()`
+    /// 取到 INTERACTIVE。于是 KEK 用用户选的档位派生，头部却写着
+    /// INTERACTIVE 的参数。解密方读头部按 INTERACTIVE 派生，得到
+    /// 一个**永远打不开这个文件的 KEK**——文件当场无法恢复。
+    ///
+    /// 原有的 `roundtrip_encrypt_then_open` 抓不到它，因为那个用例
+    /// 固定用 `interactive`，恰好与 default 相同。**只有跨档位才暴露**。
+    #[test]
+    fn every_kdf_profile_roundtrips() {
+        for profile in ["interactive", "moderate"] {
+            let dir = std::env::temp_dir().join(format!("omy-kdf-{profile}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap_or_default();
+
+            let src = dir.join("x.txt");
+            std::fs::write(&src, b"payload").unwrap_or_default();
+
+            let mut req = req_with(vec![src.to_string_lossy().into_owned()]);
+            req.kdf_profile = String::from(profile);
+            let summary = run_encrypt(&req).expect("加密应当成功");
+            assert_eq!(summary.items.len(), 1, "{profile}: {:?}", summary.failed);
+
+            let out = &summary.items[0].output;
+            let bytes = std::fs::read(out).unwrap_or_default();
+
+            // 头部记录的参数必须与实际派生 KEK 用的参数一致
+            let h = omy_core::file::peek_header(&bytes).expect("头部可解析");
+            let want = params_of(profile);
+            assert_eq!(
+                (h.argon2_m_kib, h.argon2_t, h.argon2_p),
+                (want.m_kib, want.t, want.p),
+                "{profile}: 头部记录的 KDF 参数与选择的档位不符——\
+                 解密方会按头部参数派生，必然打不开"
+            );
+
+            // 真正的判据：同一密码必须打得开
+            let reopened =
+                omy_core::file::open_with_password(&bytes, req.password.as_bytes());
+            assert!(
+                reopened.is_ok(),
+                "{profile}: 同一密码必须能打开，实际 {:?}",
+                reopened.err()
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// 沿用已有 vault 时，头部参数也必须与沿用的一致。
+    ///
+    /// 第二个文件沿用第一个的 salt **和参数**。若只沿用 salt 而参数
+    /// 另算，同样会造成派生与头部不符。
+    #[test]
+    fn reused_vault_keeps_params_consistent() {
+        let dir = std::env::temp_dir().join("omy-vault-params");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap_or_default();
+
+        // 第一个用 interactive
+        let a = dir.join("a.txt");
+        std::fs::write(&a, b"first").unwrap_or_default();
+        let mut ra = req_with(vec![a.to_string_lossy().into_owned()]);
+        ra.kdf_profile = String::from("interactive");
+        let s1 = run_encrypt(&ra).expect("第一个应当成功");
+
+        // 第二个故意选不同档位——应当沿用第一个的参数，
+        // 而不是用新档位派生却写旧参数
+        let b = dir.join("b.txt");
+        std::fs::write(&b, b"second").unwrap_or_default();
+        let mut rb = req_with(vec![b.to_string_lossy().into_owned()]);
+        rb.kdf_profile = String::from("moderate");
+        let s2 = run_encrypt(&rb).expect("第二个应当成功");
+
+        let b1 = std::fs::read(&s1.items[0].output).unwrap_or_default();
+        let b2 = std::fs::read(&s2.items[0].output).unwrap_or_default();
+
+        let h1 = omy_core::file::peek_header(&b1).expect("h1");
+        let h2 = omy_core::file::peek_header(&b2).expect("h2");
+        assert_eq!(h1.vault_salt, h2.vault_salt, "同目录必须共用 salt");
+        assert_eq!(
+            (h1.argon2_m_kib, h1.argon2_t),
+            (h2.argon2_m_kib, h2.argon2_t),
+            "沿用 vault 时参数也必须一致"
+        );
+
+        // 两个都要能用同一密码打开
+        for (i, bytes) in [&b1, &b2].into_iter().enumerate() {
+            let r = omy_core::file::open_with_password(bytes, ra.password.as_bytes());
+            assert!(r.is_ok(), "第 {} 个文件打不开: {:?}", i + 1, r.err());
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

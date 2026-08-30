@@ -108,10 +108,10 @@ async function onEncryptSubmit(opts) {
   if (r) showEncrypt.value = false;
 }
 
-async function onUnlockSubmit({ password, label }) {
+async function onUnlockSubmit({ password }) {
   const ok = unlockForRemote.value
-    ? await tryUnlockRemote(password, label)
-    : await tryUnlock(password, label);
+    ? await tryUnlockRemote(password)
+    : await tryUnlock(password);
   if (ok) {
     showUnlock.value = false;
     unlockForRemote.value = false;

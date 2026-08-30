@@ -25,7 +25,6 @@
   "unlock": {
     "title": "解锁",
     "password": "密码",
-    "label": "密码名称",
     "label_hint": "用于区分多个密码，如「工作」「私人」",
     "submit": "解 锁",
     "deriving": "正在派生密钥…",
@@ -85,7 +84,6 @@
     "password": "密码",
     "password_again": "确认密码",
     "password_mismatch": "两次输入的密码不一致",
-    "label": "密码名称",
     "filename": "文件名",
     "filename_encrypt": "加密（推荐）",
     "filename_keep_ext": "加密但保留后缀",

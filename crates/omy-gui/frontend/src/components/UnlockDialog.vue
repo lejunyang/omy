@@ -17,14 +17,13 @@ defineProps({
 const emit = defineEmits(['cancel', 'submit']);
 
 const password = ref('');
-const label = ref('main');
 const input = useTemplateRef('input');
 
 onMounted(() => input.value?.focus());
 
 function submit() {
   if (!password.value) return;
-  emit('submit', { password: password.value, label: label.value.trim() || 'main' });
+  emit('submit', { password: password.value });
 }
 </script>
 
@@ -45,11 +44,6 @@ function submit() {
           type="password"
           autocomplete="current-password"
         />
-      </div>
-
-      <div class="field">
-        <label class="flabel" for="u-label">{{ i18n.t('unlock.label') }}</label>
-        <input id="u-label" v-model="label" type="text" autocomplete="off" />
       </div>
 
       <div class="acts">

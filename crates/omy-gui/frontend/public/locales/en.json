@@ -25,7 +25,6 @@
   "unlock": {
     "title": "Unlock",
     "password": "Password",
-    "label": "Password name",
     "label_hint": "Distinguishes multiple passwords, e.g. Work, Personal",
     "submit": "Unlock",
     "deriving": "Deriving key…",
@@ -85,7 +84,6 @@
     "password": "Password",
     "password_again": "Confirm password",
     "password_mismatch": "Passwords do not match",
-    "label": "Password name",
     "filename": "File name",
     "filename_encrypt": "Encrypt (recommended)",
     "filename_keep_ext": "Encrypt but keep extension",

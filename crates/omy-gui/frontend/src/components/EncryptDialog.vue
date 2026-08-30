@@ -18,7 +18,6 @@ const emit = defineEmits(['cancel', 'submit']);
 
 const password = ref('');
 const password2 = ref('');
-const label = ref('main');
 /** `encrypt` / `keep_ext` / `plain` */
 const filenameMode = ref('encrypt');
 const compress = ref(true);
@@ -55,7 +54,6 @@ function submit() {
   if (!canSubmit.value) return;
   emit('submit', {
     password: password.value,
-    label: label.value.trim() || 'main',
     encrypt_filename: filenameMode.value !== 'plain',
     preserve_extension: filenameMode.value === 'keep_ext',
     compress: compress.value,
@@ -97,11 +95,6 @@ function submit() {
         <label class="flabel" for="e-pass2">{{ i18n.t('encrypt.password_again') }}</label>
         <input id="e-pass2" v-model="password2" type="password" autocomplete="new-password" />
         <div v-if="mismatch" class="ferr">{{ i18n.t('encrypt.password_mismatch') }}</div>
-      </div>
-
-      <div class="field">
-        <label class="flabel" for="e-label">{{ i18n.t('encrypt.label') }}</label>
-        <input id="e-label" v-model="label" type="text" autocomplete="off" />
       </div>
 
       <div class="field">

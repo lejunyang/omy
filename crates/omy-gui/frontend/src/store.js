@@ -131,7 +131,7 @@ export async function reloadRemote() {
  * 远端没有「目录」可探测 vault，所以不能走 `unlockDirectory`。
  * 这里直接用远端文件头里的 salt 派生——头部在列表里已经有了。
  */
-export async function tryUnlockRemote(password, label) {
+export async function tryUnlockRemote(password) {
   if (!state.remoteMode) return false;
   state.busy = true;
   state.busyKey = 'busy.deriving';
@@ -143,7 +143,7 @@ export async function tryUnlockRemote(password, label) {
       state.error = i18n.te('no_vault_found');
       return false;
     }
-    const r = await api.unlock(label || 'main', password, vaults);
+    const r = await api.unlock('main', password, vaults);
     state.credentials = r.credentials;
     state.remoteEntries = await api.remoteRelock();
     const opened = state.remoteEntries.filter((f) => f.unlocked).length;
@@ -343,14 +343,14 @@ export async function encryptSelected(opts) {
 }
 
 /** 用一个密码试解锁当前目录。 */
-export async function tryUnlock(password, label) {
+export async function tryUnlock(password) {
   if (!state.cwd) return false;
   state.busy = true;
   state.busyKey = 'busy.deriving';
   state.error = '';
   state.notice = '';
   try {
-    const r = await api.unlockDirectory(state.cwd, label || 'main', password);
+    const r = await api.unlockDirectory(state.cwd, password);
     state.credentials = r.credentials;
     await reload();
     const opened = state.entries.filter((e) => e.is_encrypted && e.unlocked).length;

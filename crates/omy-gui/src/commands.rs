@@ -589,7 +589,6 @@ pub fn stream_base_url() -> String {
 pub async fn unlock_directory(
     state: State<'_, Shared>,
     dir: String,
-    label: String,
     password: String,
 ) -> CmdResult<UnlockResult> {
     if password.is_empty() {
@@ -601,11 +600,16 @@ pub async fn unlock_directory(
         return Err(CmdError::code("no_vault_found"));
     }
 
-    let label = if label.is_empty() {
-        String::from("main")
-    } else {
-        label
-    };
+    // label 一律归一化成 "main"。
+    //
+    // 它是会话缓存键 (vault_salt, kind, label) 的一部分，所以同一个
+    // 密码配上不同的 label 会被算成**两条独立凭据**——状态栏显示
+    // 「2 个密码已解锁」，而实际上只有一个密码。
+    //
+    // core 层保留 label 是对的：将来要做「诱饵密码」「多用户」时，
+    // 区分不同凭据正是靠它。但 GUI 现在没有任何界面消费这个名字，
+    // 让用户填一个看不见、又会让计数出错的字段没有意义。
+    let label = String::from("main");
     unlock(state, label, password, vaults).await
 }
 

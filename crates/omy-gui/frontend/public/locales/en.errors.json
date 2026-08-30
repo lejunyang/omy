@@ -40,5 +40,6 @@
   "incompatible_version": "Incompatible version. Update both devices.",
   "unauthorized": "The device refused the connection; it may have revoked access.",
   "not_connected": "Not connected to any device.",
-  "remote_error": "The device returned an error. Try again."
+  "remote_error": "The device returned an error. Try again.",
+  "verify_failed": "Post-encryption self-check failed; nothing was saved. Please report this."
 }
