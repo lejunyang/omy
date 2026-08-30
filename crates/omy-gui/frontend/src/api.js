@@ -153,3 +153,24 @@ export const stopShare = () => invoke('stop_share');
 
 /** 共享服务状态。 */
 export const shareStatus = () => invoke('share_status');
+
+/* ---------------- 连接远端 ---------------- */
+
+/** 连接一台已配对设备。addr 留空时自动在局域网里找。 */
+export const remoteConnect = (fingerprint, addr = null) =>
+  invoke('remote_connect', { fingerprint, addr });
+
+/** 断开远端连接。 */
+export const remoteDisconnect = () => invoke('remote_disconnect');
+
+/** 拉取远端文件列表。每次都重新拉——对方可能改了共享内容。 */
+export const remoteList = () => invoke('remote_list');
+
+/** 远端连接状态。 */
+export const remoteStatus = () => invoke('remote_status');
+
+/** 输入新密码后重新解析远端列表。不重新拉，省一次往返。 */
+export const remoteRelock = () => invoke('remote_relock');
+
+/** 远端文件里出现过的 vault 参数（已去重）。 */
+export const remoteVaults = () => invoke('remote_vaults');

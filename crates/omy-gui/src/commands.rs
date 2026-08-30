@@ -249,9 +249,24 @@ fn parse_salt(hex: &str) -> Option<[u8; 16]> {
 ///
 /// 两者同生共死，就不会出现「以为锁了其实没锁」的状态差。
 #[tauri::command]
-pub fn lock(state: State<'_, Shared>, devices: State<'_, crate::device_cmds::SharedDevices>) {
+pub async fn lock(
+    state: State<'_, Shared>,
+    devices: State<'_, crate::device_cmds::SharedDevices>,
+    remote: State<'_, std::sync::Arc<crate::remote::RemoteSession>>,
+) -> CmdResult<()> {
     state.lock();
     devices.close();
+    // 远端连接也必须断开，而且必须断在**后端**。
+    //
+    // 一开始只在前端的 doLock() 里调了 disconnect，实测发现锁定后
+    // `remote_status` 仍然报 connected、协议里还能取到明文——因为
+    // 任何绕过那段前端代码的调用（别的页面脚本、CDP、将来新加的
+    // 快捷键分支）都会留下一条**活着且已认证**的信道。
+    //
+    // 锁定的语义是「从现在起什么都看不到」。把这条保证寄托在
+    // 「前端记得多调一个函数」上，等于没有这条保证。
+    remote.disconnect().await;
+    Ok(())
 }
 
 /// 当前是否已解锁。
@@ -279,7 +294,7 @@ fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
 }
 
 /// 字节转十六进制。
-fn hex_of(b: &[u8]) -> String {
+pub fn hex_of(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

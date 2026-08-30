@@ -1049,3 +1049,26 @@ input {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 40%, transparent);
 }
+
+/* ---------- 远端视图 ---------- */
+
+/* 远端来源要一眼看出来。用户同时开着本机和远端时，
+   两个界面长得几乎一样——没有明显标记的话，很容易
+   以为「我这台机器上怎么多出这些文件」 */
+.remotetag {
+  font-size: 13px;
+  margin-inline-end: calc(var(--sp) * 0.5);
+}
+
+.crumbpath .addr {
+  font-size: 11.5px;
+  color: var(--fg2);
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.statusbar .readonly {
+  padding-inline: calc(var(--sp) * 1.5);
+  border-radius: var(--r-m);
+  background: color-mix(in srgb, var(--fg2) 14%, transparent);
+  font-size: 11px;
+}

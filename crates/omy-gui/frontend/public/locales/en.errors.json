@@ -29,10 +29,16 @@
   "bad_fingerprint": "Malformed fingerprint",
   "no_such_device": "No such device",
   "pair_failed": "Pairing failed: wrong or expired code, or the other side is not omy",
-  "connect_failed": "Cannot reach the other device; check the address and network",
+  "connect_failed": "Could not reach the device. Check the address and network.",
   "cancelled": "Cancelled",
   "media_error_1": "Loading aborted",
   "media_error_2": "Network error while reading data",
   "media_error_3": "Decoding failed; the file may be damaged",
-  "media_error_4": "This format cannot be played in the app"
+  "media_error_4": "This format cannot be played in the app",
+  "auth_expired": "Authorization for this device has expired; pair again.",
+  "peer_not_found": "Device not found on the network. Make sure sharing is on.",
+  "incompatible_version": "Incompatible version. Update both devices.",
+  "unauthorized": "The device refused the connection; it may have revoked access.",
+  "not_connected": "Not connected to any device.",
+  "remote_error": "The device returned an error. Try again."
 }

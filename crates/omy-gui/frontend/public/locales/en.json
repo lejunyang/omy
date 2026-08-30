@@ -1,5 +1,8 @@
 {
-  "app": { "name": "omy", "tagline": "Encrypted library" },
+  "app": {
+    "name": "omy",
+    "tagline": "Encrypted library"
+  },
   "places": {
     "title": "Places",
     "home": "Home",
@@ -56,7 +59,8 @@
   "busy": {
     "loading": "Loading…",
     "encrypting": "Encrypting…",
-    "deriving": "Deriving key…"
+    "deriving": "Deriving key…",
+    "connecting": "Connecting…"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -182,10 +186,17 @@
     "stop_share": "Stop sharing",
     "share_files_one": "{{count}} file",
     "share_files_other": "{{count}} files",
-    "share_no_peer": "No devices paired yet, so nobody can connect."
+    "share_no_peer": "No devices paired yet, so nobody can connect.",
+    "browse": "Browse"
   },
-  "theme": { "toggle": "Toggle theme", "dark": "Dark", "light": "Light" },
-  "lang": { "toggle": "Language / 语言" },
+  "theme": {
+    "toggle": "Toggle theme",
+    "dark": "Dark",
+    "light": "Light"
+  },
+  "lang": {
+    "toggle": "Language / 语言"
+  },
   "actions": {
     "cancel": "Cancel",
     "confirm": "OK",
@@ -193,5 +204,19 @@
     "close": "Close",
     "retry": "Retry",
     "dismiss": "Got it"
+  },
+  "remote": {
+    "disconnect": "Disconnect",
+    "unknown": "Unknown device",
+    "connected_to": "Connected to {name}",
+    "readonly": "Read-only",
+    "try_password": "Try a password",
+    "empty": "This device is not sharing any files",
+    "empty_hint": "Ask them to pick a folder to share on their device."
+  },
+  "errors": {
+    "load_failed": "Can't open this location. It may not exist or be readable.",
+    "encrypt_failed": "Encryption did not finish.",
+    "connect_failed": "Could not reach the device."
   }
 }

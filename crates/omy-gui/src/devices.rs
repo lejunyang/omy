@@ -269,6 +269,21 @@ pub enum DeviceError {
     /// 不是错误，但要沿着同一条 `Result` 通道传回来，好让后台任务
     /// 知道「别把这次结束当成失败报给用户」。
     Cancelled,
+    /// 与该设备的授权已过期，需要重新配对。
+    ///
+    /// 与 [`Self::NoSuchDevice`] 分开：前者要重新配对，
+    /// 后者是从没配过。用户的处理方式不同。
+    AuthExpired,
+    /// 局域网里找不到这台设备。
+    PeerNotFound,
+    /// 对方协议版本不兼容。
+    Incompatible,
+    /// 加密握手被拒——通常是对方吊销了本机授权。
+    Unauthorized,
+    /// 尚未连接任何远端设备。
+    NotConnected,
+    /// 对方返回了错误响应。
+    RemoteError,
     /// 锁中毒等内部错误。
     Internal,
 }
@@ -287,6 +302,12 @@ impl DeviceError {
             Self::PairFailed => "pair_failed",
             Self::ConnectFailed => "connect_failed",
             Self::Cancelled => "cancelled",
+            Self::AuthExpired => "auth_expired",
+            Self::PeerNotFound => "peer_not_found",
+            Self::Incompatible => "incompatible_version",
+            Self::Unauthorized => "unauthorized",
+            Self::NotConnected => "not_connected",
+            Self::RemoteError => "remote_error",
             Self::Internal => "internal",
         }
     }

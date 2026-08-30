@@ -1,5 +1,8 @@
 {
-  "app": { "name": "omy", "tagline": "加密文件库" },
+  "app": {
+    "name": "omy",
+    "tagline": "加密文件库"
+  },
   "places": {
     "title": "位置",
     "home": "主目录",
@@ -56,7 +59,8 @@
   "busy": {
     "loading": "正在读取…",
     "encrypting": "正在加密…",
-    "deriving": "正在派生密钥…"
+    "deriving": "正在派生密钥…",
+    "connecting": "正在连接设备…"
   },
   "notice": {
     "encrypted_one": "已加密 {{count}} 个文件",
@@ -182,10 +186,17 @@
     "stop_share": "停止共享",
     "share_files_one": "{{count}} 个文件",
     "share_files_other": "{{count}} 个文件",
-    "share_no_peer": "还没有配对任何设备，目前没有人能连进来。"
+    "share_no_peer": "还没有配对任何设备，目前没有人能连进来。",
+    "browse": "浏览"
   },
-  "theme": { "toggle": "切换主题", "dark": "深色", "light": "浅色" },
-  "lang": { "toggle": "Language / 语言" },
+  "theme": {
+    "toggle": "切换主题",
+    "dark": "深色",
+    "light": "浅色"
+  },
+  "lang": {
+    "toggle": "Language / 语言"
+  },
   "actions": {
     "cancel": "取消",
     "confirm": "确定",
@@ -193,5 +204,19 @@
     "close": "关闭",
     "retry": "重试",
     "dismiss": "知道了"
+  },
+  "remote": {
+    "disconnect": "断开连接",
+    "unknown": "未知设备",
+    "connected_to": "已连接到 {name}",
+    "readonly": "只读",
+    "try_password": "试一个密码",
+    "empty": "这台设备没有共享任何文件",
+    "empty_hint": "让对方在他的设备上选一个文件夹开始共享。"
+  },
+  "errors": {
+    "load_failed": "打不开这个位置，可能没有权限或者路径不存在。",
+    "encrypt_failed": "加密没能完成。",
+    "connect_failed": "连不上这台设备。"
   }
 }

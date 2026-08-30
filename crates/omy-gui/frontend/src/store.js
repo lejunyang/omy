@@ -58,7 +58,108 @@ export const state = reactive({
   pairedCount: 0,
   /** 是否正在共享，侧栏据此显示指示灯。 */
   shareRunning: false,
+
+  /* ---- 远端浏览 ---- */
+
+  /** 已连接的对端信息。null 表示没连。 */
+  peer: null,
+  /** 远端文件列表。 */
+  remoteEntries: [],
+  /** 是否正在看远端（而不是本机文件）。
+   *
+   * 这是**视图切换**不是权限开关：断开时回到本机目录，
+   * 本机的浏览能力任何时候都不受影响。
+   */
+  remoteMode: false,
 });
+
+/** 拼出远端文件的内容 URL。 */
+export function remoteFileUrl(id) {
+  return `${state.streamBase}/rfile/${encodeURIComponent(id)}`;
+}
+
+/** 拼出远端文件的缩略图 URL。 */
+export function remoteThumbUrl(id) {
+  return `${state.streamBase}/rthumb/${encodeURIComponent(id)}`;
+}
+
+/** 连接一台设备并进入远端视图。 */
+export async function connectRemote(fingerprint, addr) {
+  state.busy = true;
+  state.busyKey = 'busy.connecting';
+  state.error = '';
+  try {
+    state.peer = await api.remoteConnect(fingerprint, addr || null);
+    state.remoteEntries = await api.remoteList();
+    state.remoteMode = true;
+    state.selected = [];
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('errors.connect_failed'));
+    state.peer = null;
+    state.remoteMode = false;
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 断开远端，回到本机视图。 */
+export async function disconnectRemote() {
+  await api.remoteDisconnect().catch(() => {});
+  state.peer = null;
+  state.remoteEntries = [];
+  state.remoteMode = false;
+}
+
+/** 重新拉远端列表。 */
+export async function reloadRemote() {
+  if (!state.remoteMode) return;
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  try {
+    state.remoteEntries = await api.remoteList();
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 在远端视图里试一个密码。
+ *
+ * 远端没有「目录」可探测 vault，所以不能走 `unlockDirectory`。
+ * 这里直接用远端文件头里的 salt 派生——头部在列表里已经有了。
+ */
+export async function tryUnlockRemote(password, label) {
+  if (!state.remoteMode) return false;
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const vaults = await api.remoteVaults();
+    if (!vaults.length) {
+      state.error = i18n.te('no_vault_found');
+      return false;
+    }
+    const r = await api.unlock(label || 'main', password, vaults);
+    state.credentials = r.credentials;
+    state.remoteEntries = await api.remoteRelock();
+    const opened = state.remoteEntries.filter((f) => f.unlocked).length;
+    if (opened > 0) {
+      state.notice = i18n.tn('notice.unlocked', opened);
+    } else {
+      state.error = i18n.te('wrong_password');
+    }
+    return opened > 0;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
 
 /** 刷新设备相关的概览状态（侧栏角标与共享指示）。
  *
@@ -307,6 +408,12 @@ export async function lock() {
   state.credentials = 0;
   state.known = {};
   state.pairedCount = 0;
+  // 后端的 lock 已经断开了远端连接，这里同步界面状态。
+  // 顺序不能反：先清状态再调后端的话，中间那一刻界面显示的是
+  // 「已断开」而连接其实还在
+  state.peer = null;
+  state.remoteEntries = [];
+  state.remoteMode = false;
   // 重新载入让加密文件回到锁定显示。
   // 不能只改本地字段——那样万一漏改一处就是信息泄露
   await reload();

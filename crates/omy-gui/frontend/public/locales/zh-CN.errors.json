@@ -29,10 +29,16 @@
   "bad_fingerprint": "指纹格式不正确",
   "no_such_device": "找不到这台设备",
   "pair_failed": "配对失败：配对码不正确、已过期，或对方不是 omy",
-  "connect_failed": "连不上对方，请检查地址和网络",
+  "connect_failed": "连不上这台设备，检查地址和网络。",
   "cancelled": "已取消",
   "media_error_1": "加载被中止",
   "media_error_2": "网络错误，无法读取数据",
   "media_error_3": "解码失败，文件可能已损坏",
-  "media_error_4": "此格式无法在应用内播放"
+  "media_error_4": "此格式无法在应用内播放",
+  "auth_expired": "与该设备的授权已过期，需要重新配对。",
+  "peer_not_found": "局域网里没找到这台设备，确认它开着共享。",
+  "incompatible_version": "对方的版本不兼容，请都升级到最新版。",
+  "unauthorized": "对方拒绝了连接，可能已经吊销了本机的授权。",
+  "not_connected": "还没有连接任何设备。",
+  "remote_error": "对方返回了错误，请稍后再试。"
 }

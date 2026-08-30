@@ -35,6 +35,8 @@ mod encrypt;
 mod lan;
 mod mime;
 mod protocol;
+mod remote;
+mod remote_cmds;
 mod state;
 
 use state::AppState;
@@ -46,6 +48,8 @@ fn main() {
     let device_session: device_cmds::SharedDevices = Arc::new(devices::DeviceSession::new());
     let pair_task: device_cmds::SharedPair = Arc::new(lan::PairTask::new());
     let share_task: device_cmds::SharedShare = Arc::new(lan::ShareTask::new());
+    let remote_session: Arc<remote::RemoteSession> = Arc::new(remote::RemoteSession::new());
+    let for_protocol_remote = Arc::clone(&remote_session);
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -58,13 +62,15 @@ fn main() {
         .manage(Arc::clone(&device_session))
         .manage(Arc::clone(&pair_task))
         .manage(Arc::clone(&share_task))
+        .manage(Arc::clone(&remote_session))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
             let st = Arc::clone(&for_protocol);
+            let rm = Arc::clone(&for_protocol_remote);
             // 解密可能耗时，必须离开 WebView 线程
             std::thread::spawn(move || {
-                responder.respond(protocol::handle(&st, &request));
+                responder.respond(protocol::handle(&st, &rm, &request));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -102,6 +108,12 @@ fn main() {
             device_cmds::start_share,
             device_cmds::stop_share,
             device_cmds::share_status,
+            remote_cmds::remote_connect,
+            remote_cmds::remote_disconnect,
+            remote_cmds::remote_list,
+            remote_cmds::remote_status,
+            remote_cmds::remote_relock,
+            remote_cmds::remote_vaults,
         ])
         .setup(move |app| {
             let mut builder = tauri::WebviewWindowBuilder::new(

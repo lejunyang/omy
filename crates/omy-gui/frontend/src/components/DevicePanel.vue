@@ -23,7 +23,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as api from '../api.js';
 import * as i18n from '../i18n.js';
 
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'connect']);
 
 /* 设备库 */
 const status = ref({ exists: false, opened: false, paired_count: 0 });
@@ -156,7 +156,18 @@ async function stopSharing() {
 }
 
 /** 点一台发现到的设备：已配对就填地址去连，未配对则提示先配对。 */
+/** 点一台发现到的设备。
+ *
+ * 已配对且未过期的直接去浏览它的共享——它已经配过了，
+ * 再弹一次配对表单等于让用户重做一遍已经做完的事。
+ * 没配过的才走配对流程。
+ */
 function useDevice(d) {
+  if (d.paired && !d.expired && d.compatible) {
+    // 带上广播里的地址：省掉一次 mDNS 查找
+    emit('connect', { fingerprint: d.fingerprint, addr: d.addr || null });
+    return;
+  }
   if (d.addr) {
     pairAddr.value = d.addr;
     showConnect.value = true;
@@ -255,6 +266,15 @@ onBeforeUnmount(() => clearInterval(timer));
               <code class="fp small">{{ d.fingerprint }}</code>
             </span>
             <span v-if="d.expired" class="tag warn">{{ i18n.t('device.expired') }}</span>
+            <!-- 过期的不给点：连上去必然被对方拒绝，
+                 让用户白试一次不如直接不提供这个动作 -->
+            <button
+              v-if="!d.expired"
+              class="btn small primary"
+              @click="$emit('connect', { fingerprint: d.fingerprint, addr: null })"
+            >
+              🌐 {{ i18n.t('device.browse') }}
+            </button>
             <button class="btn small" @click="revoke(d.fingerprint)">
               {{ i18n.t('device.revoke') }}
             </button>

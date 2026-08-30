@@ -21,10 +21,17 @@
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import * as i18n from '../i18n.js';
-import { fileUrl } from '../store.js';
+import { fileUrl, remoteFileUrl } from '../store.js';
 
 const props = defineProps({
   file: { type: Object, required: true },
+  /** 内容来自远端设备。
+   *
+   * 只影响 URL 前缀——播放、seek、文本加载全都不变。
+   * 这正是把远端做成同一个协议的收益：远端视频的拖动行为
+   * 与本地**必然**一致，不会出现「本地能拖远端不能」。
+   */
+  remote: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close']);
@@ -33,7 +40,9 @@ const media = useTemplateRef('media');
 const text = ref('');
 const mediaError = ref('');
 
-const src = computed(() => fileUrl(props.file.id));
+const src = computed(() =>
+  props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id),
+);
 const kind = computed(() => props.file.kind || 'other');
 
 /** 文本内容取回后渲染。 */

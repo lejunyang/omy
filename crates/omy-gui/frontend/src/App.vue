@@ -31,18 +31,26 @@ import {
   enrich,
   encryptable,
   refreshDeviceOverview,
+  connectRemote,
+  tryUnlockRemote,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
+import RemoteScreen from './components/RemoteScreen.vue';
 
 const showEncrypt = ref(false);
 const showUnlock = ref(false);
 const showDevices = ref(false);
 const unlockError = ref('');
 const previewEntry = ref(null);
+/** 远端预览目标。与本机预览分开存：两者的对象结构不同，
+ * 混在一个 ref 里迟早会出现「用本机的字段去读远端对象」。 */
+const remotePreview = ref(null);
+/** 当前密码框是给远端用的还是本机用的。 */
+const unlockForRemote = ref(false);
 
 /** 预览目标的完整信息（含媒体元数据）。 */
 const previewFile = computed(() => {
@@ -101,9 +109,12 @@ async function onEncryptSubmit(opts) {
 }
 
 async function onUnlockSubmit({ password, label }) {
-  const ok = await tryUnlock(password, label);
+  const ok = unlockForRemote.value
+    ? await tryUnlockRemote(password, label)
+    : await tryUnlock(password, label);
   if (ok) {
     showUnlock.value = false;
+    unlockForRemote.value = false;
     unlockError.value = '';
   } else {
     unlockError.value = state.error;
@@ -119,14 +130,41 @@ async function onPick() {
 
 async function doLock() {
   previewEntry.value = null;
+  remotePreview.value = null;
   showDevices.value = false;
+  // 断开远端由**后端**的 lock 负责，这里不再重复调用。
+  // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
+  // 的调用会留下活连接——保证放在后端才成立，放在这里只是碰巧生效。
   await lock();
+}
+
+/** 从设备面板发起连接。 */
+async function onConnectRemote({ fingerprint, addr }) {
+  showDevices.value = false;
+  await connectRemote(fingerprint, addr);
+}
+
+/** 双击一个远端文件。锁着的不给开——预览需要密钥。 */
+function onOpenRemote(f) {
+  if (f.unlocked) remotePreview.value = f;
+}
+
+/** 在远端视图里点「试密码」。 */
+function onRemoteUnlock() {
+  unlockForRemote.value = true;
+  unlockError.value = '';
+  showUnlock.value = true;
 }
 
 /** 关掉设备面板时刷新概览：面板里可能配了新设备或开了共享。 */
 async function onDevicePanelClose() {
   showDevices.value = false;
   await refreshDeviceOverview();
+}
+
+function onUnlockCancel() {
+  showUnlock.value = false;
+  unlockForRemote.value = false;
 }
 
 function onKey(e) {
@@ -154,7 +192,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 </script>
 
 <template>
+  <RemoteScreen
+    v-if="state.remoteMode"
+    @open="onOpenRemote"
+    @unlock="onRemoteUnlock"
+  />
+
   <MainScreen
+    v-else
     @open="onOpen"
     @encrypt="showEncrypt = true"
     @lock="doLock"
@@ -164,7 +209,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     @devices="showDevices = true"
   />
 
-  <DevicePanel v-if="showDevices" @close="onDevicePanelClose" />
+  <DevicePanel
+    v-if="showDevices"
+    @close="onDevicePanelClose"
+    @connect="onConnectRemote"
+  />
 
   <EncryptDialog
     v-if="showEncrypt"
@@ -178,7 +227,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-if="showUnlock"
     :busy="state.busy"
     :error="unlockError"
-    @cancel="showUnlock = false"
+    @cancel="onUnlockCancel"
     @submit="onUnlockSubmit"
   />
 
@@ -187,5 +236,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     :key="previewFile.id"
     :file="previewFile"
     @close="previewEntry = null"
+  />
+
+  <PreviewOverlay
+    v-if="remotePreview"
+    :key="'r' + remotePreview.id"
+    :file="remotePreview"
+    remote
+    @close="remotePreview = null"
   />
 </template>
