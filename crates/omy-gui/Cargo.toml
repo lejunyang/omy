@@ -24,6 +24,10 @@ omy-media = { path = "../omy-media" }
 # 不启用 protocol-asset：所有内容都走自定义的 omystream:// 协议。
 # asset 协议会直接暴露文件系统路径，与「明文不落盘」的目标相悖。
 tauri = { version = "2", features = [] }
+# 原生目录选择器。只在 Rust 侧调用并封装成自己的命令，
+# 因此 capabilities 里**不开放** dialog 权限给前端——
+# 前端拿不到任意路径选择能力，只能走我们受控的入口。
+tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

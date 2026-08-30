@@ -452,6 +452,88 @@ pub fn stream_base() -> String {
     stream_base_url()
 }
 
+/// 打开原生目录选择器，返回用户选中的目录。
+///
+/// 用户取消时返回 `None`——这不是错误，前端应当静默处理。
+///
+/// # 为什么不用 `blocking_pick_folder`
+///
+/// 阻塞版在主线程调用会与事件循环死锁（插件文档明确警告）。
+/// Tauri 命令虽然跑在别的线程上，但对话框本身要回到主线程弹出，
+/// 阻塞版仍有死锁风险。这里用回调版 + oneshot 通道等结果：
+/// 对话框在它该在的线程上弹，我们只是异步等一个值。
+///
+/// # 为什么不让前端直接用 dialog 插件
+///
+/// 那需要在 capabilities 里开放 `dialog:default`，等于给前端
+/// 任意路径的选择能力。包成自己的命令后，前端只有「选一个目录」
+/// 这一个受控入口，将来要加审计或路径限制也只需改这里。
+#[tauri::command]
+pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt as _;
+
+    // 自动化验证用的旁路：原生对话框是 OS 窗口，CDP 点不到它，
+    // 不留入口的话 GUI 端到端测试会永久卡在这里等一个没人点的窗口。
+    //
+    // 为什么这样做是安全的：这个变量只与 OMY_GUI_CDP_PORT 同场景使用，
+    // 而后者本身就意味着「远程调试端口已开放」——真要攻击，
+    // 直接通过 CDP 接管 WebView 比设这个变量容易得多。
+    // 换言之它没有扩大攻击面。
+    //
+    // 为什么不用 #[cfg(test)]：单元测试跑不起 Tauri 运行时，
+    // 这条路径只有真实 GUI 进程里才走得到。
+    if let Ok(forced) = std::env::var("OMY_GUI_PICK_FOLDER") {
+        if !forced.is_empty() {
+            return Ok(Some(forced));
+        }
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title(if title.is_empty() { "选择文件夹" } else { &title })
+        .pick_folder(move |picked| {
+            // 发送失败只意味着接收端已经走了（窗口关闭等），
+            // 没有可做的补救，也不该让它 panic
+            let _ = tx.send(picked);
+        });
+
+    // 在阻塞线程上等：命令本身是 async，直接 recv 会占死执行器线程
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|_| CmdError::code("internal"))?;
+
+    Ok(picked.map(|p| p.to_string()))
+}
+
+/// 打开原生文件选择器，可多选。
+///
+/// 只列出 `.omy` 与分片文件——选中一个非 omy 文件对本应用没有意义，
+/// 让它出现在列表里只会让用户白试一次。
+#[tauri::command]
+pub async fn pick_files(app: tauri::AppHandle, title: String) -> CmdResult<Vec<String>> {
+    use tauri_plugin_dialog::DialogExt as _;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title(if title.is_empty() { "选择文件" } else { &title })
+        .add_filter("omy", &["omy"])
+        .pick_files(move |picked| {
+            let _ = tx.send(picked);
+        });
+
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|_| CmdError::code("internal"))?;
+
+    Ok(picked
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect())
+}
+
 /// 按编译目标返回协议前缀。
 #[must_use]
 pub fn stream_base_url() -> String {

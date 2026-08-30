@@ -382,10 +382,18 @@ function wireContent() {
 
 /** 选择文件夹。 */
 async function pickFolder() {
-  // Tauri v2 的对话框插件需要额外依赖与权限配置。
-  // 这里先用 prompt 让链路能跑通，接入 dialog 插件后替换。
-  const dir = window.prompt(i18n.t('unlock.browse'), state.folder || '');
+  // 原生目录选择器由后端弹出（前端没有 dialog 权限，只能走这个入口）。
+  // 用户取消时返回 null，是正常操作而非错误，静默返回
+  let dir;
+  try {
+    dir = await invoke('pick_folder', { title: i18n.t('unlock.browse') });
+  } catch (e) {
+    state.error = i18n.te(e?.code, i18n.t('errors.load_failed'));
+    render();
+    return;
+  }
   if (!dir) return;
+
   state.error = '';
   try {
     // 后端返回的是一组 vault（一个文件夹里可能混着多个独立的库，

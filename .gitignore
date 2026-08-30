@@ -36,13 +36,22 @@ src-tauri/target/
 /crates/**/gen/schemas/
 
 # 一次性调试与改文件脚本（用完即弃，不代表可复用的验证能力）
+# 注意：probe-nobypass.mjs 不在此列——verify-picker-bypass.ps1 依赖它
 /spikes/peek-tail.ps1
 /spikes/precommit-check.ps1
 /spikes/probe-vault-salt.ps1
 /spikes/probe-header-layout.ps1
 /spikes/probe-verify-ctx.ps1
 /spikes/probe-vault-flag.ps1
+/spikes/probe-dialog-ver.ps1
+/spikes/probe-prompt.ps1
+/spikes/probe-eval*.ps1
+/spikes/probe-cdp-stage2.ps1
+/spikes/probe-verifygui.ps1
 /spikes/fix-*.ps1
+/spikes/add-*.ps1
+/spikes/dbg-ipc-patch.mjs
+/spikes/dbg-patch2.ps1
 /spikes/update-progress*.ps1
 /spikes/check-progress.ps1
 

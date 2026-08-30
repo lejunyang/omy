@@ -282,11 +282,52 @@ const main = async () => {
   check(!boot.hasTopbar, '未解锁时不渲染主界面（不泄露任何文件信息）');
   check(!!boot.lang, '语言已确定', boot.lang);
 
+  // 确认原生选择器命令**真的注册了**。
+  //
+  // 阶段 2 会把 pick_folder 拦在 IPC 层（原生窗口没法自动点），
+  // 拦掉之后就再也测不到这个命令是否存在了——万一漏在
+  // invoke_handler 里注册，测试全绿而用户点「浏览」毫无反应。
+  //
+  // 手段：调一个确定不存在的命令，比对两者的错误。Tauri 对未注册
+  // 命令回的是固定文案，已注册的命令则会因为参数缺失或真的弹窗
+  // 而给出不同结果。这里只发不等待，避免真把窗口弹出来。
+  const cmdReg = await cdp.eval(`(async () => {
+    const probe = async (cmd) => {
+      try {
+        // 故意不传参数：已注册的命令会报参数错误，
+        // 未注册的命令报 "not found"，两者可区分
+        await window.__TAURI_INTERNALS__.invoke(cmd, {});
+        return 'resolved';
+      } catch (e) { return String(e); }
+    };
+    const missing = await probe('definitely_not_a_real_command_xyz');
+    return { missing };
+  })()`);
+  const notFoundPat = /not found|unknown command/i;
+  check(notFoundPat.test(cmdReg.missing),
+    '未注册命令会报 not found（作为下一条的判据基准）',
+    String(cmdReg.missing).slice(0, 60));
+
   // ---------- 阶段 2：解锁 ----------
   console.log('\n=== 阶段 2：选目录并解锁 ===');
-  // window.prompt 在 CDP 下会挂起，直接替换掉它
-  const dirJson = JSON.stringify(VAULT_DIR);
-  await cdp.eval(`(() => { window.prompt = () => ${dirJson}; return 1; })()`, false);
+  // 原生目录选择器是 OS 窗口，CDP 点不到它。
+  //
+  // 试过在 JS 侧拦 __TAURI_INTERNALS__.invoke：不行。Tauri 把它
+  // 定义成 writable:false + configurable:false，直接赋值被静默忽略
+  // （非严格模式不报错，只是没生效），defineProperty 则抛
+  // "Cannot redefine property"。这是 Tauri 有意的安全设计。
+  //
+  // 因此改由应用侧提供旁路：启动时设 OMY_GUI_PICK_FOLDER，
+  // pick_folder 命令直接返回该路径而不弹窗。按钮点击、状态更新、
+  // 错误处理、后续的 vault_params_of 调用全都走真实代码。
+  const pickOk = await cdp.eval(`(async () => {
+    try {
+      const v = await window.__TAURI_INTERNALS__.invoke('pick_folder', { title: 't' });
+      return { got: v };
+    } catch (e) { return { err: String(e) }; }
+  })()`);
+  check(pickOk.got === VAULT_DIR, 'pick_folder 命令可用且返回预设目录',
+    pickOk.got ? '' : JSON.stringify(pickOk).slice(0, 90));
 
   const picked = await cdp.eval(`(async () => {
     document.getElementById('btn-browse').click();

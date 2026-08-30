@@ -36,6 +36,7 @@ fn main() {
     let debug_port = std::env::var("OMY_GUI_CDP_PORT").ok();
 
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::clone(&shared))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
@@ -59,6 +60,8 @@ fn main() {
             commands::set_language,
             commands::list_roots,
             commands::stream_base,
+            commands::pick_folder,
+            commands::pick_files,
         ])
         .setup(move |app| {
             let mut builder = tauri::WebviewWindowBuilder::new(

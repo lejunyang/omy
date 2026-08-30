@@ -39,6 +39,11 @@ Start-Sleep -Milliseconds 500
 Write-Output "=== 启动 GUI（CDP 端口 $Port）==="
 $env:OMY_GUI_CDP_PORT = "$Port"
 
+# 原生目录选择器是 OS 窗口，CDP 点不到。设了这个变量后
+# pick_folder 直接返回该路径而不弹窗，让自动化能跑完整链路。
+# （试过在 JS 侧拦 invoke，Tauri 把它设成 configurable:false，改不了。）
+$env:OMY_GUI_PICK_FOLDER = Join-Path $repo 'spikes\fixtures\vault'
+
 $log = Join-Path $repo 'spikes\fixtures\gui-stdout.log'
 $errlog = Join-Path $repo 'spikes\fixtures\gui-stderr.log'
 foreach ($f in @($log, $errlog)) { if (Test-Path $f) { Remove-Item $f -Force } }
