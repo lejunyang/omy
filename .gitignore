@@ -93,3 +93,4 @@ secrets.toml
 !.env.example
 /spikes/gui-git.ps1
 /spikes/gui-git.ps1
+/spikes/gui-commit.ps1
