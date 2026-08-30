@@ -61,7 +61,7 @@ impl CmdError {
 }
 
 /// 命令结果。
-type CmdResult<T> = Result<T, CmdError>;
+pub(crate) type CmdResult<T> = Result<T, CmdError>;
 
 /// 共享状态句柄。
 pub type Shared = Arc<AppState>;
@@ -542,6 +542,110 @@ pub fn stream_base_url() -> String {
     } else {
         String::from("omystream://localhost")
     }
+}
+
+/// 用一个密码尝试解锁指定目录，并立即扫描。
+///
+/// # 与 `unlock` + `scan_directory` 的区别
+///
+/// 那两个命令是给「先解锁再进门」的旧流程用的：前端得先调
+/// `vault_params_of` 拿参数，再调 `unlock`，再调 `scan_directory`。
+/// 三次往返，且中间任何一步失败都要前端自己处理。
+///
+/// 新交互里用户是在文件管理器里**顺手**输个密码试试，所以合成一个
+/// 命令：探测 vault → 派生 → 扫描，一次返回结果。解不开就是解不开，
+/// 不需要用户理解「vault 参数」是什么。
+///
+/// # Errors
+///
+/// - `empty_password`：密码为空
+/// - `no_vault_found`：这个目录里没有本应用的加密文件
+/// - `wrong_password`：所有 vault 都没派生成功
+#[tauri::command]
+pub async fn unlock_directory(
+    state: State<'_, Shared>,
+    dir: String,
+    label: String,
+    password: String,
+) -> CmdResult<UnlockResult> {
+    if password.is_empty() {
+        return Err(CmdError::code("empty_password"));
+    }
+
+    let vaults = vault_params_of(dir.clone())?;
+    if vaults.is_empty() {
+        return Err(CmdError::code("no_vault_found"));
+    }
+
+    let label = if label.is_empty() {
+        String::from("main")
+    } else {
+        label
+    };
+    unlock(state, label, password, vaults).await
+}
+
+/// 单个加密文件的探测结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProbeResult {
+    /// 是否是本应用的加密文件。
+    pub is_omy: bool,
+    /// 当前会话能否打开它。
+    pub unlocked: bool,
+    /// 能打开时的真实文件名。
+    pub name: Option<String>,
+}
+
+/// 探测单个文件。
+///
+/// 双击一个加密文件时用：先看看当前会话能不能直接打开，
+/// 能就直接预览，不能才弹密码框。省掉「明明已经解锁却还要再输一次」。
+///
+/// 复用 core 的 `probe_file` 而不是自己拼 `open` + 解 TLV：
+/// 文件名藏在加密的 TLV 里，取它要先 unwrap FEK 再解密再去 padding，
+/// 这套流程 scan.rs 已经写好且有测试覆盖，重写一遍只会引入分歧。
+#[tauri::command]
+pub async fn probe_one(state: State<'_, Shared>, path: String) -> CmdResult<ProbeResult> {
+    let p = PathBuf::from(&path);
+    let handle: Shared = Arc::clone(&state);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // 先用文件头快速排除非 omy 文件，避免为每个普通文件
+        // 都走一遍完整的 probe
+        let Ok(prefix) = read_prefix(&p, 64) else {
+            return ProbeResult {
+                is_omy: false,
+                unlocked: false,
+                name: None,
+            };
+        };
+        if !omy_core::file::is_omy_file(&prefix) {
+            return ProbeResult {
+                is_omy: false,
+                unlocked: false,
+                name: None,
+            };
+        }
+
+        let hit = handle
+            .with_session(|s| omy_core::scan::probe_file(&p, s).ok().flatten())
+            .flatten();
+
+        match hit.map(|h| h.unlock) {
+            Some(omy_core::scan::UnlockOutcome::Unlocked { filename, .. }) => ProbeResult {
+                is_omy: true,
+                unlocked: true,
+                name: filename,
+            },
+            _ => ProbeResult {
+                is_omy: true,
+                unlocked: false,
+                name: None,
+            },
+        }
+    })
+    .await
+    .map_err(|_| CmdError::code("internal"))
 }
 
 #[cfg(test)]

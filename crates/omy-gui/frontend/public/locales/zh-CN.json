@@ -1,5 +1,24 @@
 {
   "app": { "name": "omy", "tagline": "加密文件库" },
+  "places": {
+    "title": "位置",
+    "home": "主目录",
+    "desktop": "桌面",
+    "documents": "文档",
+    "downloads": "下载",
+    "pictures": "图片",
+    "videos": "视频",
+    "drives": "磁盘",
+    "devices": "附近设备",
+    "no_devices": "没有发现设备",
+    "scanning": "正在搜索…"
+  },
+  "nav": {
+    "up": "上一级",
+    "reload": "刷新",
+    "home": "起点",
+    "pick_folder": "打开文件夹…"
+  },
   "unlock": {
     "title": "解锁",
     "password": "密码",
@@ -12,24 +31,81 @@
     "pick_folder_hint": "解锁参数存在文件里，所以要先选文件夹再输密码",
     "browse": "选择文件夹…",
     "add_password": "添加密码",
-    "recursive": "包含子文件夹"
+    "recursive": "包含子文件夹",
+    "try_here": "试解锁此目录",
+    "quick_hint": "输入密码可解锁当前目录中的加密文件",
+    "quick_placeholder": "输入密码解锁…"
   },
   "status": {
     "locked": "已锁定",
     "unlocked": "已解锁",
+    "no_password": "未输入密码",
     "credentials_one": "{{count}} 个密码已解锁",
     "credentials_other": "{{count}} 个密码已解锁",
     "files_one": "{{count}} 个文件",
     "files_other": "{{count}} 个文件",
+    "selected_one": "已选 {{count}} 项",
+    "selected_other": "已选 {{count}} 项",
+    "encrypted_one": "{{count}} 个加密文件",
+    "encrypted_other": "{{count}} 个加密文件",
+    "locked_count_one": "{{count}} 个待解锁",
+    "locked_count_other": "{{count}} 个待解锁",
     "total_size": "共 {{size}}",
     "lock_now": "锁定"
+  },
+  "busy": {
+    "loading": "正在读取…",
+    "encrypting": "正在加密…",
+    "deriving": "正在派生密钥…"
+  },
+  "notice": {
+    "encrypted_one": "已加密 {{count}} 个文件",
+    "encrypted_other": "已加密 {{count}} 个文件",
+    "unlocked_one": "解锁了 {{count}} 个文件",
+    "unlocked_other": "解锁了 {{count}} 个文件",
+    "encrypt_partial": "成功 {{ok}} 个，失败 {{failed}} 个：{{reason}}"
   },
   "file": {
     "locked_name": "🔒 加密文件",
     "locked_meta": "密码未解锁",
     "unknown": "未知",
+    "folder": "文件夹",
     "open_external": "用外部应用打开",
-    "reveal": "在文件管理器中显示"
+    "reveal": "在文件管理器中显示",
+    "encrypt": "加密",
+    "preview": "预览"
+  },
+  "encrypt": {
+    "title_one": "加密 {{count}} 个文件",
+    "title_other": "加密 {{count}} 个文件",
+    "password": "密码",
+    "password_again": "确认密码",
+    "password_mismatch": "两次输入的密码不一致",
+    "label": "密码名称",
+    "filename": "文件名",
+    "filename_encrypt": "加密（推荐）",
+    "filename_keep_ext": "加密但保留后缀",
+    "filename_keep_ext_desc": "便于识别类型，但会泄露文件格式",
+    "filename_plain": "不加密",
+    "filename_plain_desc": "文件名原样可见",
+    "compress": "加密前压缩",
+    "compress_desc": "文本和文档能显著变小，已压缩的媒体几乎无效果",
+    "chunk_size": "分块大小",
+    "chunk_hint": "压缩率 ↔ seek 精度 ↔ 内存",
+    "strength": "密钥强度",
+    "strength_interactive": "快速",
+    "strength_interactive_desc": "64 MiB · 约 0.1 秒",
+    "strength_moderate": "均衡（推荐）",
+    "strength_moderate_desc": "256 MiB · 约 0.5 秒",
+    "strength_sensitive": "高强度",
+    "strength_sensitive_desc": "1 GiB · 约 2 秒，移动端可能吃力",
+    "original": "加密后原文件",
+    "original_keep": "保留（推荐）",
+    "original_delete": "直接删除",
+    "original_delete_desc": "不可撤销，且无法保证彻底清除",
+    "submit": "开始加密",
+    "no_erase_note": "本应用不提供「安全擦除」。SSD 的 wear leveling 使覆写擦除无法保证彻底清除，提供该功能会给出虚假的安全感。",
+    "folder_note": "文件夹加密尚未实现，选中的文件夹会被跳过。"
   },
   "playback": {
     "tier_p1": "直通",
@@ -44,22 +120,50 @@
   "view": {
     "grid": "网格视图",
     "list": "列表视图",
-    "empty_title": "还没有加密文件",
-    "empty_hint": "选择一个包含 .omy 文件的文件夹",
+    "empty_title": "这个文件夹是空的",
+    "empty_hint": "从左侧选择一个位置开始浏览",
+    "start_title": "选择一个位置开始",
+    "start_hint": "可以直接浏览文件，选中后加密；遇到加密文件双击输入密码即可查看",
     "no_match": "没有匹配的文件",
     "name": "名称",
     "size": "大小",
     "kind": "类型",
-    "search": "搜索…"
+    "search": "搜索…",
+    "select_all": "全选",
+    "clear_selection": "取消选择"
   },
   "kind": {
     "video": "视频",
     "audio": "音频",
     "image": "图片",
     "text": "文本",
+    "folder": "文件夹",
+    "encrypted": "加密文件",
     "other": "其他"
+  },
+  "device": {
+    "title": "附近设备",
+    "discover": "搜索设备",
+    "pair": "配对",
+    "paired": "已配对",
+    "online": "在线",
+    "offline": "离线",
+    "connect": "连接",
+    "pair_code": "配对码",
+    "pair_code_hint": "在另一台设备上输入这个 6 位数字",
+    "pair_enter": "输入对方的配对码",
+    "fingerprint": "指纹",
+    "revoke": "吊销",
+    "not_implemented": "设备功能正在开发中",
+    "cli_hint": "目前可以用命令行：omy share pair / serve / connect"
   },
   "theme": { "toggle": "切换主题", "dark": "深色", "light": "浅色" },
   "lang": { "toggle": "Language / 语言" },
-  "actions": { "cancel": "取消", "confirm": "确定", "close": "关闭", "retry": "重试" }
+  "actions": {
+    "cancel": "取消",
+    "confirm": "确定",
+    "close": "关闭",
+    "retry": "重试",
+    "dismiss": "知道了"
+  }
 }

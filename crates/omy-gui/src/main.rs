@@ -17,8 +17,17 @@
 //! 配合响应头的 `no-store`，WebView 也不会把它写进磁盘缓存。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// 与 omy-net 同样的约定：产品代码不允许 panic 路径（GUI 直接面对
+// 用户的任意文件，崩溃会丢失正在处理的数据），测试代码另行放宽——
+// 测试里的 unwrap 失败就是测试失败，那正是它该做的事。
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
+)]
 
+mod browse;
 mod commands;
+mod encrypt;
 mod mime;
 mod protocol;
 mod state;
@@ -50,6 +59,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::vault_params_of,
             commands::unlock,
+            commands::unlock_directory,
+            commands::probe_one,
             commands::lock,
             commands::is_unlocked,
             commands::credential_count,
@@ -62,6 +73,10 @@ fn main() {
             commands::stream_base,
             commands::pick_folder,
             commands::pick_files,
+            browse::browse_directory,
+            browse::list_places,
+            browse::parent_of,
+            encrypt::encrypt_paths,
         ])
         .setup(move |app| {
             let mut builder = tauri::WebviewWindowBuilder::new(

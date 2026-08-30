@@ -27,6 +27,25 @@ export function errCode(e) {
   return undefined;
 }
 
+/* ---------------- 文件浏览（不需要密码） ---------------- */
+
+/** 列出一个目录的内容。目录 + 普通文件 + 加密文件，一次一层。 */
+export const browseDirectory = (dir) => invoke('browse_directory', { dir });
+
+/** 侧栏的起点：常用目录与磁盘根。 */
+export const listPlaces = () => invoke('list_places');
+
+/** 上一级目录。已在根时返回 null。 */
+export const parentOf = (path) => invoke('parent_of', { path });
+
+/** 探测单个文件是不是加密文件、当前会话能否打开。 */
+export const probeOne = (path) => invoke('probe_one', { path });
+
+/* ---------------- 加密 ---------------- */
+
+/** 加密一批路径。成功后密码会自动进入会话。 */
+export const encryptPaths = (req) => invoke('encrypt_paths', { req });
+
 /* ---------------- 会话 ---------------- */
 
 /** 探测目录里有哪些 vault（每个有独立的 salt）。 */
@@ -35,6 +54,10 @@ export const vaultParamsOf = (dir) => invoke('vault_params_of', { dir });
 /** 用一组 vault 参数派生密钥并解锁。 */
 export const unlock = (label, password, vaults) =>
   invoke('unlock', { label, password, vaults });
+
+/** 对一个目录直接试密码：探测 vault + 派生，一步到位。 */
+export const unlockDirectory = (dir, label, password) =>
+  invoke('unlock_directory', { dir, label, password });
 
 /** 锁定。后端会清空文件列表与会话密钥。 */
 export const lock = () => invoke('lock');

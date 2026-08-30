@@ -13,9 +13,9 @@
 | `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
-| `omy-gui` | 🟢 桌面端可用 | 30 项 + 43 项端到端 + 19 项前端构建/运行时 | Tauri v2；界面重构为 Vue 3 + Vite，产物不入库由 build.rs 自动构建 |
+| `omy-gui` | 🟢 桌面端可用 | 47 项 + 43 项端到端 + 45 项前端构建/运行时 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门 |
 
-合计 **453 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **470 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -204,6 +204,58 @@ diff 保持焦点、响应式自动重渲染，那些特例连同注释一起删
 没有改 lint 配置，而是在 build.rs 局部 `#![allow]` 并写明理由：
 构建脚本不是运行期代码，cargo 的约定就是构建失败即 panic，
 返回 Result 不会让构建停下来，只会静默产出坏掉的二进制。
+
+#### GUI 改为文件管理器式交互：把密码从门槛变成工具
+
+原来的界面一启动就是密码框，解锁后才显示文件。这个模型假设
+**用户已经有加密文件了**——但新用户第一次打开应用时，手里
+一个 `.omy` 文件都没有，却被要求输入一个不存在的密码。
+唯一能做的事被一道没有钥匙的门挡住了。
+
+实测确认了这一点：`启动时没有密码门槛` 现在是一条断言。
+
+新模型把两件事分开：
+
+| | 旧模型 | 新模型 |
+|---|---|---|
+| 启动后看到 | 密码框 | 文件管理器 |
+| 没有密码时 | 什么都做不了 | 浏览、选文件、**加密** |
+| 密码的作用 | 进入应用的钥匙 | 让加密文件显示真名 |
+| 解锁粒度 | 全局开关 | 每个库（vault）独立 |
+
+`store.js` 里 **删掉了 `unlocked` 全局布尔**。会话里有几个凭据
+只影响「哪些加密文件能看见真名」，不影响应用能不能用。这个字段
+存在时，界面很难不写成「解锁了显示 A，没解锁显示 B」的二分。
+
+#### 加密完不该再问一次密码
+
+`encrypt_paths` 成功后会调 `adopt_credential`，用**产出文件真实的**
+vault_salt 把刚才用的密码装进会话。
+
+不这么做的话：用户选中文件 → 输密码 → 加密成功 → 文件变成
+「🔒 需要密码」→ 应用要求他输入三秒前刚打过的那个密码。
+
+实测断言 `加密后密码自动进入会话` 与 `刚加密的文件立刻显示真名`
+固定这个行为。
+
+#### 同一目录必须共用一个 vault salt
+
+`existing_vault` 会先扫目录里已有的加密文件，沿用它的 salt 与
+KDF 参数；没有才新生成。
+
+违反的后果很隐蔽：同一个密码在同一个目录里派生出两个不同的 KEK，
+症状是「密码明明是对的，却只解开了一部分文件」。用户无从判断
+是密码错了还是文件坏了。`second_file_reuses_vault_salt` 锁定这一点。
+
+#### 不提供的两个功能，以及为什么明确报错
+
+| 功能 | 处理 | 理由 |
+|---|---|---|
+| 移到回收站 | 返回 `trash_not_supported` | 悄悄降级成永久删除就是数据丢失 |
+| 加密整个文件夹 | 返回 `folder_not_supported` | 静默跳过会让用户以为已经加密了 |
+
+两者都有测试守护「必须报错而不是静默做别的事」，其中
+`trash_reports_error_instead_of_deleting` 会验证文件确实还在。
 #### CLI 只在网络命令内部起 runtime
 
 CLI 整体是同步的。把 `main` 改成 `#[tokio::main]` 会让加解密命令
@@ -383,6 +435,32 @@ Vue（含模板编译器）、index.html 不能有内联脚本、locales 要随�
 生效、控制台无错误、无 CSP 违规。
 
 第二层抓到过第一层抓不到的东西——CSP 拦截和 IPC 不可用只在运行时暴露。
+
+### GUI 文件管理器实测（26 项）
+
+新交互模型的两条主链路都用真实进程 + CDP 验证，不采信「界面渲染
+出来了」这种表面证据。
+
+**交互模型**（15 项，`spikes/verify-gui-filemanager.ps1` +
+`probe-gui-fm.mjs`）：造一个含普通文件、加密文件、子目录的真实目录，
+确认启动无密码门槛、侧栏位置已翻译、能识别加密文件、加密文件默认
+锁定。关键反证：**锁定文件不返回真实名与 entry_id**——不是"界面
+上不显示"，而是数据根本没出后端。
+
+**加密与解锁**（11 项，`spikes/verify-gui-crypto.ps1` +
+`probe-gui-crypto.mjs`）：全程通过真实 Tauri 命令走完
+加密 → 自动可见 → 锁定 → 错密码 → 对密码 五个阶段。
+
+三条反证是这组的重点：
+
+| 反证 | 若缺失会漏掉什么 |
+|---|---|
+| 锁定后加密文件全部回到锁定态 | 锁定只清了界面没清密钥 |
+| 错误密码解不开任何文件 | 派生成功就当解锁成功 |
+| 普通文件不被误判为加密文件 | magic 判断过于宽松 |
+
+`probe_one` 的两条断言覆盖「双击已解锁文件不该再问密码」这条
+交互路径——它在界面上表现为"没有弹窗"，很容易被当成没生效。
 ### CLI 端到端实测（19 项，`spikes/verify-cli-share.ps1`）
 
 把 `omy.exe` 当成两台设备真的跑起来：A 生成配对码、B 用
@@ -443,6 +521,8 @@ pwsh -File scripts/verify-media-tlv.ps1           # 46 项媒体 TLV 端到端
 # GUI 端到端（需 Node 跑 CDP 驱动脚本；会自动启动并关闭 GUI）
 pwsh -File spikes/make-gui-vault.ps1              # 造测试库（4 个文件同库 + 1 个异库）
 pwsh -File scripts/verify-gui.ps1                 # 43 项 GUI 端到端
+pwsh -File spikes/verify-gui-filemanager.ps1      # 15 项 文件管理器交互
+pwsh -File spikes/verify-gui-crypto.ps1           # 11 项 加密/解锁链路
 ./target/release/omy bench                        # 本机性能
 cargo run --release --example bench_scan -- 300
 cargo run --release --example fuzz_parse -- 20000
@@ -708,9 +788,12 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `omy-net` 会话有效期与吊销（`Session` 授权入口）
 - [x] `omy-net` 服务端主循环（accept + 多连接并发 + 超时 + 访问日志）
 - [x] `omy-cli` `share` 命令组（serve / discover / pair / connect / devices）
-- [ ] GUI 的设备发现与配对界面
+- [ ] GUI 的设备发现与配对界面（侧栏分区已就位，如实说明「请用 CLI」；后端未暴露 Tauri 命令）
 - [ ] `omy-net` 真实双机 mDNS 实测（当前只在单机验证协议逻辑）
 - [x] `omy-gui`：Tauri v2（解锁/扫描/预览/播放/多语言/锁定）
+- [x] `omy-gui`：文件管理器式交互（浏览/选中加密/双击解锁/统一密码）
+- [ ] `omy-gui`：文件夹加密（当前如实报 `folder_not_supported`）
+- [ ] `omy-gui`：移到回收站（当前如实报 `trash_not_supported`，**不退化为永久删除**）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 
 ## 已定决定
