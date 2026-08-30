@@ -73,7 +73,7 @@
     "locked_meta": "Password required",
     "unknown": "Unknown",
     "folder": "Folder",
-    "open_external": "Open with external app",
+    "open_external": "Open with another app",
     "reveal": "Show in file manager",
     "encrypt": "Encrypt",
     "preview": "Preview"

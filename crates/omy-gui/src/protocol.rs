@@ -73,6 +73,8 @@ pub enum Target {
     RemoteFile(String),
     /// 远端缩略图。
     RemoteThumb(String),
+    /// 未加密文件的正文（磁盘明文直读）。
+    Plain(String),
 }
 
 /// 从 URI 路径解析目标。
@@ -90,6 +92,7 @@ pub fn parse_target(path: &str) -> Option<Target> {
         ("rthumb/", Target::RemoteThumb as fn(String) -> Target),
         ("file/", Target::File as fn(String) -> Target),
         ("thumb/", Target::Thumb as fn(String) -> Target),
+        ("plain/", Target::Plain as fn(String) -> Target),
     ] {
         if let Some(id) = p.strip_prefix(prefix) {
             if id.is_empty() {
@@ -247,7 +250,121 @@ pub fn handle(
         },
         Target::RemoteFile(id) => serve_remote_file(state, remote, request, &id),
         Target::RemoteThumb(id) => serve_remote_thumb(state, remote, &id),
+        Target::Plain(token) => serve_plain(state, request, &token),
     }
+}
+
+/// 返回未加密文件的正文，支持 Range。
+///
+/// # 与 `serve_file` 的关系
+///
+/// 两者的 Range 语义必须**完全一致**，否则会出现「加密的视频能拖，
+/// 没加密的反而不能」这种莫名其妙的差异。所以这里同样：
+/// 开放结尾截断到 `MAX_SPAN`、不可满足回 416、带全套 CORS 头。
+///
+/// 唯一的区别是取字节的方式——直接 seek 磁盘，不解密。
+///
+/// # 为什么不缓存整个文件
+///
+/// 用 `seek` + 定长读，而不是 `fs::read` 之后切片。播放一个 4 GB 的
+/// 视频时，后者会把整个文件读进内存。
+fn serve_plain(
+    state: &Arc<AppState>,
+    request: &Request<Vec<u8>>,
+    token: &str,
+) -> Response<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // 只有被浏览过的文件才有 token。这道检查挡住的是
+    // 「WebView 里的脚本构造 URL 去读任意文件」
+    let Some(path) = state.plain.resolve(token) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Ok(mut f) = std::fs::File::open(&path) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Ok(md) = f.metadata() else {
+        return bare(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let total = md.len();
+
+    let range_header = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok());
+
+    let (start, end_inclusive, is_partial) = match range_header {
+        Some(h) => match parse_range(h, total) {
+            Some(r) => (r.0, r.1, true),
+            None => {
+                return with_common_headers(
+                    Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+                )
+                .body(Vec::new())
+                .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+        },
+        None => (0u64, total.saturating_sub(1), false),
+    };
+
+    let end_inclusive = if is_partial {
+        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
+    } else {
+        end_inclusive
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+
+    // 无 Range 的请求也要设上限：否则双击一个 4 GB 的视频，
+    // WebView 的第一个请求（不带 Range）就会把 4 GB 读进内存。
+    // 返回前 MAX_SPAN 并如实标注 206，播放器会继续要后面的
+    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
+    } else {
+        (length, is_partial, end_inclusive)
+    };
+
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return bare(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let cap = usize::try_from(length).unwrap_or(0);
+    let mut data = vec![0u8; cap];
+    let Ok(n) = f.read(&mut data) else {
+        return bare(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    data.truncate(n);
+
+    // 文件可能在读的过程中被截短，如实按实际读到的长度回报，
+    // 不然 Content-Length 与正文对不上，播放器会认为连接断了
+    let end_inclusive = start
+        .saturating_add(n as u64)
+        .saturating_sub(1)
+        .min(end_inclusive);
+
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (_, mime) = crate::mime::by_extension(&name);
+
+    let mut b = with_common_headers(
+        Response::builder()
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, data.len().to_string()),
+    );
+
+    b = if is_partial {
+        b.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end_inclusive}/{total}"),
+        )
+    } else {
+        b.status(StatusCode::OK)
+    };
+
+    b.body(data).unwrap_or_else(|_| Response::new(Vec::new()))
 }
 
 /// 打开文件并取得密钥。
@@ -632,6 +749,57 @@ mod tests {
         // 同一个 id 在两种前缀下必须解析成不同目标
         assert_ne!(parse_target("/file/x"), parse_target("/rfile/x"));
         assert_ne!(parse_target("/thumb/x"), parse_target("/rthumb/x"));
+    }
+
+    /// 明文路径必须与加密路径分开解析。
+    ///
+    /// 若 `plain/x` 落到 `File("x")` 分支，就会拿明文 token 去
+    /// 加密文件表里查——查不到返回 404，表现为「没加密的图片
+    /// 双击打不开」，而日志里一切正常。
+    #[test]
+    fn plain_target_is_distinct() {
+        assert_eq!(
+            parse_target("/plain/abc123"),
+            Some(Target::Plain(String::from("abc123")))
+        );
+        assert_eq!(parse_target("/plain/"), None, "空 token 必须拒绝");
+        assert_ne!(parse_target("/plain/x"), parse_target("/file/x"));
+        assert_ne!(parse_target("/plain/x"), parse_target("/rfile/x"));
+        assert_ne!(parse_target("/plain/x"), parse_target("/thumb/x"));
+    }
+
+    /// 无 Range 的大文件请求也必须被截断。
+    ///
+    /// WebView 的第一个请求通常不带 Range。若老实返回整个文件，
+    /// 双击一个 4 GB 的视频会把 4 GB 读进内存——加密路径靠
+    /// MAX_SPAN 挡住了，明文路径同样需要这条保护。
+    #[test]
+    fn plain_caps_unranged_large_file() {
+        let total: u64 = 4 * 1024 * 1024 * 1024;
+        let (start, mut end, mut partial) = (0u64, total - 1, false);
+        let mut length = end - start + 1;
+        if !partial && length > MAX_SPAN {
+            length = MAX_SPAN;
+            partial = true;
+            end = MAX_SPAN - 1;
+        }
+        assert!(partial, "超过上限时必须转成 206");
+        assert_eq!(length, MAX_SPAN);
+        assert_eq!(end, MAX_SPAN - 1);
+    }
+
+    /// 小文件不受截断影响，仍然是完整的 200。
+    #[test]
+    fn plain_small_file_stays_whole() {
+        let total: u64 = 1024;
+        let (start, end, mut partial) = (0u64, total - 1, false);
+        let mut length = end - start + 1;
+        if !partial && length > MAX_SPAN {
+            length = MAX_SPAN;
+            partial = true;
+        }
+        assert!(!partial, "小文件不该被切成 206");
+        assert_eq!(length, total);
     }
 
     #[test]

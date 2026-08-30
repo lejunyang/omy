@@ -73,6 +73,34 @@ export const state = reactive({
   remoteMode: false,
 });
 
+/** 设置一条成功提示，若干秒后自动消失。
+ *
+ * 只有**成功**类提示自动消失。错误必须留在屏幕上等用户主动关掉——
+ * 自动消失的错误等于没报错：用户很可能正低头看别处，回头只看到
+ * 操作「好像没反应」。
+ *
+ * 重复调用会取消上一个计时器，否则连续两次操作时，第一次的计时器
+ * 会把第二条提示提前撤掉。
+ */
+let noticeTimer = 0;
+export function setNotice(text, ms = 4000) {
+  state.notice = text;
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = 0;
+  if (!text) return;
+  noticeTimer = setTimeout(() => {
+    state.notice = '';
+    noticeTimer = 0;
+  }, ms);
+}
+
+/** 立刻清掉提示（用户点 ✕ 时调用）。 */
+export function clearNotice() {
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = 0;
+  state.notice = '';
+}
+
 /** 拼出远端文件的内容 URL。 */
 export function remoteFileUrl(id) {
   return `${state.streamBase}/rfile/${encodeURIComponent(id)}`;
@@ -148,7 +176,7 @@ export async function tryUnlockRemote(password) {
     state.remoteEntries = await api.remoteRelock();
     const opened = state.remoteEntries.filter((f) => f.unlocked).length;
     if (opened > 0) {
-      state.notice = i18n.tn('notice.unlocked', opened);
+      setNotice(i18n.tn('notice.unlocked', opened));
     } else {
       state.error = i18n.te('wrong_password');
     }
@@ -181,6 +209,40 @@ export async function refreshDeviceOverview() {
 /** 拼出某个文件的内容 URL。 */
 export function fileUrl(id) {
   return `${state.streamBase}/file/${encodeURIComponent(id)}`;
+}
+
+/** 拼出未加密文件的内容 URL。
+ *
+ * 走的是同一条 `omystream://` 协议，只是换个前缀。为什么不直接用
+ * 文件路径：那需要开启 Tauri 的 asset 协议，等于把整个文件系统
+ * 暴露给 WebView 里的 JS。
+ */
+export function plainUrl(token) {
+  return `${state.streamBase}/plain/${encodeURIComponent(token)}`;
+}
+
+/** 用系统默认程序打开。 */
+export async function openWithSystem(entry) {
+  if (!entry?.token) return false;
+  try {
+    await api.openExternal(entry.token);
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.te('open_failed'));
+    return false;
+  }
+}
+
+/** 在系统文件管理器里定位。 */
+export async function revealEntry(entry) {
+  if (!entry?.token) return false;
+  try {
+    await api.revealInFolder(entry.token);
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.te('open_failed'));
+    return false;
+  }
 }
 
 /** 拼出某个文件的缩略图 URL。 */
@@ -331,7 +393,7 @@ export async function encryptSelected(opts) {
         reason: i18n.te(first[1], first[1]),
       });
     } else {
-      state.notice = i18n.tn('notice.encrypted', summary.items.length);
+      setNotice(i18n.tn('notice.encrypted', summary.items.length));
     }
     return summary;
   } catch (e) {
@@ -355,7 +417,7 @@ export async function tryUnlock(password) {
     await reload();
     const opened = state.entries.filter((e) => e.is_encrypted && e.unlocked).length;
     if (opened > 0) {
-      state.notice = i18n.tn('notice.unlocked', opened);
+      setNotice(i18n.tn('notice.unlocked', opened));
     } else {
       // 派生成功但一个文件也没解开 = 密码不对。
       // 这个区分很重要：KEK 派生几乎总是"成功"的，

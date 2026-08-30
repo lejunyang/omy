@@ -126,6 +126,12 @@ impl FileEntry {
 /// 全局应用状态。
 pub struct AppState {
     inner: Mutex<Inner>,
+    /// 未加密文件的访问登记表。
+    ///
+    /// 单独放在 `Mutex` 之外是有意的：协议层每次请求都要查它，
+    /// 而那条路径上不需要碰会话密钥。共用一把锁会让预览请求
+    /// 和 Argon2 派生互相等待——大目录里滚动缩略图时很明显。
+    pub plain: crate::plain::PlainRegistry,
 }
 
 /// 受锁保护的内部状态。
@@ -154,6 +160,7 @@ impl AppState {
                 roots: Vec::new(),
                 lang: detect_language(),
             }),
+            plain: crate::plain::PlainRegistry::new(),
         }
     }
 
@@ -240,6 +247,10 @@ impl AppState {
             g.files.clear();
             g.order.clear();
         }
+        // 明文 token 也一并作废。这些文件本来就以明文躺在磁盘上，
+        // 清不清都拦不住直接去磁盘打开的人；但留着一批可用 token
+        // 与「锁定后什么都看不到」的预期不符
+        self.plain.clear();
     }
 
     /// 当前界面语言。

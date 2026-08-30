@@ -6,10 +6,19 @@
  * # 双击一个条目会发生什么
  *
  * - 目录 → 进去
- * - 普通文件 → 目前只能选中（应用内不预览未加密文件，那是系统
- *   文件管理器的活；将来可以加「用外部应用打开」）
- * - 加密文件且已解锁 → 预览
+ * - 未加密文件，能在应用内看的（图片/视频/音频/文本）→ 应用内预览
+ * - 未加密文件，看不了的（PDF、压缩包、Office…）→ 交给系统默认程序
+ * - 加密文件且已解锁 → 应用内预览
  * - 加密文件但锁着 → 弹密码框
+ *
+ * 未加密文件走的是 `omystream://localhost/plain/<token>`，与加密文件
+ * **共用同一个预览组件**。这不是为了省代码，是为了让两者的播放行为
+ * 不可能产生差异——分成两套的话，迟早出现「加密的能拖进度条、
+ * 没加密的反而不能」这种荒唐事。
+ *
+ * 读未加密文件不产生任何新的明文：它本来就以明文躺在磁盘上。
+ * 这与文档 §3 的 L2（临时解密文件）是两回事，那条针对的是把
+ * 加密内容解出来写到磁盘。
  *
  * 这条分支写在这里而不是散在组件里，因为它是**交互策略**，
  * 改动频繁且需要一眼看全。
@@ -33,6 +42,7 @@ import {
   refreshDeviceOverview,
   connectRemote,
   tryUnlockRemote,
+  openWithSystem,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
@@ -51,6 +61,13 @@ const previewEntry = ref(null);
 const remotePreview = ref(null);
 /** 当前密码框是给远端用的还是本机用的。 */
 const unlockForRemote = ref(false);
+/** 未加密文件的预览目标。
+ *
+ * 与加密文件的 `previewEntry` 分开存：后者要走 `state.known` 查
+ * 媒体元信息，而明文文件根本没有那份数据。混在一起会写出
+ * 「用加密文件的字段去读明文对象」这类必然出错的代码。
+ */
+const plainPreview = ref(null);
 
 /** 预览目标的完整信息（含媒体元数据）。 */
 const previewFile = computed(() => {
@@ -68,9 +85,7 @@ async function onOpen(entry) {
     return;
   }
   if (!entry.is_encrypted) {
-    // 未加密文件应用内不预览。静默什么都不做会让人以为卡了，
-    // 所以至少选中它，给一个可见的反馈
-    state.selected = [entry.path];
+    await openPlain(entry);
     return;
   }
   if (entry.unlocked && entry.entry_id) {
@@ -86,6 +101,29 @@ async function onOpen(entry) {
   }
   unlockError.value = '';
   showUnlock.value = true;
+}
+
+/** 打开一个未加密文件。
+ *
+ * 能在应用内看的就内嵌预览，其余交给系统默认程序——这是普通文件
+ * 管理器的行为，用户对它有稳定预期。
+ */
+async function openPlain(entry) {
+  state.selected = [entry.path];
+  if (!entry.token) return;
+
+  // preview 由后端算好（`mime.rs`），前端不再按后缀猜。
+  // 判定规则会随浏览器支持情况变化，散在两处早晚不一致
+  if (entry.preview && entry.preview !== 'other') {
+    plainPreview.value = {
+      id: entry.token,
+      name: entry.name,
+      kind: entry.preview,
+      mime: entry.mime,
+    };
+    return;
+  }
+  await openWithSystem(entry);
 }
 
 async function openPreview(entry) {
@@ -131,6 +169,9 @@ async function onPick() {
 async function doLock() {
   previewEntry.value = null;
   remotePreview.value = null;
+  // 明文预览也要关：后端 lock 会清空 token 表，
+  // 留着的话画面会突然变成加载失败，很莫名其妙
+  plainPreview.value = null;
   showDevices.value = false;
   // 断开远端由**后端**的 lock 负责，这里不再重复调用。
   // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
@@ -160,6 +201,13 @@ function onRemoteUnlock() {
 async function onDevicePanelClose() {
   showDevices.value = false;
   await refreshDeviceOverview();
+}
+
+/** 预览层里点「用外部应用打开」。 */
+async function onPlainExternal() {
+  const cur = state.entries.find((e) => e.token === plainPreview.value?.id);
+  plainPreview.value = null;
+  if (cur) await openWithSystem(cur);
 }
 
 function onUnlockCancel() {
@@ -244,5 +292,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     :file="remotePreview"
     remote
     @close="remotePreview = null"
+  />
+
+  <PreviewOverlay
+    v-if="plainPreview"
+    :key="'p' + plainPreview.id"
+    :file="plainPreview"
+    plain
+    @close="plainPreview = null"
+    @external="onPlainExternal"
   />
 </template>

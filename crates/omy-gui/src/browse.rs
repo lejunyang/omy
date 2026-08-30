@@ -54,6 +54,19 @@ pub struct DirEntry {
     pub entry_id: Option<String>,
     /// 扩展名（小写，不含点），用于选图标。
     pub ext: Option<String>,
+    /// 未加密文件的访问 token，用于应用内预览与「用系统程序打开」。
+    ///
+    /// 目录为 `None`。加密文件也给 token——「在文件管理器中显示」
+    /// 对加密文件同样适用，那个操作不需要解密。
+    pub token: Option<String>,
+    /// 未加密文件的预览类别（`image` / `video` / `audio` / `text` / `other`）。
+    ///
+    /// 前端据此决定双击是应用内预览还是交给系统程序。
+    /// 让后端算而不是前端按后缀猜：判定规则（比如哪些格式需要转码）
+    /// 会变，散在两处早晚不一致——`mime.rs` 里已经踩过这个坑。
+    pub preview: Option<String>,
+    /// 未加密文件的 MIME，供 `<video>` / `<img>` 使用。
+    pub mime: Option<String>,
 }
 
 /// 浏览一个目录。
@@ -108,6 +121,9 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
                 real_name: None,
                 entry_id: None,
                 ext: None,
+                token: None,
+                preview: None,
+                mime: None,
             });
             continue;
         }
@@ -121,6 +137,20 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
         // 其实不是我们的格式
         let encrypted = probe_encrypted(&path);
 
+        // 登记 token。加密文件也登记：「在文件管理器中显示」对它
+        // 同样适用，那个操作不需要解密。
+        let token = state.plain.register(&path);
+
+        // 预览类别只对未加密文件有意义。加密文件的类别要等解开
+        // 头部才知道——磁盘上的后缀是 .omy，按后缀只会得到 other，
+        // 填进去反而误导前端
+        let (preview, mime) = if encrypted {
+            (None, None)
+        } else {
+            let (k, m) = crate::mime::by_extension(&name);
+            (Some(k.to_owned()), Some(m))
+        };
+
         files.push(DirEntry {
             path: path.to_string_lossy().into_owned(),
             name,
@@ -131,6 +161,9 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
             real_name: None,
             entry_id: None,
             ext,
+            token,
+            preview,
+            mime,
         });
     }
 
@@ -289,6 +322,9 @@ pub fn list_places() -> Vec<DirEntry> {
                 real_name: None,
                 entry_id: None,
                 ext: None,
+                token: None,
+                preview: None,
+                mime: None,
             });
         }
     }
@@ -316,6 +352,9 @@ fn drive_roots() -> Vec<DirEntry> {
                 real_name: None,
                 entry_id: None,
                 ext: None,
+                token: None,
+                preview: None,
+                mime: None,
             })
         })
         .collect()
@@ -334,6 +373,9 @@ fn drive_roots() -> Vec<DirEntry> {
         real_name: None,
         entry_id: None,
         ext: None,
+        token: None,
+        preview: None,
+        mime: None,
     }]
 }
 

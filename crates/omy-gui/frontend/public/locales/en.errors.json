@@ -41,5 +41,7 @@
   "unauthorized": "The device refused the connection; it may have revoked access.",
   "not_connected": "Not connected to any device.",
   "remote_error": "The device returned an error. Try again.",
-  "verify_failed": "Post-encryption self-check failed; nothing was saved. Please report this."
+  "verify_failed": "Post-encryption self-check failed; nothing was saved. Please report this.",
+  "open_failed": "Couldn't open this file — there may be no associated app.",
+  "unknown_file": "This file is no longer available. Try refreshing."
 }

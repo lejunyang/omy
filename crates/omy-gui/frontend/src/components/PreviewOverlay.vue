@@ -21,7 +21,7 @@
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import * as i18n from '../i18n.js';
-import { fileUrl, remoteFileUrl } from '../store.js';
+import { fileUrl, remoteFileUrl, plainUrl } from '../store.js';
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -32,17 +32,25 @@ const props = defineProps({
    * 与本地**必然**一致，不会出现「本地能拖远端不能」。
    */
   remote: { type: Boolean, default: false },
+  /** 内容是磁盘上的未加密文件。
+   *
+   * 同样只影响 URL 前缀。三种来源（本地加密 / 远端加密 / 本地明文）
+   * 共用这一个组件，是为了让它们的播放行为**不可能**产生差异——
+   * 分成三个组件的话，迟早有人只修其中一个。
+   */
+  plain: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'external']);
 
 const media = useTemplateRef('media');
 const text = ref('');
 const mediaError = ref('');
 
-const src = computed(() =>
-  props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id),
-);
+const src = computed(() => {
+  if (props.plain) return plainUrl(props.file.id);
+  return props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id);
+});
 const kind = computed(() => props.file.kind || 'other');
 
 /** 文本内容取回后渲染。 */
@@ -133,7 +141,14 @@ onBeforeUnmount(() => {
       <!-- {{ }} 是 textContent 语义，文件内容不会被当成 HTML 解析 -->
       <pre v-else-if="kind === 'text'">{{ text }}</pre>
 
-      <div v-else class="overlay-msg">{{ i18n.t('playback.cannot_preview') }}</div>
+      <!-- 应用内看不了的类型：给一条出路，而不是一句「不支持」就完事。
+           PDF、压缩包、Office 文档都会走到这里（文档 §8 的既定设计） -->
+      <div v-else class="overlay-msg">
+        <p>{{ i18n.t('playback.cannot_preview') }}</p>
+        <button v-if="plain" class="btn primary" @click="$emit('external')">
+          📤 {{ i18n.t('file.open_external') }}
+        </button>
+      </div>
     </div>
   </div>
 </template>

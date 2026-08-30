@@ -21,6 +21,7 @@ import {
   toggleSelect,
   selectAll,
   clearSelection,
+  clearNotice,
 } from '../store.js';
 import { toggleTheme } from '../theme.js';
 import SideBar from './SideBar.vue';
@@ -245,9 +246,10 @@ function onSelect(entry, ev) {
     </div>
   </div>
 
-  <!-- 提示条：成功与错误都在这里，不打断操作 -->
+  <!-- 提示条：成功提示会自动消失，错误留到用户主动关掉。
+       错误若也自动消失就等于没报错——用户可能正低头看别处 -->
   <div v-if="state.error || state.notice" class="toast" :class="{ err: !!state.error }">
     <span>{{ state.error || state.notice }}</span>
-    <button class="iconbtn" @click="state.error = ''; state.notice = ''">✕</button>
+    <button class="iconbtn" @click="state.error = ''; clearNotice()">✕</button>
   </div>
 </template>

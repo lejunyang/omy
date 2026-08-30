@@ -34,6 +34,7 @@ mod devices;
 mod encrypt;
 mod lan;
 mod mime;
+mod plain;
 mod protocol;
 mod remote;
 mod remote_cmds;
@@ -93,6 +94,8 @@ fn main() {
             browse::browse_directory,
             browse::list_places,
             browse::parent_of,
+            plain::open_external,
+            plain::reveal_in_folder,
             encrypt::encrypt_paths,
             device_cmds::device_status,
             device_cmds::open_device_store,

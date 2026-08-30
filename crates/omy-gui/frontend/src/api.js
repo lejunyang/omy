@@ -174,3 +174,13 @@ export const remoteRelock = () => invoke('remote_relock');
 
 /** 远端文件里出现过的 vault 参数（已去重）。 */
 export const remoteVaults = () => invoke('remote_vaults');
+
+/** 用系统默认程序打开一个未加密文件。
+ *
+ * 只接受后端登记过的 token，前端拿不到「打开任意路径」的能力——
+ * 这也是没有引入 opener 插件的原因。
+ */
+export const openExternal = (token) => invoke('open_external', { token });
+
+/** 在系统文件管理器里定位一个文件。加密文件也适用。 */
+export const revealInFolder = (token) => invoke('reveal_in_folder', { token });
