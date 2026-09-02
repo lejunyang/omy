@@ -182,9 +182,22 @@ fn launch(path: &Path) -> std::io::Result<()> {
 }
 
 /// 平台相关的「用默认程序打开」。
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
 fn launch(path: &Path) -> std::io::Result<()> {
     std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
+}
+
+/// Android 上没有 xdg-open，交给系统应用要走 Intent。
+///
+/// 必须单独分一支：Android 也满足 `all(unix, not(macos))`，不排除
+/// 的话会去 spawn 一个不存在的命令，得到一个含糊的 io error，
+/// 而真正的原因是分支选错了。
+#[cfg(target_os = "android")]
+fn launch(_path: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Android 需要通过 Intent 打开外部应用，尚未实现",
+    ))
 }
 
 /// 平台相关的「在文件管理器中显示」。
@@ -214,10 +227,19 @@ fn reveal(path: &Path) -> std::io::Result<()> {
 /// 平台相关的「在文件管理器中显示」。
 ///
 /// Linux 没有统一的「选中文件」接口，退而求其次打开父目录。
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
 fn reveal(path: &Path) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(path);
     std::process::Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+}
+
+/// Android 没有「文件管理器中显示」这个概念，也没有 xdg-open。
+#[cfg(target_os = "android")]
+fn reveal(_path: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Android 没有「在文件管理器中显示」",
+    ))
 }
 
 #[cfg(test)]

@@ -20,7 +20,10 @@
     "up": "上一级",
     "reload": "刷新",
     "home": "起点",
-    "pick_folder": "打开文件夹…"
+    "pick_folder": "打开文件夹…",
+    "menu": "菜单",
+    "tab_files": "文件",
+    "tab_devices": "设备"
   },
   "unlock": {
     "title": "解锁",

@@ -8,6 +8,7 @@
 
 import { computed, ref, watch } from 'vue';
 import * as i18n from '../i18n.js';
+import { isMobile } from '../viewport.js';
 import {
   state,
   visibleEntries,
@@ -28,7 +29,31 @@ import { toggleTheme } from '../theme.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
 
-defineEmits(['open', 'encrypt', 'lock', 'quick-unlock', 'pick', 'lang', 'devices']);
+/* ---- 移动端外壳 ----
+ *
+ * 与桌面共用这一个组件，只换外壳：侧栏改抽屉、底栏改导航。
+ * 复制成两个组件的话，列表渲染、搜索、进度、统计会分叉，
+ * 修一边漏一边。
+ */
+
+/** 抽屉（移动端的侧栏）是否展开。 */
+const drawer = ref(false);
+/** 移动端底部导航的当前页。 */
+const tab = ref('files');
+
+// 切回桌面时必须收起抽屉：抽屉在桌面布局里是个盖住半屏的浮层，
+// 留着它会挡住文件列表，而桌面上没有关掉它的入口
+watch(isMobile, (m) => {
+  if (!m) drawer.value = false;
+});
+
+/** 移动端点了侧栏里的位置后要自动收起抽屉，否则挡着刚打开的目录。 */
+function onDrawerNavigate() {
+  drawer.value = false;
+}
+
+/** 移动端「选择模式」：已有选中项时，单击是加选而不是打开。 */
+const selectionActive = computed(() => state.selected.length > 0);
 
 /** 进度百分比，取整。
  *
@@ -75,11 +100,33 @@ const entriesWithMeta = computed(() =>
 function onSelect(entry, ev) {
   toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
 }
+
+/** 列表行的点击。移动端单击即打开，与网格卡片保持一致——
+ *  两种视图的打开方式若不同，用户切一次视图就得重新学一遍。 */
+function onRowClick(entry, ev) {
+  if (isMobile.value && !selectionActive.value) {
+    emit('open', entry);
+    return;
+  }
+  toggleSelect(entry.path, isMobile.value || ev.ctrlKey || ev.metaKey || ev.shiftKey);
+}
 </script>
 
 <template>
-  <div class="titlebar">
-    <span class="brand">{{ i18n.t('app.name') }}</span>
+  <div class="titlebar" :class="{ mob: isMobile }">
+    <!-- 移动端：汉堡键代替常驻侧栏。280px 宽度放不下侧栏 + 网格 -->
+    <button
+      v-if="isMobile"
+      class="iconbtn"
+      :title="i18n.t('nav.menu')"
+      :aria-label="i18n.t('nav.menu')"
+      :aria-expanded="drawer"
+      @click="drawer = !drawer"
+    >
+      ☰
+    </button>
+
+    <span v-if="!isMobile" class="brand">{{ i18n.t('app.name') }}</span>
 
     <input
       v-model="state.query"
@@ -107,40 +154,44 @@ function onSelect(entry, ev) {
       }}
     </button>
 
-    <button
-      class="iconbtn"
-      :aria-pressed="state.view === 'grid'"
-      :title="i18n.t('view.grid')"
-      :aria-label="i18n.t('view.grid')"
-      @click="state.view = 'grid'"
-    >
-      ⊞
-    </button>
-    <button
-      class="iconbtn"
-      :aria-pressed="state.view === 'list'"
-      :title="i18n.t('view.list')"
-      :aria-label="i18n.t('view.list')"
-      @click="state.view = 'list'"
-    >
-      ☰
-    </button>
-    <button
-      class="iconbtn"
-      :title="i18n.t('lang.toggle')"
-      :aria-label="i18n.t('lang.toggle')"
-      @click="$emit('lang')"
-    >
-      🌐
-    </button>
-    <button
-      class="iconbtn"
-      :title="i18n.t('theme.toggle')"
-      :aria-label="i18n.t('theme.toggle')"
-      @click="toggleTheme"
-    >
-      ◐
-    </button>
+    <!-- 移动端顶栏只留密码与上锁：屏幕宽度有限，
+         视图/语言/主题这些低频项收进抽屉，避免图标挤成一排点不准 -->
+    <template v-if="!isMobile">
+      <button
+        class="iconbtn"
+        :aria-pressed="state.view === 'grid'"
+        :title="i18n.t('view.grid')"
+        :aria-label="i18n.t('view.grid')"
+        @click="state.view = 'grid'"
+      >
+        ⊞
+      </button>
+      <button
+        class="iconbtn"
+        :aria-pressed="state.view === 'list'"
+        :title="i18n.t('view.list')"
+        :aria-label="i18n.t('view.list')"
+        @click="state.view = 'list'"
+      >
+        ☰
+      </button>
+      <button
+        class="iconbtn"
+        :title="i18n.t('lang.toggle')"
+        :aria-label="i18n.t('lang.toggle')"
+        @click="$emit('lang')"
+      >
+        🌐
+      </button>
+      <button
+        class="iconbtn"
+        :title="i18n.t('theme.toggle')"
+        :aria-label="i18n.t('theme.toggle')"
+        @click="toggleTheme"
+      >
+        ◐
+      </button>
+    </template>
     <button
       v-if="state.credentials > 0"
       class="iconbtn"
@@ -152,8 +203,23 @@ function onSelect(entry, ev) {
     </button>
   </div>
 
-  <div class="body">
-    <SideBar @pick="$emit('pick')" @devices="$emit('devices')" />
+  <div class="body" :class="{ mob: isMobile }">
+    <!-- 抽屉遮罩：点空白处收起。移动端没有 Esc 键，
+         没有这层遮罩，抽屉一旦打开就只能靠汉堡键关 -->
+    <div
+      v-if="isMobile && drawer"
+      class="scrim"
+      @click="drawer = false"
+    ></div>
+
+    <SideBar
+      :class="{ drawer: isMobile, open: drawer }"
+      :mobile="isMobile"
+      @pick="$emit('pick'); onDrawerNavigate()"
+      @devices="$emit('devices'); onDrawerNavigate()"
+      @navigate="onDrawerNavigate"
+      @lang="$emit('lang')"
+    />
 
     <div class="main">
       <div class="crumb">
@@ -253,6 +319,7 @@ function onSelect(entry, ev) {
             :key="e.path"
             :entry="e"
             :selected="state.selected.includes(e.path)"
+            :selection-active="selectionActive"
             @open="$emit('open', e)"
             @select="onSelect(e, $event)"
           />
@@ -266,7 +333,7 @@ function onSelect(entry, ev) {
             :class="{ sel: state.selected.includes(e.path) }"
             tabindex="0"
             @dblclick="$emit('open', e)"
-            @click="onSelect(e, $event)"
+            @click="onRowClick(e, $event)"
             @keydown.enter.prevent="$emit('open', e)"
           >
             <span class="ic">{{ e.is_dir ? '📁' : e.is_encrypted ? (e.unlocked ? '🔓' : '🔒') : '📄' }}</span>
@@ -287,8 +354,13 @@ function onSelect(entry, ev) {
         </div>
       </div>
 
-      <div class="statusbar">
-        <span>{{ i18n.tn('status.files', state.entries.length) }}</span>
+      <div class="statusbar" :class="{ mob: isMobile }">
+        <!-- 在容器里时说清这一点：列出来的名字是即时解密出来的，
+             不是磁盘上的文件。少了这句，用户会以为这些文件就摆在硬盘上 -->
+        <span v-if="state.container" class="cbadge">
+          📦 {{ i18n.t('container.subtitle') }}
+        </span>
+        <span>{{ i18n.tn('status.files', currentCount) }}</span>
         <span v-if="encryptedCount">{{ i18n.tn('status.encrypted', encryptedCount) }}</span>
         <span v-if="lockedCount">🔒 {{ i18n.tn('status.locked_count', lockedCount) }}</span>
         <span v-if="state.selected.length">
@@ -299,6 +371,33 @@ function onSelect(entry, ev) {
       </div>
     </div>
   </div>
+
+  <!-- 移动端底部导航（原型：📂 文件 / 🌐 设备 / 🕐 最近 / ⚙️ 设置）。
+       「最近」「设置」两页尚未实现，点了给明确提示而不是静默无反应——
+       画一个点了没反应的按钮比不画更糟 -->
+  <nav v-if="isMobile" class="pnav">
+    <button
+      class="pnavi"
+      :class="{ on: tab === 'files' }"
+      @click="tab = 'files'"
+    >
+      <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
+    </button>
+    <button
+      class="pnavi"
+      :class="{ on: tab === 'devices' }"
+      @click="tab = 'devices'; $emit('devices')"
+    >
+      <span aria-hidden="true">🌐</span>{{ i18n.t('nav.tab_devices') }}
+      <span v-if="state.pairedCount" class="ndot"></span>
+    </button>
+    <button class="pnavi" @click="$emit('lang')">
+      <span aria-hidden="true">🌐</span>{{ i18n.t('lang.toggle') }}
+    </button>
+    <button class="pnavi" @click="toggleTheme">
+      <span aria-hidden="true">◐</span>{{ i18n.t('theme.toggle') }}
+    </button>
+  </nav>
 
   <!-- 提示条：成功提示会自动消失，错误留到用户主动关掉。
        错误若也自动消失就等于没报错——用户可能正低头看别处 -->

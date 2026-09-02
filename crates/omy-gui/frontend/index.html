@@ -2,7 +2,13 @@
 <html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover：让页面延伸到刘海/圆角区域，配合 CSS 的
+         env(safe-area-inset-*) 使用。不加的话底部导航会被 Android
+         的手势导航条盖住，而这在桌面浏览器里完全看不出来 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <title>omy</title>
   </head>
   <body>

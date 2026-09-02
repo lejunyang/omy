@@ -12,16 +12,95 @@
  * 密文大小是例外——它在磁盘上本来就藏不住。
  */
 
-import { computed } from 'vue';
+import { computed, ref, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n.js';
 import { thumbUrl } from '../store.js';
+import { isMobile } from '../viewport.js';
 
 const props = defineProps({
   entry: { type: Object, required: true },
   selected: { type: Boolean, default: false },
+  /** 当前列表里是否已有选中项。
+   *
+   * 不能用 selected 代替：别的卡片被选中时，本卡片的 selected 仍是
+   * false，而此时点本卡片应当是「加选」而不是「打开」。 */
+  selectionActive: { type: Boolean, default: false },
 });
 
-defineEmits(['open', 'select']);
+const emit = defineEmits(['open', 'select']);
+
+/* ---- 打开手势：桌面双击，移动端单击 ----
+ *
+ * 触屏上不存在「双击打开」这个约定，而且移动 WebView 会把快速两次
+ * 点击当成缩放手势吃掉。沿用 dblclick 的直接后果是移动端**点什么
+ * 都打不开**——界面看着完全正常，所以这类 bug 很难从截图上发现。
+ *
+ * 长按改为进入选择：移动端没有 Ctrl 键，不给长按的话就完全无法多选，
+ * 「加密选中项」这个主功能在手机上就用不了。
+ */
+
+const LONG_PRESS_MS = 500;
+/** 手指移动超过这个距离就判定为滚动，不是长按。
+ *  没有这个判定的话，滑动列表会频繁误触发选择。 */
+const MOVE_TOLERANCE = 10;
+
+let timer = null;
+let startX = 0;
+let startY = 0;
+/** 长按已触发，随后的 click 要吞掉，否则长按选中之后又立刻打开。 */
+const suppressClick = ref(false);
+
+function clearTimer() {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+}
+
+function onPointerDown(ev) {
+  if (!isMobile.value || ev.pointerType === 'mouse') return;
+  startX = ev.clientX;
+  startY = ev.clientY;
+  suppressClick.value = false;
+  clearTimer();
+  timer = setTimeout(() => {
+    suppressClick.value = true;
+    // 传 true 当作「加选」：长按的语义就是多选，
+    // 若按单选处理，长按第二个会把第一个取消掉
+    emit('select', { ctrlKey: true });
+  }, LONG_PRESS_MS);
+}
+
+function onPointerMove(ev) {
+  if (!timer) return;
+  if (
+    Math.abs(ev.clientX - startX) > MOVE_TOLERANCE ||
+    Math.abs(ev.clientY - startY) > MOVE_TOLERANCE
+  ) {
+    clearTimer();
+  }
+}
+
+function onPointerUp() {
+  clearTimer();
+}
+
+function onClick(ev) {
+  if (suppressClick.value) {
+    suppressClick.value = false;
+    return;
+  }
+  // 移动端：已经有选中项时，点击继续做多选而不是打开——
+  // 否则用户长按选了第一个，想点第二个加选，结果直接打开了文件
+  if (isMobile.value) {
+    if (props.selected || props.selectionActive) emit('select', { ctrlKey: true });
+    else emit('open', props.entry);
+    return;
+  }
+  emit('select', ev);
+}
+
+onBeforeUnmount(clearTimer);
 
 /** 按扩展名选图标。 */
 const EXT_ICONS = {
@@ -39,7 +118,15 @@ const TIER_ICONS = { p1: '⚡', p2: '🔄', p3: '🐌' };
 
 const icon = computed(() => {
   if (props.entry.is_dir) return '📁';
-  return EXT_ICONS[props.entry.ext] || '📦';
+  const byExt = EXT_ICONS[props.entry.ext];
+  if (byExt) return byExt;
+  // 后缀不认识时，退回后端算出的预览类别。容器内的条目常常是
+  // 没列进 EXT_ICONS 的后缀，但后端已经按类别分好了；
+  // 一律回落到 📦 会让容器里的图片全部显示成「包」
+  return (
+    { image: '🖼️', video: '🎬', audio: '🎵', text: '📄' }[props.entry.preview] ||
+    '📦'
+  );
 });
 
 /** 已解锁加密文件的真实名，其余用磁盘名。 */
@@ -63,7 +150,11 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     role="button"
     :aria-label="entry.name"
     @dblclick="$emit('open', entry)"
-    @click="$emit('select', $event)"
+    @click="onClick"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb dir"><span aria-hidden="true">📁</span></div>
@@ -80,7 +171,11 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     role="button"
     :aria-label="i18n.t('file.locked_name')"
     @dblclick="$emit('open', entry)"
-    @click="$emit('select', $event)"
+    @click="onClick"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb lock"><span aria-hidden="true">🔒</span></div>
@@ -99,7 +194,11 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     role="button"
     :aria-label="displayName"
     @dblclick="$emit('open', entry)"
-    @click="$emit('select', $event)"
+    @click="onClick"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb">
@@ -128,7 +227,11 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     role="button"
     :aria-label="entry.name"
     @dblclick="$emit('open', entry)"
-    @click="$emit('select', $event)"
+    @click="onClick"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb"><span aria-hidden="true">{{ icon }}</span></div>

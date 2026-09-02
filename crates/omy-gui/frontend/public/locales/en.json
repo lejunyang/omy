@@ -20,7 +20,10 @@
     "up": "Up",
     "reload": "Refresh",
     "home": "Start",
-    "pick_folder": "Open folder…"
+    "pick_folder": "Open folder…",
+    "menu": "Menu",
+    "tab_files": "Files",
+    "tab_devices": "Devices"
   },
   "unlock": {
     "title": "Unlock",

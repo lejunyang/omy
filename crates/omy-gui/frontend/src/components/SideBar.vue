@@ -4,7 +4,19 @@
 import * as i18n from '../i18n.js';
 import { state, navigate } from '../store.js';
 
-defineEmits(['pick', 'devices']);
+defineProps({
+  /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
+   *  否则它盖住半个屏幕，用户看不到刚打开的目录。 */
+  mobile: { type: Boolean, default: false },
+});
+
+const emit = defineEmits(['pick', 'devices', 'navigate', 'lang']);
+
+/** 进入某个位置，并通知父组件（抽屉据此收起）。 */
+function go(path) {
+  navigate(path);
+  emit('navigate');
+}
 
 /** 常用目录的标签要翻译，磁盘根用原名。 */
 function labelOf(place) {
@@ -34,7 +46,7 @@ function iconOf(place) {
       class="sitem"
       :class="{ sel: state.cwd === p.path }"
       :title="p.path"
-      @click="navigate(p.path)"
+      @click="go(p.path)"
     >
       <span aria-hidden="true">{{ iconOf(p) }}</span>
       <span class="stext">{{ labelOf(p) }}</span>
