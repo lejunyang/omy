@@ -45,15 +45,25 @@ import {
   openWithSystem,
   enterContainer,
   enterContainerDir,
+  manageKey,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
+import KeyDialog from './components/KeyDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 
 const showEncrypt = ref(false);
+/** 密码管理的目标条目；null 表示对话框关着。
+ *
+ * 存条目本身而不是一个布尔量：对话框要显示改的是哪个文件，
+ * 而「当前选中项」在对话框打开期间可能被别处改掉。
+ */
+const keyTarget = ref(null);
+/** 密码管理的错误单独存，与解锁框的 error 分开。 */
+const keyError = ref('');
 const showUnlock = ref(false);
 const showDevices = ref(false);
 const unlockError = ref('');
@@ -198,6 +208,18 @@ async function onEncryptSubmit(opts) {
   if (r) showEncrypt.value = false;
 }
 
+async function onKeySubmit(req) {
+  const r = await manageKey(req);
+  if (r) {
+    keyTarget.value = null;
+    keyError.value = '';
+  } else {
+    keyError.value = state.error;
+    // 错误已经在对话框里显示，不要再占用底部提示条重复一遍
+    state.error = '';
+  }
+}
+
 async function onUnlockSubmit({ password }) {
   const ok = unlockForRemote.value
     ? await tryUnlockRemote(password)
@@ -305,6 +327,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-else
     @open="onOpen"
     @encrypt="showEncrypt = true"
+    @manage-key="((keyError = ''), (keyTarget = $event))"
     @lock="doLock"
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
     @pick="onPick"
@@ -324,6 +347,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     :busy="state.busy"
     @cancel="showEncrypt = false"
     @submit="onEncryptSubmit"
+  />
+
+  <KeyDialog
+    v-if="keyTarget"
+    :entry="keyTarget"
+    :busy="state.busy"
+    :error="keyError"
+    @cancel="keyTarget = null"
+    @submit="onKeySubmit"
   />
 
   <UnlockDialog

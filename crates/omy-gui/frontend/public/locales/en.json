@@ -225,5 +225,31 @@
   },
   "container": {
     "subtitle": "Contents of the encrypted folder"
+  },
+  "keymgmt": {
+    "title": "Manage passwords",
+    "target": "File",
+    "slots_hidden": "How many passwords this file has cannot be determined: unused slots are filled with random data, indistinguishable from real ones. This is part of the deniability design.",
+    "action": "Action",
+    "add": "Add a password",
+    "add_desc": "Both the current and the new password will open this file.",
+    "change": "Change password",
+    "change_desc": "The current password will no longer work afterwards.",
+    "remove": "Keep only the current password",
+    "remove_desc": "Every other password on this file stops working (if there are any).",
+    "current": "Current password",
+    "current_hint": "All three actions need a password that can currently open this file.",
+    "next": "New password",
+    "next_again": "New password again",
+    "mismatch": "The two new passwords do not match",
+    "same": "The new password is the same as the current one",
+    "stale_copy_warning": "Removing a password only affects this copy of the file. If it was copied, backed up or synced elsewhere, those copies can still be opened with the removed password. To retire a password for good, re-encrypt the file.",
+    "payload_note": "Only the header is rewritten; the content is not re-encrypted, so this is instant even for huge files.",
+    "submit": "Apply",
+    "working": "Rewriting…",
+    "done_add": "Password added; both passwords now work",
+    "done_change": "Password changed; the old one no longer works",
+    "done_remove": "Only the current password is kept now",
+    "locked_hint": "You need to be able to open this file before changing its passwords."
   }
 }

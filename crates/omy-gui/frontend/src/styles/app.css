@@ -1335,3 +1335,61 @@ input {
   /* 去掉点击时的蓝色高亮块，那是浏览器默认样式，不符合本应用配色 */
   -webkit-tap-highlight-color: transparent;
 }
+
+/* ---------- 密码管理对话框 ---------- */
+
+/* 对话框比 narrow 稍宽：里面有三段说明文字，380px 会让每行只剩几个字，
+   读起来像一根竖条 */
+.dlg.keymgmt {
+  width: 440px;
+}
+
+.krow {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--sp) * 2);
+  font-size: 12px;
+  margin-block-end: calc(var(--sp) * 2);
+}
+
+.krow .klabel {
+  color: var(--fg2);
+  flex: none;
+}
+
+/* 文件名可能很长，必须能截断：不截断会把对话框撑宽，
+   撑宽之后按钮跑到屏幕外，在小窗口下就点不到了 */
+.krow .kname {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 比 .note 更强的警示：.note 是"顺便说一句"，这个是"你可能理解错了"。
+   用 --danger 而不是 --warn，因为它纠正的是一个安全上的错觉 */
+.warnbox {
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: calc(var(--sp) * 2.25) calc(var(--sp) * 2.75);
+  border-radius: var(--r-m);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
+  margin-block-end: calc(var(--sp) * 3);
+}
+
+/* 会作废其它密码的操作，按钮也要红：走到这一步时用户已经看过警示文字，
+   但确认按钮和"添加密码"长得一样的话，手快点下去就没有第二次机会 */
+.btn.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 移动端：对话框不能用固定宽度，440px 在 360px 宽的屏幕上会横向溢出，
+   把「应用」按钮推到屏幕外——界面看着正常，但根本点不到那个按钮 */
+@media (max-width: 768px) {
+  .dlg.keymgmt {
+    width: 100%;
+  }
+}

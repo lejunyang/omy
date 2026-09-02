@@ -63,6 +63,18 @@ export const ENCRYPT_PROGRESS_EVENT = 'encrypt://progress';
 export const onEncryptProgress = (handler) =>
   listen(ENCRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
 
+/* ---------------- 密码管理 ---------------- */
+
+/** 给一个已加密文件增删改密码。
+ *
+ * `action` 取 `add` / `change` / `remove`。注意三者的语义都是「重新声明
+ * 这个文件的密码集合」而不是「操作某一个 slot」——格式上无法探测哪个
+ * slot 是空的，详见后端 `keymgmt.rs`。`remove` 不传 `next`（传了会报错）。
+ *
+ * 只改文件头，载荷一个字节都不动，所以再大的文件也是毫秒级。
+ */
+export const manageKey = (req) => invoke('manage_key', { req });
+
 /* ---------------- 会话 ---------------- */
 
 /** 探测目录里有哪些 vault（每个有独立的 salt）。 */

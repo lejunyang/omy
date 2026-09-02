@@ -335,6 +335,31 @@ export const encryptable = computed(() =>
         .filter((e) => e && !e.is_encrypted),
 );
 
+/** 选中项里可以管理密码的那**一个**。
+ *
+ * 只在恰好选中一个已解锁的加密文件时返回它，否则返回 null。
+ *
+ * # 为什么不支持批量
+ *
+ * 每个文件的 vault salt 可能不同，同一个密码在不同文件上派生出的 KEK
+ * 就不同；而「这个文件配了几个密码」查不出来，批量操作时无法逐个确认
+ * 结果。真要批量改，一半成功一半失败时用户手里就是一堆状态不明的文件。
+ *
+ * # 为什么要求已解锁
+ *
+ * 改密码必须先能打开这个文件（要取出 FEK 重新包裹）。锁着的文件先走
+ * 正常的解锁流程，解开后这个入口自然出现——而不是在密码管理对话框里
+ * 再套一层解锁。
+ *
+ * 容器内的条目恒为空：它们没有独立的磁盘文件，密码在外层容器上。
+ */
+export const keyManageable = computed(() => {
+  if (state.container) return null;
+  if (state.selected.length !== 1) return null;
+  const e = state.entries.find((x) => x.path === state.selected[0]);
+  return e && e.is_encrypted && e.unlocked ? e : null;
+});
+
 /* ---------------- 容器（加密文件夹）浏览 ---------------- */
 
 /** 进入一个加密文件夹，像打开普通文件夹那样。
@@ -642,6 +667,34 @@ export async function encryptSelected(opts) {
     // 必须取消订阅：每次加密都新建一个监听器，不取消的话
     // 加密 N 次之后同一个事件会被处理 N 遍
     if (unlisten) unlisten();
+  }
+}
+
+/** 给一个已加密文件增删改密码。
+ *
+ * 只改文件头，所以没有进度条——再大的文件也是毫秒级，
+ * 显示一个瞬间闪过的进度条只会让人以为出了什么事。
+ *
+ * 成功后必须 reload：改完密码，会话里装的凭据变了，列表里这个文件
+ * 是解锁还是锁定要重新算。不刷新的话界面还显示旧状态，用户点开会
+ * 发现和刚才的操作对不上。
+ */
+export async function manageKey(req) {
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const r = await api.manageKey(req);
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
+    await reload();
+    setNotice(i18n.t(`keymgmt.done_${r.action}`));
+    return r;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return null;
+  } finally {
+    state.busy = false;
   }
 }
 

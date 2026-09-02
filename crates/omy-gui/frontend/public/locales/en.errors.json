@@ -44,5 +44,12 @@
   "verify_failed": "Post-encryption self-check failed; nothing was saved. Please report this.",
   "open_failed": "Couldn't open this file — there may be no associated app.",
   "unknown_file": "This file is no longer available. Try refreshing.",
-  "container_failed": "Could not read the folder contents"
+  "container_failed": "Could not read the folder contents",
+  "new_password_required": "Enter a new password",
+  "same_password": "The new password is the same as the current one",
+  "bad_action": "Unknown action",
+  "unexpected_new_password": "This action does not take a new password",
+  "not_encrypted": "This is not an omy encrypted file",
+  "rewrite_verify_failed": "The rewritten file could not be opened with the new password; nothing was changed",
+  "corrupted": "The file is damaged or has been tampered with"
 }

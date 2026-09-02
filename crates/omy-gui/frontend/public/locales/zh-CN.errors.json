@@ -44,5 +44,12 @@
   "verify_failed": "加密后的自检没通过，文件没有保存。这是程序缺陷，请反馈。",
   "open_failed": "打不开这个文件，可能没有关联的程序。",
   "unknown_file": "这个文件已经不在了，试试刷新。",
-  "container_failed": "无法读取文件夹内容"
+  "container_failed": "无法读取文件夹内容",
+  "new_password_required": "请输入新密码",
+  "same_password": "新密码和当前密码一样，没有变化",
+  "bad_action": "未知的操作",
+  "unexpected_new_password": "这个操作不需要新密码",
+  "not_encrypted": "这不是一个 omy 加密文件",
+  "rewrite_verify_failed": "改写后的文件无法用新密码打开，已放弃修改，原文件未改动",
+  "corrupted": "文件已损坏或被篡改"
 }

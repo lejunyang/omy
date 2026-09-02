@@ -16,6 +16,7 @@ import {
   encryptedCount,
   lockedCount,
   encryptable,
+  keyManageable,
   crumbs,
   gotoCrumb,
   goUp,
@@ -70,6 +71,7 @@ const progPercent = computed(() => {
 const emit = defineEmits([
   'open',
   'encrypt',
+  'manage-key',
   'lock',
   'quick-unlock',
   'pick',
@@ -264,6 +266,14 @@ function onRowClick(entry, ev) {
             @click="$emit('encrypt')"
           >
             🔒 {{ i18n.t('file.encrypt') }} ({{ encryptable.length }})
+          </button>
+          <button
+            v-if="keyManageable"
+            class="btn small"
+            :title="i18n.t('keymgmt.title')"
+            @click="$emit('manage-key', keyManageable)"
+          >
+            🔑 {{ i18n.t('keymgmt.title') }}
           </button>
           <button v-if="state.selected.length" class="btn small" @click="clearSelection">
             {{ i18n.t('view.clear_selection') }}
