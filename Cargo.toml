@@ -83,6 +83,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 indicatif = "0.18"
 
 # ---- 回收站（仅 omy-gui 使用）----
+# 「移到回收站」必须调各平台的原生 API（Windows 的 IFileOperation、
+# macOS 的 NSFileManager、Linux 的 freedesktop trash 规范），
+# 自己实现等于重写三套平台代码且极易造成数据丢失。
+# MIT 许可，与 omy-gui 的 GPL-3.0 兼容。
+trash = "5.2"
+
 # 发布配置：优化加解密吞吐
 [profile.release]
 opt-level     = 3

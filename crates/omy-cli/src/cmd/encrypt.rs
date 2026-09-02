@@ -11,7 +11,7 @@
 //! 每个输出文件都经 `tmp → fsync → rename → fsync 父目录`，
 //! 中途崩溃不会留下看似正常实则损坏的文件（风险登记册 R6）。
 
-use super::{Cipher, Ctx, KdfProfile, NameMode};
+use super::{Cipher, Ctx, KdfProfile, NameMode, OriginalAction};
 use crate::i18n::t;
 use crate::output::{human_bytes, parse_size};
 use crate::progress::Progress;
@@ -91,13 +91,12 @@ pub struct Args {
     #[arg(long, value_enum, value_name = "MODE", default_value = "container")]
     pub mode: DirMode,
 
-    /// 保留原文件（默认）
-    #[arg(long, conflicts_with = "delete_original")]
-    pub keep_original: bool,
-
-    /// 删除原文件（需 --yes 或交互确认）
-    #[arg(long)]
-    pub delete_original: bool,
+    /// 加密后如何处理原文件：keep | trash | delete
+    ///
+    /// 不指定时取配置文件的 `defaults.original_action`（默认 keep）。
+    /// `trash` 与 `delete` 都需要 `--yes` 或交互确认。
+    #[arg(long, value_enum, value_name = "ACTION")]
+    pub original: Option<OriginalAction>,
 
     /// 缩略图模式：auto | none
     ///
@@ -241,6 +240,13 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     let name_mode = match a.name_mode {
         Some(m) => m,
         None => NameMode::from_name(&ctx.cfg.defaults.name_mode)?,
+    };
+    // 与 name_mode 同构：命令行优先，否则回落到配置文件。
+    // 解析放在读密码之前——配置里写错值应当立刻报错，
+    // 而不是让用户白输一遍密码再失败
+    let original = match a.original {
+        Some(m) => m,
+        None => OriginalAction::from_name(&ctx.cfg.defaults.original_action)?,
     };
     let compress = a.compress || ctx.cfg.compress.enabled;
     let level = a.compress_level.unwrap_or(ctx.cfg.compress.level);
@@ -426,9 +432,9 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             "encrypted_size": enc.bytes.len(),
         }));
 
-        // 删除原文件前先校验加密产物可解密——绝不能先删后验
-        if a.delete_original {
-            verify_then_delete(ctx, p, &enc.bytes, &keks)?;
+        // 处置原文件前先校验加密产物可解密——绝不能先删后验
+        if original.needs_confirm() {
+            verify_then_handle(ctx, p, &enc.bytes, &keks, original)?;
         }
     }
 
@@ -516,35 +522,59 @@ fn resolve_output(input: &Path, a: &Args, is_dir: bool) -> Result<PathBuf> {
         .join(base))
 }
 
-/// 校验加密产物可解密后再删除原文件。
+/// 校验加密产物可解密后再处置原文件。
 ///
-/// 顺序至关重要：先验证再删除。反之一旦加密有问题，原文件已经没了。
-fn verify_then_delete(ctx: &Ctx<'_>, orig: &Path, enc: &[u8], keks: &[Kek]) -> Result<()> {
-    if !ctx.out.confirm(
-        &format!(
-            "{}\n{}",
-            t("warn.delete_original"),
-            t("prompt.confirm")
-        ),
-        ctx.assume_yes,
-    ) {
+/// 顺序至关重要：先验证再动原件。反之一旦加密有问题，原文件已经没了。
+/// 回收站虽然可还原，也一样先验——不能指望用户去回收站里捞。
+fn verify_then_handle(
+    ctx: &Ctx<'_>,
+    orig: &Path,
+    enc: &[u8],
+    keks: &[Kek],
+    action: OriginalAction,
+) -> Result<()> {
+    // 两种处置的后果差别很大，提示语必须分开：
+    // 回收站可还原，永久删除不可撤销，用同一句话会误导用户
+    let warn = match action {
+        OriginalAction::Trash => t("warn.trash_original"),
+        _ => t("warn.delete_original"),
+    };
+    if !ctx.out.confirm(&format!("{warn}\n{}", t("prompt.confirm")), ctx.assume_yes) {
         ctx.out.info(t("msg.cancelled"));
         return Ok(());
     }
 
-    // 真解密一次并比对内容哈希，而不是只检查文件存在
+    // 真解密一次并比对内容，而不是只检查文件存在
     let opened = omy_core::file::open(enc, keks)?;
     let plain = opened.decrypt_all(enc)?;
     let disk = std::fs::read(orig)?;
     if plain != disk {
         bail!(
-            "校验失败：解密结果与原文件不一致，已跳过删除 {}",
+            "校验失败：解密结果与原文件不一致，已跳过处置 {}",
             orig.display()
         );
     }
-    std::fs::remove_file(orig)
-        .with_context(|| format!("删除 {} 失败", orig.display()))?;
-    ctx.out.info(&format!("已删除原文件 {}", orig.display()));
+
+    match action {
+        // 回收站对文件和目录是同一个入口，不必像永久删除那样自己分流
+        OriginalAction::Trash => {
+            trash::delete(orig)
+                .map_err(|e| anyhow::anyhow!("移到回收站失败 {}: {e}", orig.display()))?;
+            ctx.out.info(&format!("已移到回收站 {}", orig.display()));
+        }
+        // remove_file 对目录一律失败，而 container 模式加密的正是目录：
+        // 不分流会让「加密文件夹后删原件」静默失效
+        OriginalAction::Delete => {
+            if orig.is_dir() {
+                std::fs::remove_dir_all(orig)
+            } else {
+                std::fs::remove_file(orig)
+            }
+            .with_context(|| format!("删除 {} 失败", orig.display()))?;
+            ctx.out.info(&format!("已删除原文件 {}", orig.display()));
+        }
+        OriginalAction::Keep => {}
+    }
     Ok(())
 }
 

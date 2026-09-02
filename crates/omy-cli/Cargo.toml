@@ -36,6 +36,8 @@ serde.workspace = true
 serde_json.workspace = true
 # 加解密进度条。大文件是纯 CPU 循环，没有反馈时用户分不清「在算」和「卡死」。
 indicatif.workspace = true
+# --original trash：与 GUI 用同一个 crate，保证两个入口的回收站行为一致
+trash.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

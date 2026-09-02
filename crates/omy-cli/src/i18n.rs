@@ -225,6 +225,12 @@ catalog! {
         zh: "即将删除原始文件。请先确认加密文件可正常解密。",
         en: "The original file will be deleted. Verify the encrypted file first.",
     },
+    // 与永久删除分开：回收站可还原，用同一句话会让用户高估风险，
+    // 反过来把删除说成「可还原」则是更危险的误导
+    "warn.trash_original" => {
+        zh: "即将把原始文件移到回收站，之后仍可从回收站还原。",
+        en: "The original file will be moved to the recycle bin and can be restored from there.",
+    },
     "prompt.confirm" => { zh: "确认继续？[y/N] ", en: "Continue? [y/N] " },
     "msg.cancelled" => { zh: "已取消", en: "Cancelled" },
 

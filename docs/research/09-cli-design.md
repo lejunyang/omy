@@ -180,9 +180,9 @@ KDF（档位见 03 号文档）
       --no-subtitles         不处理字幕
 
 原文件（D-15）
-      --keep-original        保留   [默认]
-      --trash-original       移到回收站
-      --delete-original      删除（需 --yes 或交互确认）
+      --original <ACTION>    keep | trash | delete   [默认 keep]
+                             trash/delete 需 --yes 或交互确认
+                             不指定时取配置 defaults.original_action
 
 伪装（D-17）
       --disguise <MODE>      footer | host-jpeg | host-png

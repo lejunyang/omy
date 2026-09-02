@@ -148,6 +148,46 @@ impl NameMode {
     }
 }
 
+/// 加密后如何处理原文件，对应配置项 `defaults.original_action`。
+///
+/// 这三种取值与 GUI 的 `EncryptRequest::original` 一一对应，
+/// **新增分支时两边都要改**（GUI 侧在 `omy-gui/src/encrypt.rs`
+/// 的 `handle_original`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OriginalAction {
+    /// 保留原文件，默认。
+    Keep,
+    /// 移到系统回收站，之后还能还原。
+    Trash,
+    /// 永久删除，不可撤销。
+    Delete,
+}
+
+impl OriginalAction {
+    /// 按名称解析，用于读取配置文件。
+    ///
+    /// # Errors
+    ///
+    /// 名称无法识别时返回错误。
+    pub fn from_name(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+            "keep" => Ok(Self::Keep),
+            "trash" | "recyclebin" => Ok(Self::Trash),
+            "delete" | "remove" => Ok(Self::Delete),
+            other => bail!("未知的原文件处理方式 {other:?}，可选：keep / trash / delete"),
+        }
+    }
+
+    /// 是否需要在动手前跟用户确认。
+    ///
+    /// `keep` 什么都不做无需确认；`trash` 与 `delete` 都会让原文件从
+    /// 原位置消失，即使回收站可还原，也应当让用户知情。
+    #[must_use]
+    pub const fn needs_confirm(self) -> bool {
+        !matches!(self, Self::Keep)
+    }
+}
+
 /// 判断路径是否像 `.omy` 文件。
 ///
 /// 只看后缀，用于快速筛选；真正的识别靠文件头（见 `omy_core::is_omy_file`）。
@@ -187,6 +227,51 @@ mod tests {
         assert_eq!(KdfProfile::Sensitive.params().m_kib, 1024 * 1024);
         assert_eq!(KdfProfile::Interactive.params().t, 3);
         assert_eq!(KdfProfile::Mobile.params().t, 4);
+    }
+
+    #[test]
+    fn original_action_names_roundtrip() {
+        // 配置文件里的值靠 from_name 解析。少一个别名，用户在
+        // config.toml 写 "recycle-bin" 就会被判成非法值直接报错
+        assert_eq!(
+            OriginalAction::from_name("keep").unwrap(),
+            OriginalAction::Keep
+        );
+        assert_eq!(
+            OriginalAction::from_name("trash").unwrap(),
+            OriginalAction::Trash
+        );
+        assert_eq!(
+            OriginalAction::from_name("recycle-bin").unwrap(),
+            OriginalAction::Trash
+        );
+        assert_eq!(
+            OriginalAction::from_name("DELETE").unwrap(),
+            OriginalAction::Delete
+        );
+        assert!(OriginalAction::from_name("nope").is_err());
+    }
+
+    #[test]
+    fn only_keep_skips_confirmation() {
+        // needs_confirm 决定要不要跟用户确认。若 trash 被漏成 false，
+        // 用户加密完文件就没了，全程没有任何提示
+        assert!(!OriginalAction::Keep.needs_confirm());
+        assert!(OriginalAction::Trash.needs_confirm());
+        assert!(OriginalAction::Delete.needs_confirm());
+    }
+
+    #[test]
+    fn config_default_original_action_is_parseable() {
+        // 前提校验：配置文件的默认值必须能被 from_name 解析。
+        // 这两处曾经互不相干（配置项从未被读过），默认值写错
+        // 也不会有人发现——现在它是 encrypt 的实际输入了
+        let d = crate::config::Config::default();
+        assert_eq!(
+            OriginalAction::from_name(&d.defaults.original_action).unwrap(),
+            OriginalAction::Keep,
+            "默认必须是 keep：默认就动用户原件是不可接受的"
+        );
     }
 
     #[test]
