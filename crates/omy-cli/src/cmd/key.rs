@@ -40,6 +40,8 @@ pub enum Cmd {
     List(ListArgs),
     /// 修改密码（旧密码作废）
     Change(SlotArgs),
+    /// 重新加密：换掉文件密钥并重写载荷（可同时改密码）
+    Reencrypt(SlotArgs),
 }
 
 /// slot 操作的公共参数。
@@ -87,6 +89,7 @@ pub fn run(ctx: &Ctx<'_>, c: &Cmd) -> Result<()> {
         Cmd::Add(a) => modify(ctx, a, Op::Add),
         Cmd::Remove(a) => modify(ctx, a, Op::Remove),
         Cmd::Change(a) => modify(ctx, a, Op::Change),
+        Cmd::Reencrypt(a) => modify(ctx, a, Op::Reencrypt),
     }
 }
 
@@ -96,12 +99,29 @@ enum Op {
     Add,
     Remove,
     Change,
+    Reencrypt,
 }
 
 impl Op {
-    /// 是否需要输入一个新密码。
+    /// 是否**必须**输入一个新密码。
+    ///
+    /// `reencrypt` 不在其中：轮换的核心是换掉文件密钥，换不换密码是另一
+    /// 件事。强制要求新密码会让「我只想让旧副本的密码失效、密码不变」
+    /// 这个正当需求无法表达。
     const fn needs_new_password(self) -> bool {
         matches!(self, Self::Add | Self::Change)
+    }
+
+    /// 是否**接受**新密码（可选传入）。
+    const fn accepts_new_password(self) -> bool {
+        matches!(self, Self::Add | Self::Change | Self::Reencrypt)
+    }
+
+    /// 是否重写载荷。
+    ///
+    /// 决定两件事：要不要警告耗时、输出里的 `payload_rewritten` 取值。
+    const fn rewrites_payload(self) -> bool {
+        matches!(self, Self::Reencrypt)
     }
 
     /// 命令名，用于输出。
@@ -110,6 +130,7 @@ impl Op {
             Self::Add => "add",
             Self::Remove => "remove",
             Self::Change => "change",
+            Self::Reencrypt => "reencrypt",
         }
     }
 }
@@ -161,7 +182,7 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
     // remove 不需要新密码。这三个子命令共用 SlotArgs，所以 clap 会照样
     // 接受 --new-password-*；静默忽略是不行的——用户以为自己指定了什么，
     // 实际什么也没发生，而结果（其它密码全废）是不可逆的
-    if !op.needs_new_password()
+    if !op.accepts_new_password()
         && (a.new_password_file.is_some() || a.new_password_env.is_some())
     {
         bail!(
@@ -171,8 +192,15 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         );
     }
 
-    // 新密码要确认两遍：打错了会得到一个自己也打不开的文件
-    let new_kek = if op.needs_new_password() {
+    // 新密码要确认两遍：打错了会得到一个自己也打不开的文件。
+    //
+    // reencrypt 只在用户**显式给了**新密码来源时才读，不主动追问：
+    // 轮换本身不要求改密码，交互式追问会让「只想换文件密钥」的用户
+    // 以为必须换密码。
+    let want_new = op.needs_new_password()
+        || (op.accepts_new_password()
+            && (a.new_password_file.is_some() || a.new_password_env.is_some()));
+    let new_kek = if want_new {
         let nsrc = PasswordSource {
             env: a.new_password_env.clone(),
             file: a.new_password_file.clone(),
@@ -204,47 +232,88 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
             None => bail!("change 需要一个新密码"),
         },
         Op::Remove => vec![old_kek],
+        // 给了新密码就换掉，没给就沿用当前密码
+        Op::Reencrypt => match new_kek {
+            Some(k) => vec![k],
+            None => vec![old_kek],
+        },
     };
 
     // 所有会作废其它密码的操作都要确认。这里的措辞必须点明「其它密码」，
     // 因为用户很容易以为 add 是纯增量、change 只影响自己那一个
     if op != Op::Add {
-        ctx.out.warn(t("warn.remove_slot"));
-        ctx.out.warn(match op {
-            Op::Change => "修改后，原密码将无法再打开这个文件。",
-            _ => "该文件上除当前密码之外的其它密码都会失效（如果有的话）。",
-        });
+        if op.rewrites_payload() {
+            // 与 remove/change 的差异必须讲清，否则用户不知道为什么要
+            // 多等这么久，也不知道这次做的到底是什么
+            ctx.out.warn(
+                "重新加密会换掉文件密钥并重写整个载荷，耗时与文件大小成正比。",
+            );
+            ctx.out.warn(
+                "之后这个文件与旧密码彻底无关。但已经流出去的旧副本是独立的\
+                 密文，本操作对它无能为力——它仍可用旧密码打开。",
+            );
+            ctx.out
+                .warn("该文件上除保留密码之外的其它密码都会失效（如果有的话）。");
+        } else {
+            ctx.out.warn(t("warn.remove_slot"));
+            ctx.out.warn(match op {
+                Op::Change => "修改后，原密码将无法再打开这个文件。",
+                _ => "该文件上除当前密码之外的其它密码都会失效（如果有的话）。",
+            });
+        }
         if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
             ctx.out.info(t("msg.cancelled"));
             return Ok(());
         }
     }
 
-    let outcome = omy_core::keyslot::rewrite_slots(&data, &[unlock], &keep)?;
+    // 两条路径只差中间这一步：slot 改写只动头部，轮换要重写整个载荷。
+    // 前后的检查（验密码、确认、自证可打开、原子写回）完全共用——
+    // 分成两个函数的话，将来加一项检查就必然漏掉一边
+    let (bytes, slot_used) = if op.rewrites_payload() {
+        let out = omy_core::reencrypt::rotate_fek(
+            &data,
+            &[unlock],
+            &keep,
+            &omy_core::file::RandomMaterial::generate(),
+        )?;
+        ctx.out
+            .detail(&format!("已重写 {} 字节明文", out.plaintext_size));
+        (out.bytes, out.slot_used)
+    } else {
+        let out = omy_core::keyslot::rewrite_slots(&data, &[unlock], &keep)?;
+        (out.bytes, out.slot_used)
+    };
 
     // 写回前先自证新文件真的能用新密码打开。顺序很重要：一旦覆盖了原文件
     // 又发现打不开，用户就同时失去了旧文件和访问权
-    verify_reopenable(&outcome.bytes, &keep)?;
+    verify_reopenable(&bytes, &keep)?;
 
-    omy_core::fsatomic::write_atomic(&a.file, &outcome.bytes)
+    omy_core::fsatomic::write_atomic(&a.file, &bytes)
         .with_context(|| format!("写回 {} 失败", a.file.display()))?;
 
+    let payload_note = if op.rewrites_payload() {
+        "已重写（文件密钥已更换）"
+    } else {
+        "未改动（仅重写 slot 区与头部 MAC）"
+    };
     let human = format!(
         "已更新 {}\n\n\
          操作        key {}\n\
          生效密码数  {}\n\
-         载荷        未改动（仅重写 slot 区与头部 MAC）",
+         载荷        {}",
         a.file.display(),
         op.name(),
-        outcome.slot_used,
+        slot_used,
+        payload_note,
     );
     ctx.out.result(
         &human,
         &json!({
             "file": a.file.display().to_string(),
             "operation": op.name(),
-            "slots_in_use": outcome.slot_used,
-            "payload_rewritten": false,
+            "slots_in_use": slot_used,
+            "payload_rewritten": op.rewrites_payload(),
         }),
     );
     Ok(())
@@ -301,5 +370,27 @@ mod tests {
         assert_eq!(Op::Add.name(), "add");
         assert_eq!(Op::Remove.name(), "remove");
         assert_eq!(Op::Change.name(), "change");
+        assert_eq!(Op::Reencrypt.name(), "reencrypt");
+    }
+
+    #[test]
+    fn only_reencrypt_rewrites_payload() {
+        // 不这样会怎样：这个判定同时决定「要不要警告耗时」和输出里的
+        // payload_rewritten。若 remove 也被算成重写载荷，JSON 消费方会以为
+        // 每次改密码都动了载荷，增量备份策略就会做错决定
+        assert!(Op::Reencrypt.rewrites_payload());
+        for op in [Op::Add, Op::Remove, Op::Change] {
+            assert!(!op.rewrites_payload(), "{} 不该重写载荷", op.name());
+        }
+    }
+
+    #[test]
+    fn reencrypt_accepts_but_does_not_require_new_password() {
+        // 轮换的核心是换文件密钥，改密码是可选的。强制要求会让
+        // 「只想让旧副本的密码失效、密码不变」无法表达
+        assert!(Op::Reencrypt.accepts_new_password());
+        assert!(!Op::Reencrypt.needs_new_password());
+        // remove 则连接受都不该接受
+        assert!(!Op::Remove.accepts_new_password());
     }
 }
