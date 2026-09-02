@@ -59,7 +59,8 @@
     "loading": "正在读取…",
     "encrypting": "正在加密…",
     "deriving": "正在派生密钥…",
-    "connecting": "正在连接设备…"
+    "connecting": "正在连接设备…",
+    "file_of": "第 {i} / {n} 个"
   },
   "notice": {
     "encrypted_one": "已加密 {{count}} 个文件",
@@ -103,6 +104,8 @@
     "strength_sensitive_desc": "1 GiB · 约 2 秒，移动端可能吃力",
     "original": "加密后原文件",
     "original_keep": "保留（推荐）",
+    "original_trash": "移到回收站",
+    "original_trash_desc": "之后还能从系统回收站还原",
     "original_delete": "直接删除",
     "original_delete_desc": "不可撤销，且无法保证彻底清除",
     "submit": "开始加密",

@@ -48,6 +48,12 @@ export const state = reactive({
   busy: false,
   /** 忙碌提示文案的键。 */
   busyKey: '',
+  /** 加密进度。null 表示当前没有在加密。
+   *
+   * 单独一个对象而不是摊平成几个字段：它整体有效或整体无效，
+   * 摊开后容易出现「换了文件但百分比还是上一个的」这种半旧状态。
+   */
+  progress: null,
   /** 错误文案。 */
   error: '',
   /** 提示文案（成功类）。 */
@@ -595,6 +601,20 @@ export async function encryptSelected(opts) {
   state.busyKey = 'busy.encrypting';
   state.error = '';
   state.notice = '';
+  state.progress = null;
+
+  // 订阅要在发起加密**之前**建立：小文件可能在 await 返回前就发完事件，
+  // 晚一步订阅就会一个都收不到。
+  let unlisten = null;
+  try {
+    unlisten = await api.onEncryptProgress((p) => {
+      state.progress = p;
+    });
+  } catch {
+    // 订阅失败只是没有进度条，不该让加密本身失败
+    unlisten = null;
+  }
+
   try {
     const summary = await api.encryptPaths({ paths, ...opts });
     state.credentials = await api.credentialCount().catch(() => state.credentials);
@@ -618,6 +638,10 @@ export async function encryptSelected(opts) {
     return null;
   } finally {
     state.busy = false;
+    state.progress = null;
+    // 必须取消订阅：每次加密都新建一个监听器，不取消的话
+    // 加密 N 次之后同一个事件会被处理 N 遍
+    if (unlisten) unlisten();
   }
 }
 

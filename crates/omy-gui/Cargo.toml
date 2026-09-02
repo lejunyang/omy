@@ -40,7 +40,6 @@ dirs.workspace = true
 tokio = { workspace = true }
 # 设备库密码留在会话里以免反复询问，Drop 时必须抹掉
 zeroize = { workspace = true }
-
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
@@ -55,3 +54,12 @@ panic                   = "warn"
 expect_used             = "warn"
 todo                    = "warn"
 unimplemented           = "warn"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# 「移到回收站」：原生回收站 API 的跨平台封装。
+# 不能用 remove_file 冒充——用户选「回收站」是想要能后悔，
+# 悄悄改成永久删除就是数据丢失。
+#
+# 按平台声明：trash 5.2 的 cfg 明确排除了 android，在 Android 上
+# 这个 crate 不提供任何函数，无条件依赖会在链接期才报错。
+trash = { workspace = true }

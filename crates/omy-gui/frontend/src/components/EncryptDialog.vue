@@ -164,6 +164,13 @@ function submit() {
           <span>{{ i18n.t('encrypt.original_keep') }}</span>
         </label>
         <label class="radio">
+          <input v-model="original" type="radio" value="trash" />
+          <span>
+            {{ i18n.t('encrypt.original_trash') }}
+            <div class="d">{{ i18n.t('encrypt.original_trash_desc') }}</div>
+          </span>
+        </label>
+        <label class="radio">
           <input v-model="original" type="radio" value="delete" />
           <span>
             {{ i18n.t('encrypt.original_delete') }}

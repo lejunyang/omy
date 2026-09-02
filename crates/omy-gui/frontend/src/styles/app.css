@@ -536,6 +536,58 @@ input {
   line-height: 1.6;
 }
 
+/* ---------- 加密进度 ---------- */
+
+.prog {
+  width: min(420px, 80%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp);
+}
+
+.prog-track {
+  height: 6px;
+  border-radius: var(--r-s);
+  background: var(--bg3);
+  overflow: hidden;
+}
+
+.prog-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-s);
+  /* 事件按整百分比节流，两次之间是跳变。加个过渡让它看起来连续，
+     150ms 足够平滑又不会拖到落后于真实进度 */
+  transition: width 150ms linear;
+}
+
+.prog-text {
+  display: flex;
+  justify-content: space-between;
+  gap: calc(var(--sp) * 2);
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.prog-name {
+  /* 文件名可能很长，压缩它而不是把百分比挤出可视区 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.prog-pct {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.prog-sub {
+  font-size: 11px;
+  color: var(--fg2);
+}
+
 /* ---------- 按钮 ---------- */
 
 .btn {

@@ -59,7 +59,8 @@
     "loading": "Loading…",
     "encrypting": "Encrypting…",
     "deriving": "Deriving key…",
-    "connecting": "Connecting…"
+    "connecting": "Connecting…",
+    "file_of": "File {i} of {n}"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -103,6 +104,8 @@
     "strength_sensitive_desc": "1 GiB · about 2 s, heavy on mobile",
     "original": "Original files",
     "original_keep": "Keep (recommended)",
+    "original_trash": "Move to Recycle Bin",
+    "original_trash_desc": "Can still be restored from the system Recycle Bin",
     "original_delete": "Delete",
     "original_delete_desc": "Cannot be undone, and complete erasure is not guaranteed",
     "submit": "Encrypt",

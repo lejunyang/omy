@@ -216,6 +216,24 @@ function onSelect(entry, ev) {
         <div v-else-if="state.busy" class="empty">
           <div class="icon" aria-hidden="true">⏳</div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
+
+          <!-- 有进度才显示进度条：派生密钥等阶段拿不到百分比，
+               强行显示一个不动的空槽比不显示更让人以为卡住了 -->
+          <div v-if="state.progress" class="prog">
+            <div class="prog-track">
+              <div class="prog-fill" :style="{ width: progPercent + '%' }"></div>
+            </div>
+            <div class="prog-text">
+              <span class="prog-name">{{ state.progress.name }}</span>
+              <span class="prog-pct">{{ progPercent }}%</span>
+            </div>
+            <div v-if="state.progress.total_files > 1" class="prog-sub">
+              {{ i18n.t('busy.file_of', {
+                i: state.progress.index,
+                n: state.progress.total_files,
+              }) }}
+            </div>
+          </div>
         </div>
 
         <!-- 「没有匹配」与「这里是空的」要分清：前者是搜索词的结果，

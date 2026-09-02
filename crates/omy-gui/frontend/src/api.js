@@ -15,6 +15,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 /** 从后端错误里取出错误码。
  *
@@ -45,6 +46,22 @@ export const probeOne = (path) => invoke('probe_one', { path });
 
 /** 加密一批路径。成功后密码会自动进入会话。 */
 export const encryptPaths = (req) => invoke('encrypt_paths', { req });
+
+/** 事件名必须与后端 `ENCRYPT_PROGRESS_EVENT` 完全一致。
+ *
+ * 写错一个字母不会有任何报错，只会表现成「进度条永远不动」，
+ * 所以两边都用常量，并在此注明出处。
+ */
+export const ENCRYPT_PROGRESS_EVENT = 'encrypt://progress';
+
+/** 订阅加密进度，返回取消订阅的函数。
+ *
+ * 载荷形如 `{ index, total_files, name, done, total }`。
+ * `done` / `total` 都是**明文**字节：压缩后密文大小与明文脱节，
+ * 按密文报会让进度条走得莫名其妙。
+ */
+export const onEncryptProgress = (handler) =>
+  listen(ENCRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
 
 /* ---------------- 会话 ---------------- */
 

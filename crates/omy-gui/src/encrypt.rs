@@ -17,10 +17,31 @@
 
 use crate::commands::{CmdError, CmdResult, Shared};
 use omy_core::crypto::{Argon2Params, Kek};
-use omy_core::file::{EncryptOptions, RandomMaterial, encrypt as core_encrypt};
+use omy_core::file::{EncryptOptions, RandomMaterial, encrypt_with_progress};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::State;
+use tauri::{Emitter as _, State};
+
+/// 进度事件的名字。前端用同名字符串 listen。
+///
+/// 定为常量而不是各处写字面量：事件名两边必须严格一致，
+/// 写错一个字母不会有任何编译错误，只会表现为「进度条永远不动」。
+pub const ENCRYPT_PROGRESS_EVENT: &str = "encrypt://progress";
+
+/// 加密进度事件载荷。
+#[derive(Debug, Clone, Serialize)]
+pub struct EncryptProgress {
+    /// 当前正在处理第几个（从 1 开始，便于直接显示）。
+    pub index: usize,
+    /// 本批一共多少个。
+    pub total_files: usize,
+    /// 当前文件名，让用户知道卡在哪个文件上。
+    pub name: String,
+    /// 当前文件已处理的明文字节。
+    pub done: u64,
+    /// 当前文件的明文总字节。
+    pub total: u64,
+}
 
 /// 前端传来的加密参数。
 #[derive(Debug, Clone, Deserialize)]
@@ -115,6 +136,7 @@ fn params_of(profile: &str) -> Argon2Params {
 /// - `internal`：线程调度失败
 #[tauri::command]
 pub async fn encrypt_paths(
+    app: tauri::AppHandle,
     state: State<'_, Shared>,
     req: EncryptRequest,
 ) -> CmdResult<EncryptSummary> {
@@ -129,7 +151,7 @@ pub async fn encrypt_paths(
 
     // Argon2 派生 + 大文件读写都是重活，必须离开异步执行器
     tauri::async_runtime::spawn_blocking(move || {
-        let out = run_encrypt(&req)?;
+        let out = run_encrypt(&req, Some(&app))?;
         // 加密成功后把凭据装进会话。用产出文件的 vault_salt 而不是
         // 重新猜——run_encrypt 内部可能沿用了目录里已有的 salt
         if let Some(first) = out.items.first() {
@@ -168,7 +190,10 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
 }
 
 /// 实际执行。
-fn run_encrypt(req: &EncryptRequest) -> CmdResult<EncryptSummary> {
+///
+/// `app` 为 `None` 时不发进度事件——单元测试里没有 Tauri 运行时，
+/// 但加密逻辑本身必须能独立测试。
+fn run_encrypt(req: &EncryptRequest, app: Option<&tauri::AppHandle>) -> CmdResult<EncryptSummary> {
     // 输出目录取第一个输入所在的目录。批量加密时所有产物放一起，
     // 而不是散落在各自源目录——后者会让「刚加密的文件去哪了」很难回答
     let first = PathBuf::from(req.paths.first().ok_or_else(|| CmdError::code("empty_selection"))?);
@@ -195,9 +220,16 @@ fn run_encrypt(req: &EncryptRequest) -> CmdResult<EncryptSummary> {
     let mut items = Vec::new();
     let mut failed = Vec::new();
 
-    for raw in &req.paths {
+    let total_files = req.paths.len();
+    for (i, raw) in req.paths.iter().enumerate() {
         let src = PathBuf::from(raw);
-        match encrypt_one(&src, &out_dir, &keks, &vault_salt, params, req) {
+        // 事件里报 i+1：给人看的序号从 1 开始，
+        // 让前端再去 +1 只会让两边都要记得这件事
+        let pos = i.saturating_add(1);
+        match encrypt_one(
+            &src, &out_dir, &keks, &vault_salt, params, req,
+            app.map(|a| (a, pos, total_files)),
+        ) {
             Ok(item) => {
                 handle_original(&src, &req.original, &mut failed);
                 items.push(item);
@@ -217,6 +249,7 @@ fn encrypt_one(
     vault_salt: &[u8; 16],
     params: Argon2Params,
     req: &EncryptRequest,
+    progress: Option<(&tauri::AppHandle, usize, usize)>,
 ) -> Result<EncryptedItem, String> {
     // 目录打包成容器：单文件读内容，目录走 pack_folder。
     //
@@ -263,8 +296,48 @@ fn encrypt_one(
         ..EncryptOptions::default()
     };
 
-    let enc = core_encrypt(&data, keks, vault_salt, &opts, &RandomMaterial::generate())
-        .map_err(|_| String::from("encrypt_failed"))?;
+    // 进度事件按**整百分比**节流。不节流的话，256 KiB 分块下加密 1 GB
+    // 要发四千多次事件，IPC 开销反而拖慢加密，进度条也会因为刷新过密而卡顿。
+    let mut last_pct = u8::MAX;
+    let total = data.len() as u64;
+    let enc = {
+        let mut cb = |done: u64, _t: u64| {
+            let Some((app, pos, total_files)) = progress else {
+                return;
+            };
+            // 空文件（total 为 0）算 100%：checked_div 在除数为 0 时
+            // 返回 None，正好用 unwrap_or 兜住，不必手写分支
+            let pct = done
+                .saturating_mul(100)
+                .checked_div(total)
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(100);
+            if pct == last_pct {
+                return;
+            }
+            last_pct = pct;
+            // 发送失败就算了：前端没在听不代表加密该中断
+            let _ = app.emit(
+                ENCRYPT_PROGRESS_EVENT,
+                EncryptProgress {
+                    index: pos,
+                    total_files,
+                    name: filename.clone(),
+                    done,
+                    total,
+                },
+            );
+        };
+        encrypt_with_progress(
+            &data,
+            keks,
+            vault_salt,
+            &opts,
+            &RandomMaterial::generate(),
+            Some(&mut cb),
+        )
+        .map_err(|_| String::from("encrypt_failed"))?
+    };
 
     // 写盘前自检：产物必须真的能用刚才那个密码打开。
     //
@@ -332,17 +405,44 @@ fn unique_output(dir: &Path, original: &str, req: &EncryptRequest) -> PathBuf {
 /// 报进 `failed` 让用户知道即可。
 fn handle_original(src: &Path, mode: &str, failed: &mut Vec<(String, String)>) {
     let r = match mode {
-        "delete" => std::fs::remove_file(src).map_err(|_| "delete_failed"),
-        "trash" => {
-            // 回收站需要平台 API（Windows 的 SHFileOperation、
-            // macOS 的 NSFileManager）。没有引入 trash crate 之前
-            // 明确报错，而不是偷偷改成永久删除——那是数据丢失
-            Err("trash_not_supported")
-        }
+        "delete" => delete_permanently(src).map_err(|_| "delete_failed"),
+        "trash" => move_to_trash(src),
         _ => Ok(()),
     };
     if let Err(code) = r {
         failed.push((src.to_string_lossy().into_owned(), String::from(code)));
+    }
+}
+
+/// 移到系统回收站。
+///
+/// 交给 trash crate 调各平台原生 API。它对文件和目录是同一个入口，
+/// 不需要像永久删除那样自己分流。
+#[cfg(not(target_os = "android"))]
+fn move_to_trash(src: &Path) -> Result<(), &'static str> {
+    trash::delete(src).map_err(|_| "trash_failed")
+}
+
+/// Android 没有系统回收站，trash crate 也不支持这个平台。
+///
+/// 返回不支持，**绝不降级为永久删除**：用户选「回收站」就是想要
+/// 能后悔，静默改成删掉是数据丢失。原件留在原处，用户至少还能
+/// 自己决定怎么处理。
+#[cfg(target_os = "android")]
+fn move_to_trash(_src: &Path) -> Result<(), &'static str> {
+    Err("trash_not_supported")
+}
+
+/// 永久删除原件，文件和目录都要能删。
+///
+/// 必须按类型分流：`remove_file` 对目录一律失败。而 GUI 支持把整个
+/// 文件夹打包成容器，加密文件夹后选「删除原件」走的正是这条路——
+/// 只调 `remove_file` 会让它静默失败，用户以为删了其实没删。
+fn delete_permanently(src: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::remove_dir_all(src)
+    } else {
+        std::fs::remove_file(src)
     }
 }
 
@@ -447,7 +547,7 @@ mod tests {
         let params = Argon2Params::INTERACTIVE;
         let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
 
-        let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req)
+        let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req, None)
             .expect("文件夹加密应当成功");
 
         assert_eq!(item.original_size, 12, "载荷是 5 + 7 字节");
@@ -491,7 +591,7 @@ mod tests {
         let params = Argon2Params::INTERACTIVE;
         let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
 
-        let item = encrypt_one(&root.join("data"), &out_dir, &[kek], &salt, params, &req)
+        let item = encrypt_one(&root.join("data"), &out_dir, &[kek], &salt, params, &req, None)
             .expect("加密应当成功");
 
         // 只读头部——扫描就是这么做的，不解密载荷
@@ -507,7 +607,7 @@ mod tests {
         std::fs::write(&plain, b"just a file").unwrap();
         // Kek 有意不实现 Clone（密钥不该随手复制），重新派生一个
         let kek2 = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
-        let item2 = encrypt_one(&plain, &out_dir, &[kek2], &salt, params, &req)
+        let item2 = encrypt_one(&plain, &out_dir, &[kek2], &salt, params, &req, None)
             .expect("单文件加密应当成功");
         let prefix2 = read_prefix(Path::new(&item2.output), 256).unwrap();
         let header2 = omy_core::file::peek_header(&prefix2).unwrap();
@@ -548,20 +648,62 @@ mod tests {
     }
 
     #[test]
-    fn trash_reports_error_instead_of_deleting() {
-        // 回收站没实现时绝不能偷偷改成永久删除——那是数据丢失
+    fn trash_moves_file_to_recycle_bin() {
+        // 「移到回收站」必须真的把原件移走：留在原地等于没执行用户的选择。
+        // 至于「不能悄悄永久删除」这条保证，由下面的
+        // trash_is_recoverable_not_permanent_delete 守着。
         let dir = std::env::temp_dir().join("omy-trash-test");
         let _ = std::fs::create_dir_all(&dir);
-        let f = dir.join("keep-me.txt");
+        let f = dir.join("trash-me.txt");
         std::fs::write(&f, b"important").unwrap();
 
         let mut failed = Vec::new();
         handle_original(&f, "trash", &mut failed);
 
-        assert!(f.exists(), "文件必须还在——回收站未实现时不能删除");
-        assert_eq!(failed.len(), 1);
-        assert_eq!(failed[0].1, "trash_not_supported");
-        let _ = std::fs::remove_file(&f);
+        assert!(failed.is_empty(), "移到回收站不该报错，实际: {failed:?}");
+        assert!(!f.exists(), "原件必须已从原位置移走");
+    }
+
+    #[test]
+    fn trash_is_recoverable_not_permanent_delete() {
+        // 这条测试的意义：用户选「回收站」是想要能后悔。若哪天有人图省事
+        // 把实现换成 remove_file，功能测试照样通过（文件确实没了），
+        // 只有这里能发现「东西再也找不回来了」。
+        //
+        // 判据是回收站里能找到同名条目——不比对内容，因为各平台回收站
+        // 的存储位置和命名规则不同，能列举到就足以证明它是可还原的。
+        let dir = std::env::temp_dir().join("omy-trash-recover");
+        let _ = std::fs::create_dir_all(&dir);
+        let name = format!("omy-recover-probe-{}.txt", std::process::id());
+        let f = dir.join(&name);
+        std::fs::write(&f, b"recoverable").unwrap();
+
+        let mut failed = Vec::new();
+        handle_original(&f, "trash", &mut failed);
+        assert!(failed.is_empty(), "移到回收站不该报错，实际: {failed:?}");
+        assert!(!f.exists(), "原件必须已从原位置移走");
+
+        let found = trash::os_limited::list()
+            .map(|items| items.into_iter().any(|it| it.name == name.as_str()))
+            .unwrap_or(false);
+        assert!(found, "回收站里应能找到 {name}，否则说明是永久删除而非可还原");
+    }
+
+    #[test]
+    fn delete_mode_removes_directory_too() {
+        // GUI 支持把整个文件夹打包成容器，所以「删除原件」必须能删目录。
+        // remove_file 对目录一律失败：不这样测，加密文件夹后原目录会
+        // 静默留在原地，用户以为删了其实没删。
+        let dir = std::env::temp_dir().join("omy-delete-dir-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("a.txt"), b"x").unwrap();
+
+        let mut failed = Vec::new();
+        handle_original(&dir, "delete", &mut failed);
+
+        assert!(failed.is_empty(), "删除目录不该报错，实际: {failed:?}");
+        assert!(!dir.exists(), "目录必须真的被删掉");
     }
 
     #[test]
@@ -591,7 +733,7 @@ mod tests {
         std::fs::write(&src, content).unwrap();
 
         let req = req_with(vec![src.to_string_lossy().into_owned()]);
-        let summary = run_encrypt(&req).expect("加密应当成功");
+        let summary = run_encrypt(&req, None).expect("加密应当成功");
 
         assert_eq!(summary.items.len(), 1, "失败项：{:?}", summary.failed);
         assert!(summary.failed.is_empty(), "{:?}", summary.failed);
@@ -632,12 +774,12 @@ mod tests {
         let a = dir.join("a.txt");
         std::fs::write(&a, b"first").unwrap();
         let req_a = req_with(vec![a.to_string_lossy().into_owned()]);
-        let s1 = run_encrypt(&req_a).expect("第一个应当成功");
+        let s1 = run_encrypt(&req_a, None).expect("第一个应当成功");
 
         let b = dir.join("b.txt");
         std::fs::write(&b, b"second").unwrap();
         let req_b = req_with(vec![b.to_string_lossy().into_owned()]);
-        let s2 = run_encrypt(&req_b).expect("第二个应当成功");
+        let s2 = run_encrypt(&req_b, None).expect("第二个应当成功");
 
         let h1 = omy_core::file::peek_header(&std::fs::read(&s1.items[0].output).unwrap()).unwrap();
         let h2 = omy_core::file::peek_header(&std::fs::read(&s2.items[0].output).unwrap()).unwrap();
@@ -669,7 +811,7 @@ mod tests {
 
             let mut req = req_with(vec![src.to_string_lossy().into_owned()]);
             req.kdf_profile = String::from(profile);
-            let summary = run_encrypt(&req).expect("加密应当成功");
+            let summary = run_encrypt(&req, None).expect("加密应当成功");
             assert_eq!(summary.items.len(), 1, "{profile}: {:?}", summary.failed);
 
             let out = &summary.items[0].output;
@@ -713,7 +855,7 @@ mod tests {
         std::fs::write(&a, b"first").unwrap_or_default();
         let mut ra = req_with(vec![a.to_string_lossy().into_owned()]);
         ra.kdf_profile = String::from("interactive");
-        let s1 = run_encrypt(&ra).expect("第一个应当成功");
+        let s1 = run_encrypt(&ra, None).expect("第一个应当成功");
 
         // 第二个故意选不同档位——应当沿用第一个的参数，
         // 而不是用新档位派生却写旧参数
@@ -721,7 +863,7 @@ mod tests {
         std::fs::write(&b, b"second").unwrap_or_default();
         let mut rb = req_with(vec![b.to_string_lossy().into_owned()]);
         rb.kdf_profile = String::from("moderate");
-        let s2 = run_encrypt(&rb).expect("第二个应当成功");
+        let s2 = run_encrypt(&rb, None).expect("第二个应当成功");
 
         let b1 = std::fs::read(&s1.items[0].output).unwrap_or_default();
         let b2 = std::fs::read(&s2.items[0].output).unwrap_or_default();
