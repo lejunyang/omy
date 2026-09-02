@@ -143,6 +143,21 @@ android，否则会去调一个不存在的命令，只得到含糊的运行期�
 积攒改动的代价是具体的：改动一多就无法二分定位回归，也无法单独
 回退其中一项；而且越攒越不敢提交，最后只能一次性全提。
 
+### 不要绕开 git 的 eol 过滤器写对象
+
+本仓库 `.gitattributes` 规定 `*.rs`/`*.js`/`*.json` 等按 `eol=lf`
+存储。如果用 `git hash-object` / `git update-index` 直接写索引（例如
+按 hunk 拆分提交时），必须带 `--path`，否则 **clean 过滤器不会执行**，
+CRLF 会被原样写进库。
+
+这个错误的表现极具误导性：文件内容其实一字不差，但 `git status` 永远
+显示 `M`，`git diff` 把每一行都算成改动，而 `--ignore-cr-at-eol` 又
+显示没有差异——两个结论互相矛盾。要用 `git cat-file blob` 看原始字节
+才能确认（`git show` 会做 eol 转换，看不出来）。
+
+配套的坑：Python `subprocess` 用 `text=True` 时，Windows 上会把 `\n`
+写成 `\r\n`。读写 git 对象一律走字节。
+
 ## 提交前
 
 - `cargo test`、`cargo clippy -- -D warnings` 必须通过。
