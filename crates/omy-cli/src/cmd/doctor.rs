@@ -39,6 +39,38 @@ impl Check {
     }
 }
 
+/// 媒体能力检查：FFmpeg / ffprobe 在不在，在的话报版本。
+///
+/// 必须真探测。缩略图与视频播放依赖外部 FFmpeg，装没装只有查了才知道，
+/// 这正是用户跑 doctor 想问的问题。
+fn media_check() -> Check {
+    let probe = omy_media::ffprobe::has_ffprobe();
+    let ff = omy_media::ffprobe::has_ffmpeg();
+    match (probe, ff) {
+        (true, true) => {
+            // 报出版本号：用户排查「为什么这个视频抽不出帧」时，
+            // 版本是第一个要问的东西
+            let v = omy_media::ffprobe::version(omy_media::ffprobe::Tool::Ffprobe)
+                .unwrap_or_else(|_| String::from("版本未知"));
+            Check::pass("媒体预览（omy-media）", format!("ffprobe 与 ffmpeg 均可用（{v}）"))
+        }
+        // 分开报缺哪个：图片缩略图走纯 Rust 不需要 FFmpeg，
+        // 只缺 ffmpeg 时视频抽帧不可用但探测仍可用，二者影响范围不同
+        (true, false) => Check::warn(
+            "媒体预览（omy-media）",
+            "ffprobe 可用但缺 ffmpeg：可探测媒体信息，无法生成视频缩略图",
+        ),
+        (false, true) => Check::warn(
+            "媒体预览（omy-media）",
+            "ffmpeg 可用但缺 ffprobe：无法探测媒体信息与播放分级",
+        ),
+        (false, false) => Check::warn(
+            "媒体预览（omy-media）",
+            "未找到 ffprobe / ffmpeg：图片缩略图仍可用（纯 Rust），视频探测与抽帧不可用",
+        ),
+    }
+}
+
 /// 执行 `doctor`。
 ///
 /// # Errors
@@ -123,18 +155,24 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         ));
     }
 
-    // 尚未实现的能力：如实报告，不留悬念
-    checks.push(Check::warn(
-        "媒体预览（omy-media）",
-        "未实现：FFmpeg 封装尚未接入，无法生成缩略图或播放媒体",
-    ));
-    checks.push(Check::warn(
+    // 媒体能力：真去查 FFmpeg 在不在，而不是写死结论。
+    //
+    // 这里曾经硬编码「未实现」，在 omy-media 做好之后就成了假消息。
+    // doctor 报假消息比没有 doctor 更糟：用户会放着可用的功能不用，
+    // 或者跑去排查一个不存在的问题
+    checks.push(media_check());
+
+    // 局域网共享：能力已接入，这里只报告它依赖什么
+    checks.push(Check::pass(
         "局域网共享（omy-net）",
-        "未实现：mDNS 发现与 Noise 传输尚未接入",
+        "可用：mDNS 发现 + SPAKE2 配对 + Noise IK 传输（omy share）",
     ));
-    checks.push(Check::warn(
+
+    // 格式层面的已知偏差，不是本机环境问题，所以用 note 而不是 warn——
+    // 用 ⚠ 会让用户以为自己机器缺了什么东西
+    checks.push(Check::note(
         "XChaCha20-Poly1305",
-        "未实现：当前 --cipher xchacha20 实际使用 ChaCha20-Poly1305（12 字节 nonce）",
+        "未实现：--cipher xchacha20 实际使用 ChaCha20-Poly1305（12 字节 nonce）",
     ));
 
     // 渲染
@@ -145,10 +183,7 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             Some(false) => "⚠",
             None => "·",
         };
-        ctx.out.result(
-            &format!("{mark} {:<26} {}", c.name, c.detail),
-            &json!(null),
-        );
+        ctx.out.line(&format!("{mark} {:<26} {}", c.name, c.detail));
         rows.push(json!({
             "name": c.name,
             "status": match c.ok {

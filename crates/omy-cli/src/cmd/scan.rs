@@ -172,18 +172,15 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             UnlockOutcome::Locked => (None, hit.header.plaintext_size, None),
         };
 
-        if !ctx.out.is_json() {
-            let mark = if ok { "✓" } else { "·" };
-            ctx.out.result(
-                &format!(
-                    "{mark} {:<36} {:>10}  {}",
-                    name.as_deref().unwrap_or("<文件名已加密>"),
-                    human_bytes(plain_size),
-                    hit.path.display()
-                ),
-                &json!(null),
-            );
-        }
+        // 不需要手写 is_json 判断：line 自己在 JSON 模式下静默。
+        // 这层判断以前是为了绕开 result 会打印 null 的问题而加的
+        let mark = if ok { "✓" } else { "·" };
+        ctx.out.line(&format!(
+            "{mark} {:<36} {:>10}  {}",
+            name.as_deref().unwrap_or("<文件名已加密>"),
+            human_bytes(plain_size),
+            hit.path.display()
+        ));
         // -vv：逐个命中的细节，含匹配到哪个凭据
         ctx.out.trace(&format!(
             "    密文 {}，块大小 {}，{}",

@@ -97,16 +97,13 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
                 marks.push("已转码");
             }
 
-            ctx.out.result(
-                &format!(
-                    "{:<44} {:>10}  {:>10} 块  {}",
-                    truncate(&p.display().to_string(), 44),
-                    human_bytes(size),
-                    thousands(h.n_chunks()),
-                    marks.join(" ")
-                ),
-                &json!(null),
-            );
+            ctx.out.line(&format!(
+                "{:<44} {:>10}  {:>10} 块  {}",
+                truncate(&p.display().to_string(), 44),
+                human_bytes(size),
+                thousands(h.n_chunks()),
+                marks.join(" ")
+            ));
 
             rows.push(json!({
                 "path": p.display().to_string(),

@@ -76,6 +76,22 @@ impl Out {
         }
     }
 
+    /// 输出一行**纯人类可读**文本到 stdout，JSON 模式下静默。
+    ///
+    /// 与 `result` 的区别：`result` 在 JSON 模式下会打印它的 `value`，
+    /// 适合「一个命令产出一份结构化结果」。而逐行列表（doctor 的每项
+    /// 检查、list 的每个文件…）在 JSON 模式下应当**只**由末尾那次
+    /// `result` 汇总输出，中间每行不能各自打印。
+    ///
+    /// 曾经这些地方调 `result(text, &json!(null))`，于是 JSON 模式下
+    /// 每行吐一个 `null`，最后才是真正的对象——整体不是合法 JSON。
+    /// 症状很隐蔽：人类模式完全正常，只有写脚本的人会撞上。
+    pub fn line(&self, human: &str) {
+        if !self.is_json() && !human.is_empty() {
+            println!("{human}");
+        }
+    }
+
     /// 是否应显示进度反馈。
     ///
     /// 单独给一个方法而不是暴露 `quiet` 字段：进度的开关条件

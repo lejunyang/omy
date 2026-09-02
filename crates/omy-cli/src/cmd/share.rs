@@ -545,7 +545,7 @@ fn run_discover(ctx: &Ctx<'_>, a: &DiscoverArgs) -> Result<()> {
             .map_or_else(|| "(无地址)".to_owned(), |ip| format!("{ip}:{}", d.port));
 
         ctx.out
-            .result(&format!("{:<24} {addr:<22} {fp}  {mark}", d.name), &json!(null));
+            .line(&format!("{:<24} {addr:<22} {fp}  {mark}", d.name));
         rows.push(json!({
             "name": d.name,
             "addr": addr,
@@ -783,10 +783,8 @@ fn run_connect(ctx: &Ctx<'_>, a: &ConnectArgs) -> Result<()> {
         let mut rows = Vec::new();
         for e in &entries {
             let id = short_handle(&e.handle);
-            ctx.out.result(
-                &format!("{id}  {:>10}", crate::output::human_bytes(e.size)),
-                &json!(null),
-            );
+            ctx.out
+                .line(&format!("{id}  {:>10}", crate::output::human_bytes(e.size)));
             rows.push(json!({
                 "id": id,
                 "size": e.size,
@@ -906,10 +904,8 @@ fn run_devices(ctx: &Ctx<'_>, c: &DevicesCmd) -> Result<()> {
                 } else {
                     format_ts(d.expires_at)
                 };
-                ctx.out.result(
-                    &format!("{fp}  {:<24} {status:<8} 到期 {exp}", d.name),
-                    &json!(null),
-                );
+                ctx.out
+                    .line(&format!("{fp}  {:<24} {status:<8} 到期 {exp}", d.name));
                 rows.push(json!({
                     "fingerprint": fp,
                     "name": d.name,
