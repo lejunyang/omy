@@ -14,12 +14,13 @@
 use super::{Cipher, Ctx, KdfProfile, NameMode};
 use crate::i18n::t;
 use crate::output::{human_bytes, parse_size};
+use crate::progress::Progress;
 use crate::password::{PasswordSource, read_password};
 use anyhow::{Context as _, Result, bail};
 use clap::Args as ClapArgs;
 use omy_core::pack::SkipReason;
 use omy_core::crypto::Kek;
-use omy_core::file::{EncryptOptions, RandomMaterial, encrypt as core_encrypt};
+use omy_core::file::{EncryptOptions, RandomMaterial, encrypt_with_progress};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -382,13 +383,27 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             folder_index: folder_index.clone(),
         };
 
-        let enc = core_encrypt(
-            &plaintext,
-            &keks,
-            &vault_salt,
-            &opts,
-            &RandomMaterial::generate(),
-        )?;
+        // 进度条按**明文**字节走。回调在加密线程内同步调用，
+        // 所以里面只做一次 set_position——indicatif 自己会限流重绘，
+        // 在这里再加判断反而会让进度条卡顿。
+        let bar = Progress::new(
+            ctx.out.wants_progress(),
+            plaintext.len() as u64,
+            &format!("加密 {}", name),
+        );
+        let enc = {
+            let mut cb = |done: u64, _total: u64| bar.set(done);
+            encrypt_with_progress(
+                &plaintext,
+                &keks,
+                &vault_salt,
+                &opts,
+                &RandomMaterial::generate(),
+                Some(&mut cb),
+            )?
+        };
+        // 必须在打印结果之前清掉，否则进度条残留会和成功信息挤在一行
+        bar.finish();
 
         omy_core::fsatomic::write_atomic(&out_path, &enc.bytes)?;
 

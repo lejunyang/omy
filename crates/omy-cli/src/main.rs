@@ -20,6 +20,7 @@ mod config;
 mod i18n;
 mod output;
 mod password;
+mod progress;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

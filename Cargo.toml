@@ -77,6 +77,12 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sy
 # 版本经镜像 sparse 索引核实，非凭记忆填写。
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "ico"] }
 
+# ---- 进度显示（仅 omy-cli 使用）----
+# 大文件加解密是纯 CPU 循环，没有进度反馈时用户无法区分「在算」和「卡死」。
+# 版本经 cargo search 核实；MIT 许可，rust-version 1.85 与本 workspace 一致。
+indicatif = "0.18"
+
+# ---- 回收站（仅 omy-gui 使用）----
 # 发布配置：优化加解密吞吐
 [profile.release]
 opt-level     = 3

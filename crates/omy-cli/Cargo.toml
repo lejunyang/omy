@@ -34,6 +34,8 @@ toml.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# 加解密进度条。大文件是纯 CPU 循环，没有反馈时用户分不清「在算」和「卡死」。
+indicatif.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

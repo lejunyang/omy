@@ -76,6 +76,16 @@ impl Out {
         }
     }
 
+    /// 是否应显示进度反馈。
+    ///
+    /// 单独给一个方法而不是暴露 `quiet` 字段：进度的开关条件
+    /// （非 JSON 且非 quiet）与 `info` 完全一致，各调用点自己拼这个
+    /// 判断迟早会漏掉一个，导致 JSON 输出被进度条污染。
+    #[must_use]
+    pub const fn wants_progress(&self) -> bool {
+        !self.quiet && !self.is_json()
+    }
+
     /// 提示信息，走 stderr。JSON 模式与 quiet 下静默。
     pub fn info(&self, msg: &str) {
         if !self.quiet && !self.is_json() {
