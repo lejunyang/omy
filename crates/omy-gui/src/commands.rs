@@ -445,12 +445,18 @@ pub struct ContainerItem {
     pub size: Option<u64>,
     /// 在明文载荷中的起始偏移。目录为 `None`。
     ///
-    /// 前端预览容器内文件时要靠它定位，`read_range` 按这个偏移取数据。
+    /// 后端据此定位，`read_range` 按这个偏移取数据。
     pub offset: Option<u64>,
     /// 预览类别，按文件名后缀判断。
     pub kind: String,
     /// MIME。
     pub mime: String,
+    /// 预览用的访问 token。目录为 `None`。
+    ///
+    /// 前端拼成 `omystream://…/citem/<token>` 请求内容。**不能**让前端
+    /// 直接传偏移和长度：那等于把「读这个容器任意位置」的能力交给
+    /// WebView 里的任何脚本，越过了索引这层约束（见 [`crate::citem`]）。
+    pub token: Option<String>,
 }
 
 /// 列出一个目录容器里的条目。
@@ -498,7 +504,22 @@ pub async fn list_container(
         return Err(CmdError::code("not_a_container"));
     };
 
-    Ok(items_from_index(&idx))
+    let mut items = items_from_index(&idx);
+    // 给每个文件登记 token。放在这里而不是 `items_from_index` 里，是为了
+    // 让那个函数保持纯映射、可单独测；登记要碰全局状态
+    for it in &mut items {
+        if let (Some(off), Some(size)) = (it.offset, it.size) {
+            it.token = state.citem.register(crate::citem::ContainerRef {
+                entry_id: id.clone(),
+                inner_path: it.path.clone(),
+                offset: off,
+                size,
+                mime: it.mime.clone(),
+            });
+        }
+    }
+
+    Ok(items)
 }
 
 /// 把容器索引转成前端条目。
@@ -530,6 +551,8 @@ fn items_from_index(idx: &omy_core::container::ContainerIndex) -> Vec<ContainerI
                 offset: range.map(|(off, _)| off),
                 kind,
                 mime,
+                // token 由 `list_container` 登记后填入：那里才有全局状态
+                token: None,
             }
         })
         .collect()

@@ -218,9 +218,6 @@
     "connect_failed": "Could not reach the device."
   },
   "container": {
-    "subtitle": "Contents of the encrypted folder",
-    "root": "Root",
-    "empty": "This folder is empty",
-    "hint": "Double-click a folder to go deeper. Previewing files inside a container is not supported yet — decrypt the whole folder first."
+    "subtitle": "Contents of the encrypted folder"
   }
 }

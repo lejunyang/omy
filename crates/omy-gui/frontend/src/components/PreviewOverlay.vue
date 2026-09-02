@@ -21,7 +21,7 @@
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import * as i18n from '../i18n.js';
-import { fileUrl, remoteFileUrl, plainUrl } from '../store.js';
+import { fileUrl, remoteFileUrl, plainUrl, containerItemUrl } from '../store.js';
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -34,11 +34,18 @@ const props = defineProps({
   remote: { type: Boolean, default: false },
   /** 内容是磁盘上的未加密文件。
    *
-   * 同样只影响 URL 前缀。三种来源（本地加密 / 远端加密 / 本地明文）
-   * 共用这一个组件，是为了让它们的播放行为**不可能**产生差异——
-   * 分成三个组件的话，迟早有人只修其中一个。
+   * 同样只影响 URL 前缀。四种来源（本地加密 / 远端加密 / 本地明文 /
+   * 容器内文件）共用这一个组件，是为了让它们的播放行为**不可能**产生
+   * 差异——分成四个组件的话，迟早有人只修其中一个。
    */
   plain: { type: Boolean, default: false },
+  /** 内容是加密文件夹（容器）里的一个文件。
+   *
+   * 同样只影响 URL 前缀。刻意与 `plain` 分开：那个不需要密钥，这个需要；
+   * 而且这个**没有**「用外部应用打开」的出路——容器内的条目只是载荷里
+   * 的一段区间，磁盘上没有对应文件可交给系统程序。
+   */
+  inContainer: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close', 'external']);
@@ -48,6 +55,7 @@ const text = ref('');
 const mediaError = ref('');
 
 const src = computed(() => {
+  if (props.inContainer) return containerItemUrl(props.file.id);
   if (props.plain) return plainUrl(props.file.id);
   return props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id);
 });

@@ -23,7 +23,7 @@
  * 前端拿到的条目就都是锁定态。
  */
 
-import { reactive, computed } from 'vue';
+import { reactive, computed, watch } from 'vue';
 import * as api from './api.js';
 import * as i18n from './i18n.js';
 
@@ -58,6 +58,21 @@ export const state = reactive({
   pairedCount: 0,
   /** 是否正在共享，侧栏据此显示指示灯。 */
   shareRunning: false,
+
+  /** 正在浏览的加密文件夹（容器），null 表示在看磁盘目录。
+   *
+   * `{ entryId, name, items, cwd }`：`items` 是后端 `list_container`
+   * 返回的**扁平**全路径列表，`cwd` 是容器内的当前子目录（相对容器根，
+   * 空串为根）。
+   *
+   * # 为什么放进主状态而不是一个弹窗组件的局部 ref
+   *
+   * 「进入一个加密文件夹」在用户眼里就是进入一个文件夹，不该换一套
+   * 界面。把它做成一个**位置**，主界面的面包屑、网格/列表、双击预览
+   * 就能原样复用——否则容器视图会长成第二套文件列表，两边的排序、
+   * 图标、预览行为迟早分歧。
+   */
+  container: null,
 
   /* ---- 远端浏览 ---- */
 
@@ -221,6 +236,15 @@ export function plainUrl(token) {
   return `${state.streamBase}/plain/${encodeURIComponent(token)}`;
 }
 
+/** 拼出容器内单个文件的内容 URL。
+ *
+ * 同样只换前缀。token 由后端 `list_container` 登记后下发，前端**拿不到**
+ * 「按偏移读容器任意位置」的能力——那个约束在后端。
+ */
+export function containerItemUrl(token) {
+  return `${state.streamBase}/citem/${encodeURIComponent(token)}`;
+}
+
 /** 用系统默认程序打开。 */
 export async function openWithSystem(entry) {
   if (!entry?.token) return false;
@@ -256,9 +280,12 @@ export function thumbUrl(id) {
  * 不重排——否则会和后端的顺序打架。
  */
 export const visibleEntries = computed(() => {
+  // 在容器里就列容器的内容。同一个 computed 供主界面使用，
+  // 这样网格、列表、搜索、状态栏全都不需要知道自己在哪种位置
+  const source = state.container ? containerEntries.value : state.entries;
   const q = state.query.trim().toLowerCase();
-  if (!q) return state.entries;
-  return state.entries.filter((e) => {
+  if (!q) return source;
+  return source.filter((e) => {
     // 锁定的加密文件没有可搜的名字，搜索时直接排除：
     // 用磁盘文件名去匹配会泄露信息
     if (e.is_encrypted && !e.unlocked) return false;
@@ -267,22 +294,141 @@ export const visibleEntries = computed(() => {
   });
 });
 
-/** 当前目录里加密文件的数量。 */
-export const encryptedCount = computed(
-  () => state.entries.filter((e) => e.is_encrypted).length,
+/** 当前视图里的条目总数（状态栏用）。
+ *
+ * 不能直接用 `state.entries.length`：在容器里那是**外层磁盘目录**的
+ * 数量，与眼前列的东西无关。
+ */
+export const currentCount = computed(() =>
+  state.container ? containerEntries.value.length : state.entries.length,
+);
+
+/** 当前目录里加密文件的数量。容器内恒为 0：里面的东西已经解出来了。 */
+export const encryptedCount = computed(() =>
+  state.container ? 0 : state.entries.filter((e) => e.is_encrypted).length,
 );
 
 /** 其中还锁着的数量。 */
-export const lockedCount = computed(
-  () => state.entries.filter((e) => e.is_encrypted && !e.unlocked).length,
+export const lockedCount = computed(() =>
+  state.container
+    ? 0
+    : state.entries.filter((e) => e.is_encrypted && !e.unlocked).length,
 );
 
-/** 选中项里可加密的（排除已经是加密文件的）。 */
+/** 选中项里可加密的（排除已经是加密文件的）。
+ *
+ * 容器内恒为空：那些条目没有磁盘路径，加密命令收的是路径。
+ * 在这里返回空数组，「加密」按钮自然就不出现——比让按钮出现
+ * 然后点了报错要好。
+ */
 export const encryptable = computed(() =>
-  state.selected
-    .map((p) => state.entries.find((e) => e.path === p))
-    .filter((e) => e && !e.is_encrypted),
+  state.container
+    ? []
+    : state.selected
+        .map((p) => state.entries.find((e) => e.path === p))
+        .filter((e) => e && !e.is_encrypted),
 );
+
+/* ---------------- 容器（加密文件夹）浏览 ---------------- */
+
+/** 进入一个加密文件夹，像打开普通文件夹那样。
+ *
+ * 拿到的是**扁平**的全路径列表，之后由 `visibleEntries` 按当前层级过滤。
+ * 一次取全而不是每层问一次：索引本来就是整份解出来的，分层请求只会
+ * 让每次进目录都重解一遍容器头部。
+ */
+export async function enterContainer(entry) {
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  state.error = '';
+  try {
+    const items = await api.listContainer(entry.entry_id);
+    state.container = {
+      entryId: entry.entry_id,
+      name: entry.real_name || entry.name,
+      items,
+      cwd: '',
+    };
+    state.selected = [];
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.te('container_failed'));
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 在容器内进入一个子目录。 */
+export function enterContainerDir(path) {
+  if (!state.container) return;
+  state.container.cwd = path;
+  state.selected = [];
+}
+
+/** 离开容器，回到它所在的磁盘目录。 */
+export function leaveContainer() {
+  state.container = null;
+  state.selected = [];
+}
+
+/** 把容器内条目转成主列表认识的形状。
+ *
+ * # 为什么要适配而不是让 EntryCard 认识第二种结构
+ *
+ * 卡片和列表行只需要「名字、大小、是不是目录、图标线索」这几件事。
+ * 与其在模板里到处加 `v-if="isContainerItem"`，不如在这里补齐字段——
+ * 那种分支写法正是「改了一个分支忘了另一个」的温床。
+ *
+ * `path` 用容器内的相对路径：主列表用它做 `:key` 和选中标识，只要在
+ * 当前视图里唯一就够，不需要是磁盘路径。
+ */
+function adaptContainerItem(it) {
+  return {
+    path: it.path,
+    name: it.name,
+    is_dir: it.is_dir,
+    size: it.size,
+    // 容器内的条目已经在解密后的视野里了，不是「一个加密文件」——
+    // 标成 is_encrypted 会让卡片显示锁图案并要求再输一次密码
+    is_encrypted: false,
+    unlocked: true,
+    real_name: null,
+    entry_id: null,
+    ext: it.name.includes('.') ? it.name.split('.').pop().toLowerCase() : null,
+    // token 走 /citem/ 而不是 /plain/，两者不能混：前者要密钥，
+    // 后者是磁盘明文。`in_container` 就是给预览层区分用的
+    token: it.token,
+    preview: it.kind,
+    mime: it.mime,
+    is_container: false,
+    in_container: true,
+  };
+}
+
+/** 容器内当前层级的直接子项。
+ *
+ * 容器索引是扁平的全路径列表，这里按 `cwd` 过滤出直接子项——
+ * 否则进根目录会把所有层级的文件一股脑铺平列出来。
+ */
+const containerEntries = computed(() => {
+  const c = state.container;
+  if (!c) return [];
+  const prefix = c.cwd ? `${c.cwd}/` : '';
+  const out = [];
+  for (const it of c.items) {
+    if (!it.path.startsWith(prefix)) continue;
+    const rest = it.path.slice(prefix.length);
+    if (!rest || rest.includes('/')) continue; // 只要直接子项
+    out.push(adaptContainerItem(it));
+  }
+  // 目录在前、各自自然序——与后端 `list_dir` 对磁盘目录的约定一致。
+  // 两处都要排是因为容器索引的顺序是打包时的字节序，不是显示序
+  return out.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { numeric: true });
+  });
+});
 
 /* ---------------- 导航 ---------------- */
 
@@ -295,6 +441,9 @@ export async function navigate(dir) {
     state.entries = await api.browseDirectory(dir);
     state.cwd = dir;
     state.selected = [];
+    // 进磁盘目录就意味着不在容器里了。不清的话面包屑会同时显示
+    // 磁盘路径和容器层级，点哪个都对不上
+    state.container = null;
     await refreshKnown();
   } catch (e) {
     state.error = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
@@ -303,15 +452,46 @@ export async function navigate(dir) {
   }
 }
 
-/** 回到上一级。 */
+/** 回到上一级。
+ *
+ * 在容器里时先在容器内部往上走，走到容器根再退出容器——
+ * 与普通文件夹的层级感受一致。
+ */
 export async function goUp() {
+  if (state.container) {
+    const cwd = state.container.cwd;
+    if (!cwd) {
+      leaveContainer();
+      return;
+    }
+    const i = cwd.lastIndexOf('/');
+    enterContainerDir(i < 0 ? '' : cwd.slice(0, i));
+    return;
+  }
   if (!state.cwd) return;
   const parent = await api.parentOf(state.cwd).catch(() => null);
   if (parent) await navigate(parent);
 }
 
-/** 刷新当前目录。 */
+/** 刷新当前位置。
+ *
+ * 在容器里就重新取一次容器索引（同时刷新 token），而不是退回磁盘目录。
+ * 刷新不该改变用户所在的位置。
+ */
 export async function reload() {
+  if (state.container) {
+    const { entryId, name, cwd } = state.container;
+    const items = await api.listContainer(entryId).catch(() => null);
+    if (items) {
+      state.container = { entryId, name, items, cwd };
+    } else {
+      // 取不到通常意味着已经锁定或文件不在了，退回磁盘目录比
+      // 停在一个再也刷不出内容的位置要好
+      leaveContainer();
+      if (state.cwd) await navigate(state.cwd);
+    }
+    return;
+  }
   if (state.cwd) await navigate(state.cwd);
 }
 
@@ -320,26 +500,63 @@ export async function loadPlaces() {
   state.places = await api.listPlaces().catch(() => []);
 }
 
-/** 面包屑的各段。 */
+/** 面包屑的各段。
+ *
+ * 段的形状是 `{ name, path, kind }`：`kind` 为 `dir` 表示磁盘目录，
+ * `container` 表示容器本身，`inner` 表示容器内的子目录。点击时按 kind
+ * 分派——三者的「跳转」是三件不同的事，靠路径字符串猜会出错
+ * （容器内路径和相对磁盘路径长得一样）。
+ *
+ * 在容器里时，磁盘路径那几段仍然保留在前面：用户需要知道这个加密
+ * 文件夹是从哪儿打开的，而且点它能回去。
+ */
 export const crumbs = computed(() => {
-  if (!state.cwd) return [];
-  // Windows 用反斜杠，Unix 用正斜杠。分割后重新拼接成可点击的路径
-  const sep = state.cwd.includes('\\') ? '\\' : '/';
-  const parts = state.cwd.split(/[\\/]/).filter(Boolean);
   const out = [];
-  let acc = '';
-  for (const [i, p] of parts.entries()) {
-    if (i === 0) {
-      // Windows 的 "C:" 要补上分隔符才是合法路径；
-      // Unix 的第一段前面要加根斜杠
-      acc = sep === '\\' ? `${p}${sep}` : `${sep}${p}`;
-    } else {
-      acc = `${acc}${acc.endsWith(sep) ? '' : sep}${p}`;
+  if (state.cwd) {
+    // Windows 用反斜杠，Unix 用正斜杠。分割后重新拼接成可点击的路径
+    const sep = state.cwd.includes('\\') ? '\\' : '/';
+    const parts = state.cwd.split(/[\\/]/).filter(Boolean);
+    let acc = '';
+    for (const [i, p] of parts.entries()) {
+      if (i === 0) {
+        // Windows 的 "C:" 要补上分隔符才是合法路径；
+        // Unix 的第一段前面要加根斜杠
+        acc = sep === '\\' ? `${p}${sep}` : `${sep}${p}`;
+      } else {
+        acc = `${acc}${acc.endsWith(sep) ? '' : sep}${p}`;
+      }
+      out.push({ name: p, path: acc, kind: 'dir' });
     }
-    out.push({ name: p, path: acc });
+  }
+  const c = state.container;
+  if (c) {
+    out.push({ name: c.name, path: '', kind: 'container' });
+    if (c.cwd) {
+      const parts = c.cwd.split('/').filter(Boolean);
+      for (const [i, p] of parts.entries()) {
+        out.push({
+          name: p,
+          path: parts.slice(0, i + 1).join('/'),
+          kind: 'inner',
+        });
+      }
+    }
   }
   return out;
 });
+
+/** 点击面包屑的某一段。 */
+export async function gotoCrumb(c) {
+  if (c.kind === 'dir') {
+    await navigate(c.path);
+    return;
+  }
+  if (c.kind === 'container') {
+    enterContainerDir('');
+    return;
+  }
+  enterContainerDir(c.path);
+}
 
 /* ---------------- 选择 ---------------- */
 
@@ -476,6 +693,10 @@ export async function lock() {
   state.credentials = 0;
   state.known = {};
   state.pairedCount = 0;
+  // 容器视图里列的是解密出来的文件名，锁定后不该继续可见。
+  // 下面还有一道 watch 兜着，两道都要：这一行是主路径，
+  // watch 保证「即使某条路径忘了清，界面也不会留着内容」
+  state.container = null;
   // 后端的 lock 已经断开了远端连接，这里同步界面状态。
   // 顺序不能反：先清状态再调后端的话，中间那一刻界面显示的是
   // 「已断开」而连接其实还在
@@ -495,6 +716,20 @@ export async function switchLanguage() {
   await api.setLanguage(next);
   localStorage.setItem('omy.lang', next);
 }
+
+// 凭据归零就退出容器视图，不依赖某处记得清状态。
+//
+// 容器视图里列的是**解密出来的文件名**——锁定的语义是「这些都不该再
+// 看得见」。`lock()` 确实清了，但那是一处容易在重构中被漏掉的赋值；
+// 这里再守一道，让「锁定即不可见」不依赖某一行代码没被删掉。
+// 这与原先 ContainerPanel 自己监听凭据数是同一个道理，面板没了，
+// 这道保证要跟着搬过来而不是丢掉。
+watch(
+  () => state.credentials,
+  (n) => {
+    if (n === 0) state.container = null;
+  },
+);
 
 /** 补齐某个已解锁文件的媒体元信息。 */
 export async function enrich(entryId) {

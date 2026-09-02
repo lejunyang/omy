@@ -149,6 +149,12 @@ pub struct AppState {
     /// 而那条路径上不需要碰会话密钥。共用一把锁会让预览请求
     /// 和 Argon2 派生互相等待——大目录里滚动缩略图时很明显。
     pub plain: crate::plain::PlainRegistry,
+    /// 容器内文件的访问登记表。
+    ///
+    /// 与 `plain` 同理放在锁外：协议层每次请求容器内文件都要查它。
+    /// 表里只有「所属容器 id + 载荷区间」，没有密钥也没有路径——
+    /// 授权判断由协议层拿 id 回查会话完成，见 [`crate::citem`]。
+    pub citem: crate::citem::ContainerRegistry,
 }
 
 /// 受锁保护的内部状态。
@@ -178,6 +184,7 @@ impl AppState {
                 lang: detect_language(),
             }),
             plain: crate::plain::PlainRegistry::new(),
+            citem: crate::citem::ContainerRegistry::new(),
         }
     }
 
@@ -268,6 +275,10 @@ impl AppState {
         // 清不清都拦不住直接去磁盘打开的人；但留着一批可用 token
         // 与「锁定后什么都看不到」的预期不符
         self.plain.clear();
+        // 容器内文件的 token 同样作废。这一条比明文那条更要紧：
+        // 上面的 files.clear() 已经让协议层回查 entry id 时查不到，
+        // 但两道防线里任何一道单独成立都不该被当成可以省掉另一道
+        self.citem.clear();
     }
 
     /// 当前界面语言。
@@ -374,6 +385,34 @@ mod tests {
         assert!(s.files().is_empty(), "锁定后文件列表必须清空");
         assert!(s.file("a").is_none(), "锁定后不能再按 id 取到条目");
         assert!(!s.is_unlocked());
+    }
+
+    /// 锁定必须让容器内文件的 token 一起失效。
+    ///
+    /// 这些 token 指向的是**解密后**的载荷区间，锁定的语义就是
+    /// 「这些都不该再读得到」。协议层还会拿 entry id 回查一次解锁状态，
+    /// 但两道防线里任何一道都不该因为另一道存在而省掉。
+    #[test]
+    fn lock_clears_container_tokens() {
+        let s = AppState::new();
+        let t = s
+            .citem
+            .register(crate::citem::ContainerRef {
+                entry_id: String::from("a"),
+                inner_path: String::from("secret/plan.txt"),
+                offset: 0,
+                size: 10,
+                mime: String::from("text/plain"),
+            })
+            .unwrap_or_default();
+        assert!(s.citem.resolve(&t).is_some());
+
+        s.lock();
+
+        assert!(
+            s.citem.resolve(&t).is_none(),
+            "锁定后容器内文件的 token 必须失效"
+        );
     }
 
     #[test]

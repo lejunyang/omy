@@ -28,6 +28,7 @@
 )]
 
 mod browse;
+mod citem;
 mod commands;
 mod device_cmds;
 mod devices;

@@ -75,6 +75,8 @@ pub enum Target {
     RemoteThumb(String),
     /// 未加密文件的正文（磁盘明文直读）。
     Plain(String),
+    /// 容器（加密文件夹）内单个文件的正文。
+    ContainerItem(String),
 }
 
 /// 从 URI 路径解析目标。
@@ -93,6 +95,7 @@ pub fn parse_target(path: &str) -> Option<Target> {
         ("file/", Target::File as fn(String) -> Target),
         ("thumb/", Target::Thumb as fn(String) -> Target),
         ("plain/", Target::Plain as fn(String) -> Target),
+        ("citem/", Target::ContainerItem as fn(String) -> Target),
     ] {
         if let Some(id) = p.strip_prefix(prefix) {
             if id.is_empty() {
@@ -251,6 +254,7 @@ pub fn handle(
         Target::RemoteFile(id) => serve_remote_file(state, remote, request, &id),
         Target::RemoteThumb(id) => serve_remote_thumb(state, remote, &id),
         Target::Plain(token) => serve_plain(state, request, &token),
+        Target::ContainerItem(token) => serve_container_item(state, request, &token),
     }
 }
 
@@ -351,6 +355,161 @@ fn serve_plain(
     let mut b = with_common_headers(
         Response::builder()
             .header(header::CONTENT_TYPE, mime)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, data.len().to_string()),
+    );
+
+    b = if is_partial {
+        b.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end_inclusive}/{total}"),
+        )
+    } else {
+        b.status(StatusCode::OK)
+    };
+
+    b.body(data).unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// 返回容器（加密文件夹）内**单个**文件的正文，支持 Range。
+///
+/// # 为什么能只解密其中一个文件
+///
+/// 容器的载荷就是把各个文件首尾相接后按块加密。索引里记着每个文件在
+/// 明文载荷中的区间 `(offset, len)`，而 `read_range` 本来就支持从任意
+/// 明文偏移读任意长度——它只会解开覆盖该区间的那几个块。
+///
+/// 所以这里做的事就是**加一层偏移**：外界请求容器内文件的第 `start`
+/// 字节，实际要读的是载荷的第 `item.offset + start` 字节。
+///
+/// # 与 `serve_file` 的关系
+///
+/// Range 语义必须**完全一致**，否则会出现「同一个视频放在容器外能拖
+/// 进度条、放进容器就不能」。所以开放结尾截断到 `MAX_SPAN`、不可满足
+/// 回 416、CORS、`no-store` 全部照搬。
+///
+/// # 授权：每次请求都要回查
+///
+/// token 在登记表里**不构成**授权。锁定后同一个 token 仍在表里（虽然
+/// `lock()` 会清），但 `state.file(entry_id)` 会查不到或 `unlocked`
+/// 为假——这才是真正的判据。授权只看会话当下的状态，不看登记时的状态。
+fn serve_container_item(
+    state: &Arc<AppState>,
+    request: &Request<Vec<u8>>,
+    token: &str,
+) -> Response<Vec<u8>> {
+    let Some(item) = state.citem.resolve(token) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+
+    // 关键授权检查：拿所属容器的 id 回查会话。
+    // 锁定后这里会查不到条目（lock 清空了文件表），于是 403/404——
+    // 不能因为「token 还在表里」就返回内容
+    let Some(entry) = state.file(&item.entry_id) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    if !entry.unlocked {
+        return bare(StatusCode::FORBIDDEN);
+    }
+
+    let Some((bytes, opened)) = open_for(state, &entry.path) else {
+        return bare(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+
+    // 这个文件自己的长度，不是整个容器的。Range 的 total 必须是它——
+    // 否则播放器会以为文件有整个容器那么长，拖到后面读出别人的字节
+    let total = item.size;
+
+    // 索引里的区间必须落在载荷内。正常情况下恒成立，但索引来自文件
+    // 内容，损坏或被篡改的容器可能给出越界区间——那会让下面的加法
+    // 算出一个指向其他文件数据的偏移
+    let payload_total = opened.header.plaintext_size;
+    if item
+        .offset
+        .checked_add(total)
+        .is_none_or(|end| end > payload_total)
+    {
+        return bare(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let range_header = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok());
+
+    let (start, end_inclusive, is_partial) = match range_header {
+        Some(h) => match parse_range(h, total) {
+            Some(r) => (r.0, r.1, true),
+            None => {
+                return with_common_headers(
+                    Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+                )
+                .body(Vec::new())
+                .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+        },
+        None => (0u64, total.saturating_sub(1), false),
+    };
+
+    let end_inclusive = if is_partial {
+        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
+    } else {
+        end_inclusive
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+
+    // 无 Range 的请求同样要设上限：容器里可能有个 4 GB 的视频，
+    // 第一个不带 Range 的请求会把它整个解密进内存。
+    // 与 `serve_plain` 的处理一致：返回前 MAX_SPAN 并如实标 206
+    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
+    } else {
+        (length, is_partial, end_inclusive)
+    };
+
+    let cindex = opened.compression_index().unwrap_or_default();
+    let cindex = if cindex.is_empty() {
+        None
+    } else {
+        Some(cindex)
+    };
+
+    let header_len = u64::from(opened.header.header_len);
+    // 这一行就是「容器内单文件」与「整个文件」的**全部**区别：
+    // 把请求的偏移平移到该文件在载荷中的位置
+    let payload_start = item.offset.saturating_add(start);
+
+    let data = match omy_core::payload::read_range(
+        &opened.header,
+        opened.payload_key(),
+        cindex.as_deref(),
+        payload_start,
+        length,
+        |payload_off, len| {
+            // 与 serve_file 相同的契约：read_range 给的是相对载荷起点的
+            // 偏移，取密文时要加回 header_len
+            let abs = payload_off.saturating_add(header_len);
+            let s = usize::try_from(abs).unwrap_or(usize::MAX);
+            let e = usize::try_from(abs.saturating_add(len)).unwrap_or(usize::MAX);
+            bytes
+                .get(s..e)
+                .map(<[u8]>::to_vec)
+                .ok_or(omy_core::Error::Truncated {
+                    context: "container item ciphertext fetch",
+                    need: e,
+                    got: bytes.len(),
+                })
+        },
+    ) {
+        Ok(d) => d,
+        Err(_) => return bare(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    let mut b = with_common_headers(
+        Response::builder()
+            .header(header::CONTENT_TYPE, item.mime.clone())
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::CONTENT_LENGTH, data.len().to_string()),
     );
@@ -751,6 +910,28 @@ mod tests {
         assert_ne!(parse_target("/thumb/x"), parse_target("/rthumb/x"));
     }
 
+    /// 容器内文件的路径必须与其他所有前缀分开解析。
+    ///
+    /// 若 `citem/x` 落到别的分支，就会拿容器条目的 token 去文件表里查——
+    /// 查不到返回 404，表现为「容器里的文件双击打不开」，而日志里一切正常。
+    #[test]
+    fn container_item_target_is_distinct() {
+        assert_eq!(
+            parse_target("/citem/abcd"),
+            Some(Target::ContainerItem(String::from("abcd")))
+        );
+        assert_eq!(parse_target("/citem/"), None, "空 token 必须拒绝");
+        // 不能被任何其他前缀吃掉，也不能吃掉别人
+        for other in [
+            parse_target("/file/abcd"),
+            parse_target("/plain/abcd"),
+            parse_target("/rfile/abcd"),
+            parse_target("/thumb/abcd"),
+        ] {
+            assert_ne!(parse_target("/citem/abcd"), other);
+        }
+    }
+
     /// 明文路径必须与加密路径分开解析。
     ///
     /// 若 `plain/x` 落到 `File("x")` 分支，就会拿明文 token 去
@@ -852,6 +1033,132 @@ mod tests {
         let capped = end.min(start + MAX_SPAN - 1);
         assert_eq!(capped - start + 1, MAX_SPAN, "截断后正好 2 MiB");
         assert!(capped < end, "必须真的被截断");
+    }
+
+    /// 容器内每个文件都必须解出**自己**的字节。
+    ///
+    /// 这是本功能最危险的一处：偏移算错不会报错，只会安静地返回相邻
+    /// 文件的内容。所以造一个真的加密容器，逐个文件比对完整内容——
+    /// 只测「能读出东西」是不够的，必须测「读出的是对的那个东西」。
+    ///
+    /// 三个文件的内容故意用不同字节填充且长度不等，任何偏移错位都会
+    /// 让断言失败。
+    #[test]
+    fn container_items_decrypt_to_their_own_bytes() {
+        use omy_core::container::{ContainerBuilder, EntryMeta};
+        use omy_core::file::{EncryptOptions, RandomMaterial, encrypt as core_encrypt};
+
+        // 三段可区分的内容，长度刻意不同也刻意不是块大小的整数倍
+        let files: [(&str, Vec<u8>); 3] = [
+            ("a.bin", vec![0xAA; 5000]),
+            ("b.bin", vec![0xBB; 137]),
+            ("c.bin", vec![0xCC; 9001]),
+        ];
+
+        let mut payload = Vec::new();
+        let mut b = ContainerBuilder::new(String::from("root"));
+        for (name, data) in &files {
+            b.add_file(
+                vec![String::from(*name)],
+                data.len() as u64,
+                None,
+                EntryMeta::default(),
+            )
+            .unwrap_or_else(|_| unreachable!("测试数据合法"));
+            payload.extend_from_slice(data);
+        }
+        let index = b
+            .finish()
+            .unwrap_or_else(|_| unreachable!("测试数据合法"));
+
+        let kek = omy_core::crypto::Kek::from_key(omy_core::crypto::SecretKey::from_bytes(
+            [7u8; 32],
+        ));
+        let opts = EncryptOptions {
+            folder_index: Some(index.encode()),
+            ..EncryptOptions::default()
+        };
+        let enc = core_encrypt(
+            &payload,
+            &[kek.duplicate()],
+            &[0u8; 16],
+            &opts,
+            &RandomMaterial::generate(),
+        )
+        .unwrap_or_else(|_| unreachable!("加密应当成功"));
+
+        let enc = enc.bytes;
+        let opened = omy_core::file::open(&enc, &[kek])
+            .unwrap_or_else(|_| unreachable!("刚加密的文件应当能打开"));
+        let parsed = opened
+            .folder_index()
+            .unwrap_or_else(|_| unreachable!("应当是容器"));
+        let header_len = u64::from(opened.header.header_len);
+
+        for (name, expected) in &files {
+            let entry = parsed
+                .find(name)
+                .unwrap_or_else(|| unreachable!("索引里应有 {name}"));
+            let (off, len) = entry
+                .range()
+                .unwrap_or_else(|| unreachable!("{name} 应有区间"));
+            assert_eq!(len, expected.len() as u64, "{name} 长度不符");
+
+            // 这段偏移换算与 serve_container_item 中的一致：
+            // 容器内偏移 + 该文件起点 -> 载荷偏移；取密文时再加 header_len
+            let got = omy_core::payload::read_range(
+                &opened.header,
+                opened.payload_key(),
+                None,
+                off,
+                len,
+                |payload_off, n| {
+                    let abs = payload_off.saturating_add(header_len);
+                    let s = usize::try_from(abs).unwrap_or(usize::MAX);
+                    let e = usize::try_from(abs.saturating_add(n)).unwrap_or(usize::MAX);
+                    enc.get(s..e)
+                        .map(<[u8]>::to_vec)
+                        .ok_or(omy_core::Error::Truncated {
+                            context: "test fetch",
+                            need: e,
+                            got: enc.len(),
+                        })
+                },
+            )
+            .unwrap_or_else(|_| unreachable!("{name} 应当能读出"));
+
+            assert_eq!(&got, expected, "{name} 读出的字节不是它自己的内容");
+        }
+
+        // 再验一次部分读取：容器内文件的 Range 起点要叠加它的偏移。
+        // 少加这一层，拖进度条会读到前一个文件的尾巴
+        let c = parsed
+            .find("c.bin")
+            .unwrap_or_else(|| unreachable!("应有 c.bin"));
+        let (c_off, _) = c
+            .range()
+            .unwrap_or_else(|| unreachable!("c.bin 应有区间"));
+        let mid = omy_core::payload::read_range(
+            &opened.header,
+            opened.payload_key(),
+            None,
+            c_off.saturating_add(1000),
+            16,
+            |payload_off, n| {
+                let abs = payload_off.saturating_add(header_len);
+                let s = usize::try_from(abs).unwrap_or(usize::MAX);
+                let e = usize::try_from(abs.saturating_add(n)).unwrap_or(usize::MAX);
+                enc.get(s..e)
+                    .map(<[u8]>::to_vec)
+                    .ok_or(omy_core::Error::Truncated {
+                        context: "test fetch",
+                        need: e,
+                        got: enc.len(),
+                    })
+            },
+        )
+        .unwrap_or_else(|_| unreachable!("部分读取应当成功"));
+        assert_eq!(mid, vec![0xCC; 16], "从中间读也必须落在 c.bin 内");
     }
 
     #[test]

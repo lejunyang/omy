@@ -43,12 +43,13 @@ import {
   connectRemote,
   tryUnlockRemote,
   openWithSystem,
+  enterContainer,
+  enterContainerDir,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
-import ContainerPanel from './components/ContainerPanel.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 
@@ -58,11 +59,16 @@ const showDevices = ref(false);
 const unlockError = ref('');
 const previewEntry = ref(null);
 
-/** 正在浏览的目录容器：`{ name, items }`。 */
-const container = ref(null);
 /** 远端预览目标。与本机预览分开存：两者的对象结构不同，
  * 混在一个 ref 里迟早会出现「用本机的字段去读远端对象」。 */
 const remotePreview = ref(null);
+/** 容器内文件的预览目标。
+ *
+ * 与明文预览分开存：URL 前缀不同（`/citem/` 要密钥，`/plain/` 不要），
+ * 而且这个不能给「用外部应用打开」——那需要磁盘上的一个真实文件，
+ * 容器内的条目没有。混在一起就会出现一个点了没反应的按钮。
+ */
+const citemPreview = ref(null);
 /** 当前密码框是给远端用的还是本机用的。 */
 const unlockForRemote = ref(false);
 /** 未加密文件的预览目标。
@@ -84,6 +90,16 @@ const previewFile = computed(() => {
 
 /** 双击一个条目。 */
 async function onOpen(entry) {
+  // 容器内的条目：目录在容器里往下走，文件走容器专用的预览 URL。
+  // 这一支必须在最前面——下面几支都以「有磁盘路径」为前提
+  if (entry.in_container) {
+    if (entry.is_dir) {
+      enterContainerDir(entry.path);
+      return;
+    }
+    openContainerItem(entry);
+    return;
+  }
   if (entry.is_dir) {
     await navigate(entry.path);
     return;
@@ -94,9 +110,10 @@ async function onOpen(entry) {
   }
   if (entry.unlocked && entry.entry_id) {
     // 容器是一整个文件夹，载荷为多个文件拼接。当成单个文件预览
-    // 只会得到一堆首尾相接的字节，所以先分流出去
+    // 只会得到一堆首尾相接的字节，所以先分流出去——像进普通文件夹
+    // 那样进入它，而不是弹一个另一套交互的面板
     if (entry.is_container) {
-      await openContainer(entry);
+      await enterContainer(entry);
       return;
     }
     await openPreview(entry);
@@ -136,14 +153,29 @@ async function openPlain(entry) {
   await openWithSystem(entry);
 }
 
-/** 打开一个目录容器，列出里面的条目。 */
-async function openContainer(entry) {
-  const items = await api.listContainer(entry.entry_id).catch(() => null);
-  if (!items) {
+/** 预览容器内的一个文件。
+ *
+ * 与容器外的文件走**同一个** PreviewOverlay：加密文件、远端文件、
+ * 磁盘明文、容器内文件四种来源共用一个组件，差别只有 URL 前缀。
+ * 这样「容器里的视频能不能拖进度条」不可能与容器外不一致。
+ *
+ * 应用内看不了的类型（PDF、压缩包…）会落到预览层的兜底分支，显示
+ * 「此格式无法在应用内预览」。这里**不能**退回「用系统程序打开」——
+ * 那要求磁盘上有个真实文件，而容器内的条目只是载荷里的一段区间；
+ * 真要支持得先解出一个临时文件，那正是本项目要避免的明文落盘。
+ */
+function openContainerItem(entry) {
+  if (!entry.token) {
     state.error = i18n.te('container_failed');
     return;
   }
-  container.value = { name: entry.real_name || entry.name, items };
+  state.selected = [entry.path];
+  citemPreview.value = {
+    id: entry.token,
+    name: entry.name,
+    kind: entry.preview,
+    mime: entry.mime,
+  };
 }
 
 async function openPreview(entry) {
@@ -192,8 +224,9 @@ async function doLock() {
   // 明文预览也要关：后端 lock 会清空 token 表，
   // 留着的话画面会突然变成加载失败，很莫名其妙
   plainPreview.value = null;
-  // 容器面板同样要关：里面列的是文件名，锁定后不该继续可见
-  container.value = null;
+  // 容器内文件的预览同样要关，理由更强：那是解密出来的内容。
+  // 容器视图本身由 store 的 lock() 与一道 watch 一起收掉
+  citemPreview.value = null;
   showDevices.value = false;
   // 断开远端由**后端**的 lock 负责，这里不再重复调用。
   // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
@@ -316,13 +349,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     @close="remotePreview = null"
   />
 
-  <ContainerPanel
-    v-if="container"
-    :name="container.name"
-    :items="container.items"
-    @close="container = null"
-  />
-
   <PreviewOverlay
     v-if="plainPreview"
     :key="'p' + plainPreview.id"
@@ -330,5 +356,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     plain
     @close="plainPreview = null"
     @external="onPlainExternal"
+  />
+
+  <!-- 容器内文件：同一个预览组件，只是换 URL 前缀。
+       不传 plain，所以兜底分支不会出现「用外部应用打开」——
+       容器里的条目没有磁盘文件可交给系统程序 -->
+  <PreviewOverlay
+    v-if="citemPreview"
+    :key="'c' + citemPreview.id"
+    :file="citemPreview"
+    in-container
+    @close="citemPreview = null"
   />
 </template>

@@ -58,7 +58,11 @@ try {
     Write-Output ''
     Write-Output '=== 2. 跑探针 ==='
     $probe = Join-Path $root 'spikes\probe-folder-encrypt.mjs'
-    & node --experimental-websocket $probe $port $work
+    # 同时留一份日志：探针输出较长，调用方的管道可能被截断，
+    # 而判断「哪一项失败」需要完整输出
+    $log = Join-Path $root 'spikes\_probe-out.txt'
+    & node --experimental-websocket $probe $port $work 2>&1 |
+        Tee-Object -FilePath $log
     $code = $LASTEXITCODE
 } finally {
     Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
