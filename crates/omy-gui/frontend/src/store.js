@@ -670,20 +670,43 @@ export async function encryptSelected(opts) {
   }
 }
 
-/** 给一个已加密文件增删改密码。
+/** 给一个已加密文件增删改密码，或重新加密。
  *
- * 只改文件头，所以没有进度条——再大的文件也是毫秒级，
- * 显示一个瞬间闪过的进度条只会让人以为出了什么事。
+ * add / change / remove 只改文件头，再大的文件也是毫秒级，所以不订阅
+ * 进度——显示一个瞬间闪过的进度条只会让人以为出了什么事。
+ *
+ * reencrypt 相反：它要把载荷读一遍再写一遍，耗时与文件大小成正比，而
+ * 对话框里还写着「期间请不要关闭程序」。不给进度条的话，用户面对一个
+ * 静止的界面又被告知不能关，无从判断是在跑还是已经卡死。
  *
  * 成功后必须 reload：改完密码，会话里装的凭据变了，列表里这个文件
  * 是解锁还是锁定要重新算。不刷新的话界面还显示旧状态，用户点开会
  * 发现和刚才的操作对不上。
  */
 export async function manageKey(req) {
+  const rewrites = req.action === 'reencrypt';
   state.busy = true;
-  state.busyKey = 'busy.deriving';
+  // 阶段不同，说法也要不同：轮换时说"正在派生密钥"，用户会以为卡在
+  // 一个本该几百毫秒的步骤上
+  state.busyKey = rewrites ? 'busy.reencrypting' : 'busy.deriving';
   state.error = '';
   state.notice = '';
+  state.progress = null;
+
+  // 订阅要在发起之前建立：小文件可能在 await 返回前就发完事件，
+  // 晚一步订阅就会一个都收不到
+  let unlisten = null;
+  if (rewrites) {
+    try {
+      unlisten = await api.onEncryptProgress((p) => {
+        state.progress = p;
+      });
+    } catch {
+      // 订阅失败只是没有进度条，不该让操作本身失败
+      unlisten = null;
+    }
+  }
+
   try {
     const r = await api.manageKey(req);
     state.credentials = await api.credentialCount().catch(() => state.credentials);
@@ -695,6 +718,10 @@ export async function manageKey(req) {
     return null;
   } finally {
     state.busy = false;
+    state.progress = null;
+    // 必须取消订阅：每次操作都新建一个监听器，不取消的话
+    // 操作 N 次之后同一个事件会被处理 N 遍
+    if (unlisten) unlisten();
   }
 }
 

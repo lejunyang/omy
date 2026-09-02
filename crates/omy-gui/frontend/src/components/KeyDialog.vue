@@ -1,10 +1,20 @@
 <script setup>
-/** 密码管理对话框：给一个已加密文件增删改密码。
+/** 密码管理对话框：给一个已加密文件增删改密码，或重新加密。
  *
- * # 为什么三个操作放在一个对话框里
+ * # 为什么前三个操作放在一起
  *
- * 它们在格式层面是同一个操作——重建 slot 区。分成三个入口会让人以为
- * 它们代价不同（比如「改密码要重新加密吧」），而实际上都是毫秒级。
+ * add / change / remove 在格式层面是同一个操作——重建 slot 区。分成三个
+ * 入口会让人以为它们代价不同（比如「改密码要重新加密吧」），而实际上都是
+ * 毫秒级。
+ *
+ * # 为什么 reencrypt 也在这个对话框里，而不是单独入口
+ *
+ * 用户是**带着同一个问题**来的：「我怎么让某个密码不再有效」。答案分两种
+ * （只改这份文件的密码集合 / 连文件密钥一起换掉），差别正是这个对话框要
+ * 解释的。放到另一个入口，用户根本不会知道存在第二种，会误以为 remove
+ * 就已经彻底作废了旧密码。
+ *
+ * 它与前三个的代价差一个数量级，所以要显式警示耗时，并用红色确认按钮。
  *
  * # 为什么不显示「当前有几个密码」
  *
@@ -27,7 +37,7 @@ const props = defineProps({
 
 const emit = defineEmits(['cancel', 'submit']);
 
-/** `add` / `change` / `remove` */
+/** `add` / `change` / `remove` / `reencrypt` */
 const action = ref('add');
 const current = ref('');
 const next = ref('');
@@ -36,21 +46,38 @@ const input = useTemplateRef('input');
 
 onMounted(() => input.value?.focus());
 
-const needsNext = computed(() => action.value !== 'remove');
+/** 要不要显示新密码输入框。 */
+const showsNext = computed(() => action.value !== 'remove');
+
+/** 新密码是不是必填。
+ *
+ * reencrypt 例外：它即使密码不变也有意义（换掉文件密钥，让旧副本的密码
+ * 对这份文件失效）。强制填新密码会让这个正当需求无法表达。
+ */
+const requiresNext = computed(() => action.value === 'add' || action.value === 'change');
+
+/** 这个操作会重写载荷吗——决定底部说明与耗时警示。 */
+const rewrites = computed(() => action.value === 'reencrypt');
 
 const mismatch = computed(
-  () => needsNext.value && next2.value.length > 0 && next.value !== next2.value,
+  () => showsNext.value && next2.value.length > 0 && next.value !== next2.value,
 );
 
-/** 新密码与当前密码相同：这不是笔误就是误解，拦下来并说明原因。 */
+/** 新密码与当前密码相同：这不是笔误就是误解，拦下来并说明原因。
+ *
+ * 对 reencrypt 不算错——密码不变也是有效用法，所以不拦。
+ */
 const same = computed(
-  () => needsNext.value && next.value.length > 0 && next.value === current.value,
+  () =>
+    requiresNext.value && next.value.length > 0 && next.value === current.value,
 );
 
 const canSubmit = computed(() => {
   if (props.busy || !current.value) return false;
-  if (!needsNext.value) return true;
-  return next.value.length > 0 && !mismatch.value && !same.value;
+  if (requiresNext.value && next.value.length === 0) return false;
+  // 填了就要校验，哪怕是可选的：两次不一致说明打错了，
+  // 提交下去会得到一个自己也打不开的文件
+  return !mismatch.value && !same.value;
 });
 
 /** 换操作时清掉新密码输入框。
@@ -71,7 +98,7 @@ function submit() {
     current: current.value,
     // remove 不能带新密码，后端会拒绝——这里也不发，
     // 保证前后端对「这个操作不需要新密码」的理解一致
-    next: needsNext.value ? next.value : '',
+    next: showsNext.value ? next.value : '',
   });
 }
 </script>
@@ -96,7 +123,11 @@ function submit() {
 
       <div class="field">
         <div class="flabel">{{ i18n.t('keymgmt.action') }}</div>
-        <label v-for="a in ['add', 'change', 'remove']" :key="a" class="radio">
+        <label
+          v-for="a in ['add', 'change', 'remove', 'reencrypt']"
+          :key="a"
+          class="radio"
+        >
           <input v-model="action" type="radio" :value="a" @change="onActionChange" />
           <span>
             {{ i18n.t(`keymgmt.${a}`) }}
@@ -111,6 +142,12 @@ function submit() {
         {{ i18n.t('keymgmt.stale_copy_warning') }}
       </div>
 
+      <!-- 轮换要讲两件事：慢（与文件大小成正比），以及它同样收不回已经
+           流出去的副本。只说前者会让人以为轮换=彻底作废旧密码 -->
+      <div v-if="rewrites" class="warnbox" role="alert">
+        {{ i18n.t('keymgmt.reencrypt_warning') }}
+      </div>
+
       <div class="field">
         <label class="flabel" for="k-cur">{{ i18n.t('keymgmt.current') }}</label>
         <input
@@ -123,11 +160,16 @@ function submit() {
         <div class="d">{{ i18n.t('keymgmt.current_hint') }}</div>
       </div>
 
-      <template v-if="needsNext">
+      <template v-if="showsNext">
         <div class="field">
-          <label class="flabel" for="k-new">{{ i18n.t('keymgmt.next') }}</label>
+          <label class="flabel" for="k-new">
+            {{ requiresNext ? i18n.t('keymgmt.next') : i18n.t('keymgmt.next_optional') }}
+          </label>
           <input id="k-new" v-model="next" type="password" autocomplete="new-password" />
           <div v-if="same" class="ferr">{{ i18n.t('keymgmt.same') }}</div>
+          <div v-if="!requiresNext" class="d">
+            {{ i18n.t('keymgmt.next_optional_hint') }}
+          </div>
         </div>
 
         <div class="field">
@@ -137,7 +179,11 @@ function submit() {
         </div>
       </template>
 
-      <div class="note if">{{ i18n.t('keymgmt.payload_note') }}</div>
+      <!-- 这句必须跟着操作变：对 reencrypt 说「不重写载荷」是把实际
+           情况说反了 -->
+      <div class="note if">
+        {{ rewrites ? i18n.t('keymgmt.rewrite_note') : i18n.t('keymgmt.payload_note') }}
+      </div>
 
       <div class="acts">
         <button type="button" class="btn" @click="$emit('cancel')">
@@ -146,7 +192,7 @@ function submit() {
         <button
           type="submit"
           class="btn primary"
-          :class="{ danger: action === 'remove' }"
+          :class="{ danger: action === 'remove' || rewrites }"
           :disabled="!canSubmit"
         >
           {{ busy ? i18n.t('keymgmt.working') : i18n.t('keymgmt.submit') }}

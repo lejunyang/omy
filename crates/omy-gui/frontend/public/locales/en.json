@@ -63,7 +63,8 @@
     "encrypting": "Encrypting…",
     "deriving": "Deriving key…",
     "connecting": "Connecting…",
-    "file_of": "File {{i}} of {{n}}"
+    "file_of": "File {{i}} of {{n}}",
+    "reencrypting": "Re-encrypting..."
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -243,13 +244,20 @@
     "next_again": "New password again",
     "mismatch": "The two new passwords do not match",
     "same": "The new password is the same as the current one",
-    "stale_copy_warning": "Removing a password only affects this copy of the file. If it was copied, backed up or synced elsewhere, those copies can still be opened with the removed password. To retire a password for good, re-encrypt the file.",
+    "stale_copy_warning": "Removing a password only affects this copy of the file. If it was copied, backed up or synced elsewhere, those copies can still be opened with the removed password. To make this file unrelated to the old password, choose \"Re-encrypt\" above.",
     "payload_note": "Only the header is rewritten; the content is not re-encrypted, so this is instant even for huge files.",
     "submit": "Apply",
     "working": "Rewriting…",
     "done_add": "Password added; both passwords now work",
     "done_change": "Password changed; the old one no longer works",
     "done_remove": "Only the current password is kept now",
-    "locked_hint": "You need to be able to open this file before changing its passwords."
+    "locked_hint": "You need to be able to open this file before changing its passwords.",
+    "reencrypt": "Re-encrypt (replace file key)",
+    "reencrypt_desc": "Rewrites the whole file and replaces its file key. This file will no longer relate to the old password, but it takes time proportional to the file size.",
+    "reencrypt_warning": "This file will be rewritten in full; large files may take a while, so please keep the app open. Afterwards the old password is useless for this file — but any copies made earlier are separate files and can still be opened with it.",
+    "next_optional": "New password (optional)",
+    "next_optional_hint": "Leave empty to keep the same password and only replace the file key — this makes the password on older copies useless for this file.",
+    "rewrite_note": "The contents are re-encrypted, so this takes as long as the file is big. The original is left untouched until the write succeeds.",
+    "done_reencrypt": "Re-encrypted; the file key has been replaced"
   }
 }

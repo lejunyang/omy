@@ -295,7 +295,15 @@ function onRowClick(entry, ev) {
 
           <!-- 有进度才显示进度条：派生密钥等阶段拿不到百分比，
                强行显示一个不动的空槽比不显示更让人以为卡住了 -->
-          <div v-if="state.progress" class="prog">
+          <!-- data-* 上带一份未经格式化的原始值：自动化与无障碍工具读它，
+               不必去解析给人看的文案（文案随语言变，解析必然脆） -->
+          <div
+            v-if="state.progress"
+            class="prog"
+            :data-stage="state.progress.index"
+            :data-stages="state.progress.total_files"
+            :data-pct="progPercent"
+          >
             <div class="prog-track">
               <div class="prog-fill" :style="{ width: progPercent + '%' }"></div>
             </div>

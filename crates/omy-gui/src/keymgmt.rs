@@ -22,28 +22,36 @@
 //! "只留下我现在用的这个"。文件上原本挂着几个密码是查不出来的，所以
 //! 界面不能显示"将删除 1 个密码"这种它并不知道的数字。
 //!
-//! # 一个必须传达给用户的局限
+//! # 第四个操作：`reencrypt`
 //!
-//! 移除密码只影响这一份文件。攻击者若留有旧副本，仍能用旧密码打开那个
-//! 副本——真正的密钥轮换要重新加密载荷，是另一个操作。UI 不说这句的话，
-//! 用户会以为"删掉密码"等于"那个人再也看不到了"，这是危险的错觉。
+//! 上面三个都只改"谁能打开"，载荷密文一字节不变，所以移除密码只影响这
+//! 一份文件——攻击者若留有旧副本，仍能用旧密码打开那个副本。用户会以为
+//! "删掉密码"等于"那个人再也看不到了"，这是危险的错觉。
+//!
+//! `reencrypt` 换掉文件密钥并重写整个载荷（core 的 `reencrypt`），此后
+//! 这个文件与旧密码彻底无关。代价是耗时与文件大小成正比，所以它是用户
+//! 明确选择的另一个操作，不是默认行为。
+//!
+//! 它仍然挡不住已经流出去的副本：那是一份独立的密文，本操作对它无能为力。
+//! UI 必须说"这份文件从此与旧密码无关"，不能说"彻底作废旧密码"。
 
 use crate::commands::{CmdError, CmdResult, Shared};
+use crate::encrypt::{ENCRYPT_PROGRESS_EVENT, EncryptProgress};
 use omy_core::crypto::{Argon2Params, Kek};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tauri::State;
+use tauri::{Emitter as _, State};
 
 /// 前端发起的密码管理请求。
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyRequest {
     /// 目标 `.omy` 文件的磁盘路径。
     pub path: String,
-    /// 操作：`add` / `change` / `remove`。
+    /// 操作：`add` / `change` / `remove` / `reencrypt`。
     pub action: String,
-    /// 当前密码，用于解开文件。三种操作都必需。
+    /// 当前密码，用于解开文件。四种操作都必需。
     pub current: String,
-    /// 新密码，`add` / `change` 用。
+    /// 新密码。`add` / `change` 必需，`reencrypt` 可选（留空即沿用当前密码）。
     #[serde(default)]
     pub next: String,
 }
@@ -55,10 +63,10 @@ pub struct KeyOutcome {
     pub action: String,
     /// 改写后生效的密码数量。
     pub slots_in_use: usize,
-    /// 恒为 false：本操作从不重写载荷。
+    /// 是否重写了载荷。只有 `reencrypt` 为 true。
     ///
-    /// 显式返回而不是让前端假定——万一将来有人把实现改成"解密再加密"，
-    /// 端到端验证会立刻发现这个字段变了。
+    /// 显式返回而不是让前端假定：这是"改密码"与"轮换"的唯一可观察差别，
+    /// 端到端验证靠它区分两者是否真的走了不同实现。
     pub payload_rewritten: bool,
 }
 
@@ -75,30 +83,79 @@ pub struct KeyOutcome {
 /// - `corrupted`：文件头部被篡改（MAC 不匹配）
 /// - `internal`：线程调度失败
 #[tauri::command]
-pub async fn manage_key(state: State<'_, Shared>, req: KeyRequest) -> CmdResult<KeyOutcome> {
+pub async fn manage_key(
+    app: tauri::AppHandle,
+    state: State<'_, Shared>,
+    req: KeyRequest,
+) -> CmdResult<KeyOutcome> {
     if req.current.is_empty() {
         return Err(CmdError::code("password_required"));
     }
     let action = Action::parse(&req.action).ok_or_else(|| CmdError::code("bad_action"))?;
-    if action.needs_next() {
-        if req.next.is_empty() {
-            return Err(CmdError::code("new_password_required"));
-        }
-        // 提前拦掉：否则会白跑两次 Argon2 才发现什么也没变
-        if req.next == req.current {
-            return Err(CmdError::code("same_password"));
-        }
-    } else if !req.next.is_empty() {
+    if action.needs_next() && req.next.is_empty() {
+        return Err(CmdError::code("new_password_required"));
+    }
+    if !action.accepts_next() && !req.next.is_empty() {
         // remove 用不到新密码。静默忽略是不行的——用户以为自己指定了什么，
         // 实际什么也没发生，而 remove 的结果（其它密码作废）不可逆
         return Err(CmdError::code("unexpected_new_password"));
     }
+    // 提前拦掉：否则会白跑两次 Argon2 才发现什么也没变。
+    //
+    // reencrypt 例外：它即使密码不变也是有意义的（换掉文件密钥，让旧副本
+    // 的密码对这份文件失效），所以只在真的要改密码时才拦
+    if !req.next.is_empty() && req.next == req.current && action != Action::Reencrypt {
+        return Err(CmdError::code("same_password"));
+    }
 
     let handle: Shared = std::sync::Arc::clone(&state);
-    // 两次 Argon2 各几百毫秒，必须离开异步执行器，否则 UI 卡住
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &req, action))
+    // 两次 Argon2 各几百毫秒，轮换还要重写整个载荷，
+    // 必须离开异步执行器，否则 UI 卡住
+    tauri::async_runtime::spawn_blocking(move || run(&handle, &app, &req, action))
         .await
         .map_err(|_| CmdError::code("internal"))?
+}
+
+/// 造一个把 core 进度转成前端事件的回调。
+///
+/// `stage` / `stages` 直接映射成 `index` / `total_files`，复用前端现成的
+/// 「第 i / n 个」渲染——轮换的两个阶段（读一遍、写一遍）对用户来说正好
+/// 就是"两步"。
+///
+/// 按整百分比节流：不节流的话 256 KiB 分块下处理 1 GB 要发四千多次事件，
+/// IPC 开销反而拖慢操作，进度条也会因刷新过密而卡顿（与 encrypt.rs 同一
+/// 理由，改动时两处都要看）。
+fn progress_cb<'a>(
+    app: &'a tauri::AppHandle,
+    name: &'a str,
+    stage: usize,
+    stages: usize,
+) -> impl FnMut(u64, u64) + 'a {
+    let mut last_pct = u8::MAX;
+    move |done: u64, total: u64| {
+        // 空文件（total 为 0）算 100%：checked_div 在除数为 0 时返回 None，
+        // 正好用 unwrap_or 兜住
+        let pct = done
+            .saturating_mul(100)
+            .checked_div(total)
+            .and_then(|v| u8::try_from(v).ok())
+            .unwrap_or(100);
+        if pct == last_pct {
+            return;
+        }
+        last_pct = pct;
+        // 发送失败就算了：前端没在听不代表操作该中断
+        let _ = app.emit(
+            ENCRYPT_PROGRESS_EVENT,
+            EncryptProgress {
+                index: stage,
+                total_files: stages,
+                name: name.to_owned(),
+                done,
+                total,
+            },
+        );
+    }
 }
 
 /// 操作类型。
@@ -107,6 +164,7 @@ enum Action {
     Add,
     Change,
     Remove,
+    Reencrypt,
 }
 
 impl Action {
@@ -115,12 +173,27 @@ impl Action {
             "add" => Some(Self::Add),
             "change" => Some(Self::Change),
             "remove" => Some(Self::Remove),
+            "reencrypt" => Some(Self::Reencrypt),
             _ => None,
         }
     }
 
+    /// 是否**必须**给新密码。
     const fn needs_next(self) -> bool {
         matches!(self, Self::Add | Self::Change)
+    }
+
+    /// 是否**接受**新密码。
+    ///
+    /// `reencrypt` 接受但不强制：轮换的核心是换文件密钥，改不改密码是另一
+    /// 件事。强制要求会让"只想让旧副本的密码对这份文件失效"无法表达。
+    const fn accepts_next(self) -> bool {
+        matches!(self, Self::Add | Self::Change | Self::Reencrypt)
+    }
+
+    /// 是否重写载荷。
+    const fn rewrites_payload(self) -> bool {
+        matches!(self, Self::Reencrypt)
     }
 
     const fn name(self) -> &'static str {
@@ -128,11 +201,17 @@ impl Action {
             Self::Add => "add",
             Self::Change => "change",
             Self::Remove => "remove",
+            Self::Reencrypt => "reencrypt",
         }
     }
 }
 
-fn run(state: &Shared, req: &KeyRequest, action: Action) -> CmdResult<KeyOutcome> {
+fn run(
+    state: &Shared,
+    app: &tauri::AppHandle,
+    req: &KeyRequest,
+    action: Action,
+) -> CmdResult<KeyOutcome> {
     let path = Path::new(&req.path);
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
@@ -150,9 +229,45 @@ fn run(state: &Shared, req: &KeyRequest, action: Action) -> CmdResult<KeyOutcome
         Action::Add => vec![current.duplicate(), derive(&req.next, &header.vault_salt, params)?],
         Action::Change => vec![derive(&req.next, &header.vault_salt, params)?],
         Action::Remove => vec![current.duplicate()],
+        // 给了新密码就换掉，没给就沿用当前密码
+        Action::Reencrypt => {
+            if req.next.is_empty() {
+                vec![current.duplicate()]
+            } else {
+                vec![derive(&req.next, &header.vault_salt, params)?]
+            }
+        }
     };
 
-    let outcome = omy_core::keyslot::rewrite_slots(&data, &[current], &keep).map_err(map_core_err)?;
+    // 两条路径只差这一步：slot 改写只动头部，轮换要把载荷读一遍再写一遍。
+    // 前后的检查（自证可打开、原子写回、装入会话）完全共用——分开写的话，
+    // 将来加一项检查就必然漏掉一边
+    let (bytes, slot_used) = if action.rewrites_payload() {
+        // 进度条上显示文件名，让用户知道在处理哪个文件。
+        // 取磁盘名而不是解出来的原名：这一步还没解密，而且用户是在列表里
+        // 按显示名选中它的
+        let shown = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        // 两个阶段各自独立汇报，不合成一条总进度：合成会让进度条在中点
+        // 莫名减速（读的速度和写的速度不一样），用户以为卡住了
+        let mut dec = progress_cb(app, &shown, 1, 2);
+        let mut enc = progress_cb(app, &shown, 2, 2);
+        let out = omy_core::reencrypt::rotate_fek_with_progress(
+            &data,
+            &[current],
+            &keep,
+            &omy_core::file::RandomMaterial::generate(),
+            Some(&mut dec),
+            Some(&mut enc),
+        )
+        .map_err(map_core_err)?;
+        (out.bytes, out.slot_used)
+    } else {
+        let out =
+            omy_core::keyslot::rewrite_slots(&data, &[current], &keep).map_err(map_core_err)?;
+        (out.bytes, out.slot_used)
+    };
 
     // 写回前先自证每个保留密码都能打开新文件。逐个验而不是只验第一个：
     // add 最容易犯的错是新密码能开、原密码被挤掉，只验一个正好漏掉。
@@ -160,21 +275,21 @@ fn run(state: &Shared, req: &KeyRequest, action: Action) -> CmdResult<KeyOutcome
     // 顺序不能反——先覆盖原文件再发现打不开，用户就同时失去了旧文件
     // 和访问权
     for k in &keep {
-        omy_core::file::open(&outcome.bytes, &[k.duplicate()])
+        omy_core::file::open(&bytes, &[k.duplicate()])
             .map_err(|_| CmdError::code("rewrite_verify_failed"))?;
     }
 
-    omy_core::fsatomic::write_atomic(path, &outcome.bytes)
-        .map_err(|_| CmdError::code("io_error"))?;
+    omy_core::fsatomic::write_atomic(path, &bytes).map_err(|_| CmdError::code("io_error"))?;
 
     // 把改动后仍然有效的密码装进会话，否则列表会把这个文件显示成
     // 「🔒 需要密码」——用户刚刚才输过密码，再被问一次很荒唐。
     //
     // 用 keep 的最后一个：add/change 时它是新密码，remove 时是当前密码。
     // 都是「用户接下来会用的那个」
-    let adopt = match action {
-        Action::Remove => &req.current,
-        _ => &req.next,
+    let adopt = if action == Action::Remove || req.next.is_empty() {
+        &req.current
+    } else {
+        &req.next
     };
     state.with_session(|s| {
         // 与 unlock / encrypt 用同一个 label，否则同一个密码会被算成
@@ -184,8 +299,8 @@ fn run(state: &Shared, req: &KeyRequest, action: Action) -> CmdResult<KeyOutcome
 
     Ok(KeyOutcome {
         action: action.name().to_owned(),
-        slots_in_use: outcome.slot_used,
-        payload_rewritten: false,
+        slots_in_use: slot_used,
+        payload_rewritten: action.rewrites_payload(),
     })
 }
 
@@ -233,9 +348,32 @@ mod tests {
         assert_eq!(Action::parse("remove"), Some(Action::Remove));
         // 不这样会怎样：拼错的动作名若被当成某个默认操作执行，
         // 用户可能在想改密码时把其它密码全删了
+        assert_eq!(Action::parse("reencrypt"), Some(Action::Reencrypt));
         assert_eq!(Action::parse("delete"), None);
         assert_eq!(Action::parse(""), None);
         assert_eq!(Action::parse("ADD"), None, "大小写不同应视为未知");
+    }
+
+    #[test]
+    fn only_reencrypt_rewrites_payload() {
+        // 不这样会怎样：这是「改密码」与「轮换」唯一的可观察差别。若 remove
+        // 也被算成重写载荷，端到端验证就无法区分两者是否真走了不同实现
+        assert!(Action::Reencrypt.rewrites_payload());
+        for a in [Action::Add, Action::Change, Action::Remove] {
+            assert!(!a.rewrites_payload(), "{} 不该重写载荷", a.name());
+        }
+    }
+
+    #[test]
+    fn reencrypt_accepts_but_does_not_require_new_password() {
+        // 轮换即使密码不变也有意义：换掉文件密钥，让旧副本的密码对这份
+        // 文件失效。强制要求新密码会让这个正当需求无法表达
+        assert!(Action::Reencrypt.accepts_next());
+        assert!(!Action::Reencrypt.needs_next());
+        // remove 连接受都不该接受，否则用户以为指定了什么、实际什么也没发生
+        assert!(!Action::Remove.accepts_next());
+        assert!(Action::Add.accepts_next());
+        assert!(Action::Change.accepts_next());
     }
 
     #[test]
