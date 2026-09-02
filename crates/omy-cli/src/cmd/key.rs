@@ -158,6 +158,19 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
     ctx.out
         .detail(&format!("已用现有密码解开（slot {}）", opened.slot_index));
 
+    // remove 不需要新密码。这三个子命令共用 SlotArgs，所以 clap 会照样
+    // 接受 --new-password-*；静默忽略是不行的——用户以为自己指定了什么，
+    // 实际什么也没发生，而结果（其它密码全废）是不可逆的
+    if !op.needs_new_password()
+        && (a.new_password_file.is_some() || a.new_password_env.is_some())
+    {
+        bail!(
+            "key {} 不接受 --new-password-file / --new-password-env：\
+             它只保留当前密码，不设置新密码",
+            op.name()
+        );
+    }
+
     // 新密码要确认两遍：打错了会得到一个自己也打不开的文件
     let new_kek = if op.needs_new_password() {
         let nsrc = PasswordSource {

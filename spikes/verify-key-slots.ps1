@@ -130,13 +130,28 @@ Check '新旧密码相同时报错' ($LASTEXITCODE -ne 0) $out.Trim().Split("`n"
 Check '新旧密码相同时文件未改动' `
     ((Get-FileHash $f5 -Algorithm SHA256).Hash -eq $snapshot)
 
+# remove 用不到新密码，但三个子命令共用参数结构，clap 照样会接受它。
+# 静默忽略是不行的：用户以为指定了什么，实际什么也没发生，而结果不可逆
+$out = & $omy key remove $f5 --password-env PW_A --new-password-env PW_B --yes 2>&1 | Out-String
+Check 'remove 拒绝 --new-password-env 而非静默忽略' ($LASTEXITCODE -ne 0) `
+    $out.Trim().Split("`n")[0]
+Check 'remove 报错时文件未改动' `
+    ((Get-FileHash $f5 -Algorithm SHA256).Hash -eq $snapshot)
+
 Write-Output ''
 Write-Output '=== 6. 不再出现「尚未实现」 ==='
+# remove 不带新密码参数（上面刚验过它会拒绝），add/change 才带
 foreach ($sub in @('add', 'remove', 'change')) {
-    $o = & $omy key $sub $f5 --password-env PW_A --new-password-env PW_B --yes 2>&1 | Out-String
+    if ($sub -eq 'remove') {
+        $o = & $omy key remove $f5 --password-env PW_A --yes 2>&1 | Out-String
+    } else {
+        $o = & $omy key $sub $f5 --password-env PW_A --new-password-env PW_B --yes 2>&1 | Out-String
+    }
     Check "key $sub 不报未实现" (-not ($o -match '尚未实现|not implemented'))
-    # 每次操作后把密码改回 A，便于下一轮复用
-    & $omy key change $f5 --password-env PW_B --new-password-env PW_A --yes *> $null
+    # add/change 会把密码换成 B，改回 A 以便下一轮复用；remove 不改密码
+    if ($sub -ne 'remove') {
+        & $omy key change $f5 --password-env PW_B --new-password-env PW_A --yes *> $null
+    }
 }
 
 Write-Output ''
