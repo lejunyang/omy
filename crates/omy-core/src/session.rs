@@ -78,6 +78,10 @@ impl CredentialKind {
 ///
 /// `label` 是调用方给凭据起的名字（如 "主密码"、"诱饵"），**不是密码本身**。
 /// 这样既能区分多个凭据，又不必在缓存键里保留秘密。
+///
+/// 代价是「键命中」只说明这个名字用过，**不说明密码相同**。所以
+/// [`SessionKeys::unlock_password`] 不能拿命中当「已经解锁过」，
+/// 必须重新派生并覆盖。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     vault_salt: [u8; 16],
@@ -111,9 +115,8 @@ pub struct UnlockedCredential {
 ///
 /// let mut s = SessionKeys::new();
 /// let salt = [0x11u8; 16];
-/// // 第一次会跑 Argon2（慢）
 /// s.unlock_password("主密码", &salt, "hunter2", Argon2Params::TEST_WEAK)?;
-/// // 第二次命中缓存，不再跑 Argon2
+/// // 同名同盐再解锁一次会覆盖，不会多出一条凭据
 /// s.unlock_password("主密码", &salt, "hunter2", Argon2Params::TEST_WEAK)?;
 /// assert_eq!(s.len(), 1);
 /// # Ok::<(), omy_core::Error>(())
@@ -156,8 +159,33 @@ impl SessionKeys {
 
     /// 用密码解锁并缓存 KEK。
     ///
-    /// 若 `(vault_salt, kind, label)` 已在缓存中，**直接返回不重跑 Argon2**——
-    /// 这是整个扫描性能的基础。
+    /// 同一个 `(vault_salt, kind, label)` 再次解锁时**会重新派生并覆盖**旧条目，
+    /// 旧 KEK 在被挤出时清零。
+    ///
+    /// # 为什么不能「命中缓存就跳过 KDF」
+    ///
+    /// 缓存键里没有密码（有意如此，见 [`CacheKey`]），所以「命中」只说明
+    /// 这个**名字**用过，不说明密码相同。早先的实现在命中时直接
+    /// `return Ok(())`，于是同一 label 下的第二个密码从未被派生，会话里留着
+    /// 的还是上一个 KEK——而返回值是 `Ok`，调用方以为解锁成功了。
+    ///
+    /// 上层大量使用固定 label（GUI 恒为 `"main"`，见 `commands::unlock`），
+    /// 这条路径因此是常态而非边角：
+    ///
+    /// - 先打错一次密码、再输对的 → 第二次被忽略，一直提示打不开；
+    /// - 改完密码后自动装入新密码 → 装不进去，文件被显示成「需要密码」。
+    ///
+    /// 扫描性能不依赖这个早退：慢速 KDF 每个密码只跑一次是靠调用方在
+    /// **文件循环外**解锁（见 `scan` 命令），而每个文件复用 KEK 是靠
+    /// [`SessionKeys::scannable_for`] 从缓存读。想显式避免重复派生的调用方
+    /// 可以自己留住 KEK 走 [`SessionKeys::insert_kek`]。
+    ///
+    /// # 为什么不是把密码指纹加进缓存键
+    ///
+    /// 那需要在 Argon2 之前先算一个**快速**的密码哈希并驻留内存。能读到
+    /// 进程内存的攻击者本来只能对着 Argon2 逐个猜（每次几百毫秒），有了
+    /// 快速指纹就能离线秒破——而密码常被复用到别处。为省一次 KDF 削弱
+    /// 密码强度不值得。
     ///
     /// # Errors
     ///
@@ -175,11 +203,9 @@ impl SessionKeys {
             kind: CredentialKind::Vault,
             label: label.to_owned(),
         };
-        if self.cache.contains_key(&key) {
-            return Ok(()); // 缓存命中，跳过慢速 KDF
-        }
         let kek = Kek::from_password(password.as_bytes(), vault_salt, params)?;
         self.kdf_runs = self.kdf_runs.saturating_add(1);
+        // insert 会把同键的旧 Kek 返回，就地 drop 即清零（ZeroizeOnDrop）
         self.cache.insert(key, kek);
         Ok(())
     }

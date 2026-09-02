@@ -220,7 +220,7 @@ fn temp_plaintext_dir_gets_no_index_marker() {
 // ============================================================
 
 #[test]
-fn repeated_unlock_runs_kdf_only_once() {
+fn repeated_unlock_keeps_one_entry() {
     let mut s = SessionKeys::new();
     let salt = [0x11u8; 16];
 
@@ -228,12 +228,50 @@ fn repeated_unlock_runs_kdf_only_once() {
         s.unlock_password("main", &salt, "hunter2", Argon2Params::TEST_WEAK).expect("unlock");
     }
 
-    assert_eq!(s.len(), 1, "同一凭据只应有一个缓存条目");
-    assert_eq!(
-        s.kdf_runs(),
-        1,
-        "10 次解锁只应执行 1 次 Argon2——这是扫描性能的前提，缓存失效会让扫描慢 4 个数量级"
-    );
+    // 只断言外部可观察的行为：凭据不会重复堆积。
+    //
+    // 这里刻意**不**断言 kdf_runs==1。早先的版本那样断言，等于把
+    // 「命中缓存就跳过 KDF」这个实现细节锁死，而正是那个跳过让
+    // 「同一 label 换一个密码」被静默忽略（见下一条测试）。
+    // 扫描性能靠的是调用方在文件循环外解锁一次，不靠这个早退。
+    assert_eq!(s.len(), 1, "同一 (salt, label) 只应有一个缓存条目，否则状态栏的凭据计数会虚高");
+}
+
+/// 用派生出的 slot key 做 KEK 指纹。
+///
+/// `Kek` 的 `Debug` 是脱敏的，两个不同的 KEK 打印出来一模一样——直接比
+/// Debug 字符串会让下面这条测试永远通过（我第一版探针就踩了这个）。
+fn kek_fingerprint(k: &Kek) -> [u8; 32] {
+    *k.derive_slot_key(&[0u8; 16], 0).as_bytes()
+}
+
+#[test]
+fn relocking_same_label_with_new_password_replaces_kek() {
+    // 不这样会怎样：`unlock_password` 曾在 (salt, kind, label) 命中时
+    // 直接 `return Ok(())`。缓存键里没有密码，所以「命中」只说明这个
+    // 名字用过、不说明密码相同——第二个密码于是从未被派生，会话里留着
+    // 的还是第一个 KEK，而返回值是 Ok，调用方以为解锁成功了。
+    //
+    // GUI 的 label 恒为 "main"，这个 bug 每天都会撞上：先打错一次密码
+    // 再输对的，界面会一直说打不开；改完密码后自动装入新密码也装不进去。
+    let salt = [0x77u8; 16];
+    let p = Argon2Params::TEST_WEAK;
+
+    let mut s = SessionKeys::new();
+    s.unlock_password("main", &salt, "wrong-password", p).expect("first");
+    let first = kek_fingerprint(&s.scannable_for(&salt).first().expect("cred").kek);
+
+    s.unlock_password("main", &salt, "correct-password", p).expect("second");
+    let second = kek_fingerprint(&s.scannable_for(&salt).first().expect("cred").kek);
+
+    assert_eq!(s.len(), 1, "覆盖而不是新增：同名凭据只该有一条");
+    assert_ne!(first, second, "换密码后会话里必须是新 KEK，否则第二次解锁被静默忽略");
+
+    // 还要是**正确**的那个 KEK，不能只是「变了」
+    let mut fresh = SessionKeys::new();
+    fresh.unlock_password("main", &salt, "correct-password", p).expect("fresh");
+    let expected = kek_fingerprint(&fresh.scannable_for(&salt).first().expect("cred").kek);
+    assert_eq!(second, expected, "覆盖后的 KEK 必须等于用新密码独立派生的结果");
 }
 
 #[test]
@@ -244,6 +282,8 @@ fn different_labels_are_separate_entries() {
     s.unlock_password("decoy", &salt, "pw-b", Argon2Params::TEST_WEAK).expect("b");
 
     assert_eq!(s.len(), 2);
+    // 两个不同 label 各派生一次：这里的 kdf_runs 反映的是「不同凭据不共享
+    // 缓存」，与「同 label 是否跳过 KDF」无关，所以仍然成立
     assert_eq!(s.kdf_runs(), 2);
 }
 
