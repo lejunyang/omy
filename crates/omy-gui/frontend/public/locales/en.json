@@ -63,7 +63,7 @@
     "encrypting": "Encrypting…",
     "deriving": "Deriving key…",
     "connecting": "Connecting…",
-    "file_of": "File {i} of {n}"
+    "file_of": "File {{i}} of {{n}}"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -212,7 +212,7 @@
   "remote": {
     "disconnect": "Disconnect",
     "unknown": "Unknown device",
-    "connected_to": "Connected to {name}",
+    "connected_to": "Connected to {{name}}",
     "readonly": "Read-only",
     "try_password": "Try a password",
     "empty": "This device is not sharing any files",

@@ -63,7 +63,7 @@
     "encrypting": "正在加密…",
     "deriving": "正在派生密钥…",
     "connecting": "正在连接设备…",
-    "file_of": "第 {i} / {n} 个"
+    "file_of": "第 {{i}} / {{n}} 个"
   },
   "notice": {
     "encrypted_one": "已加密 {{count}} 个文件",
@@ -212,7 +212,7 @@
   "remote": {
     "disconnect": "断开连接",
     "unknown": "未知设备",
-    "connected_to": "已连接到 {name}",
+    "connected_to": "已连接到 {{name}}",
     "readonly": "只读",
     "try_password": "试一个密码",
     "empty": "这台设备没有共享任何文件",
