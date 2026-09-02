@@ -475,6 +475,15 @@ impl OpenedFile {
         self.tlvs.find(types::MEDIA_META).is_some()
     }
 
+    /// 是否带有缩略图。
+    ///
+    /// 只看条目存在性，不做解密。判断「有没有」不能靠解密是否成功：
+    /// 解密失败也可能是文件损坏，那样会把损坏静默当成「没有缩略图」。
+    #[must_use]
+    pub fn has_thumbnail(&self) -> bool {
+        self.tlvs.find(types::THUMBNAIL).is_some()
+    }
+
     /// 记录在 TLV 中的原始明文哈希。
     ///
     /// # Errors
@@ -527,6 +536,23 @@ impl OpenedFile {
     #[must_use]
     pub const fn is_container(&self) -> bool {
         self.header.has_flag(flags::CONTAINER)
+    }
+
+    /// 解密后的容器索引**原始字节**。
+    ///
+    /// 与 [`Self::folder_index`] 的区别：那个返回解析后的结构，用于读取内容；
+    /// 这个返回未解析的字节，用于原样搬运（重新加密时）。走
+    /// `parse` → `encode` 往返会把索引重新序列化一遍，任何编码差异都会变成
+    /// 「轮换后容器打不开」——而这种缺陷只在带容器的文件上出现，极难定位。
+    ///
+    /// # Errors
+    ///
+    /// 非容器文件返回 [`Error::MissingTlv`]；解密失败时返回相应错误。
+    pub fn raw_folder_index(&self) -> Result<Vec<u8>> {
+        if !self.header.has_flag(flags::CONTAINER) {
+            return Err(Error::MissingTlv { tlv_type: types::FOLDER_INDEX });
+        }
+        self.tlvs.decrypt_value(types::FOLDER_INDEX, &self.fek, self.header.cipher_id)
     }
 
     /// 解密全部载荷。
