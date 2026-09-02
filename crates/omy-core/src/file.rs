@@ -15,12 +15,12 @@
 
 use crate::crypto::{Argon2Params, CipherId, Fek, Kek, SecretKey, content_hash, header_mac, verify_header_mac};
 use crate::error::{Error, Result};
+use crate::payload;
 use crate::header::{
     COMPRESS_NONE, COMPRESS_ZSTD, DEFAULT_CHUNK_SIZE, FIXED_HEADER_LEN, FixedHeader,
     HEADER_MAC_LEN, KDF_ARGON2ID, SLOT_AREA_LEN, SLOT_AREA_OFFSET, SLOT_COUNT, SLOT_COUNT_U8,
     TLV_AREA_OFFSET, VERSION_MAJOR, VERSION_MINOR, flags, validate_chunk_size,
 };
-use crate::payload::{decrypt_payload, encrypt_payload};
 use crate::slot::{build_slot_area, unwrap_fek};
 use crate::tlv::{
     CompressionIndexEntry, TlvEntry, TlvSet, decode_compression_index, encode_compression_index,
@@ -138,13 +138,32 @@ pub fn encrypt(
     opts: &EncryptOptions,
     rnd: &RandomMaterial,
 ) -> Result<EncryptedFile> {
+    encrypt_with_progress(plaintext, keks, vault_salt, opts, rnd, None)
+}
+
+/// 与 [`encrypt`] 相同，但分块过程中回报进度。
+///
+/// 大文件加密是纯 CPU 循环，没有进度反馈时用户无法区分「在算」和
+/// 「卡死了」。回调语义见 [`crate::payload::ProgressFn`]。
+///
+/// # Errors
+///
+/// 与 [`encrypt`] 一致。
+pub fn encrypt_with_progress(
+    plaintext: &[u8],
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
+    rnd: &RandomMaterial,
+    progress: Option<payload::ProgressFn<'_>>,
+) -> Result<EncryptedFile> {
     if keks.is_empty() {
         return Err(Error::TooManySlots { got: 0, max: SLOT_COUNT });
     }
     validate_chunk_size(opts.chunk_size)?;
 
     let fek = Fek::random();
-    encrypt_with_fek(plaintext, keks, vault_salt, opts, rnd, &fek)
+    encrypt_with_fek_and_progress(plaintext, keks, vault_salt, opts, rnd, &fek, progress)
 }
 
 /// 用指定 FEK 加密。
@@ -164,6 +183,23 @@ pub fn encrypt_with_fek(
     opts: &EncryptOptions,
     rnd: &RandomMaterial,
     fek: &Fek,
+) -> Result<EncryptedFile> {
+    encrypt_with_fek_and_progress(plaintext, keks, vault_salt, opts, rnd, fek, None)
+}
+
+/// 与 [`encrypt_with_fek`] 相同，但分块过程中回报进度。
+///
+/// # Errors
+///
+/// 与 [`encrypt_with_fek`] 一致。
+pub fn encrypt_with_fek_and_progress(
+    plaintext: &[u8],
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
+    rnd: &RandomMaterial,
+    fek: &Fek,
+    progress: Option<payload::ProgressFn<'_>>,
 ) -> Result<EncryptedFile> {
     if opts.chunk_size == 0 {
         return Err(Error::MalformedHeader { reason: "chunk_size must not be zero" });
@@ -258,7 +294,13 @@ pub fn encrypt_with_fek(
     };
 
     let payload_key = fek.derive_payload_key(&header.file_uuid);
-    let (payload, index) = encrypt_payload(&header, &payload_key, plaintext, opts.zstd_level)?;
+    let (payload, index) = payload::encrypt_payload_with_progress(
+        &header,
+        &payload_key,
+        plaintext,
+        opts.zstd_level,
+        progress,
+    )?;
 
     // 压缩模式必须写 CRITICAL 索引 TLV，否则无法定位块
     if opts.compress {
@@ -496,6 +538,19 @@ impl OpenedFile {
     /// - [`Error::ChunkAuthFailed`]：某块认证失败
     /// - [`Error::ContentHashMismatch`]：内容哈希校验失败
     pub fn decrypt_all(&self, file_bytes: &[u8]) -> Result<Vec<u8>> {
+        self.decrypt_all_with_progress(file_bytes, None)
+    }
+
+    /// 与 [`Self::decrypt_all`] 相同，但分块过程中回报进度。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::decrypt_all`] 一致。
+    pub fn decrypt_all_with_progress(
+        &self,
+        file_bytes: &[u8],
+        progress: Option<payload::ProgressFn<'_>>,
+    ) -> Result<Vec<u8>> {
         let start = self.header.header_len as usize;
         let payload = file_bytes.get(start..).ok_or(Error::Truncated {
             context: "payload",
@@ -505,7 +560,13 @@ impl OpenedFile {
 
         let idx = self.compression_index()?;
         let idx_ref = if idx.is_empty() { None } else { Some(idx.as_slice()) };
-        let plain = decrypt_payload(&self.header, &self.payload_key, payload, idx_ref)?;
+        let plain = payload::decrypt_payload_with_progress(
+            &self.header,
+            &self.payload_key,
+            payload,
+            idx_ref,
+            progress,
+        )?;
 
         // 有哈希就校验——这是可还原性承诺的自检手段
         if let Ok(expected) = self.stored_content_hash() {

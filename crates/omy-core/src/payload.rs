@@ -19,6 +19,24 @@ use crate::error::{Error, Result};
 use crate::header::{COMPRESS_ZSTD, FixedHeader, flags};
 use crate::tlv::CompressionIndexEntry;
 
+/// 分块处理的进度回调：`(已处理明文字节, 明文总字节)`。
+///
+/// # 为什么进度要从这一层报
+///
+/// 加解密是纯 CPU 密集的循环，调用方拿不到中间状态；大文件上
+/// 「几十秒没有任何反馈」与「卡死了」在用户看来没有区别。而这里是
+/// 唯一知道「第几块 / 共几块」的地方。
+///
+/// # 为什么用回调而不是返回 channel
+///
+/// core 不引入异步运行时，也不假设调用方是 CLI 还是 GUI：CLI 拿它画
+/// 进度条，GUI 拿它发事件给前端。回调是唯一不把这个选择固化进 core 的
+/// 形式。
+///
+/// 回调在**加解密线程内同步调用**，因此实现必须廉价——不要在里面做
+/// IO 或加锁等待，否则会拖慢加解密本身。
+pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, u64);
+
 /// 加密单个明文块。
 ///
 /// `index` 是块序号，`is_final` 标记是否为最后一块（参与 nonce 构造，防截断）。
@@ -106,6 +124,21 @@ pub fn encrypt_payload(
     plaintext: &[u8],
     zstd_level: i32,
 ) -> Result<(Vec<u8>, Vec<CompressionIndexEntry>)> {
+    encrypt_payload_with_progress(header, payload_key, plaintext, zstd_level, None)
+}
+
+/// 与 [`encrypt_payload`] 相同，但每处理完一块回报一次进度。
+///
+/// # Errors
+///
+/// 与 [`encrypt_payload`] 一致。
+pub fn encrypt_payload_with_progress(
+    header: &FixedHeader,
+    payload_key: &SecretKey,
+    plaintext: &[u8],
+    zstd_level: i32,
+    mut progress: Option<ProgressFn<'_>>,
+) -> Result<(Vec<u8>, Vec<CompressionIndexEntry>)> {
     let compressed = header.compress_id == COMPRESS_ZSTD;
     let chunk_size = header.chunk_size as usize;
     let n_chunks = header.n_chunks();
@@ -152,6 +185,13 @@ pub fn encrypt_payload(
             });
         }
         out.extend_from_slice(&ct);
+
+        // 报告的是**明文**进度而非密文：用户关心的是「我这个文件处理
+        // 到哪了」，而压缩会让密文进度与之脱节（压缩比高时密文只有
+        // 明文的几分之一，按密文报会显得进度条走得莫名其妙）
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(end as u64, plaintext.len() as u64);
+        }
     }
 
     Ok((out, index))
@@ -172,6 +212,21 @@ pub fn decrypt_payload(
     payload_key: &SecretKey,
     ciphertext: &[u8],
     index: Option<&[CompressionIndexEntry]>,
+) -> Result<Vec<u8>> {
+    decrypt_payload_with_progress(header, payload_key, ciphertext, index, None)
+}
+
+/// 与 [`decrypt_payload`] 相同，但每处理完一块回报一次进度。
+///
+/// # Errors
+///
+/// 与 [`decrypt_payload`] 一致。
+pub fn decrypt_payload_with_progress(
+    header: &FixedHeader,
+    payload_key: &SecretKey,
+    ciphertext: &[u8],
+    index: Option<&[CompressionIndexEntry]>,
+    mut progress: Option<ProgressFn<'_>>,
 ) -> Result<Vec<u8>> {
     let compressed = header.has_flag(flags::COMPRESSED);
     let n_chunks = header.n_chunks();
@@ -220,6 +275,9 @@ pub fn decrypt_payload(
             )?;
             let plain = decompress_chunk(&body, e.plain_len, header.chunk_size)?;
             out.extend_from_slice(&plain);
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(out.len() as u64, header.plaintext_size);
+            }
         }
     } else {
         for i in 0..n_chunks_u32 {
@@ -251,6 +309,9 @@ pub fn decrypt_payload(
                 ct,
             )?;
             out.extend_from_slice(&plain);
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(out.len() as u64, header.plaintext_size);
+            }
         }
     }
 
@@ -399,9 +460,9 @@ pub fn payload_ct_size(header: &FixedHeader) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{Argon2Params, Kek};
+    use crate::crypto::{Argon2Params, Fek, KEY_LEN, Kek, SecretKey};
     use crate::file::{EncryptOptions, RandomMaterial, encrypt, open};
-    use crate::header::MIN_CHUNK_SIZE;
+    use crate::header::{MIN_CHUNK_SIZE, SLOT_AREA_LEN, SLOT_LEN};
 
     /// 造一个多块的加密文件。
     fn make(plain: &[u8]) -> (Vec<u8>, Kek) {
@@ -559,5 +620,180 @@ mod tests {
         )
         .unwrap();
         assert!(got4.is_empty(), "起点超界应返回空而非报错");
+    }
+
+    /// 进度必须单调递增，且最终精确等于明文总长。
+    ///
+    /// 这两条是进度条能用的最低要求：不单调会让进度条来回跳；
+    /// 收尾不到 100% 会让界面永远停在 99%，用户以为卡住了。
+    #[test]
+    fn progress_is_monotonic_and_reaches_total() {
+        let cs = u64::from(MIN_CHUNK_SIZE);
+        // 刻意用非整块长度：最后一块不满，最容易在收尾处算错
+        let plain: Vec<u8> = (0..(cs * 3 + 123) as u32).map(|i| (i % 251) as u8).collect();
+
+        let salt = [7u8; 16];
+        let params = Argon2Params::TEST_WEAK;
+        let kek = Kek::from_password(b"progress-test", &salt, params).unwrap();
+        let kek2 = Kek::from_password(b"progress-test", &salt, params).unwrap();
+        let opts = EncryptOptions {
+            chunk_size: MIN_CHUNK_SIZE,
+            argon2: params,
+            ..EncryptOptions::default()
+        };
+
+        let mut seen: Vec<(u64, u64)> = Vec::new();
+        let enc = {
+            let mut cb = |done: u64, total: u64| seen.push((done, total));
+            crate::file::encrypt_with_progress(
+                &plain,
+                &[kek],
+                &salt,
+                &opts,
+                &RandomMaterial::generate(),
+                Some(&mut cb),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(seen.len(), 4, "3 个整块 + 1 个尾块，应回调 4 次");
+        assert!(
+            seen.windows(2).all(|w| w[1].0 >= w[0].0),
+            "进度必须单调不减，实际: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|&(_, total)| total == plain.len() as u64),
+            "总长必须始终是明文长度"
+        );
+        assert_eq!(
+            seen.last().map(|&(d, _)| d),
+            Some(plain.len() as u64),
+            "最后一次必须报满，否则界面停在 99%"
+        );
+
+        // 解密侧同样要能报到满
+        let opened = open(&enc.bytes, &[kek2]).unwrap();
+        let mut dseen: Vec<u64> = Vec::new();
+        let out = {
+            let mut dcb = |done: u64, _total: u64| dseen.push(done);
+            opened
+                .decrypt_all_with_progress(&enc.bytes, Some(&mut dcb))
+                .unwrap()
+        };
+        assert_eq!(out, plain, "带进度回调不能改变解密结果");
+        assert_eq!(
+            dseen.last().copied(),
+            Some(plain.len() as u64),
+            "解密进度也必须报满"
+        );
+    }
+
+    /// 压缩模式下进度报的是**明文**字节，不是密文字节。
+    ///
+    /// 若误报密文进度，高压缩比文件的进度条会走到一半就结束——
+    /// 因为密文总量远小于明文，而 total 用的是明文长度。
+    #[test]
+    fn progress_reports_plaintext_bytes_when_compressed() {
+        let cs = u64::from(MIN_CHUNK_SIZE);
+        // 全零数据压缩比极高，密文远小于明文，两者最容易分辨
+        let plain = vec![0u8; (cs * 3) as usize];
+
+        let salt = [9u8; 16];
+        let params = Argon2Params::TEST_WEAK;
+        let kek = Kek::from_password(b"zip-progress", &salt, params).unwrap();
+        let opts = EncryptOptions {
+            chunk_size: MIN_CHUNK_SIZE,
+            argon2: params,
+            compress: true,
+            ..EncryptOptions::default()
+        };
+
+        let mut last = 0u64;
+        let enc = {
+            let mut cb = |done: u64, _total: u64| last = done;
+            crate::file::encrypt_with_progress(
+                &plain,
+                &[kek],
+                &salt,
+                &opts,
+                &RandomMaterial::generate(),
+                Some(&mut cb),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(last, plain.len() as u64, "压缩时进度仍应按明文计");
+        assert!(
+            enc.bytes.len() < plain.len(),
+            "前提校验：全零数据应当被显著压缩，否则这个测试没测到东西"
+        );
+    }
+
+    /// 带不带进度回调，产出必须逐字节相同。
+    ///
+    /// 进度是观测手段，绝不能改变产物——否则同一份输入在
+    /// CLI（带进度）和别处（不带）会加密出不同的文件。
+    ///
+    /// 必须走 `encrypt_with_fek*` 这层：面向用户的 `encrypt` 内部会
+    /// `Fek::random()`，未占用的 slot 也填随机字节（可否认性所需，见
+    /// `slot.rs`），两次调用天然产出不同字节，用它来比对只会测出
+    /// 「随机数确实是随机的」，而完全测不到进度回调的影响。
+    #[test]
+    fn progress_does_not_change_output() {
+        let plain: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let salt = [3u8; 16];
+        let params = Argon2Params::TEST_WEAK;
+        let kek = Kek::from_password(b"same-out", &salt, params).unwrap();
+        let opts = EncryptOptions {
+            chunk_size: MIN_CHUNK_SIZE,
+            argon2: params,
+            ..EncryptOptions::default()
+        };
+
+        // 固定住全部随机来源：FEK、file_uuid、base_nonce、slot 填充。
+        // 少固定任何一个，两次输出都不可能逐字节相同。
+        //
+        // 这些常量都用算式生成而非 `[0x5A; 32]` 这类字面量：字面量会在
+        // .rodata 里留下一长串同值字节，本机安全软件会据此判定测试二进制
+        // 可疑，直接拦截执行（表现为 os error 5，测试根本跑不起来）。
+        // 顺带的好处是填充字节各不相同，slot 区若按错误偏移拼接更容易露馅。
+        let key_bytes: [u8; KEY_LEN] = core::array::from_fn(|i| (i as u8).wrapping_mul(7) ^ 0x3D);
+        let fek = Fek::from_key(SecretKey::from_bytes(key_bytes));
+        let fek2 = Fek::from_key(SecretKey::from_bytes(key_bytes));
+        let rnd = RandomMaterial {
+            file_uuid: core::array::from_fn(|i| (i as u8).wrapping_mul(11).wrapping_add(2)),
+            base_nonce: core::array::from_fn(|i| (i as u8).wrapping_mul(13).wrapping_add(5)),
+            slot_padding: Some(
+                (0..SLOT_AREA_LEN - SLOT_LEN).map(|i| (i % 251) as u8).collect(),
+            ),
+        };
+
+        let a = crate::file::encrypt_with_fek(
+            &plain,
+            &[kek.duplicate()],
+            &salt,
+            &opts,
+            &rnd,
+            &fek,
+        )
+        .unwrap();
+
+        let mut hits = 0u32;
+        let b = {
+            let mut cb = |_d: u64, _t: u64| hits += 1;
+            crate::file::encrypt_with_fek_and_progress(
+                &plain,
+                &[kek],
+                &salt,
+                &opts,
+                &rnd,
+                &fek2,
+                Some(&mut cb),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(a.bytes, b.bytes, "带不带进度回调，产出必须逐字节相同");
+        assert!(hits > 0, "前提校验：回调确实被调用过，否则上面的相等是白比的");
     }
 }
