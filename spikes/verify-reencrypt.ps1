@@ -15,7 +15,13 @@ function check($name, $ok, $detail = '') {
 }
 
 if (-not (Test-Path $cli)) { Write-Output "FAIL 找不到 $cli"; exit 1 }
-$newest = Get-ChildItem (Join-Path $root 'crates') -Recurse -Include *.rs |
+# 只看 omy.exe 真正依赖的 crate。扫整个 crates 会把 omy-gui 的改动也算进来，
+# 于是纯 CLI 脚本被一个与它无关的文件拦住——那种误报会训练人无脑 rebuild，
+# 久了就把这条检查当噪音忽略，而它要防的正是「拿旧二进制测新代码」
+$cliCrates = 'omy-cli', 'omy-core', 'omy-media', 'omy-net' |
+    ForEach-Object { Join-Path $root "crates\$_" } |
+    Where-Object { Test-Path $_ }
+$newest = Get-ChildItem $cliCrates -Recurse -Include *.rs |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($newest.LastWriteTime -gt (Get-Item $cli).LastWriteTime) {
     Write-Output "FAIL 二进制比源码旧（$($newest.Name)），先 cargo build -p omy-cli"

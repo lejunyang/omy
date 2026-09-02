@@ -462,6 +462,14 @@ async function main() {
   const btnReachable = await c.eval(`(() => {
     const b = document.querySelector('.keymgmt .acts .btn.primary');
     if (!b) return 'no-button';
+    // 先自证只有一层遮罩。上一节故意留着对话框不关，若这里又叠了第二个
+    // 对话框（例如中途调过解锁），下层按钮的几何算得出来但点击会被上层
+    // 遮罩接住，报成 covered-by——那是探针的状态问题，不是布局缺陷。
+    // 分开报，免得又花一轮查错方向
+    const ovs = document.querySelectorAll('.overlay.dlg-overlay').length;
+    if (ovs !== 1) return 'stacked-overlays:' + ovs;
+    // 对话框比屏幕高时要能滚到按钮——这才是移动端真实的操作方式
+    b.scrollIntoView({ block: 'center' });
     const r = b.getBoundingClientRect();
     const cx = Math.round(r.left + r.width / 2);
     const cy = Math.round(r.top + r.height / 2);
