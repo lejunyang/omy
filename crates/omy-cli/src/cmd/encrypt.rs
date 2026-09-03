@@ -329,18 +329,29 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         let meta = std::fs::metadata(p)
             .with_context(|| format!("无法访问 {}", p.display()))?;
 
+        // 树形模式走完全不同的流程：它自己往磁盘写很多个文件，
+        // 没有单一的「明文载荷 + 密文字节」可以交给下面那条流水线。
+        // 硬塞进去的话，进度条、媒体探测、JSON 契约全都要加分支判断，
+        // 而它们对树形模式没有一个是适用的
+        if meta.is_dir() && a.mode == DirMode::Tree {
+            let one = encrypt_as_tree(ctx, p, a, &keks, &vault_salt, &opts_base(
+                name_mode, compress, level, chunk_u32, cipher, params,
+            ), original)?;
+            total_in += one.0;
+            total_out += one.1;
+            results.push(one.2);
+            continue;
+        }
+
         let (plaintext, folder_index, name) = if meta.is_dir() {
             match a.mode {
                 DirMode::Container => {
                     let (p, idx, n) = build_container(ctx, p)?;
                     (p, Some(idx), n)
                 }
-                DirMode::Tree => {
-                    bail!(
-                        "tree 模式尚未实现。当前可用 --mode container 打包成单文件。\n\
-                         （tree 模式需要目录名加密与 base32 编码，见设计文档 05 号 §3）"
-                    )
-                }
+                // 上面已经 continue 掉了，这里不可能到达。
+                // 写 unreachable 而不是重复一遍逻辑：两处实现迟早分歧
+                DirMode::Tree => unreachable!("tree 模式已在上面处理"),
             }
         } else {
             let data = std::fs::read(p)
@@ -450,6 +461,252 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     Ok(())
 }
 
+/// 构造与单文件路径一致的加密选项。
+///
+/// 抽出来是为了让树形模式与容器模式**用同一份选项**：算法、分块、KDF 参数
+/// 若两条路径各写一遍，哪天改了 cipher 默认值只改一处，同一个命令的两种
+/// 模式会产出不同格式的文件。
+///
+/// `filename` 与媒体附加信息不在这里——前者由每个文件自己决定，
+/// 后者只对单文件有意义。
+fn opts_base(
+    name_mode: NameMode,
+    compress: bool,
+    level: i32,
+    chunk_u32: u32,
+    cipher: Cipher,
+    params: omy_core::crypto::Argon2Params,
+) -> EncryptOptions {
+    EncryptOptions {
+        filename: None,
+        preserve_extension: name_mode == NameMode::KeepExt,
+        compress,
+        zstd_level: level,
+        chunk_size: chunk_u32,
+        cipher: cipher.id(),
+        argon2: params,
+        write_content_hash: true,
+        ..EncryptOptions::default()
+    }
+}
+
+/// 树形模式加密一个目录。
+///
+/// 返回 `(明文字节数, 密文字节数, JSON 结果)`。
+fn encrypt_as_tree(
+    ctx: &Ctx<'_>,
+    root: &Path,
+    a: &Args,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
+    original: OriginalAction,
+) -> Result<(u64, u64, serde_json::Value)> {
+    // 泄露的元数据必须在**动手之前**告知，不是事后报告。
+    // 用户看到「已加密完成，顺便说一下别人能数出你有多少文件」时，
+    // 原目录可能已经删了
+    ctx.out.warn(omy_core::tree::TreeReport::leak_notice());
+
+    // 输出父目录：--output-dir 指定则用它，否则与原目录同级
+    let out_parent = if let Some(d) = &a.output_dir {
+        std::fs::create_dir_all(d)
+            .with_context(|| format!("创建输出目录 {} 失败", d.display()))?;
+        d.clone()
+    } else if let Some(o) = &a.output {
+        // -o 在树形模式下语义是「输出根目录的父目录」而不是文件名——
+        // 树形模式产出的是目录，不是单个文件。明确说清而不是默默改语义
+        std::fs::create_dir_all(o)
+            .with_context(|| format!("创建输出目录 {} 失败", o.display()))?;
+        o.clone()
+    } else {
+        root.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    };
+
+    let mut total_in = 0u64;
+    let mut on_file = |name: &str, size: u64| {
+        ctx.out.trace(&format!("  文件 {} （{}）", name, human_bytes(size)));
+    };
+
+    let rep = omy_core::tree::encrypt_tree(
+        root,
+        &out_parent,
+        keks,
+        vault_salt,
+        opts,
+        Some(&mut on_file),
+    )
+    .with_context(|| format!("树形加密 {} 失败", root.display()))?;
+
+    // 跳过的条目逐条报出来，与容器模式同样处理：静默丢弃会让用户
+    // 以为整个目录都加密了
+    for sk in &rep.skipped {
+        ctx.out.warn(&format!("跳过 {}：{}", sk.path, skip_why(sk.reason)));
+    }
+
+    // 超长目录名有运维含义：这些目录一旦丢了边车文件就认不出原名
+    if rep.long_names > 0 {
+        ctx.out.warn(&format!(
+            "{} 个目录名过长，已截断并在目录内写入名称文件。\n\
+             删掉那个文件会导致目录名无法还原；如需避免，请缩短目录名。",
+            rep.long_names
+        ));
+    }
+
+    // 统计明文与密文体积。逐个文件加密，密文总量要遍历产物才知道
+    for_each_file(root, &mut |sz| total_in = total_in.saturating_add(sz));
+    let mut total_out = 0u64;
+    for_each_file(&rep.root, &mut |sz| total_out = total_out.saturating_add(sz));
+    let count = rep.files;
+
+    ctx.out.success(&format!(
+        "{} {} → {}（{} 个文件、{} 个目录，{} → {}）",
+        t("ok.encrypted"),
+        root.display(),
+        rep.root.display(),
+        count,
+        rep.dirs,
+        human_bytes(total_in),
+        human_bytes(total_out)
+    ));
+
+    // 原文件处置：树形模式无法用「解密一次比对字节」那套校验——
+    // 那是针对单个密文文件的。这里改为逐个文件校验整棵树
+    if original.needs_confirm() {
+        verify_tree_then_handle(ctx, root, &rep.root, keks, vault_salt, opts.cipher, original)?;
+    }
+
+    Ok((
+        total_in,
+        total_out,
+        json!({
+            "input": root.display().to_string(),
+            "output": rep.root.display().to_string(),
+            "mode": "tree",
+            "files": count,
+            "dirs": rep.dirs,
+            "long_names": rep.long_names,
+            "plaintext_size": total_in,
+            "encrypted_size": total_out,
+        }),
+    ))
+}
+
+/// 树形模式的原件处置：先把整棵树解开比对，再动原件。
+///
+/// 不能复用 [`verify_then_handle`]：那个函数解一份密文字节与一个原文件比对，
+/// 而树形模式是多对多。**校验必须逐个文件比对内容**——只数文件个数的话，
+/// 内容串位（最难查的那种缺陷）会被放过，而此时原目录已经删了。
+fn verify_tree_then_handle(
+    ctx: &Ctx<'_>,
+    orig: &Path,
+    enc_root: &Path,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: omy_core::crypto::CipherId,
+    action: OriginalAction,
+) -> Result<()> {
+    let warn = match action {
+        OriginalAction::Trash => t("warn.trash_original"),
+        _ => t("warn.delete_original"),
+    };
+    if !ctx.out.confirm(&format!("{warn}\n{}", t("prompt.confirm")), ctx.assume_yes) {
+        ctx.out.info(t("msg.cancelled"));
+        return Ok(());
+    }
+
+    // 解到临时目录里比对。用 target 旁边的临时目录而不是系统 temp：
+    // 大目录可能几十 GB，系统 temp 常在小分区上
+    let tmp = enc_root.with_file_name(format!(
+        ".omy-verify-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)
+        .with_context(|| format!("创建校验目录 {} 失败", tmp.display()))?;
+
+    let verify = || -> Result<()> {
+        let rep = omy_core::tree::decrypt_tree(enc_root, &tmp, keks, vault_salt, cipher, None)?;
+        let mut mismatch = Vec::new();
+        compare_trees(orig, &rep.root, &mut mismatch);
+        if !mismatch.is_empty() {
+            bail!(
+                "校验失败：{} 项与原目录不一致（首个：{}），已跳过处置",
+                mismatch.len(),
+                mismatch.first().map_or("?", String::as_str)
+            );
+        }
+        Ok(())
+    };
+    let outcome = verify();
+    // 无论成败都要清掉临时明文——它是完整的明文副本，留着是安全问题
+    let _ = std::fs::remove_dir_all(&tmp);
+    outcome?;
+
+    match action {
+        OriginalAction::Trash => {
+            trash::delete(orig)
+                .map_err(|e| anyhow::anyhow!("移到回收站失败 {}: {e}", orig.display()))?;
+            ctx.out.info(&format!("已移到回收站 {}", orig.display()));
+        }
+        OriginalAction::Delete => {
+            std::fs::remove_dir_all(orig)
+                .with_context(|| format!("删除 {} 失败", orig.display()))?;
+            ctx.out.info(&format!("已删除原目录 {}", orig.display()));
+        }
+        OriginalAction::Keep => {}
+    }
+    Ok(())
+}
+
+/// 递归比对两棵目录树的文件内容，把不一致的相对路径记进 `out`。
+fn compare_trees(a: &Path, b: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(a) else {
+        out.push(a.display().to_string());
+        return;
+    };
+    for e in rd.flatten() {
+        let pa = e.path();
+        let pb = b.join(e.file_name());
+        if pa.is_dir() {
+            if pb.is_dir() {
+                compare_trees(&pa, &pb, out);
+            } else {
+                out.push(pa.display().to_string());
+            }
+        } else if pa.is_file() {
+            match (std::fs::read(&pa), std::fs::read(&pb)) {
+                (Ok(x), Ok(y)) if x == y => {}
+                _ => out.push(pa.display().to_string()),
+            }
+        }
+    }
+}
+
+/// 遍历目录下所有文件，把每个文件的大小交给回调。
+fn for_each_file(root: &Path, cb: &mut dyn FnMut(u64)) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            for_each_file(&p, cb);
+        } else if let Ok(md) = p.metadata() {
+            cb(md.len());
+        }
+    }
+}
+
+/// 跳过原因的中文说明。
+///
+/// 与容器模式共用：同一个原因在两种模式下说法不一致，用户会以为是两回事。
+fn skip_why(reason: SkipReason) -> &'static str {
+    match reason {
+        SkipReason::Symlink => "符号链接暂不支持，见设计文档 05 号 §4.2",
+        SkipReason::NotRegular => "非常规文件（设备/管道/套接字）",
+        SkipReason::Unreadable => "读取失败（权限不足，或文件正被占用）",
+        SkipReason::TooDeep => "目录层级超过上限",
+    }
+}
+
 /// 把目录打包成容器的明文载荷。
 ///
 /// 遍历逻辑本身在 `omy_core::pack`——GUI 也要做文件夹加密，
@@ -467,13 +724,7 @@ fn build_container(ctx: &Ctx<'_>, root: &Path) -> Result<(Vec<u8>, Vec<u8>, Stri
     // 跳过的条目必须逐条报出来。静默丢弃最坏的后果是：用户以为整个
     // 目录都加密了，删掉原件，解密时才发现少东西
     for sk in &packed.skipped {
-        let why = match sk.reason {
-            SkipReason::Symlink => "符号链接暂不支持，见设计文档 05 号 §4.2",
-            SkipReason::NotRegular => "非常规文件（设备/管道/套接字）",
-            SkipReason::Unreadable => "读取失败（权限不足，或文件正被占用）",
-            SkipReason::TooDeep => "目录层级超过上限",
-        };
-        ctx.out.warn(&format!("跳过 {}：{}", sk.path, why));
+        ctx.out.warn(&format!("跳过 {}：{}", sk.path, skip_why(sk.reason)));
     }
 
     if packed.index.entries.len() > omy_core::container::RECOMMENDED_MAX_ENTRIES {

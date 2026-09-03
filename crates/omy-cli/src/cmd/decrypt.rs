@@ -71,6 +71,14 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     let mut results = Vec::new();
 
     for f in &a.files {
+        // 树形模式的产物是**目录**，不是单个 .omy 文件。不先分流的话
+        // read_possibly_sharded 会拿目录去读，得到一个「拒绝访问」之类的
+        // IO 错误——用户完全无法从中看出「这是树形加密的目录」
+        if f.is_dir() {
+            results.push(decrypt_as_tree(ctx, f, a, &pw)?);
+            continue;
+        }
+
         let data = read_possibly_sharded(ctx, f, a.ignore_missing_shards)?;
         let h = omy_core::file::peek_header(&data)?;
 
@@ -235,6 +243,130 @@ fn container_target(input: &Path, a: &Args) -> Result<PathBuf> {
         return Ok(d.clone());
     }
     Ok(input.parent().unwrap_or_else(|| Path::new(".")).to_path_buf())
+}
+
+/// 解开一棵树形加密的目录。
+///
+/// # 为什么要先去树里找一个文件
+///
+/// 单个 `.omy` 文件的头部自带 `vault_salt` 与 KDF 参数，可以直接派生 KEK。
+/// 但树形模式的根是一个**目录**——目录没有头部。而目录名的解密又必须先有
+/// KEK，于是形成了鸡生蛋问题。
+///
+/// 解法是从树里任意一个 `.omy` 文件的头部取参数：同一个 vault 内这些参数
+/// 本就一致（`--vault` 的语义就是复用它们），取哪个都一样。
+fn decrypt_as_tree(
+    ctx: &Ctx<'_>,
+    root: &Path,
+    a: &Args,
+    pw: &[u8],
+) -> Result<serde_json::Value> {
+    let Some(sample) = find_any_omy_file(root) else {
+        bail!(
+            "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
+            root.display()
+        );
+    };
+    // 只读头部那一小段：为了取 16 字节的盐去读一个几百 MB 的文件没有道理
+    let head = read_head(&sample, 4096)?;
+    let h = omy_core::file::peek_header(&head)?;
+    let kek = Kek::from_password(pw, &h.vault_salt, h.argon2_params())?;
+
+    if a.verify_only {
+        // 校验模式不落盘，解到临时目录再删。放在密文旁边而不是系统 temp：
+        // 大目录可能几十 GB，系统 temp 常在小分区上
+        let tmp = root.with_file_name(format!(".omy-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp)?;
+        let out = omy_core::tree::decrypt_tree(
+            root,
+            &tmp,
+            &[kek],
+            &h.vault_salt,
+            h.cipher_id,
+            None,
+        );
+        // 无论成败都清掉临时明文——它是完整的明文副本，留着是安全问题
+        let _ = std::fs::remove_dir_all(&tmp);
+        let rep = out?;
+        ctx.out.success(&format!(
+            "{} {}（树形，{} 个文件、{} 个目录）",
+            t("ok.verified"),
+            root.display(),
+            rep.files,
+            rep.dirs
+        ));
+        return Ok(json!({
+            "input": root.display().to_string(),
+            "verified": true,
+            "mode": "tree",
+            "files": rep.files,
+            "dirs": rep.dirs,
+        }));
+    }
+
+    let target = container_target(root, a)?;
+    std::fs::create_dir_all(&target)
+        .with_context(|| format!("创建输出目录 {} 失败", target.display()))?;
+
+    let mut on_file = |name: &str, size: u64| {
+        ctx.out.trace(&format!("  文件 {} （{}）", name, human_bytes(size)));
+    };
+    let rep = omy_core::tree::decrypt_tree(
+        root,
+        &target,
+        &[kek],
+        &h.vault_salt,
+        h.cipher_id,
+        Some(&mut on_file),
+    )
+    .with_context(|| format!("解开 {} 失败", root.display()))?;
+
+    for sk in &rep.skipped {
+        ctx.out.warn(&format!("跳过 {}", sk.path));
+    }
+
+    ctx.out.success(&format!(
+        "已解开到 {}：{} 个文件、{} 个目录",
+        rep.root.display(),
+        rep.files,
+        rep.dirs
+    ));
+
+    Ok(json!({
+        "input": root.display().to_string(),
+        "output": rep.root.display().to_string(),
+        "mode": "tree",
+        "files": rep.files,
+        "dirs": rep.dirs,
+    }))
+}
+
+/// 在树里找任意一个 `.omy` 文件，用来取 vault 参数。
+fn find_any_omy_file(root: &Path) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(root).ok()?;
+    let mut dirs = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            dirs.push(p);
+        } else if p.extension().is_some_and(|x| x == "omy") {
+            return Some(p);
+        }
+    }
+    // 当前层没有就往下找：根目录下可能只有子目录
+    dirs.into_iter().find_map(|d| find_any_omy_file(&d))
+}
+
+/// 只读文件开头若干字节。
+fn read_head(p: &Path, n: usize) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(p)
+        .with_context(|| format!("打开 {} 失败", p.display()))?;
+    let mut buf = vec![0u8; n];
+    let got = f.read(&mut buf)?;
+    buf.truncate(got);
+    Ok(buf)
 }
 
 /// 把容器载荷展开到磁盘，并把结果展示给用户。
