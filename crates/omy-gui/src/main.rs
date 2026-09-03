@@ -34,6 +34,7 @@ mod device_cmds;
 mod devices;
 mod decrypt;
 mod encrypt;
+mod fileops;
 mod keymgmt;
 mod lan;
 mod mime;
@@ -102,6 +103,9 @@ fn main() {
             plain::reveal_in_folder,
             encrypt::encrypt_paths,
             decrypt::decrypt_paths,
+            fileops::delete_paths,
+            fileops::rename_path,
+            fileops::create_folder,
             keymgmt::manage_key,
             device_cmds::device_status,
             device_cmds::open_device_store,
