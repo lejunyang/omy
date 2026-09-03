@@ -71,6 +71,7 @@ pub mod session;
 pub mod shard;
 pub mod slot;
 pub mod source;
+pub mod unpack;
 pub mod tlv;
 pub mod util;
 

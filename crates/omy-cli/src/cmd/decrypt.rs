@@ -223,7 +223,7 @@ fn resolve_output(input: &Path, name: &str, a: &Args) -> Result<PathBuf> {
     } else {
         input.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
     };
-    Ok(dir.join(sanitize_filename(name)))
+    Ok(dir.join(omy_core::unpack::sanitize_filename(name)))
 }
 
 /// 容器解开到哪个目录。
@@ -237,116 +237,67 @@ fn container_target(input: &Path, a: &Args) -> Result<PathBuf> {
     Ok(input.parent().unwrap_or_else(|| Path::new(".")).to_path_buf())
 }
 
-/// 把容器载荷展开到磁盘。
+/// 把容器载荷展开到磁盘，并把结果展示给用户。
 ///
-/// 每个条目的路径组件在 `ContainerIndex::parse` 阶段已校验安全性，
-/// 此处再做一次落盘前的最终确认——纵深防御，防止后续改动引入回归。
+/// 落盘逻辑在 [`omy_core::unpack`]——路径逃逸防护与文件名兼容处理不能有
+/// 两份实现（GUI 也要解容器）。这里只负责展示：人类可读的报告与 JSON 契约
+/// 都是 CLI 的职责，不该进 core。
 fn extract_container(
     ctx: &Ctx<'_>,
     idx: &omy_core::container::ContainerIndex,
     payload: &[u8],
     target: &Path,
 ) -> Result<serde_json::Value> {
-    use omy_core::container::EntryKind;
-
-    let root = target.join(sanitize_filename(&idx.root));
-    std::fs::create_dir_all(&root)
-        .with_context(|| format!("创建 {} 失败", root.display()))?;
-
-    let mut n_files = 0usize;
-    let mut n_dirs = 0usize;
-    let mut adjusted: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-
-    // 先建所有目录，含空目录——空目录必须显式还原，否则会丢失
-    for e in &idx.entries {
-        if e.kind == EntryKind::Dir {
-            let p = safe_join(&root, &e.path)?;
-            std::fs::create_dir_all(&p)
-                .with_context(|| format!("创建目录 {} 失败", p.display()))?;
-            n_dirs += 1;
-        }
-    }
-
-    for e in &idx.entries {
-        match e.kind {
-            EntryKind::File => {
-                let (p, was_adjusted) = safe_join_reporting(&root, &e.path)?;
-                if was_adjusted {
-                    adjusted.push(e.display_path());
-                }
-                if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                let start = usize::try_from(e.offset).unwrap_or(usize::MAX);
-                let len = usize::try_from(e.size).unwrap_or(0);
-                let end = start.saturating_add(len);
-                let bytes = payload.get(start..end).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "条目 {} 的区间 {}..{} 超出载荷长度 {}",
-                        e.display_path(),
-                        start,
-                        end,
-                        payload.len()
-                    )
-                })?;
-
-                // 逐文件哈希校验：容器里某个文件坏了要能精确指出是哪个
-                if let Some(expect) = &e.hash {
-                    let actual = omy_core::util::blake2b_256(bytes);
-                    if &actual != expect {
-                        bail!("条目 {} 的内容哈希不匹配", e.display_path());
-                    }
-                }
-                std::fs::write(&p, bytes)
-                    .with_context(|| format!("写入 {} 失败", p.display()))?;
-                n_files += 1;
-            }
-            EntryKind::Symlink => {
-                // 符号链接跨平台差异大，按 N3 决策：不静默丢弃，明确报告
-                skipped.push(format!("{}（符号链接）", e.display_path()));
-            }
-            EntryKind::Dir => {}
-        }
-    }
-
-    // 元数据还原必须在此处——所有条目都已落盘之后。
-    // 新建目录项会更新父目录的 mtime，边写边设会被随后的写入冲掉，
-    // 症状是「文件时间对了、目录时间还是现在」，只在非空目录上出现
-    let meta_rep = omy_core::restore::restore_metadata(&root, idx);
+    let rep = omy_core::unpack::extract_container(idx, payload, target)?;
 
     ctx.out.success(&format!(
-        "已解开容器到 {}：{n_files} 个文件、{n_dirs} 个目录",
-        root.display()
+        "已解开容器到 {}：{} 个文件、{} 个目录",
+        rep.root.display(),
+        rep.files,
+        rep.dirs
     ));
 
     // 元数据还原报告：不支持的项必须明确报告（决策 N3）
-    if !adjusted.is_empty() {
+    if !rep.adjusted.is_empty() {
         ctx.out.warn(&format!(
             "{} 个文件名因当前平台限制被调整",
-            adjusted.len()
+            rep.adjusted.len()
         ));
-        for a in adjusted.iter().take(10) {
+        for a in rep.adjusted.iter().take(10) {
             ctx.out.detail(&format!("  {a}"));
         }
     }
-    if !skipped.is_empty() {
-        ctx.out.warn(&format!("{} 个条目未还原：", skipped.len()));
-        for s in skipped.iter().take(10) {
-            ctx.out.info(&format!("  {s}"));
+    if !rep.skipped.is_empty() {
+        ctx.out.warn(&format!("{} 个条目未还原：", rep.skipped.len()));
+        for s in rep.skipped.iter().take(10) {
+            ctx.out.info(&format!("  {}（{}）", s.path, skip_label(s.reason)));
         }
     }
-    report_metadata(ctx, &meta_rep);
+    report_metadata(ctx, &rep.metadata);
 
     Ok(json!({
         "container": true,
-        "root": root.display().to_string(),
-        "files": n_files,
-        "dirs": n_dirs,
-        "adjusted_names": adjusted,
-        "skipped": skipped,
-        "metadata": metadata_json(&meta_rep),
+        "root": rep.root.display().to_string(),
+        "files": rep.files,
+        "dirs": rep.dirs,
+        "adjusted_names": rep.adjusted,
+        "skipped": rep.skipped.iter().map(|s| json!({
+            "path": s.path,
+            "reason": s.reason,
+        })).collect::<Vec<_>>(),
+        "metadata": metadata_json(&rep.metadata),
     }))
+}
+
+/// 未还原原因的中文说明。
+///
+/// 与 `meta_item_label` 同一个道理：`reason` 是给 JSON 与翻译键用的稳定
+/// 标识，直接显示给用户就成了「symlink」这种半英文。
+fn skip_label(reason: &str) -> &'static str {
+    match reason {
+        "symlink" => "符号链接",
+        _ => "未知原因",
+    }
 }
 
 /// 展示元数据还原报告（文档 05 §4.4）。
@@ -425,78 +376,6 @@ fn metadata_json(rep: &omy_core::restore::RestoreReport) -> serde_json::Value {
     })
 }
 
-/// 安全拼接路径，拒绝任何逃出 root 的结果。
-fn safe_join(root: &Path, comps: &[String]) -> Result<PathBuf> {
-    Ok(safe_join_reporting(root, comps)?.0)
-}
-
-/// 安全拼接并报告是否调整过文件名。
-fn safe_join_reporting(root: &Path, comps: &[String]) -> Result<(PathBuf, bool)> {
-    let mut p = root.to_path_buf();
-    let mut adjusted = false;
-    for c in comps {
-        // 二次校验：解析阶段已查，此处防止后续改动引入回归
-        omy_core::container::validate_component(c)?;
-        let s = sanitize_filename(c);
-        if s != *c {
-            adjusted = true;
-        }
-        p.push(s);
-    }
-    // 最终确认结果仍在 root 之内
-    if !p.starts_with(root) {
-        bail!("路径 {} 逃出目标目录", p.display());
-    }
-    Ok((p, adjusted))
-}
-
-/// 把文件名调整为当前平台可用形式。
-///
-/// Windows 禁止 `\ / : * ? " < > |` 与一批保留名。绝不静默丢弃，
-/// 调用方会把调整过的项报告给用户（决策 N3）。
-fn sanitize_filename(name: &str) -> String {
-    #[cfg(windows)]
-    {
-        const BAD: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
-        const RESERVED: &[&str] = &[
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
-            "LPT9",
-        ];
-        let mut s: String = name
-            .chars()
-            .map(|c| {
-                if BAD.contains(&c) || (c as u32) < 0x20 {
-                    '_'
-                } else {
-                    c
-                }
-            })
-            .collect();
-        // 结尾的点与空格在 Windows 上会被吞掉
-        while s.ends_with('.') || s.ends_with(' ') {
-            s.pop();
-        }
-        let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-        if RESERVED.contains(&stem.as_str()) {
-            s = format!("_{s}");
-        }
-        if s.is_empty() {
-            s = String::from("_");
-        }
-        s
-    }
-    #[cfg(not(windows))]
-    {
-        // Unix 只需处理 / 与 NUL
-        let s: String = name
-            .chars()
-            .map(|c| if c == '/' || c == '\0' { '_' } else { c })
-            .collect();
-        if s.is_empty() { String::from("_") } else { s }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,28 +389,13 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_keeps_normal_names() {
-        assert_eq!(sanitize_filename("report.docx"), "report.docx");
-        assert_eq!(sanitize_filename("中文文件名.txt"), "中文文件名.txt");
+    fn skip_labels_cover_known_reasons() {
+        // reason 是 core 给的稳定代号，这里保证每个已知代号都有中文说明。
+        // 漏一个的话界面上会显示「未知原因」，而原因其实是知道的
+        assert_eq!(skip_label("symlink"), "符号链接");
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn sanitize_handles_windows_restrictions() {
-        assert_eq!(sanitize_filename("report:2026?.txt"), "report_2026_.txt");
-        assert_eq!(sanitize_filename("a<b>c"), "a_b_c");
-        assert_eq!(sanitize_filename("trailing."), "trailing");
-        assert_eq!(sanitize_filename("CON"), "_CON");
-        assert_eq!(sanitize_filename("con.txt"), "_con.txt");
-        assert_eq!(sanitize_filename(""), "_");
-    }
-
-    #[test]
-    fn safe_join_rejects_traversal() {
-        let root = Path::new("/tmp/root");
-        assert!(safe_join(root, &["..".to_string()]).is_err());
-        assert!(safe_join(root, &["a".to_string(), "..".to_string()]).is_err());
-        let ok = safe_join(root, &["a".to_string(), "b.txt".to_string()]).unwrap();
-        assert!(ok.starts_with(root));
-    }
+    // sanitize_filename / safe_join 的测试跟着实现一起搬到了
+    // omy_core::unpack——留在这里会变成「测一个自己不再拥有的行为」，
+    // 而且两处断言迟早分歧
 }
