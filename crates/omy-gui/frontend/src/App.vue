@@ -48,12 +48,21 @@ import {
   enterContainer,
   enterContainerDir,
   manageKey,
+  ctxMenu,
+  ctxItems,
+  openContextMenu,
+  closeContextMenu,
+  doDelete,
+  doRename,
+  doCreateFolder,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import RestoreDialog from './components/RestoreDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
+import ContextMenu from './components/ContextMenu.vue';
 import KeyDialog from './components/KeyDialog.vue';
+import NameDialog from './components/NameDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
@@ -231,6 +240,75 @@ async function onKeySubmit(req) {
   }
 }
 
+/* ---------------- 右键菜单 ---------------- */
+
+/** 命名对话框：null 表示没开，否则 { mode, initial, path }。 */
+const nameDlg = ref(null);
+
+function onEntryMenu(payload) {
+  openContextMenu(payload);
+}
+
+/** 菜单项被点。
+ *
+ * 先关菜单再执行：删除会触发 reload，列表重排后菜单会悬在一个已经不存在
+ * 的条目上方。
+ */
+async function onCtxPick(key) {
+  const entry = ctxMenu.entry;
+  closeContextMenu();
+  if (!entry) return;
+
+  switch (key) {
+    case 'open':
+      await onOpen(entry);
+      break;
+    case 'encrypt':
+      showEncrypt.value = true;
+      break;
+    case 'restore':
+      showRestore.value = true;
+      break;
+    case 'manage-key':
+      keyError.value = '';
+      keyTarget.value = keyManageable.value;
+      break;
+    case 'rename':
+      // 用真名做初始值：加密文件在磁盘上叫一串十六进制，
+      // 拿那个当初始值等于让用户从头输
+      nameDlg.value = {
+        mode: 'rename',
+        initial: entry.real_name || entry.name,
+        path: entry.path,
+      };
+      break;
+    case 'newfolder':
+      nameDlg.value = { mode: 'newfolder', initial: '', path: '' };
+      break;
+    case 'trash':
+      await doDelete(true);
+      break;
+    case 'delete':
+      await doDelete(false);
+      break;
+    case 'reveal':
+      await onReveal(entry);
+      break;
+    default:
+      break;
+  }
+}
+
+async function onNameSubmit(name) {
+  const d = nameDlg.value;
+  if (!d) return;
+  const ok =
+    d.mode === 'rename' ? await doRename(d.path, name) : await doCreateFolder(name);
+  // 失败时保留对话框：名字冲突或非法时用户要改的正是这个输入框，
+  // 关掉他得从右键菜单重新走一遍
+  if (ok) nameDlg.value = null;
+}
+
 async function onUnlockSubmit({ password }) {
   const ok = unlockForRemote.value
     ? await tryUnlockRemote(password)
@@ -337,6 +415,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
   <MainScreen
     v-else
     @open="onOpen"
+    @menu="onEntryMenu"
     @encrypt="showEncrypt = true"
     @restore="showRestore = true"
     @manage-key="((keyError = ''), (keyTarget = $event))"
@@ -377,6 +456,24 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     :error="keyError"
     @cancel="keyTarget = null"
     @submit="onKeySubmit"
+  />
+
+  <ContextMenu
+    v-if="ctxMenu.entry"
+    :items="ctxItems"
+    :x="ctxMenu.x"
+    :y="ctxMenu.y"
+    @pick="onCtxPick"
+    @close="closeContextMenu"
+  />
+
+  <NameDialog
+    v-if="nameDlg"
+    :mode="nameDlg.mode"
+    :initial="nameDlg.initial"
+    :busy="state.busy"
+    @cancel="nameDlg = null"
+    @submit="onNameSubmit"
   />
 
   <UnlockDialog

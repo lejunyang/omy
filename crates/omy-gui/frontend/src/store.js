@@ -387,6 +387,207 @@ export const keyManageable = computed(() => {
   return e && e.is_encrypted && e.unlocked ? e : null;
 });
 
+/* ---------------- 右键菜单 ---------------- */
+
+/** 右键菜单的状态。`entry` 为 null 表示菜单没开。 */
+export const ctxMenu = reactive({ entry: null, x: 0, y: 0 });
+
+export function openContextMenu({ entry, x, y }) {
+  ctxMenu.entry = entry;
+  ctxMenu.x = x;
+  ctxMenu.y = y;
+}
+
+export function closeContextMenu() {
+  ctxMenu.entry = null;
+}
+
+/** 当前右键菜单该显示哪些项。
+ *
+ * 用 disabled 而不是直接隐藏：菜单项的位置固定，用户才能形成肌肉记忆。
+ * 每次右键都换一套项目、位置浮动，会让人反复找「删除在哪一行」。
+ * 不可用的原因写进 hint，鼠标悬停能看到——否则用户只知道点不动，
+ * 不知道为什么。
+ *
+ * 容器内的条目全部不可操作：它们没有独立的磁盘文件，删一个「条目」
+ * 得重写整个容器，这不是右键菜单该做的事。
+ */
+export const ctxItems = computed(() => {
+  const e = ctxMenu.entry;
+  if (!e) return [];
+  const t = i18n.t;
+  const inContainer = !!state.container;
+  const many = state.selected.length > 1;
+
+  // 容器内只留一项说明，不给任何会失败的操作
+  if (inContainer) {
+    return [
+      {
+        key: 'noop-container',
+        icon: 'ℹ️',
+        label: t('ctx.in_container'),
+        disabled: true,
+        hint: t('ctx.in_container_hint'),
+      },
+    ];
+  }
+
+  const items = [];
+
+  // 打开：目录进去，文件预览
+  items.push({
+    key: 'open',
+    icon: e.is_dir ? '📂' : '👁️',
+    label: e.is_dir ? t('ctx.open_folder') : t('ctx.preview'),
+    disabled: many,
+    hint: many ? t('ctx.single_only') : '',
+  });
+
+  items.push({ key: 'sep' });
+
+  // 加密：非加密项才行。加密目录本身已经是密文，再套一层没有意义
+  const canEncrypt = encryptable.value.length > 0;
+  items.push({
+    key: 'encrypt',
+    icon: '🔒',
+    label: t('file.encrypt'),
+    disabled: !canEncrypt,
+    hint: canEncrypt ? '' : t('ctx.already_encrypted'),
+  });
+
+  // 还原：已解锁的加密文件
+  const canRestore = restorable.value.length > 0;
+  items.push({
+    key: 'restore',
+    icon: '📤',
+    label: t('file.restore'),
+    disabled: !canRestore,
+    hint: canRestore ? '' : t('ctx.restore_needs_unlocked'),
+  });
+
+  // 密码管理：必须是**已解锁的单个**加密文件
+  const canKey = !!keyManageable.value;
+  items.push({
+    key: 'manage-key',
+    icon: '🔑',
+    label: t('keymgmt.title'),
+    disabled: !canKey,
+    hint: canKey ? '' : t('ctx.key_needs_unlocked_file'),
+  });
+
+  items.push({ key: 'sep' });
+
+  // 重命名：密文目录不行——名字本身就是密文，改掉就再也解不开了
+  const isEncDir = !!e.is_encrypted_dir;
+  items.push({
+    key: 'rename',
+    icon: '✏️',
+    label: t('ctx.rename'),
+    disabled: many || isEncDir,
+    hint: isEncDir
+      ? t('ctx.rename_encrypted_dir')
+      : many
+        ? t('ctx.single_only')
+        : '',
+  });
+
+  items.push({
+    key: 'newfolder',
+    icon: '📁',
+    label: t('ctx.new_folder'),
+  });
+
+  items.push({ key: 'sep' });
+
+  items.push({ key: 'trash', icon: '🗑️', label: t('ctx.trash') });
+  items.push({ key: 'delete', icon: '⛔', label: t('ctx.delete'), danger: true });
+
+  items.push({ key: 'sep' });
+
+  // 「在文件管理器中显示」需要后端给的 token，锁定的加密文件没有
+  items.push({
+    key: 'reveal',
+    icon: '📍',
+    label: t('ctx.reveal'),
+    disabled: many,
+    hint: many ? t('ctx.single_only') : '',
+  });
+
+  return items;
+});
+
+/* ---------------- 常规文件操作 ---------------- */
+
+/** 删除选中项。`toTrash` 为 false 是永久删除。
+ *
+ * 作用于**整个选中集**而不只是右键点的那一项：右键前已经先选中了，
+ * 用户看到几个高亮就期望删掉几个。
+ */
+export async function doDelete(toTrash) {
+  const paths = state.selected.slice();
+  if (!paths.length) return null;
+  state.busy = true;
+  try {
+    const r = await api.deletePaths(paths, toTrash);
+    state.selected = [];
+    await reload();
+    if (r.failed.length) {
+      // 部分失败要说清哪些没删掉。只报「删除失败」的话，用户不知道
+      // 20 个里有 19 个已经删了
+      state.error = i18n.t('ctx.delete_partial', {
+        ok: String(r.deleted.length),
+        bad: String(r.failed.length),
+      });
+    } else {
+      setNotice(
+        i18n.t(toTrash ? 'ctx.trashed_n' : 'ctx.deleted_n', {
+          n: String(r.deleted.length),
+        }),
+      );
+    }
+    return r;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return null;
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 重命名一个条目。 */
+export async function doRename(path, name) {
+  state.busy = true;
+  try {
+    await api.renamePath(path, name);
+    state.selected = [];
+    await reload();
+    setNotice(i18n.t('ctx.renamed'));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 在当前目录下新建文件夹。 */
+export async function doCreateFolder(name) {
+  if (!state.cwd) return false;
+  state.busy = true;
+  try {
+    await api.createFolder(state.cwd, name);
+    await reload();
+    setNotice(i18n.t('ctx.folder_created'));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
 /* ---------------- 容器（加密文件夹）浏览 ---------------- */
 
 /** 进入一个加密文件夹，像打开普通文件夹那样。

@@ -236,7 +236,16 @@
     "load_failed": "Can't open this location. It may not exist or be readable.",
     "encrypt_failed": "Encryption did not finish.",
     "connect_failed": "Could not reach the device.",
-    "restore_failed": "Restore failed"
+    "restore_failed": "Restore failed",
+    "empty_selection": "Nothing selected",
+    "empty_name": "Name cannot be empty",
+    "invalid_name": "Invalid name",
+    "already_exists": "A file or folder with that name already exists",
+    "encrypted_dir_rename": "Encrypted directories cannot be renamed; the name would become unrecoverable",
+    "not_a_directory": "Target is not a folder",
+    "delete_failed": "Delete failed",
+    "trash_failed": "Could not move to Trash",
+    "trash_not_supported": "This platform has no Trash"
   },
   "container": {
     "subtitle": "Contents of the encrypted folder"
@@ -296,5 +305,35 @@
     "meta_owner": "owner",
     "meta_xattr": "extended attributes",
     "meta_not_recorded": "modification time of single files (not saved at encryption)"
+  },
+  "ctx": {
+    "open_folder": "Open",
+    "preview": "Preview",
+    "rename": "Rename",
+    "new_folder": "New folder",
+    "trash": "Move to Trash",
+    "delete": "Delete permanently",
+    "reveal": "Show in file manager",
+    "single_only": "Works on a single item only",
+    "already_encrypted": "Selection is already encrypted",
+    "restore_needs_unlocked": "Unlock first to restore",
+    "key_needs_unlocked_file": "Select a single unlocked encrypted file",
+    "rename_encrypted_dir": "This is an encrypted directory; its name is the ciphertext and renaming it would make the name unrecoverable",
+    "in_container": "Item inside an encrypted folder",
+    "in_container_hint": "Items inside a container have no file of their own on disk. Restore to disk first.",
+    "name_label": "Name",
+    "name_bad_empty": "Enter a name",
+    "name_bad_invalid": "Invalid name",
+    "name_bad_slash": "Name cannot contain / or \\",
+    "name_bad_chars": "Name cannot contain : * ? \" < > |",
+    "name_bad_trailing": "Name cannot end with a dot or space",
+    "name_bad_toolong": "Name is too long",
+    "do_rename": "Rename",
+    "do_create": "Create",
+    "renamed": "Renamed",
+    "folder_created": "Folder created",
+    "trashed_n": "Moved {{n}} item(s) to Trash",
+    "deleted_n": "Permanently deleted {{n}} item(s)",
+    "delete_partial": "Deleted {{ok}}, failed {{bad}}"
   }
 }

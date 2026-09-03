@@ -27,7 +27,7 @@ const props = defineProps({
   selectionActive: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['open', 'select']);
+const emit = defineEmits(['open', 'select', 'menu']);
 
 /* ---- 打开手势：桌面双击，移动端单击 ----
  *
@@ -65,9 +65,15 @@ function onPointerDown(ev) {
   clearTimer();
   timer = setTimeout(() => {
     suppressClick.value = true;
+    // 先选中再弹菜单：菜单里的操作都作用于「选中项」，
+    // 不先选中的话长按弹出的菜单会作用在别的条目上
+    //
     // 传 true 当作「加选」：长按的语义就是多选，
     // 若按单选处理，长按第二个会把第一个取消掉
-    emit('select', { ctrlKey: true });
+    if (!props.selected) emit('select', { ctrlKey: true });
+    // 触屏没有右键，长按是唯一的菜单入口。只做「加选」的话
+    // 手机上完全没有办法删除或重命名文件
+    emit('menu', { entry: props.entry, x: startX, y: startY });
   }, LONG_PRESS_MS);
 }
 
@@ -98,6 +104,19 @@ function onClick(ev) {
     return;
   }
   emit('select', ev);
+}
+
+/** 桌面右键。
+ *
+ * 先选中再弹菜单：菜单里的操作作用于「选中项」，在一个未选中的条目上
+ * 右键却对之前选中的东西生效，是最容易造成误删的一种交互。
+ *
+ * 已经在多选里的条目不重置选择——用户选了 5 个文件再右键，意图显然是
+ * 对这 5 个一起操作。
+ */
+function onContextMenu(ev) {
+  if (!props.selected) emit('select', { ctrlKey: false });
+  emit('menu', { entry: props.entry, x: ev.clientX, y: ev.clientY });
 }
 
 onBeforeUnmount(clearTimer);
@@ -155,6 +174,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
+    @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb dir">
@@ -183,6 +203,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
+    @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb lock"><span aria-hidden="true">🔒</span></div>
@@ -206,6 +227,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
+    @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb">
@@ -239,6 +261,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
+    @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb"><span aria-hidden="true">{{ icon }}</span></div>

@@ -1434,3 +1434,93 @@ input {
     0 0 2px var(--bg),
     0 0 4px var(--bg);
 }
+
+/* ---------- 右键菜单 ---------- */
+
+/* 铺满全屏的透明层：点任何地方都要能关掉菜单。
+   只在菜单上监听失焦是不够的——点到别的条目上不会触发。
+   z-index 要高于卡片但低于对话框：从菜单里选「重命名」会弹对话框，
+   那时菜单已经关了，但顺序错了会看到对话框被菜单层盖住。 */
+.ctxlayer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.ctxmenu {
+  position: fixed;
+  min-width: 190px;
+  padding: calc(var(--sp) * 1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  background: var(--bg2);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 38%);
+  /* 菜单项多时也不该顶出屏幕 */
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.ctxmenu .mi {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  width: 100%;
+  padding: calc(var(--sp) * 1.75) calc(var(--sp) * 2.25);
+  border: 0;
+  border-radius: var(--r-s);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ctxmenu .mi:hover:not(:disabled),
+.ctxmenu .mi:focus-visible {
+  background: var(--bg3);
+  outline: none;
+}
+
+/* 删除用危险色。它与「移到回收站」并列，颜色是唯一的即时区分 */
+.ctxmenu .mi.danger {
+  color: var(--danger);
+}
+
+.ctxmenu .mi:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* 图标列定宽，让文字左边缘对齐。不定宽的话不同宽度的 emoji
+   会让每一行的文字起点参差不齐 */
+.ctxmenu .mic {
+  width: 1.15em;
+  flex: none;
+  text-align: center;
+}
+
+.ctxmenu .mil {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.msep {
+  height: 1px;
+  margin: calc(var(--sp) * 1) calc(var(--sp) * 1.5);
+  background: var(--border);
+}
+
+/* 移动端：手指目标要够大。44px 是触摸目标的通用下限，
+   桌面的 12.5px 行高在手机上会频繁点错行 */
+@media (max-width: 768px) {
+  .ctxmenu {
+    min-width: 62vw;
+  }
+
+  .ctxmenu .mi {
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 3);
+    font-size: 14px;
+    min-height: 44px;
+  }
+}

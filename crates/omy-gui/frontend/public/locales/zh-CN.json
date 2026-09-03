@@ -236,7 +236,16 @@
     "load_failed": "打不开这个位置，可能没有权限或者路径不存在。",
     "encrypt_failed": "加密没能完成。",
     "connect_failed": "连不上这台设备。",
-    "restore_failed": "还原失败"
+    "restore_failed": "还原失败",
+    "empty_selection": "没有选中任何项目",
+    "empty_name": "名称不能为空",
+    "invalid_name": "名称不合法",
+    "already_exists": "同名的文件或文件夹已存在",
+    "encrypted_dir_rename": "加密目录不能重命名，改名后名字将无法解开",
+    "not_a_directory": "目标不是一个文件夹",
+    "delete_failed": "删除失败",
+    "trash_failed": "移到回收站失败",
+    "trash_not_supported": "当前系统不支持回收站"
   },
   "container": {
     "subtitle": "加密文件夹的内容"
@@ -296,5 +305,35 @@
     "meta_owner": "属主",
     "meta_xattr": "扩展属性",
     "meta_not_recorded": "单个文件的修改时间（加密时未保存）"
+  },
+  "ctx": {
+    "open_folder": "打开",
+    "preview": "预览",
+    "rename": "重命名",
+    "new_folder": "新建文件夹",
+    "trash": "移到回收站",
+    "delete": "永久删除",
+    "reveal": "在文件管理器中显示",
+    "single_only": "只能对单个项目操作",
+    "already_encrypted": "选中项已经是加密的",
+    "restore_needs_unlocked": "需要先解锁才能还原",
+    "key_needs_unlocked_file": "需要选中单个已解锁的加密文件",
+    "rename_encrypted_dir": "这是加密目录，名字本身就是密文，改名后将无法解开",
+    "in_container": "加密文件夹内的条目",
+    "in_container_hint": "容器内的条目没有独立的磁盘文件，请先还原到磁盘再操作",
+    "name_label": "名称",
+    "name_bad_empty": "请输入名称",
+    "name_bad_invalid": "名称不合法",
+    "name_bad_slash": "名称不能包含 / 或 \\",
+    "name_bad_chars": "名称不能包含 : * ? \" < > |",
+    "name_bad_trailing": "名称不能以点或空格结尾",
+    "name_bad_toolong": "名称太长",
+    "do_rename": "重命名",
+    "do_create": "创建",
+    "renamed": "已重命名",
+    "folder_created": "已创建文件夹",
+    "trashed_n": "已移到回收站 {{n}} 项",
+    "deleted_n": "已永久删除 {{n}} 项",
+    "delete_partial": "已删除 {{ok}} 项，{{bad}} 项失败"
   }
 }

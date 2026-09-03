@@ -71,6 +71,7 @@ const progPercent = computed(() => {
 
 const emit = defineEmits([
   'open',
+  'menu',
   'encrypt',
   'restore',
   'manage-key',
@@ -113,6 +114,21 @@ function onRowClick(entry, ev) {
     return;
   }
   toggleSelect(entry.path, isMobile.value || ev.ctrlKey || ev.metaKey || ev.shiftKey);
+}
+
+/** 列表行右键。与卡片同一套语义：先选中，再弹菜单。
+ *
+ * 不复用 onRowClick：那个函数处理 ctrl/shift 组合选择，右键不该有那些
+ * 行为——在已选中的一批上右键必须保留整批选择。
+ */
+function onRowMenu(e, ev) {
+  // 未选中就单选它。已在多选里的不动：用户选了 5 个再右键，
+  // 意图显然是对这 5 个一起操作
+  //
+  // toggleSelect 的第二参为 false 时，若该项已是唯一选中项会**取消**
+  // 选择，所以这里必须先判断未选中
+  if (!state.selected.includes(e.path)) toggleSelect(e.path, false);
+  emit('menu', { entry: e, x: ev.clientX, y: ev.clientY });
 }
 </script>
 
@@ -349,6 +365,7 @@ function onRowClick(entry, ev) {
             :selection-active="selectionActive"
             @open="$emit('open', e)"
             @select="onSelect(e, $event)"
+            @menu="$emit('menu', $event)"
           />
         </div>
 
@@ -361,6 +378,7 @@ function onRowClick(entry, ev) {
             tabindex="0"
             @dblclick="$emit('open', e)"
             @click="onRowClick(e, $event)"
+            @contextmenu.prevent="onRowMenu(e, $event)"
             @keydown.enter.prevent="$emit('open', e)"
           >
             <span class="ic">{{

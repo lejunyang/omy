@@ -119,6 +119,20 @@ export const isUnlocked = () => invoke('is_unlocked');
 /** 已装载的凭据数量。 */
 export const credentialCount = () => invoke('credential_count');
 
+/* ---------------- 常规文件操作 ---------------- */
+
+/** 删除文件或目录。`toTrash` 为 true 进系统回收站。 */
+export const deletePaths = (paths, toTrash = true) =>
+  invoke('delete_paths', { req: { paths, to_trash: toTrash } });
+
+/** 重命名。返回新的完整路径。 */
+export const renamePath = (path, name) =>
+  invoke('rename_path', { req: { path, name } });
+
+/** 在 parent 下新建文件夹。返回新目录的完整路径。 */
+export const createFolder = (parent, name) =>
+  invoke('create_folder', { req: { parent, name } });
+
 /* ---------------- 文件 ---------------- */
 
 /** 扫描目录，返回文件列表（含锁定项）。 */
