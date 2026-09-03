@@ -1416,3 +1416,21 @@ input {
     width: 100%;
   }
 }
+
+/* 加密目录的角标。
+   压在文件夹图标右下角，而不是替换它：加密目录首先是个能正常进入的
+   文件夹，换成锁图标会让人以为要先解锁才能打开。 */
+.thumb {
+  position: relative;
+}
+.encbadge {
+  position: absolute;
+  right: 6%;
+  bottom: 6%;
+  font-size: 0.42em;
+  line-height: 1;
+  /* 深色底描边，否则浅色文件夹图标上的锁看不清 */
+  text-shadow:
+    0 0 2px var(--bg),
+    0 0 4px var(--bg);
+}

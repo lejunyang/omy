@@ -86,7 +86,8 @@
     "reveal": "Show in file manager",
     "encrypt": "Encrypt",
     "preview": "Preview",
-    "restore": "Restore"
+    "restore": "Restore",
+    "folder_encrypted": "Encrypted folder"
   },
   "encrypt": {
     "title_one": "Encrypt {{count}} file",
@@ -159,7 +160,8 @@
     "text": "Text",
     "folder": "Folder",
     "encrypted": "Encrypted",
-    "other": "Other"
+    "other": "Other",
+    "folder_encrypted": "Encrypted folder"
   },
   "device": {
     "title": "Devices & sharing",

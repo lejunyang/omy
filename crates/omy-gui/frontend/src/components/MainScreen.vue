@@ -363,7 +363,13 @@ function onRowClick(entry, ev) {
             @click="onRowClick(e, $event)"
             @keydown.enter.prevent="$emit('open', e)"
           >
-            <span class="ic">{{ e.is_dir ? '📁' : e.is_encrypted ? (e.unlocked ? '🔓' : '🔒') : '📄' }}</span>
+            <span class="ic">{{
+              e.is_dir
+                ? (e.is_encrypted_dir ? '🔐' : '📁')
+                : e.is_encrypted
+                  ? (e.unlocked ? '🔓' : '🔒')
+                  : '📄'
+            }}</span>
             <span class="nm">
               {{ e.is_encrypted && !e.unlocked ? i18n.t('file.locked_name') : e.real_name || e.name }}
             </span>
@@ -371,7 +377,7 @@ function onRowClick(entry, ev) {
             <span class="tg">
               {{
                 e.is_dir
-                  ? i18n.t('kind.folder')
+                  ? (e.is_encrypted_dir ? i18n.t('kind.folder_encrypted') : i18n.t('kind.folder'))
                   : e.is_encrypted
                     ? i18n.t('kind.encrypted')
                     : (e.ext || '').toUpperCase()

@@ -148,7 +148,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     :class="{ sel: selected }"
     tabindex="0"
     role="button"
-    :aria-label="entry.name"
+    :aria-label="displayName"
     @dblclick="$emit('open', entry)"
     @click="onClick"
     @pointerdown="onPointerDown"
@@ -157,9 +157,16 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @pointercancel="onPointerUp"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div class="thumb dir"><span aria-hidden="true">📁</span></div>
-    <div class="cname" :title="entry.name">{{ entry.name }}</div>
-    <div class="cmeta">{{ i18n.t('file.folder') }}</div>
+    <div class="thumb dir">
+      <span aria-hidden="true">📁</span>
+      <!-- 加密目录挂一个角标而不是换成锁图标：它首先是个文件夹，
+           「能像普通文件夹一样进」是这里要传达的第一件事 -->
+      <span v-if="entry.is_encrypted_dir" class="encbadge" aria-hidden="true">🔒</span>
+    </div>
+    <div class="cname" :title="displayName">{{ displayName }}</div>
+    <div class="cmeta">
+      {{ entry.is_encrypted_dir ? i18n.t('file.folder_encrypted') : i18n.t('file.folder') }}
+    </div>
   </div>
 
   <!-- 加密文件（锁定）：不显示任何内容线索 -->

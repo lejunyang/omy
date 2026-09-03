@@ -72,6 +72,15 @@ pub struct DirEntry {
     /// 双击它应当进入容器浏览，而不是当作单个文件预览。
     /// 未解锁时恒为 `false`——「这是个文件夹」也是内容信息。
     pub is_container: bool,
+    /// 这个**目录**是不是树形模式加密出来的。
+    ///
+    /// 注意它与 `is_encrypted` 并列而不是复用后者：`is_encrypted` 的含义是
+    /// 「这个文件的内容是密文」，而加密目录本身没有内容，它只是名字是密文。
+    /// 混用会让前端分不清「要不要解密才能预览」。
+    ///
+    /// `is_dir` 对它仍然是 `true`——前端已有的双击进目录逻辑要能直接复用，
+    /// 否则就得为它写第二套打开逻辑。
+    pub is_encrypted_dir: bool,
 }
 
 /// 浏览一个目录。
@@ -116,6 +125,9 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
         let name = item.file_name().to_string_lossy().into_owned();
 
         if md.is_dir() {
+            // 廉价判定：只看后缀与字符集，不尝试解密。目录多的时候
+            // 逐个解密会让列目录明显变慢，而解名放到后面统一做
+            let enc_dir = omy_core::dirname::looks_encrypted(&name);
             dirs.push(DirEntry {
                 path: path.to_string_lossy().into_owned(),
                 name,
@@ -130,6 +142,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
                 preview: None,
                 mime: None,
                 is_container: false,
+                is_encrypted_dir: enc_dir,
             });
             continue;
         }
@@ -171,6 +184,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
             preview,
             mime,
             is_container: false,
+            is_encrypted_dir: false,
         });
     }
 
@@ -181,6 +195,11 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
 
     // 有会话时顺带标出哪些加密文件已解锁
     annotate_unlocked(&mut dirs, state);
+    // 再把树形加密的目录名与目录内文件名解出来。放在排序**之后**：
+    // 排序按磁盘名做（那是稳定的），解出来的名字只用于显示。
+    // 若按解出的名字排，锁定与解锁两种状态下顺序会不一样，
+    // 列表会在输入密码的瞬间跳动
+    annotate_tree_names(&mut dirs, root, state);
 
     Ok(dirs)
 }
@@ -198,6 +217,116 @@ fn probe_encrypted(p: &Path) -> bool {
         return false;
     };
     omy_core::file::is_omy_file(buf.get(..n).unwrap_or(&[]))
+}
+
+/// 解出树形加密目录的真实名字，以及目录内加密文件的真实名字。
+///
+/// # 为什么两件事放一起
+///
+/// 都需要同一份前置条件：一个能读出 `vault_salt` 的样本文件，加上会话里
+/// 对应的 KEK。分成两个函数会把「找样本 + 派生 dirname key」这段做两遍，
+/// 而它涉及磁盘 IO 与 Argon2 之后的 HKDF。
+///
+/// # 静默失败是有意的
+///
+/// 解不开就保留磁盘名（那串 base32），不报错也不清空。理由：
+/// - 没有密码时**本该**看不懂，这是正常状态而不是错误；
+/// - 一个解不开的名字不应该让整个目录列不出来。
+fn annotate_tree_names(entries: &mut [DirEntry], root: &Path, state: &Shared) {
+    if !state.is_unlocked() {
+        return;
+    }
+    // 当前目录里有没有加密目录 / 加密文件，决定了值不值得往下做
+    let has_enc_dir = entries.iter().any(|e| e.is_encrypted_dir);
+    let has_enc_file = entries.iter().any(|e| e.is_encrypted && !e.unlocked);
+    if !has_enc_dir && !has_enc_file {
+        return;
+    }
+
+    // 取 vault 参数的样本：先在当前目录里找，找不到再往加密子目录里找。
+    //
+    // 「往子目录里找」是必要的：用户站在密文树的**根的父目录**时，当前层
+    // 只有一个加密目录、没有任何 .omy 文件，此时拿不到 salt 就解不出那个
+    // 目录的名字——而这恰好是最常见的场景（刚加密完，站在原地看产物）。
+    let Some(sample) = omy_core::tree::find_any_file(root) else {
+        return;
+    };
+    // 4 KiB 足够覆盖固定头 + slot 区：这里只要 vault_salt 与 KDF 参数
+    let Ok(prefix) = read_head(&sample, 4096) else {
+        return;
+    };
+    let Ok(header) = omy_core::file::peek_header(&prefix) else {
+        return;
+    };
+
+    let keks: Vec<omy_core::crypto::Kek> = state
+        .with_session(|s| {
+            s.all_for(&header.vault_salt)
+                .into_iter()
+                .map(|c| c.kek)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(kek) = keks.first() else {
+        return;
+    };
+    let dkey = omy_core::dirname::DirnameKey::derive(kek, &header.vault_salt);
+
+    for e in entries.iter_mut() {
+        if e.is_encrypted_dir {
+            // 超长名截断过，完整密文在目录内部的边车文件里
+            let sidecar =
+                std::fs::read(Path::new(&e.path).join(omy_core::dirname::DIRNAME_SIDECAR)).ok();
+            if let Ok(real) = omy_core::dirname::decrypt_dirname(
+                &e.name,
+                sidecar.as_deref(),
+                &dkey,
+                header.cipher_id,
+            ) {
+                e.real_name = Some(real);
+                e.unlocked = true;
+            }
+        } else if e.is_encrypted && !e.unlocked {
+            // 树形模式里的文件磁盘名是随机 uuid，真名在它自己的 TLV 里。
+            // annotate_unlocked 只认 scan_directory 登记过的文件，
+            // 而浏览进密文树时没人调过 scan——所以这里要自己解一次
+            if let Some(real) = real_name_of(Path::new(&e.path), &keks) {
+                e.unlocked = true;
+                // 真名的后缀才是有意义的那个：磁盘上一律是 .omy
+                let (kind, mime) = crate::mime::by_extension(&real);
+                e.preview = Some(kind.to_owned());
+                e.mime = Some(mime);
+                e.ext = std::path::Path::new(&real)
+                    .extension()
+                    .map(|x| x.to_string_lossy().to_ascii_lowercase());
+                e.real_name = Some(real);
+            }
+        }
+    }
+}
+
+/// 只读文件开头若干字节。
+///
+/// `commands.rs` 与 `encrypt.rs` 里各有一份等价实现，它们是 `pub(self)` 的。
+/// 这里没有第四次复制的必要——若将来要统一，三处一起收进 `crate::util`
+/// 之类的地方，**改一处就要改三处**。
+fn read_head(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(p)?;
+    let mut buf = vec![0u8; n];
+    let got = f.read(&mut buf)?;
+    buf.truncate(got);
+    Ok(buf)
+}
+
+/// 读出一个加密文件在 TLV 里记的真实文件名。
+///
+/// 只读头部区域：文件名在 TLV 区，不需要把载荷读进来。1 MiB 与
+/// `enrich_file` 取同一个上限——那里的注释说明了它足够覆盖含缩略图的 TLV 区。
+fn real_name_of(path: &Path, keks: &[omy_core::crypto::Kek]) -> Option<String> {
+    let bytes = read_head(path, 1 << 20).ok()?;
+    let opened = omy_core::file::open(&bytes, keks).ok()?;
+    opened.filename().ok()
 }
 
 /// 给已解锁的加密文件补上真实文件名与 entry id。
@@ -334,6 +463,7 @@ pub fn list_places() -> Vec<DirEntry> {
                 preview: None,
                 mime: None,
                 is_container: false,
+                is_encrypted_dir: false,
             });
         }
     }
@@ -365,6 +495,7 @@ fn drive_roots() -> Vec<DirEntry> {
                 preview: None,
                 mime: None,
                 is_container: false,
+                is_encrypted_dir: false,
             })
         })
         .collect()
@@ -402,6 +533,75 @@ pub fn parent_of(path: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encrypted_dir_is_recognized_by_name_shape() {
+        use omy_core::dirname::looks_encrypted;
+        // 真密文目录名：全大写 base32 + .omy 后缀
+        assert!(
+            looks_encrypted("3NJDNEJ4TXYUFW2SW2D3RWBAP3I7WILHZB6SVLM7BE5JJ45OYH5Q4ZQ.omy"),
+            "真实的密文目录名必须被认出来，否则用户看到的是一串乱码而不是原名"
+        );
+        // 截断名带 ~ 标记
+        assert!(looks_encrypted("AAAABBBBCCCC~ABCD2345.omy"));
+
+        // 普通目录不能被误判：误判会让它显示成「已加密」，
+        // 而且会去读它内部的 .omy-name，白费一次磁盘 IO
+        assert!(!looks_encrypted("工作资料"));
+        assert!(!looks_encrypted("photos"));
+        // 小写不是 base32 字符集：加密文件的磁盘名是小写十六进制，
+        // 若把它当成目录名会解密失败
+        assert!(!looks_encrypted("4c1f877776c32979260c06e8c48b0465.omy"));
+        // 只有后缀、没有名字
+        assert!(!looks_encrypted(".omy"));
+        // 有 .omy 后缀但含非 base32 字符（用户自己建的目录）
+        assert!(!looks_encrypted("MY-BACKUP.omy"));
+    }
+
+    #[test]
+    fn encrypted_dir_stays_a_directory_for_the_frontend() {
+        // 加密目录必须仍然 is_dir=true。前端已有的「双击进目录」逻辑靠这个
+        // 字段分流，若把它标成文件，双击会走预览路径，得到「这不是能预览的
+        // 文件」——而用户要的正是「跟正常目录一样访问」。
+        //
+        // 这条守的是列目录时的字段组合，所以造一个真目录来跑 list_dir 的
+        // 目录分支逻辑（不需要会话）。
+        let root = std::env::temp_dir().join("omy-browse-encdir");
+        let _ = std::fs::remove_dir_all(&root);
+        let enc_name = "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDDEEEEEEEEFFFFFFFF.omy";
+        std::fs::create_dir_all(root.join(enc_name)).unwrap();
+        std::fs::create_dir_all(root.join("普通目录")).unwrap();
+
+        // 直接验判定与 DirEntry 的构造规则，不经 Shared
+        for (name, want_enc) in [(enc_name, true), ("普通目录", false)] {
+            let is_enc = omy_core::dirname::looks_encrypted(name);
+            assert_eq!(is_enc, want_enc, "{name} 的判定不对");
+        }
+
+        // 加密目录的 is_encrypted 必须是 false：那个字段的含义是
+        // 「内容是密文」，而目录没有内容。混用会让前端以为要先解密才能进
+        let entry = DirEntry {
+            path: root.join(enc_name).to_string_lossy().into_owned(),
+            name: String::from(enc_name),
+            is_dir: true,
+            size: None,
+            is_encrypted: false,
+            unlocked: false,
+            real_name: None,
+            entry_id: None,
+            ext: None,
+            token: None,
+            preview: None,
+            mime: None,
+            is_container: false,
+            is_encrypted_dir: true,
+        };
+        assert!(entry.is_dir, "加密目录必须仍然是目录");
+        assert!(!entry.is_encrypted, "目录本身没有密文内容");
+        assert!(entry.is_encrypted_dir, "但要标出它是加密目录");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn natural_order_puts_2_before_10() {

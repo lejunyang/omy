@@ -86,7 +86,8 @@
     "reveal": "在文件管理器中显示",
     "encrypt": "加密",
     "preview": "预览",
-    "restore": "还原"
+    "restore": "还原",
+    "folder_encrypted": "加密文件夹"
   },
   "encrypt": {
     "title_one": "加密 {{count}} 个文件",
@@ -159,7 +160,8 @@
     "text": "文本",
     "folder": "文件夹",
     "encrypted": "加密文件",
-    "other": "其他"
+    "other": "其他",
+    "folder_encrypted": "加密文件夹"
   },
   "device": {
     "title": "设备与共享",
