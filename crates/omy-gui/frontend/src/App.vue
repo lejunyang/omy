@@ -33,12 +33,14 @@ import {
   reload,
   loadPlaces,
   encryptSelected,
+  restoreSelected,
   tryUnlock,
   lock,
   switchLanguage,
   selectAll,
   enrich,
   encryptable,
+  restorable,
   refreshDeviceOverview,
   connectRemote,
   tryUnlockRemote,
@@ -49,6 +51,7 @@ import {
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
+import RestoreDialog from './components/RestoreDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import KeyDialog from './components/KeyDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
@@ -56,6 +59,7 @@ import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 
 const showEncrypt = ref(false);
+const showRestore = ref(false);
 /** 密码管理的目标条目；null 表示对话框关着。
  *
  * 存条目本身而不是一个布尔量：对话框要显示改的是哪个文件，
@@ -201,6 +205,13 @@ async function tryRefreshThenPreview(entry) {
   await reload();
   const fresh = state.entries.find((e) => e.path === entry.path);
   if (fresh?.unlocked) await openPreview(fresh);
+}
+
+async function onRestoreSubmit(opts) {
+  const r = await restoreSelected(opts);
+  // 只在完全成功时关闭。部分失败（典型是 target_exists）时留着对话框，
+  // 用户勾一下「覆盖」或换个目录就能重试——关掉的话他得从选文件重来
+  if (r && !r.failed.length) showRestore.value = false;
 }
 
 async function onEncryptSubmit(opts) {
