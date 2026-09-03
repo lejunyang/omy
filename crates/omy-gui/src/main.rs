@@ -32,6 +32,7 @@ mod citem;
 mod commands;
 mod device_cmds;
 mod devices;
+mod decrypt;
 mod encrypt;
 mod keymgmt;
 mod lan;
@@ -100,6 +101,7 @@ fn main() {
             plain::open_external,
             plain::reveal_in_folder,
             encrypt::encrypt_paths,
+            decrypt::decrypt_paths,
             keymgmt::manage_key,
             device_cmds::device_status,
             device_cmds::open_device_store,
