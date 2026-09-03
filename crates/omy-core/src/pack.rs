@@ -97,45 +97,41 @@ pub struct PackedFolder {
 /// 再加个类型参数会让调用方的错误信息变得难读。
 pub type ProgressFn<'a> = &'a mut dyn FnMut(&str, u64);
 
-/// 把 `root` 目录打包成容器载荷。
+/// 遍历时交给回调的一个条目。
 ///
-/// # 内存
+/// 抽出这个类型是为了让容器模式与树形模式**共用同一套遍历判定**：
+/// 按名字稳定排序、用 `symlink_metadata` 而不是 `metadata`、跳过符号链接
+/// 与非普通文件、深度上限。各写一份的话，哪天给容器模式修了「跳过 socket
+/// 文件」，树形模式还在按老样子处理，同一个目录用两种模式加密会得到不同的
+/// 内容集合。
+#[derive(Debug)]
+pub struct WalkItem {
+    /// 绝对路径。
+    pub path: PathBuf,
+    /// 相对根目录的路径组件。
+    pub comps: Vec<String>,
+    /// 是否是目录。
+    pub is_dir: bool,
+    /// 文件系统元数据，供调用方提取 mtime 等。
+    pub meta: EntryMeta,
+}
+
+/// 遍历目录树，对每个条目调用 `visit`。
 ///
-/// 载荷是**整个目录的内容拼接**，会全部读进内存。这与 core 其他部分
-/// 按块处理的风格不一致，但容器格式本身要求先知道每个文件的区间才能
-/// 写索引，而区间要等前面所有文件都读完才确定。
+/// **父目录保证先于其子项被访问**——树形模式依赖这一点：子项要写进父目录
+/// 对应的密文目录，那个目录必须已经建好。
 ///
-/// 调用方应对大目录做预检——`ContainerIndex` 里有
-/// [`crate::container::RECOMMENDED_MAX_ENTRIES`] 可参考。
+/// 跳过的条目记进 `skipped`，不中断遍历：一个打不开的文件不该让整个目录
+/// 加密失败。
 ///
 /// # Errors
 ///
-/// - 根路径不是目录
-/// - 索引构建失败（路径组件非法等，由 `ContainerBuilder` 校验）
-///
-/// 单个文件读不出来**不算错误**，会记进 `skipped` 继续——
-/// 一个打不开的文件不该让整个目录加密失败。
-pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<PackedFolder> {
-    if !root.is_dir() {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::NotADirectory,
-            "pack_folder expects a directory",
-        )));
-    }
-
-    let root_name = root
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        // 根目录（如 `C:\`）没有 file_name。用固定名而不是空串：
-        // 空名会让解密时创建不出目录
-        .unwrap_or_else(|| String::from("folder"));
-
-    let mut builder = ContainerBuilder::new(root_name.clone());
-    let mut payload = Vec::new();
-    let mut skipped = Vec::new();
-    let mut file_count = 0usize;
-    let mut dir_count = 0usize;
-
+/// 只有 `visit` 自己返回错误时才会中断。
+pub fn walk_dir(
+    root: &Path,
+    skipped: &mut Vec<SkippedEntry>,
+    visit: &mut dyn FnMut(&WalkItem) -> Result<()>,
+) -> Result<()> {
     // 显式栈而不是递归：递归在深目录上会爆栈，而爆栈是不可恢复的。
     // 栈里存 (绝对路径, 相对组件, 深度)
     let mut stack: Vec<(PathBuf, Vec<String>, usize)> = vec![(root.to_path_buf(), Vec::new(), 0)];
@@ -176,7 +172,7 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
             // 用 symlink_metadata 而不是 metadata：后者会跟随链接，
             // 于是一个指向目录的符号链接会被当成真目录递归进去，
             // 环状链接直接把我们送进死循环
-            let Ok(md) = item.path().symlink_metadata() else {
+            let Ok(md) = path.symlink_metadata() else {
                 skipped.push(SkippedEntry {
                     path: comps.join("/"),
                     reason: SkipReason::Unreadable,
@@ -195,27 +191,15 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
             let meta = meta_from_fs(&md);
 
             if md.is_dir() {
-                builder.add_dir(comps.clone(), meta)?;
-                dir_count = dir_count.saturating_add(1);
+                visit(&WalkItem {
+                    path: path.clone(),
+                    comps: comps.clone(),
+                    is_dir: true,
+                    meta,
+                })?;
                 subdirs.push((path, comps, depth.saturating_add(1)));
             } else if md.is_file() {
-                let Ok(data) = std::fs::read(&path) else {
-                    // 读不出来就跳过并记录，不让整个目录加密失败。
-                    // 常见原因：文件正被别的程序独占打开
-                    skipped.push(SkippedEntry {
-                        path: comps.join("/"),
-                        reason: SkipReason::Unreadable,
-                    });
-                    continue;
-                };
-                let size = data.len() as u64;
-                let hash = crate::util::blake2b_256(&data);
-                builder.add_file(comps.clone(), size, Some(hash), meta)?;
-                payload.extend_from_slice(&data);
-                file_count = file_count.saturating_add(1);
-                if let Some(cb) = progress.as_deref_mut() {
-                    cb(&comps.join("/"), size);
-                }
+                visit(&WalkItem { path, comps, is_dir: false, meta })?;
             } else {
                 // 设备文件、FIFO、socket 等
                 skipped.push(SkippedEntry {
@@ -228,8 +212,84 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
         subdirs.reverse();
         stack.extend(subdirs);
     }
+    Ok(())
+}
+
+/// 把 `root` 目录打包成容器载荷。
+///
+/// # 内存
+///
+/// 载荷是**整个目录的内容拼接**，会全部读进内存。这与 core 其他部分
+/// 按块处理的风格不一致，但容器格式本身要求先知道每个文件的区间才能
+/// 写索引，而区间要等前面所有文件都读完才确定。
+///
+/// 调用方应对大目录做预检——`ContainerIndex` 里有
+/// [`crate::container::RECOMMENDED_MAX_ENTRIES`] 可参考。
+///
+/// # Errors
+///
+/// - 根路径不是目录
+/// - 索引构建失败（路径组件非法等，由 `ContainerBuilder` 校验）
+///
+/// 单个文件读不出来**不算错误**，会记进 `skipped` 继续——
+/// 一个打不开的文件不该让整个目录加密失败。
+pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<PackedFolder> {
+    if !root.is_dir() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "pack_folder expects a directory",
+        )));
+    }
+
+    let root_name = root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        // 根目录（如 `C:\`）没有 file_name。用固定名而不是空串：
+        // 空名会让解密时创建不出目录
+        .unwrap_or_else(|| String::from("folder"));
+
+    let mut builder = ContainerBuilder::new(root_name.clone());
+    let mut payload = Vec::new();
+    let mut skipped = Vec::new();
+    let mut file_count = 0usize;
+    let mut dir_count = 0usize;
+    // 闭包里读不出来的文件单独收集：`skipped` 已被 walk_dir 可变借走，
+    // 闭包不能同时碰它。遍历结束后合并
+    let mut unreadable: Vec<String> = Vec::new();
+
+    walk_dir(root, &mut skipped, &mut |item| {
+        if item.is_dir {
+            builder.add_dir(item.comps.clone(), item.meta.clone())?;
+            dir_count = dir_count.saturating_add(1);
+        } else {
+            let Ok(data) = std::fs::read(&item.path) else {
+                // 读不出来就跳过并记录，不让整个目录加密失败。
+                // 常见原因：文件正被别的程序独占打开
+                //
+                // 注意这里不能 push 到 skipped——它已被 walk_dir 借走。
+                // 交给下面的 unreadable 收集
+                unreadable.push(item.comps.join("/"));
+                return Ok(());
+            };
+            let size = data.len() as u64;
+            let hash = crate::util::blake2b_256(&data);
+            builder.add_file(item.comps.clone(), size, Some(hash), item.meta.clone())?;
+            payload.extend_from_slice(&data);
+            file_count = file_count.saturating_add(1);
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(&item.comps.join("/"), size);
+            }
+        }
+        Ok(())
+    })?;
 
     let index = builder.finish()?;
+
+    // 合并闭包里收集的读失败项
+    skipped.extend(unreadable.into_iter().map(|path| SkippedEntry {
+        path,
+        reason: SkipReason::Unreadable,
+    }));
 
     Ok(PackedFolder {
         payload,
@@ -326,6 +386,44 @@ mod tests {
     }
 
     #[test]
+    fn ordering_is_byte_order_not_filesystem_order() {
+        // 变异测试抓出来的缺口：`ordering_is_stable` 只比较两次打包的结果，
+        // 而**两次都会拿到同一个文件系统顺序**——把 sort 整行删掉，那条
+        // 断言依然通过。它证明的是「确定性」，不是「按字节序排」。
+        //
+        // 这里改为断言一个与文件系统顺序**不同**的具体顺序：NTFS 大小写
+        // 不敏感，返回 `a.txt, Z.txt`；而字节序里 `Z`(0x5A) < `a`(0x61)，
+        // 应得到 `Z.txt, a.txt`。漏排序时这条立刻失败。
+        //
+        // 为什么必须按字节序：索引里记的是每个文件在载荷中的区间，跨平台
+        // 打开同一个容器时若排序规则不同，区间就对不上。ext4 按字节序、
+        // NTFS 按大小写不敏感——只有显式排序才能让两边一致。
+        let root = std::env::temp_dir().join("omy-pack-order");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), b"aaa").unwrap();
+        std::fs::write(root.join("Z.txt"), b"z").unwrap();
+
+        let p = pack_folder(&root, None).unwrap();
+        let names: Vec<String> = p
+            .index
+            .entries
+            .iter()
+            .filter(|e| e.range().is_some())
+            .map(|e| e.display_path())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Z.txt", "a.txt"],
+            "必须按字节序排列（大写 Z 在小写 a 之前），而不是沿用文件系统顺序"
+        );
+        // 载荷的拼接顺序也要跟着：Z 的内容在前
+        assert_eq!(p.payload, b"zaaa", "载荷拼接顺序要与索引一致");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn ordering_is_stable() {
         // 同一个目录打包两次必须得到完全相同的载荷。
         // read_dir 的顺序由文件系统决定，不排序的话这条不成立
@@ -388,6 +486,49 @@ mod tests {
         assert_eq!(p.file_count, 1, "只有真文件被打包");
         assert_eq!(p.skipped.len(), 1);
         assert_eq!(p.skipped[0].reason, SkipReason::Symlink);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_junctions_are_skipped_not_followed() {
+        // Windows 上的补位测试。原来的符号链接测试是 `#[cfg(unix)]`，
+        // 于是「改用 metadata 会跟随链接」这个缺陷在 Windows 开发机上
+        // **压根没有测试覆盖**——变异测试把这个盲区暴露了出来。
+        //
+        // 创建符号链接在 Windows 上需要特权（实测 WinError 1314），但
+        // **目录联接（junction）不需要**，而 Rust 同样把它报成 symlink。
+        // 于是不必提权就能覆盖这条路径。
+        //
+        // 为什么必须跳过：环状联接会让遍历死循环，且会把目标内容重复打包。
+        let root = std::env::temp_dir().join("omy-pack-junction");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::write(root.join("real/inside.txt"), b"content").unwrap();
+
+        let link = root.join("link");
+        let st = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(root.join("real"))
+            .output();
+        // 建不出来就跳过：不同环境的策略可能不同，测试不该因此变红
+        let Ok(o) = st else { return };
+        if !o.status.success() || !link.exists() {
+            return;
+        }
+
+        let p = pack_folder(&root, None).unwrap();
+        assert_eq!(
+            p.file_count, 1,
+            "只有 real/inside.txt 该被打包；联接被跟随的话会变成 2"
+        );
+        assert!(
+            p.skipped.iter().any(|s| s.reason == SkipReason::Symlink),
+            "联接必须如实报告为符号链接，实际 {:?}",
+            p.skipped
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
