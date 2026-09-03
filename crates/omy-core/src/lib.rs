@@ -65,6 +65,7 @@ pub mod keyslot;
 pub mod pack;
 pub mod payload;
 pub mod reencrypt;
+pub mod restore;
 pub mod scan;
 pub mod session;
 pub mod shard;
