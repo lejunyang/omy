@@ -743,6 +743,29 @@ input {
   margin-block-start: calc(var(--sp));
 }
 
+/* 「选择目录」按钮：字段内的次要动作，不该和底部的主按钮抢注意力 */
+.pickbtn {
+  margin-block-start: calc(var(--sp) * 1.5);
+}
+
+/* 最终落点路径。
+ *
+ * 用等宽字体并允许在任意位置断行：路径可能很长，用 ellipsis 截断会
+ * 藏掉**末尾**——而末尾（具体哪个子目录）才是用户要确认的部分。
+ * 宁可占两行也不能省。 */
+.tpath {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--fg2);
+  margin-block-start: calc(var(--sp) * 1.5);
+  padding: calc(var(--sp) * 1.25) calc(var(--sp) * 1.75);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-s, 4px);
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
 .radio {
   display: flex;
   align-items: flex-start;

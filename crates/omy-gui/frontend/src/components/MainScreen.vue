@@ -16,6 +16,7 @@ import {
   encryptedCount,
   lockedCount,
   encryptable,
+  restorable,
   keyManageable,
   crumbs,
   gotoCrumb,
@@ -71,6 +72,7 @@ const progPercent = computed(() => {
 const emit = defineEmits([
   'open',
   'encrypt',
+  'restore',
   'manage-key',
   'lock',
   'quick-unlock',
@@ -266,6 +268,13 @@ function onRowClick(entry, ev) {
             @click="$emit('encrypt')"
           >
             🔒 {{ i18n.t('file.encrypt') }} ({{ encryptable.length }})
+          </button>
+          <button
+            v-if="restorable.length"
+            class="btn small"
+            @click="$emit('restore')"
+          >
+            📤 {{ i18n.t('file.restore') }} ({{ restorable.length }})
           </button>
           <button
             v-if="keyManageable"

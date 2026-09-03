@@ -63,6 +63,28 @@ export const ENCRYPT_PROGRESS_EVENT = 'encrypt://progress';
 export const onEncryptProgress = (handler) =>
   listen(ENCRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
 
+/* ---------------- 还原（解密到磁盘） ---------------- */
+
+/** 把选中的加密文件还原到磁盘。
+ *
+ * `req` 形如 `{ ids, target_dir, overwrite }`：
+ * - `ids` 是已登记文件的 id，不是路径——后端要靠 id 查会话里的凭据
+ * - `target_dir` 传 null 表示还原到加密文件所在目录
+ * - `overwrite` 默认 false，同名已存在时报 `target_exists`
+ */
+export const decryptPaths = (req) => invoke('decrypt_paths', { req });
+
+/** 事件名必须与后端 `DECRYPT_PROGRESS_EVENT` 完全一致。理由同上。
+ *
+ * 与加密用不同的名字：两者可能先后发生，共用一个会让进度条
+ * 分不清当前该显示「加密中」还是「还原中」。
+ */
+export const DECRYPT_PROGRESS_EVENT = 'decrypt://progress';
+
+/** 订阅还原进度，返回取消订阅的函数。载荷字段与加密进度一致。 */
+export const onDecryptProgress = (handler) =>
+  listen(DECRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
+
 /* ---------------- 密码管理 ---------------- */
 
 /** 给一个已加密文件增删改密码。

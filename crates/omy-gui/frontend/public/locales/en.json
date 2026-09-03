@@ -64,14 +64,18 @@
     "deriving": "Deriving key…",
     "connecting": "Connecting…",
     "file_of": "File {{i}} of {{n}}",
-    "reencrypting": "Re-encrypting..."
+    "reencrypting": "Re-encrypting...",
+    "restoring": "Restoring…"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
     "encrypted_other": "Encrypted {{count}} files",
     "unlocked_one": "Unlocked {{count}} file",
     "unlocked_other": "Unlocked {{count}} files",
-    "encrypt_partial": "{{ok}} succeeded, {{failed}} failed: {{reason}}"
+    "encrypt_partial": "{{ok}} succeeded, {{failed}} failed: {{reason}}",
+    "restored_one": "Restored 1 item to {{path}}",
+    "restored_other": "Restored {{count}} items to {{path}}",
+    "restore_partial": "{{ok}} restored, {{failed}} failed: {{reason}}"
   },
   "file": {
     "locked_name": "🔒 Encrypted",
@@ -81,7 +85,8 @@
     "open_external": "Open with another app",
     "reveal": "Show in file manager",
     "encrypt": "Encrypt",
-    "preview": "Preview"
+    "preview": "Preview",
+    "restore": "Restore"
   },
   "encrypt": {
     "title_one": "Encrypt {{count}} file",
@@ -222,7 +227,8 @@
   "errors": {
     "load_failed": "Can't open this location. It may not exist or be readable.",
     "encrypt_failed": "Encryption did not finish.",
-    "connect_failed": "Could not reach the device."
+    "connect_failed": "Could not reach the device.",
+    "restore_failed": "Restore failed"
   },
   "container": {
     "subtitle": "Contents of the encrypted folder"
@@ -259,5 +265,28 @@
     "next_optional_hint": "Leave empty to keep the same password and only replace the file key — this makes the password on older copies useless for this file.",
     "rewrite_note": "The contents are re-encrypted, so this takes as long as the file is big. The original is left untouched until the write succeeds.",
     "done_reencrypt": "Re-encrypted; the file key has been replaced"
+  },
+  "restore": {
+    "title_one": "Restore 1 file",
+    "title_other": "Restore {{count}} files",
+    "target": "Restore to",
+    "target_here": "Current folder",
+    "target_here_desc": "Next to the encrypted file",
+    "target_pick": "Another folder",
+    "target_pick_desc": "Pick a location with the button below",
+    "choose": "Choose folder…",
+    "pick_title": "Choose a folder to restore into",
+    "pick_failed": "Could not open the folder picker",
+    "overwrite": "Overwrite existing files",
+    "overwrite_desc": "When off, existing files are skipped and reported",
+    "container_note": "A folder is restored as a directory of the same name, keeping its structure",
+    "plaintext_note": "Restored files are unencrypted — mind where you put them",
+    "submit": "Restore",
+    "meta_partial": "{{items}} could not be restored",
+    "meta_mode": "POSIX permissions",
+    "meta_btime": "creation time",
+    "meta_owner": "owner",
+    "meta_xattr": "extended attributes",
+    "meta_not_recorded": "modification time of single files (not saved at encryption)"
   }
 }

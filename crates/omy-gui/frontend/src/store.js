@@ -335,6 +335,25 @@ export const encryptable = computed(() =>
         .filter((e) => e && !e.is_encrypted),
 );
 
+/** 选中项里可以还原到磁盘的（已加密且已解锁的）。
+ *
+ * 与 `encryptable` 互补：一个挑还没加密的，一个挑已经加密的。
+ *
+ * 为什么要求 `unlocked`：还原需要密钥，而密钥来自会话。锁着的文件
+ * 即使选中了也解不开，让按钮出现然后点了报 `locked` 不如不出现。
+ *
+ * 容器内恒为空：里面的条目没有独立的文件 id，还原命令收的是 id。
+ * 真要取出容器里的单个文件，是另一件事（预览面板的「导出」），
+ * 不该混进这个批量入口。
+ */
+export const restorable = computed(() =>
+  state.container
+    ? []
+    : state.selected
+        .map((p) => state.entries.find((e) => e.path === p))
+        .filter((e) => e && e.is_encrypted && e.unlocked),
+);
+
 /** 选中项里可以管理密码的那**一个**。
  *
  * 只在恰好选中一个已解锁的加密文件时返回它，否则返回 null。
@@ -668,6 +687,89 @@ export async function encryptSelected(opts) {
     // 加密 N 次之后同一个事件会被处理 N 遍
     if (unlisten) unlisten();
   }
+}
+
+/** 把选中的加密文件还原到磁盘。
+ *
+ * `opts` 形如 `{ target_dir, overwrite }`，来自还原对话框。
+ *
+ * 成功后**不** reload：还原不改变加密文件本身，列表内容没有变化。
+ * 白刷一次列表会让大目录闪一下，看起来像出了什么事。
+ */
+export async function restoreSelected(opts) {
+  // 字段是 entry_id 不是 id：DirEntry 里的 id 专指「已登记的 FileEntry
+  // 的 id」，与磁盘条目本身区分开
+  const ids = restorable.value.map((e) => e.entry_id).filter(Boolean);
+  if (!ids.length) {
+    state.error = i18n.te('empty_selection');
+    return null;
+  }
+
+  state.busy = true;
+  state.busyKey = 'busy.restoring';
+  state.error = '';
+  state.notice = '';
+  state.progress = null;
+
+  // 订阅必须在发起之前建立，理由同加密：小文件可能在 await 返回前
+  // 就把事件发完了，晚一步订阅一个都收不到
+  let unlisten = null;
+  try {
+    unlisten = await api.onDecryptProgress((p) => {
+      state.progress = p;
+    });
+  } catch {
+    unlisten = null;
+  }
+
+  try {
+    const summary = await api.decryptPaths({ ids, ...opts });
+
+    if (summary.failed.length) {
+      // 部分失败要说清是哪个、为什么。只报数字的话用户无从下手，
+      // 尤其 target_exists 是他自己能解决的（勾覆盖或换目录）
+      const first = summary.failed[0];
+      state.error = i18n.t('notice.restore_partial', {
+        ok: summary.items.length,
+        failed: summary.failed.length,
+        reason: i18n.te(first[1], first[1]),
+      });
+    } else {
+      setNotice(restoreNotice(summary.items));
+    }
+    return summary;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('errors.restore_failed'));
+    return null;
+  } finally {
+    state.busy = false;
+    state.progress = null;
+    if (unlisten) unlisten();
+  }
+}
+
+/** 还原成功后的提示文案。
+ *
+ * 单独提出来是因为它要合并三种信息：还原了什么、放在哪、元数据有没有
+ * 缺项。挤在一行里会很长，所以元数据只在**确实有缺项**时才提。
+ *
+ * 元数据那句不能省：解出来的文件时间戳不对是用户会注意到的事，
+ * 事先说明「哪些项没还原、为什么」比让他事后怀疑文件坏了要好。
+ */
+function restoreNotice(items) {
+  const where = items[0]?.output || '';
+  const base = i18n.tn('notice.restored', items.length, { path: where });
+
+  // 汇总所有条目的不支持项。同一种原因在多个文件上出现算一次——
+  // 用户要知道的是「哪类元数据没还原」，不是每个文件重复一遍
+  const kinds = new Set();
+  for (const it of items) {
+    for (const [code] of it.metadata?.unsupported || []) kinds.add(code);
+  }
+  if (!kinds.size) return base;
+
+  const names = [...kinds].map((c) => i18n.t(`restore.meta_${c}`)).join('、');
+  return `${base}（${i18n.t('restore.meta_partial', { items: names })}）`;
 }
 
 /** 给一个已加密文件增删改密码，或重新加密。

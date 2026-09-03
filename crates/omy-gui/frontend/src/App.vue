@@ -327,6 +327,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-else
     @open="onOpen"
     @encrypt="showEncrypt = true"
+    @restore="showRestore = true"
     @manage-key="((keyError = ''), (keyTarget = $event))"
     @lock="doLock"
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
@@ -339,6 +340,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-if="showDevices"
     @close="onDevicePanelClose"
     @connect="onConnectRemote"
+  />
+
+  <RestoreDialog
+    v-if="showRestore"
+    :targets="restorable"
+    :current-dir="state.cwd"
+    :busy="state.busy"
+    @cancel="showRestore = false"
+    @submit="onRestoreSubmit"
   />
 
   <EncryptDialog

@@ -64,14 +64,18 @@
     "deriving": "正在派生密钥…",
     "connecting": "正在连接设备…",
     "file_of": "第 {{i}} / {{n}} 个",
-    "reencrypting": "正在重新加密…"
+    "reencrypting": "正在重新加密…",
+    "restoring": "正在还原…"
   },
   "notice": {
     "encrypted_one": "已加密 {{count}} 个文件",
     "encrypted_other": "已加密 {{count}} 个文件",
     "unlocked_one": "解锁了 {{count}} 个文件",
     "unlocked_other": "解锁了 {{count}} 个文件",
-    "encrypt_partial": "成功 {{ok}} 个，失败 {{failed}} 个：{{reason}}"
+    "encrypt_partial": "成功 {{ok}} 个，失败 {{failed}} 个：{{reason}}",
+    "restored_one": "已还原 1 项到 {{path}}",
+    "restored_other": "已还原 {{count}} 项到 {{path}}",
+    "restore_partial": "{{ok}} 项已还原，{{failed}} 项失败：{{reason}}"
   },
   "file": {
     "locked_name": "🔒 加密文件",
@@ -81,7 +85,8 @@
     "open_external": "用其他应用打开",
     "reveal": "在文件管理器中显示",
     "encrypt": "加密",
-    "preview": "预览"
+    "preview": "预览",
+    "restore": "还原"
   },
   "encrypt": {
     "title_one": "加密 {{count}} 个文件",
@@ -222,7 +227,8 @@
   "errors": {
     "load_failed": "打不开这个位置，可能没有权限或者路径不存在。",
     "encrypt_failed": "加密没能完成。",
-    "connect_failed": "连不上这台设备。"
+    "connect_failed": "连不上这台设备。",
+    "restore_failed": "还原失败"
   },
   "container": {
     "subtitle": "加密文件夹的内容"
@@ -259,5 +265,28 @@
     "next_optional_hint": "留空表示密码不变，只换掉文件密钥——这样做的意义是让旧副本的密码对这份文件失效。",
     "rewrite_note": "内容会重新加密，所以耗时取决于文件大小。原文件在写入成功前不会被改动。",
     "done_reencrypt": "已重新加密，文件密钥已更换"
+  },
+  "restore": {
+    "title_one": "还原 1 个文件",
+    "title_other": "还原 {{count}} 个文件",
+    "target": "还原到哪里",
+    "target_here": "当前目录",
+    "target_here_desc": "解出来的文件和加密文件放在一起",
+    "target_pick": "选择其他目录",
+    "target_pick_desc": "点下面的按钮挑一个位置",
+    "choose": "选择目录…",
+    "pick_title": "选择还原到哪个目录",
+    "pick_failed": "打不开目录选择器",
+    "overwrite": "覆盖同名文件",
+    "overwrite_desc": "不勾选时，目标已存在同名文件会跳过并报告",
+    "container_note": "文件夹会解成一个同名目录，原有的层级结构保持不变",
+    "plaintext_note": "还原出来的是未加密的原始文件，请注意存放位置的安全",
+    "submit": "开始还原",
+    "meta_partial": "{{items}} 未能还原",
+    "meta_mode": "POSIX 权限位",
+    "meta_btime": "创建时间",
+    "meta_owner": "属主",
+    "meta_xattr": "扩展属性",
+    "meta_not_recorded": "单个文件的修改时间（加密时未保存）"
   }
 }
