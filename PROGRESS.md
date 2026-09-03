@@ -841,8 +841,10 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `container` 目录容器索引
 - [x] `BlockSource` trait
 - [ ] `tree` 模式：目录名加密 + base32 编码（文档 05 §3）
-- [ ] slot 原地增删改：保留 FEK、重建 slot 区、重算头部 MAC，**不重写载荷**（`key add/remove/change` 依赖此能力）
-- [ ] 元数据保存与还原报告的完整实现（D-20 / N3）
+- [x] slot 原地增删改：保留 FEK、重建 slot 区、重算头部 MAC，**不重写载荷**（`keyslot`，`key add/remove/change` 已接）
+- [x] 密钥轮换：换 FEK 并重新加密载荷（`reencrypt`，`key reencrypt` 已接）
+- [x] 元数据**保存**：`pack.rs` 采集 mtime/btime，unix 上另有 mode/uid/gid
+- [ ] 元数据**还原**与还原报告（D-20 / N3）——保存已做，解包时全部丢弃，实测解出来的文件修改时间是「现在」
 - [ ] 伪装模式：`footer` / `host-jpeg` / `host-png`（D-17）
 - [ ] 符号链接跨平台还原（当前如实报告为跳过）
 
@@ -854,7 +856,7 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] i18n 简中 + 英文
 - [x] 配置文件
 - [x] `--vault`：加入已有库，复用 salt 与 KDF 参数
-- [ ] `serve` / `connect`（依赖 omy-net）
+- [x] `share serve / discover / pair / connect / devices`（19 项端到端通过）
 - [x] 进度条（`indicatif`，仅在 stderr 是终端且非 `--json` / `-q` 时显示）
 
 ### omy-media
