@@ -119,7 +119,13 @@
     "original_delete_desc": "不可撤销，且无法保证彻底清除",
     "submit": "开始加密",
     "no_erase_note": "本应用不提供「安全擦除」。SSD 的 wear leveling 使覆写擦除无法保证彻底清除，提供该功能会给出虚假的安全感。",
-    "folder_note": "文件夹加密尚未实现，选中的文件夹会被跳过。"
+    "folder_note": "文件夹加密尚未实现，选中的文件夹会被跳过。",
+    "folder_mode": "文件夹加密方式",
+    "folder_mode_container": "打包成单个加密文件",
+    "folder_mode_container_desc": "完全隐藏目录结构，适合归档和分享；修改任一文件需重写整包",
+    "folder_mode_tree": "逐个加密（保持目录结构）",
+    "folder_mode_tree_desc": "支持增量修改和云盘同步；单个文件可单独分享，损坏只影响一个文件",
+    "folder_mode_tree_leak": "⚠️ 逐个加密模式下，别人能看到你有多少文件、每个文件多大、目录有几层，但看不到文件名和内容。"
   },
   "playback": {
     "tier_p1": "直通",

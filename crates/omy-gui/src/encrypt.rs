@@ -68,6 +68,12 @@ pub struct EncryptRequest {
     /// 加密后如何处理原文件：`keep` / `trash` / `delete`。
     #[serde(default = "default_keep")]
     pub original: String,
+    /// 文件夹加密模式：`container` 打包成单文件，`tree` 逐个加密保持结构。
+    ///
+    /// 默认 container：它完全隐藏目录结构，是更安全的那个选择。树形模式
+    /// 泄露文件数与树形（N6），必须由用户明确选择，不能是默认值。
+    #[serde(default = "default_container")]
+    pub folder_mode: String,
 }
 
 fn default_true() -> bool {
@@ -81,6 +87,9 @@ fn default_profile() -> String {
 }
 fn default_keep() -> String {
     String::from("keep")
+}
+fn default_container() -> String {
+    String::from("container")
 }
 
 /// 单个文件的加密结果。
@@ -165,7 +174,19 @@ pub async fn encrypt_paths(
 
 /// 把刚用过的密码装进会话，使新加密的文件立即可见。
 fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
-    let Ok(prefix) = read_prefix(Path::new(sample), 256) else {
+    // 树形模式的产物是**目录**，读它的「前 256 字节」只会失败，
+    // 于是这个函数静默返回，用户刚加密完的树立刻显示成锁定——
+    // 然后被要求输入他三秒前刚打过的密码。所以目录要先往里找一个文件。
+    let path = PathBuf::from(sample);
+    let sample_file = if path.is_dir() {
+        match first_omy_in(&path) {
+            Some(p) => p,
+            None => return,
+        }
+    } else {
+        path
+    };
+    let Ok(prefix) = read_prefix(&sample_file, 256) else {
         return;
     };
     let Ok(header) = omy_core::file::peek_header(&prefix) else {
@@ -187,6 +208,25 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
             header.argon2_params(),
         );
     });
+}
+
+/// 在树里找任意一个 `.omy` 文件。
+///
+/// 树形模式的产物没有统一的头部，vault 参数只能从其中任一个文件读——
+/// 同一个 vault 内这些参数本就一致，取哪个都一样。
+fn first_omy_in(root: &Path) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(root).ok()?;
+    let mut dirs = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            dirs.push(p);
+        } else if p.extension().is_some_and(|x| x == "omy") {
+            return Some(p);
+        }
+    }
+    // 当前层没有就往下找：根目录下可能只有子目录
+    dirs.into_iter().find_map(|d| first_omy_in(&d))
 }
 
 /// 实际执行。
@@ -251,6 +291,12 @@ fn encrypt_one(
     req: &EncryptRequest,
     progress: Option<(&tauri::AppHandle, usize, usize)>,
 ) -> Result<EncryptedItem, String> {
+    // 树形模式：自己往磁盘写很多个文件，没有单一的密文字节可以走下面
+    // 那条流水线。分流在最前面，避免下面每一步都要判断「这是不是树形」
+    if src.is_dir() && req.folder_mode == "tree" {
+        return encrypt_one_as_tree(src, out_dir, keks, vault_salt, params, req);
+    }
+
     // 目录打包成容器：单文件读内容，目录走 pack_folder。
     //
     // 遍历逻辑在 `omy_core::pack`，与 CLI 共用同一份实现——
@@ -367,6 +413,80 @@ fn encrypt_one(
         encrypted_size: enc.bytes.len() as u64,
         skipped,
     })
+}
+
+/// 树形模式加密一个目录。
+///
+/// # 与容器模式的区别
+///
+/// 容器模式产出**一个** `.omy` 文件，`output` 指向它。树形模式产出一棵
+/// **目录树**，`output` 指向加密后的根目录。前端据此展示，不需要区分——
+/// 双击进目录和双击进容器在界面上是同一件事。
+///
+/// `encrypted_size` 要遍历产物累加：逐个文件加密时没有一个「密文总字节数」
+/// 可以直接拿到。少算的话用户会以为加密后体积缩水了。
+fn encrypt_one_as_tree(
+    src: &Path,
+    out_dir: &Path,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    params: Argon2Params,
+    req: &EncryptRequest,
+) -> Result<EncryptedItem, String> {
+    let opts = EncryptOptions {
+        // 文件名一律加密：树形模式下磁盘名是随机的 uuid，
+        // 原名只能存在 TLV 里。不加密的话文件名压根没地方放
+        filename: None,
+        preserve_extension: req.preserve_extension,
+        compress: req.compress,
+        chunk_size: req.chunk_size,
+        // 与容器模式同一个理由：必须显式传，否则头部记的参数与
+        // 实际派生 KEK 用的参数不一致，文件永远打不开
+        argon2: params,
+        ..EncryptOptions::default()
+    };
+
+    let rep = omy_core::tree::encrypt_tree(src, out_dir, keks, vault_salt, &opts, None)
+        .map_err(|_| String::from("tree_encrypt_failed"))?;
+
+    let mut original_size = 0u64;
+    sum_file_sizes(src, &mut original_size);
+    let mut encrypted_size = 0u64;
+    sum_file_sizes(&rep.root, &mut encrypted_size);
+
+    let mut skipped: Vec<String> = rep
+        .skipped
+        .iter()
+        .map(|sk| format!("{}: {}", sk.path, sk.reason.code()))
+        .collect();
+    // 超长目录名不是「跳过」，但同样要让用户知道：那些目录一旦丢了
+    // 名称文件就认不出原名了
+    if rep.long_names > 0 {
+        skipped.push(format!("{}: long_dirname", rep.long_names));
+    }
+
+    Ok(EncryptedItem {
+        source: src.to_string_lossy().into_owned(),
+        output: rep.root.to_string_lossy().into_owned(),
+        original_size,
+        encrypted_size,
+        skipped,
+    })
+}
+
+/// 递归累加目录下所有文件的字节数。
+fn sum_file_sizes(root: &Path, total: &mut u64) {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            sum_file_sizes(&p, total);
+        } else if let Ok(md) = p.metadata() {
+            *total = total.saturating_add(md.len());
+        }
+    }
 }
 
 /// 决定输出文件名，避免覆盖已有文件。
@@ -495,6 +615,94 @@ mod tests {
             chunk_size: 256 * 1024,
             kdf_profile: String::from("interactive"),
             original: String::from("keep"),
+            folder_mode: String::from("container"),
+        }
+    }
+
+    #[test]
+    fn tree_mode_encrypts_into_a_directory_not_a_file() {
+        // 树形模式产出目录树而不是单个文件。这条同时守两件事：
+        // 产物形态对，且里面**没有明文名残留**——后者是这个模式的全部意义。
+        let root = std::env::temp_dir().join("omy-gui-tree-rt");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/照片")).unwrap();
+        std::fs::write(root.join("src/readme.txt"), b"hello tree").unwrap();
+        std::fs::write(root.join("src/照片/pic.bin"), b"binary!").unwrap();
+        let out_dir = root.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let mut req = req_with(vec![]);
+        req.password = String::from("pw-tree");
+        req.folder_mode = String::from("tree");
+        let salt = [9u8; 16];
+        let params = Argon2Params::INTERACTIVE;
+        let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
+
+        let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req, None)
+            .expect("树形加密应当成功");
+
+        let out = PathBuf::from(&item.output);
+        assert!(out.is_dir(), "树形模式的产物必须是目录，实际 {}", item.output);
+        assert_eq!(item.original_size, 17, "明文是 10 + 7 字节");
+        assert!(item.encrypted_size > 0, "密文体积要累加出来，不能是 0");
+
+        // 磁盘上不能出现任何明文名
+        let mut names = Vec::new();
+        collect_names(&out, &mut names);
+        let joined = names.join("|");
+        for leaked in ["readme", "照片", "pic"] {
+            assert!(!joined.contains(leaked), "明文名 {leaked} 泄露在 {joined}");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_output_can_be_found_for_credential_adoption() {
+        // adopt_credential 要从产物里读 vault 参数。树形模式的产物是目录，
+        // 直接读它的前 256 字节只会失败——于是那个函数静默返回，用户刚
+        // 加密完的树立刻显示成锁定，然后被要求输入他三秒前刚打过的密码。
+        //
+        // 这条断言守住 first_omy_in：必须能从目录里找出一个真正可读头部的
+        // 文件。只断言「返回了 Some」不够，要真的解析出头部才算。
+        let root = std::env::temp_dir().join("omy-gui-tree-adopt");
+        let _ = std::fs::remove_dir_all(&root);
+        // 故意让根目录下**只有子目录**，逼 first_omy_in 递归下去
+        std::fs::create_dir_all(root.join("src/deep/deeper")).unwrap();
+        std::fs::write(root.join("src/deep/deeper/x.txt"), b"data").unwrap();
+        let out_dir = root.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let mut req = req_with(vec![]);
+        req.password = String::from("pw-adopt");
+        req.folder_mode = String::from("tree");
+        let salt = [11u8; 16];
+        let params = Argon2Params::INTERACTIVE;
+        let kek = Kek::from_password(req.password.as_bytes(), &salt, params).unwrap();
+        let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req, None)
+            .expect("树形加密应当成功");
+
+        let found = first_omy_in(&PathBuf::from(&item.output))
+            .expect("必须能从树里找到一个 .omy 文件，否则加密后无法自动解锁");
+        let prefix = read_prefix(&found, 256).expect("找到的文件必须可读");
+        let header = omy_core::file::peek_header(&prefix)
+            .expect("找到的必须是真正的 omy 文件，能解析出头部");
+        assert_eq!(
+            header.vault_salt, salt,
+            "头部里的 vault_salt 要与加密时用的一致，否则派生出的 KEK 打不开文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 递归收集目录下所有条目名，用于查明文名泄露。
+    fn collect_names(dir: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            out.push(e.file_name().to_string_lossy().into_owned());
+            if e.path().is_dir() {
+                collect_names(&e.path(), out);
+            }
         }
     }
 

@@ -25,6 +25,13 @@ const compress = ref(true);
 const chunkIndex = ref(2);
 const strength = ref('moderate');
 const original = ref('keep');
+/** 文件夹模式：`container` 打包成单文件，`tree` 逐个加密。
+ *
+ * 默认 container 而不是「记住上次选择」：两种模式泄露的元数据量不同，
+ * 而「上次选了什么」是用户看不见的状态。加密一个敏感文件夹时，不该因为
+ * 上次选过 tree 就默默沿用——container 是更安全的那个，作默认值合适。
+ */
+const folderMode = ref('container');
 
 /** 可选的分块大小。
  *
@@ -60,6 +67,7 @@ function submit() {
     chunk_size: chunkSize.value,
     kdf_profile: strength.value,
     original: original.value,
+    folder_mode: folderMode.value,
   });
 }
 </script>
@@ -82,7 +90,29 @@ function submit() {
         </div>
       </div>
 
-      <div v-if="hasFolder" class="note">{{ i18n.t('encrypt.folder_note') }}</div>
+      <div v-if="hasFolder" class="field">
+        <div class="flabel">{{ i18n.t('encrypt.folder_mode') }}</div>
+        <label class="radio">
+          <input v-model="folderMode" type="radio" value="container" />
+          <span>
+            {{ i18n.t('encrypt.folder_mode_container') }}
+            <div class="d">{{ i18n.t('encrypt.folder_mode_container_desc') }}</div>
+          </span>
+        </label>
+        <label class="radio">
+          <input v-model="folderMode" type="radio" value="tree" />
+          <span>
+            {{ i18n.t('encrypt.folder_mode_tree') }}
+            <div class="d">{{ i18n.t('encrypt.folder_mode_tree_desc') }}</div>
+          </span>
+        </label>
+        <!-- 泄露量必须在勾选那一刻就摆在眼前，而不是藏在帮助文档里。
+             措辞刻意具体：「泄露元数据」用户无法据此判断风险，
+             「别人能数出你有多少文件」才能（威胁模型 N6）。 -->
+        <div v-if="folderMode === 'tree'" class="warnbox">
+          {{ i18n.t('encrypt.folder_mode_tree_leak') }}
+        </div>
+      </div>
 
       <div class="hr"></div>
 

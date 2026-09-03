@@ -119,7 +119,13 @@
     "original_delete_desc": "Cannot be undone, and complete erasure is not guaranteed",
     "submit": "Encrypt",
     "no_erase_note": "This app does not offer \"secure erase\". SSD wear leveling makes overwrite-based erasure unreliable, and offering it would give a false sense of security.",
-    "folder_note": "Folder encryption is not implemented yet; selected folders will be skipped."
+    "folder_note": "Folder encryption is not implemented yet; selected folders will be skipped.",
+    "folder_mode": "Folder encryption mode",
+    "folder_mode_container": "Pack into a single encrypted file",
+    "folder_mode_container_desc": "Fully hides the directory structure; good for archiving and sharing. Changing any file rewrites the whole package.",
+    "folder_mode_tree": "Encrypt each file (keep directory structure)",
+    "folder_mode_tree_desc": "Supports incremental edits and cloud sync; individual files can be shared, and damage affects only one file.",
+    "folder_mode_tree_leak": "⚠️ In per-file mode, others can see how many files you have, how large each one is, and how deep the directories go — but not the file names or contents."
   },
   "playback": {
     "tier_p1": "Direct",
