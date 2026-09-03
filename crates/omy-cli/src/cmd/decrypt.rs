@@ -261,7 +261,7 @@ fn decrypt_as_tree(
     a: &Args,
     pw: &[u8],
 ) -> Result<serde_json::Value> {
-    let Some(sample) = find_any_omy_file(root) else {
+    let Some(sample) = omy_core::tree::find_any_file(root) else {
         bail!(
             "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
             root.display()
@@ -340,22 +340,6 @@ fn decrypt_as_tree(
         "files": rep.files,
         "dirs": rep.dirs,
     }))
-}
-
-/// 在树里找任意一个 `.omy` 文件，用来取 vault 参数。
-fn find_any_omy_file(root: &Path) -> Option<PathBuf> {
-    let rd = std::fs::read_dir(root).ok()?;
-    let mut dirs = Vec::new();
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            dirs.push(p);
-        } else if p.extension().is_some_and(|x| x == "omy") {
-            return Some(p);
-        }
-    }
-    // 当前层没有就往下找：根目录下可能只有子目录
-    dirs.into_iter().find_map(|d| find_any_omy_file(&d))
 }
 
 /// 只读文件开头若干字节。

@@ -357,6 +357,37 @@ fn random_nonce() -> [u8; NONCE_LEN] {
     n
 }
 
+/// 在密文树里找任意一个加密文件，用来取 vault 参数。
+///
+/// # 为什么需要它
+///
+/// 单个 `.omy` 文件的头部自带 `vault_salt` 与 KDF 参数，而**目录没有头部**。
+/// 可是解目录名又必须先有 KEK，KEK 又要靠 salt 和参数才能派生——鸡生蛋。
+/// 解法是从树里任取一个文件读它的头部：同一个 vault 内这些参数本就一致，
+/// 取哪个都一样。
+///
+/// 三个入口都要用（CLI 解目录、GUI 加密后自动解锁、GUI 浏览解目录名），
+/// 所以放在 core 里只留一份。新增判定（比如将来要跳过别的边车文件）
+/// 只需改这里。
+///
+/// 深度优先向下找：根目录下可能只有子目录而没有直接的文件。
+#[must_use]
+pub fn find_any_file(root: &Path) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(root).ok()?;
+    let mut dirs = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            dirs.push(p);
+        } else if p.extension().is_some_and(|x| x == "omy") {
+            // 边车文件叫 `.omy-name`，扩展名不是 `omy`，所以不会被误取。
+            // 但它确实以 `.omy` 开头，靠「名字含 .omy」判断就会中招
+            return Some(p);
+        }
+    }
+    dirs.into_iter().find_map(|d| find_any_file(&d))
+}
+
 /// 16 字节转小写十六进制。
 fn hex16(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
@@ -395,6 +426,42 @@ mod tests {
 
     fn opts() -> EncryptOptions {
         EncryptOptions { argon2: Argon2Params::TEST_WEAK, ..EncryptOptions::default() }
+    }
+
+    #[test]
+    fn find_any_file_skips_the_name_sidecar() {
+        // 边车文件叫 `.omy-name`，它以 `.omy` 开头但不是加密文件。
+        // 把它当成样本去读头部只会失败，而失败的表现是「解不开目录名」，
+        // 会被误认为密码不对。
+        //
+        // 这条同时守「只有子目录时要能往下找」：根目录下没有直接的文件。
+        let root = std::env::temp_dir().join("omy-find-any-sidecar");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        // 边车放在**上层**，真文件放在下层：如果实现按广度优先且不排除
+        // 边车，就会先撞上边车
+        std::fs::write(root.join(crate::dirname::DIRNAME_SIDECAR), b"not a file").unwrap();
+        std::fs::write(root.join("sub/aabb.omy"), b"pretend header").unwrap();
+
+        let got = find_any_file(&root).expect("应当找到子目录里的 .omy");
+        assert_eq!(
+            got.file_name().and_then(|s| s.to_str()),
+            Some("aabb.omy"),
+            "拿到的必须是真加密文件而不是边车，实际 {got:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_any_file_returns_none_for_tree_without_files() {
+        // 只有目录没有文件时必须返回 None 而不是随便给一个路径。
+        // 给错的话调用方会拿它去读头部，得到一个含糊的 IO 错误
+        let root = std::env::temp_dir().join("omy-find-any-empty");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        assert!(find_any_file(&root).is_none(), "空树应当返回 None");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

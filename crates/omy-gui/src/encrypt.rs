@@ -179,7 +179,7 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
     // 然后被要求输入他三秒前刚打过的密码。所以目录要先往里找一个文件。
     let path = PathBuf::from(sample);
     let sample_file = if path.is_dir() {
-        match first_omy_in(&path) {
+        match omy_core::tree::find_any_file(&path) {
             Some(p) => p,
             None => return,
         }
@@ -208,25 +208,6 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
             header.argon2_params(),
         );
     });
-}
-
-/// 在树里找任意一个 `.omy` 文件。
-///
-/// 树形模式的产物没有统一的头部，vault 参数只能从其中任一个文件读——
-/// 同一个 vault 内这些参数本就一致，取哪个都一样。
-fn first_omy_in(root: &Path) -> Option<PathBuf> {
-    let rd = std::fs::read_dir(root).ok()?;
-    let mut dirs = Vec::new();
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            dirs.push(p);
-        } else if p.extension().is_some_and(|x| x == "omy") {
-            return Some(p);
-        }
-    }
-    // 当前层没有就往下找：根目录下可能只有子目录
-    dirs.into_iter().find_map(|d| first_omy_in(&d))
 }
 
 /// 实际执行。
@@ -682,7 +663,7 @@ mod tests {
         let item = encrypt_one(&root.join("src"), &out_dir, &[kek], &salt, params, &req, None)
             .expect("树形加密应当成功");
 
-        let found = first_omy_in(&PathBuf::from(&item.output))
+        let found = omy_core::tree::find_any_file(&PathBuf::from(&item.output))
             .expect("必须能从树里找到一个 .omy 文件，否则加密后无法自动解锁");
         let prefix = read_prefix(&found, 256).expect("找到的文件必须可读");
         let header = omy_core::file::peek_header(&prefix)
