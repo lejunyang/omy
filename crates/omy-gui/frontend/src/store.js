@@ -292,9 +292,9 @@ export const visibleEntries = computed(() => {
   const q = state.query.trim().toLowerCase();
   if (!q) return source;
   return source.filter((e) => {
-    // 锁定的加密文件没有可搜的名字，搜索时直接排除：
-    // 用磁盘文件名去匹配会泄露信息
-    if (e.is_encrypted && !e.unlocked) return false;
+    // 锁定的加密文件与加密目录都没有可搜的名字，搜索时直接排除：
+    // 用磁盘名去匹配等于拿 base32 密文当明文搜，还会泄露信息
+    if ((e.is_encrypted || e.is_encrypted_dir) && !e.unlocked) return false;
     const name = e.real_name || e.name;
     return name.toLowerCase().includes(q);
   });
@@ -309,16 +309,24 @@ export const currentCount = computed(() =>
   state.container ? containerEntries.value.length : state.entries.length,
 );
 
-/** 当前目录里加密文件的数量。容器内恒为 0：里面的东西已经解出来了。 */
+/** 当前目录里加密内容的数量。容器内恒为 0：里面的东西已经解出来了。
+ *
+ * 加密**目录**也要算：一个只含树形加密目录的文件夹否则会显示
+ * 「0 个加密文件」，而用户眼前明明有一个带锁的加密文件夹。
+ */
 export const encryptedCount = computed(() =>
-  state.container ? 0 : state.entries.filter((e) => e.is_encrypted).length,
+  state.container
+    ? 0
+    : state.entries.filter((e) => e.is_encrypted || e.is_encrypted_dir).length,
 );
 
-/** 其中还锁着的数量。 */
+/** 其中还锁着的数量。加密目录同样计入，理由见 `encryptedCount`。 */
 export const lockedCount = computed(() =>
   state.container
     ? 0
-    : state.entries.filter((e) => e.is_encrypted && !e.unlocked).length,
+    : state.entries.filter(
+        (e) => (e.is_encrypted || e.is_encrypted_dir) && !e.unlocked,
+      ).length,
 );
 
 /** 选中项里可加密的（排除已经是加密文件的）。
@@ -838,13 +846,22 @@ export async function tryUnlock(password) {
     const r = await api.unlockDirectory(state.cwd, password);
     state.credentials = r.credentials;
     await reload();
-    const opened = state.entries.filter((e) => e.is_encrypted && e.unlocked).length;
+    // 判据要同时算上加密文件与加密目录。
+    //
+    // 加密目录的 is_encrypted 故意是 false——那个字段的含义是「内容是
+    // 密文」，而目录没有内容，只有名字是密文。所以只按 is_encrypted 过滤
+    // 会漏掉它们：一个只含树形加密目录的文件夹，解锁成功后 opened 仍是 0，
+    // 被判成「密码不对」，用户输了正确密码却看到红字报错，而目录名其实
+    // 已经解出来了。
+    const opened = state.entries.filter(
+      (e) => (e.is_encrypted || e.is_encrypted_dir) && e.unlocked,
+    ).length;
     if (opened > 0) {
       setNotice(i18n.tn('notice.unlocked', opened));
     } else {
-      // 派生成功但一个文件也没解开 = 密码不对。
+      // 派生成功但一个都没解开 = 密码不对。
       // 这个区分很重要：KEK 派生几乎总是"成功"的，
-      // 真正的判据是有没有文件被解开
+      // 真正的判据是有没有东西被解开
       state.error = i18n.te('wrong_password');
     }
     return opened > 0;

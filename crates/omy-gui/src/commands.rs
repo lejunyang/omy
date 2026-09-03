@@ -191,10 +191,28 @@ pub fn vault_params_of(dir: String) -> CmdResult<Vec<VaultParams>> {
     let mut seen: Vec<VaultParams> = Vec::new();
     for e in entries.flatten() {
         let p = e.path();
-        if !p.is_file() {
-            continue;
-        }
-        let Ok(bytes) = read_prefix(&p, 4096) else {
+        // 树形加密的目录要往里取一个样本文件。
+        //
+        // 早先这里是 `if !p.is_file() { continue }`，于是站在密文树的
+        // **父目录**输密码会报 no_omy_file_found——「这个目录里没有加密
+        // 文件」，可用户明明看到一个带锁的加密文件夹就在眼前。而这恰好是
+        // 最常见的位置：刚加密完，站在原地看产物。
+        //
+        // 只对**看起来是密文目录**的做这件事，不对所有目录递归：
+        // 否则浏览一个有几万个文件的普通目录时，每次解锁都要深度遍历。
+        let sample = if p.is_dir() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !omy_core::dirname::looks_encrypted(&name) {
+                continue;
+            }
+            match omy_core::tree::find_any_file(&p) {
+                Some(s) => s,
+                None => continue,
+            }
+        } else {
+            p
+        };
+        let Ok(bytes) = read_prefix(&sample, 4096) else {
             continue;
         };
         let Ok(h) = omy_core::file::peek_header(&bytes) else {
