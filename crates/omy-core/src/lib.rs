@@ -74,6 +74,7 @@ pub mod source;
 pub mod unpack;
 pub mod dirname;
 pub mod tlv;
+pub mod tree;
 pub mod util;
 
 pub use container::{ContainerBuilder, ContainerEntry, ContainerIndex, EntryKind, EntryMeta};
