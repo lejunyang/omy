@@ -72,6 +72,7 @@ pub mod shard;
 pub mod slot;
 pub mod source;
 pub mod unpack;
+pub mod dirname;
 pub mod tlv;
 pub mod util;
 

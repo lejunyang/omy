@@ -151,6 +151,22 @@ impl Kek {
         Ok(Self(SecretKey::from_bytes(out)))
     }
 
+    /// 派生 vault 级的目录名加密密钥（树形模式，文档 05 §3.3）。
+    ///
+    /// `salt = vault_salt`，`info` 由调用方给出（见
+    /// [`crate::dirname::DirnameKey::derive`]）。
+    ///
+    /// # 为什么 salt 是 vault_salt 而不是 file_uuid
+    ///
+    /// 目录名不属于任何单个文件，没有 file_uuid 可用。用 vault_salt 的
+    /// 副作用是**目录结构的可见性绑定整个 vault**：能解开 vault 的任一
+    /// 密码都能看到完整目录树，无法按 slot 区分权限。这是树形模式的固有
+    /// 约束，UI 必须告知用户。
+    #[must_use]
+    pub fn derive_dirname_key(&self, vault_salt: &[u8; 16], info: &[u8]) -> SecretKey {
+        hkdf_expand(self.0.as_bytes(), vault_salt, info)
+    }
+
     /// 派生第 `slot_index` 个 key slot 的包裹密钥。
     ///
     /// `info = "omy/v1/slot" || u16le(slot_index)`，`salt = file_uuid`
