@@ -519,8 +519,12 @@ fn handle_original(src: &Path, mode: &str, failed: &mut Vec<(String, String)>) {
 ///
 /// 交给 trash crate 调各平台原生 API。它对文件和目录是同一个入口，
 /// 不需要像永久删除那样自己分流。
+///
+/// `pub(crate)`：右键菜单的删除也走这里。共用而不是各写一份——否则
+/// 「Android 没有回收站要明确报不支持、绝不降级为永久删除」这条只在
+/// 一处生效，另一处会静默删掉用户的文件。
 #[cfg(not(target_os = "android"))]
-fn move_to_trash(src: &Path) -> Result<(), &'static str> {
+pub(crate) fn move_to_trash(src: &Path) -> Result<(), &'static str> {
     trash::delete(src).map_err(|_| "trash_failed")
 }
 
@@ -530,7 +534,7 @@ fn move_to_trash(src: &Path) -> Result<(), &'static str> {
 /// 能后悔，静默改成删掉是数据丢失。原件留在原处，用户至少还能
 /// 自己决定怎么处理。
 #[cfg(target_os = "android")]
-fn move_to_trash(_src: &Path) -> Result<(), &'static str> {
+pub(crate) fn move_to_trash(_src: &Path) -> Result<(), &'static str> {
     Err("trash_not_supported")
 }
 
@@ -539,7 +543,9 @@ fn move_to_trash(_src: &Path) -> Result<(), &'static str> {
 /// 必须按类型分流：`remove_file` 对目录一律失败。而 GUI 支持把整个
 /// 文件夹打包成容器，加密文件夹后选「删除原件」走的正是这条路——
 /// 只调 `remove_file` 会让它静默失败，用户以为删了其实没删。
-fn delete_permanently(src: &Path) -> std::io::Result<()> {
+/// `pub(crate)`：右键菜单的「永久删除」也走这里，理由同
+/// [`move_to_trash`]——按类型分流这件事只该有一处实现。
+pub(crate) fn delete_permanently(src: &Path) -> std::io::Result<()> {
     if src.is_dir() {
         std::fs::remove_dir_all(src)
     } else {
