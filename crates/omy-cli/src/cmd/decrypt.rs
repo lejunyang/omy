@@ -310,6 +310,11 @@ fn extract_container(
         }
     }
 
+    // 元数据还原必须在此处——所有条目都已落盘之后。
+    // 新建目录项会更新父目录的 mtime，边写边设会被随后的写入冲掉，
+    // 症状是「文件时间对了、目录时间还是现在」，只在非空目录上出现
+    let meta_rep = omy_core::restore::restore_metadata(&root, idx);
+
     ctx.out.success(&format!(
         "已解开容器到 {}：{n_files} 个文件、{n_dirs} 个目录",
         root.display()
@@ -331,6 +336,7 @@ fn extract_container(
             ctx.out.info(&format!("  {s}"));
         }
     }
+    report_metadata(ctx, &meta_rep);
 
     Ok(json!({
         "container": true,
@@ -339,7 +345,84 @@ fn extract_container(
         "dirs": n_dirs,
         "adjusted_names": adjusted,
         "skipped": skipped,
+        "metadata": metadata_json(&meta_rep),
     }))
+}
+
+/// 展示元数据还原报告（文档 05 §4.4）。
+///
+/// 「平台不支持」和「尝试了但失败」分开报，因为对用户的含义不同：
+/// 前者换台机器解开就能拿到，后者是这次的问题、重试可能就好。
+/// 合并会让人要么以为文件坏了，要么放弃重试白丢元数据。
+fn report_metadata(ctx: &Ctx<'_>, rep: &omy_core::restore::RestoreReport) {
+    if !rep.unsupported.is_empty() {
+        ctx.out.warn("部分元数据未能还原（当前平台限制）：");
+        for (kind, n) in &rep.unsupported {
+            // 必须是 info 而不是 detail：detail 只在 -v 下显示，
+            // 而上一行的冒号已经承诺要列举。默认只看到标题的话，
+            // 用户想知道的「未能还原什么」得加 -v 重跑一次才拿到——
+            // 可这正是决策 N3 要求明确报告的那件事。
+            // 列举也不会刷屏：项数上限就四个
+            ctx.out
+                .info(&format!("  {n} 个条目的{}", meta_item_label(*kind)));
+        }
+        // 这句不能省。少了它，用户以为元数据已经丢了，
+        // 而实际上值一直在加密文件里，换个平台解开就能完整还原
+        ctx.out
+            .info("  完整元数据仍保存在加密文件中，在其他平台解开可还原更多项");
+    }
+    if !rep.failures.is_empty() {
+        ctx.out
+            .warn(&format!("{} 项元数据设置失败：", rep.failures.len()));
+        // 同样用 info：这是需要用户自己处理的问题（文件被占用、权限
+        // 不足），藏在 -v 后面等于没报
+        for f in rep.failures.iter().take(10) {
+            ctx.out
+                .info(&format!("  {} 的 {}：{}", f.path, f.item, f.reason));
+        }
+        // 被截断时必须说清还剩多少：只显示前 10 条而不提总数，
+        // 会让人以为问题就这么多
+        if rep.failures.len() > 10 {
+            ctx.out.info(&format!(
+                "  （还有 {} 项，用 --json 查看完整列表）",
+                rep.failures.len() - 10
+            ));
+        }
+    }
+}
+
+/// 不支持项的中文说明。
+///
+/// 不直接用 `code()`：那是给 JSON 与翻译键用的稳定标识，
+/// 直接显示给用户就成了「mode」「btime」这种看不懂的词。
+fn meta_item_label(kind: omy_core::restore::UnsupportedKind) -> &'static str {
+    use omy_core::restore::UnsupportedKind as U;
+    match kind {
+        U::Mode => "POSIX 权限位",
+        U::Btime => "创建时间",
+        U::Owner => "属主（uid/gid）",
+        U::Xattr => "扩展属性",
+    }
+}
+
+/// 元数据报告的 JSON 形态。
+///
+/// `unsupported` 用对象数组而不是把 code 直接当键：条目数是数据不是键名，
+/// 前者结构稳定、便于脚本遍历，后者每多一项就多一个字段。
+fn metadata_json(rep: &omy_core::restore::RestoreReport) -> serde_json::Value {
+    json!({
+        "mtime_restored": rep.mtime_restored,
+        "mode_restored": rep.mode_restored,
+        "unsupported": rep.unsupported.iter().map(|(k, n)| json!({
+            "item": k.code(),
+            "count": n,
+        })).collect::<Vec<_>>(),
+        "failures": rep.failures.iter().map(|f| json!({
+            "path": f.path,
+            "item": f.item,
+            "reason": f.reason,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// 安全拼接路径，拒绝任何逃出 root 的结果。
