@@ -82,6 +82,22 @@ impl TreeReport {
     }
 }
 
+/// 逐个文件的媒体附加信息回调。
+///
+/// 入参是该文件的**明文字节**与文件名，返回 `(缩略图, 媒体元信息, moov 副本)`，
+/// 不需要就返回三个 `None`。
+///
+/// # 为什么是回调而不是 core 自己做
+///
+/// 生成缩略图要靠 `omy-media`，而它是 **LGPL**，core 是主许可——
+/// core 依赖它会把许可传染到整个下游。回调把这件事留给调用方：
+/// CLI 和 GUI 本来就已经链接了 omy-media。
+///
+/// 回调在加密循环里**同步调用**，每个文件一次。实现里会起 ffprobe 子进程，
+/// 因此大目录会明显变慢；调用方若不需要就传 `None`，那样一个子进程都不会起。
+pub type MediaExtrasFn<'a> =
+    &'a mut dyn FnMut(&[u8], &str) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// 加密一棵目录树。
 ///
 /// `out_parent` 是加密后根目录的**父目录**；根目录名本身会被加密。
@@ -105,7 +121,27 @@ pub fn encrypt_tree(
     keks: &[Kek],
     vault_salt: &[u8; 16],
     opts: &EncryptOptions,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<TreeReport> {
+    encrypt_tree_with_media(root, out_parent, keks, vault_salt, opts, progress, None)
+}
+
+/// 与 [`encrypt_tree`] 相同，但为每个文件生成媒体附加信息。
+///
+/// 不带 `media` 的版本产出的树**没有缩略图**：列表页里这样的相册每一项都是
+/// 通用图标。回调语义见 [`MediaExtrasFn`]。
+///
+/// # Errors
+///
+/// 与 [`encrypt_tree`] 一致。
+pub fn encrypt_tree_with_media(
+    root: &Path,
+    out_parent: &Path,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
     mut progress: Option<ProgressFn<'_>>,
+    mut media: Option<MediaExtrasFn<'_>>,
 ) -> Result<TreeReport> {
     if !root.is_dir() {
         return Err(Error::Io(std::io::Error::new(
@@ -177,6 +213,17 @@ pub fn encrypt_tree(
             // 文件名不需要 base32 那套（有 TLV 可用），用哈希更短
             let mut fopts = opts.clone();
             fopts.filename = Some(name.clone());
+            // 媒体附加信息逐文件生成。
+            //
+            // 必须在这里覆盖，不能只依赖 `opts`：调用方传进来的那份是整棵树
+            // 共用的，里面的 thumbnail 之类要么为空，要么是上一个文件的——
+            // 后者会把 A 的缩略图写进 B。
+            if let Some(cb) = media.as_deref_mut() {
+                let (thumb, meta, moov) = cb(&data, name);
+                fopts.thumbnail = thumb;
+                fopts.media_meta = meta;
+                fopts.moov_cache = moov;
+            }
             let rnd = RandomMaterial::generate();
             let enc = crate::file::encrypt(&data, keks, vault_salt, &fopts, &rnd)?;
 
@@ -1011,6 +1058,95 @@ mod tests {
 
     fn kek_of(pw: &[u8], salt: &[u8; 16]) -> Kek {
         Kek::from_password(pw, salt, Argon2Params::TEST_WEAK).unwrap()
+    }
+
+    #[test]
+    fn media_extras_are_written_per_file_not_shared() {
+        // 回调返回的缩略图必须写进**对应那个文件**。
+        //
+        // 不这样会怎样：早先树形模式只设了 filename，其余字段沿用调用方
+        // 传进来的那份 opts —— 那是整棵树共用的一份，于是要么全为空
+        // （谁都没有缩略图），要么写进了上一个文件的缩略图（A 的图出现在
+        // B 上）。后者尤其难查：界面能显示图，只是显示错了。
+        let root = std::env::temp_dir().join("omy-media-cb");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("one.bin"), b"1111").unwrap();
+        std::fs::write(src.join("two.bin"), b"2222").unwrap();
+
+        let salt = [9u8; 16];
+        let kek = kek_of(b"pw", &salt);
+        let out = root.join("enc");
+        std::fs::create_dir_all(&out).unwrap();
+        let opts = crate::file::EncryptOptions::default();
+
+        // 每个文件给一份**内容不同**的假缩略图，内容由文件名决定。
+        // 若实现把它们串了，下面按名字取回时就会对不上。
+        let mut seen = Vec::new();
+        let mut cb = |_data: &[u8], name: &str| {
+            seen.push(name.to_owned());
+            let thumb = format!("thumb-of-{name}").into_bytes();
+            let meta = format!("{{\"name\":\"{name}\"}}").into_bytes();
+            (Some(thumb), Some(meta), None)
+        };
+        let rep = encrypt_tree_with_media(
+            &src,
+            &out,
+            &[kek.duplicate()],
+            &salt,
+            &opts,
+            None,
+            Some(&mut cb),
+        )
+        .unwrap();
+        assert_eq!(rep.files, 2);
+        seen.sort();
+        assert_eq!(seen, vec!["one.bin", "two.bin"], "回调应当每个文件各调一次");
+
+        // 逐个解开，核对缩略图与文件名是否配套
+        let mut checked = 0;
+        for p in all_files(&rep.root) {
+            let data = std::fs::read(&p).unwrap();
+            let opened = crate::file::open(&data, &[kek.duplicate()]).unwrap();
+            let name = opened.filename().unwrap();
+            let thumb = opened.thumbnail().unwrap();
+            assert_eq!(
+                thumb,
+                format!("thumb-of-{name}").into_bytes(),
+                "{name} 拿到的是别人的缩略图"
+            );
+            let meta = opened.media_meta().unwrap();
+            assert_eq!(meta, format!("{{\"name\":\"{name}\"}}").into_bytes());
+            checked += 1;
+        }
+        assert_eq!(checked, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn encrypt_tree_without_media_writes_no_thumbnail() {
+        // 不传回调时不该凭空造出缩略图。这条守住「回调是唯一来源」，
+        // 顺带保证不传回调的调用方（老代码）行为不变。
+        let root = std::env::temp_dir().join("omy-media-none");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.bin"), b"AAAA").unwrap();
+
+        let salt = [11u8; 16];
+        let kek = kek_of(b"pw", &salt);
+        let out = root.join("enc");
+        std::fs::create_dir_all(&out).unwrap();
+        let opts = crate::file::EncryptOptions::default();
+        let rep = encrypt_tree(&src, &out, &[kek.duplicate()], &salt, &opts, None).unwrap();
+
+        for p in all_files(&rep.root) {
+            let data = std::fs::read(&p).unwrap();
+            let opened = crate::file::open(&data, &[kek.duplicate()]).unwrap();
+            assert!(!opened.has_thumbnail(), "没传回调却有缩略图");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

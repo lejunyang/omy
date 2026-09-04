@@ -533,13 +533,29 @@ fn encrypt_as_tree(
         ctx.out.trace(&format!("  文件 {} （{}）", name, human_bytes(size)));
     };
 
-    let rep = omy_core::tree::encrypt_tree(
+    // 逐个文件生成媒体附加信息。选项由 `a` 现算，而不是从外面多传一个
+    // 参数进来——那会让本函数的参数数量超出 clippy 上限，而加 allow
+    // 等于把「参数太多」这个真实信号关掉。
+    let prep_opts = build_prepare_options(a)?;
+    // 警告只在 trace 级别输出：一棵树里非媒体文件是多数，逐个报
+    // 「不是媒体」会把有用输出冲掉；而真正的探测故障仍然要能查到，
+    // 所以不是直接丢弃。
+    let mut on_media = |data: &[u8], name: &str| {
+        let p = omy_media::prepare(data, &prep_opts);
+        for w in &p.warnings {
+            ctx.out.trace(&format!("  媒体 {name}：{w}"));
+        }
+        (p.thumbnail, p.media_meta, p.moov_cache)
+    };
+
+    let rep = omy_core::tree::encrypt_tree_with_media(
         root,
         &out_parent,
         keks,
         vault_salt,
         opts,
         Some(&mut on_file),
+        Some(&mut on_media),
     )
     .with_context(|| format!("树形加密 {} 失败", root.display()))?;
 
