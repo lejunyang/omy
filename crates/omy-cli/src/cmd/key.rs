@@ -117,6 +117,20 @@ impl Op {
         matches!(self, Self::Add | Self::Change | Self::Reencrypt)
     }
 
+    /// 本次要不要去读新密码。
+    ///
+    /// 单文件与目录两条路径都用它。之前各写各的，目录那条漏了「显式给了
+    /// 新密码来源」这一支，于是 `key reencrypt <目录> --new-password-file`
+    /// 的新密码被**静默忽略**：命令报成功，密码其实没换。
+    ///
+    /// reencrypt 只在用户显式给了来源时才读，不主动追问——轮换本身不要求
+    /// 改密码，追问会让「只想换文件密钥」的用户以为必须换。
+    fn wants_new_password(self, a: &SlotArgs) -> bool {
+        self.needs_new_password()
+            || (self.accepts_new_password()
+                && (a.new_password_file.is_some() || a.new_password_env.is_some()))
+    }
+
     /// 是否重写载荷。
     ///
     /// 决定两件事：要不要警告耗时、输出里的 `payload_rewritten` 取值。
@@ -197,15 +211,8 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         );
     }
 
-    // 新密码要确认两遍：打错了会得到一个自己也打不开的文件。
-    //
-    // reencrypt 只在用户**显式给了**新密码来源时才读，不主动追问：
-    // 轮换本身不要求改密码，交互式追问会让「只想换文件密钥」的用户
-    // 以为必须换密码。
-    let want_new = op.needs_new_password()
-        || (op.accepts_new_password()
-            && (a.new_password_file.is_some() || a.new_password_env.is_some()));
-    let new_kek = if want_new {
+    // 新密码要确认两遍：打错了会得到一个自己也打不开的文件
+    let new_kek = if op.wants_new_password(a) {
         let nsrc = PasswordSource {
             env: a.new_password_env.clone(),
             file: a.new_password_file.clone(),
@@ -367,19 +374,10 @@ fn read_prefix(p: &std::path::Path, n: usize) -> Result<Vec<u8>> {
 /// 文件取——同一个 vault 内它们本就一致（与 `decrypt` 的树形分支同一套
 /// 做法）。取到之后 Argon2 只派生一次，整棵树复用。
 ///
-/// `reencrypt` 不支持：它要重写每个文件的全部载荷，一棵几十 GB 的树
-/// 中途失败会留下一半新一半旧、且两个密码各开一半的状态。单文件上这个
-/// 风险是有界的，整棵树上不是。宁可明确拒绝，也不要提供一个大概率
-/// 半途而废的操作。
+/// `reencrypt` 会把每个文件的载荷读一遍、用新 FEK 写一遍，耗时与总数据量
+/// 成正比，所以带进度输出。中途失败不会毁数据：每个文件各自原子写回，
+/// 任一时刻每个文件要么是完整的旧密文、要么是完整的新密文。
 fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
-    if op.rewrites_payload() {
-        bail!(
-            "key {} 暂不支持目录：重新加密要重写整棵树的载荷，\n\
-             中途失败会留下一半文件用新密钥、一半用旧密钥的状态。\n\
-             如果确实需要，请先 decrypt 再重新 encrypt。",
-            op.name()
-        );
-    }
     // 树只能有一个密码，所以 add / remove 在这里没有意义。
     //
     // 目录名由**第一个** KEK 派生（encrypt_tree / decrypt_tree 都只认
@@ -431,7 +429,7 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         );
     }
 
-    let new_kek = if op.needs_new_password() {
+    let new_kek = if op.wants_new_password(a) {
         let nsrc = PasswordSource {
             env: a.new_password_env.clone(),
             file: a.new_password_file.clone(),
@@ -446,34 +444,69 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         None
     };
 
+    // 在 new_kek 被移进 keep 之前先记下来：轮换可以不换密码，
+    // 提示的措辞和要不要预告目录改名都取决于这一点
+    let changing_password = new_kek.is_some();
     let keep: Vec<Kek> = match op {
         Op::Change => match new_kek {
             Some(k) => vec![k],
             None => bail!("change 需要一个新密码"),
         },
+        // 轮换可以不换密码：「让旧副本作废」是它的正当用法之一
+        Op::Reencrypt => match new_kek {
+            Some(k) => vec![k],
+            None => vec![old_kek.duplicate()],
+        },
         // 上面已经逐一拒绝。不用 unreachable!：omy-cli 虽然没有 omy-gui
         // 那么严的禁用规则，但一个能被将来的改动触发的 panic 不值得留
-        Op::Add | Op::Remove | Op::Reencrypt => {
+        Op::Add | Op::Remove => {
             bail!("key {} 不支持目录", op.name())
         }
     };
 
-    ctx.out.warn("修改后，原密码将无法再打开这棵树里的任何文件。");
-    // 目录名会变这件事必须提前说：用户回到文件管理器发现文件夹「不见了」
-    // 是很吓人的，而它只是改了名
-    ctx.out
-        .warn("目录名由密码派生，换密码后整棵树的目录名都会变（内容不变）。");
+    let rotate = op.rewrites_payload();
+        if rotate {
+        ctx.out
+            .warn("重新加密会换掉每个文件的密钥并重写全部载荷，耗时与总数据量成正比。");
+        ctx.out.warn(
+            "之后这棵树与旧密钥彻底无关。但已经流出去的旧副本是独立的密文，\
+             本操作对它无能为力——它仍可用旧密码打开。",
+        );
+    }
+    if changing_password {
+        ctx.out.warn("修改后，原密码将无法再打开这棵树里的任何文件。");
+        // 目录名会变这件事必须提前说：用户回到文件管理器发现文件夹
+        // 「不见了」是很吓人的，而它只是改了名
+        ctx.out
+            .warn("目录名由密码派生，换密码后整棵树的目录名都会变（内容不变）。");
+    } else {
+        // 不换密码时目录名不变，得说清楚，否则用户会怀疑操作没生效
+        ctx.out.warn("密码不变，所以目录名保持原样，只有文件内容被重新加密。");
+    }
     if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
         ctx.out.info(t("msg.cancelled"));
         return Ok(());
     }
 
-    let rep = omy_core::tree::rekey_tree(
+    // 只有轮换才显示进度：改密码是秒级的，刷一堆进度行反而是噪音
+    let mut last = 0usize;
+    let mut tick = |name: &str, idx: usize, total: usize, _done: u64, _bytes: u64| {
+        // 按文件节流。不节流的话每个文件会刷上百行（字节进度每变一次
+        // 就来一次），把终端刷满，真正有用的信息反而被顶走
+        if idx == last {
+            return;
+        }
+        last = idx;
+        ctx.out.detail(&format!("[{idx}/{total}] {name}"));
+    };
+    let rep = omy_core::tree::rekey_tree_with_progress(
         &a.file,
         &[old_kek],
         &keep,
         &h.vault_salt,
         h.cipher_id,
+        rotate,
+        if rotate { Some(&mut tick) } else { None },
     )?;
 
     // 部分失败要显式报出来，并且退出码不能是 0——用户以为全改完了，
@@ -490,7 +523,7 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         );
     }
 
-    let human = format!(
+    let mut human = format!(
         "{} 完成\n目录        {}\n改写文件    {}\n重命名目录  {}\n新路径      {}",
         op.name(),
         a.file.display(),
@@ -498,6 +531,9 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         rep.dirs_renamed,
         rep.root.display()
     );
+    if rep.payload_rewritten {
+        human.push_str(&format!("\n重写明文    {} 字节", rep.bytes_rewritten));
+    }
     ctx.out.result(
         &human,
         &json!({
@@ -507,7 +543,8 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
             "files_changed": rep.changed,
             "dirs_renamed": rep.dirs_renamed,
             "new_root": rep.root.display().to_string(),
-            "payload_rewritten": false,
+            "payload_rewritten": rep.payload_rewritten,
+            "bytes_rewritten": rep.bytes_rewritten,
         }),
     );
     Ok(())
