@@ -35,6 +35,8 @@ const props = defineProps({
   error: { type: String, default: '' },
   /** 目标是树形加密的目录（整棵树共用一个密码）。 */
   isTree: { type: Boolean, default: false },
+  /** 部分失败时，具体是哪些文件没改成。 */
+  errorFiles: { type: Array, default: () => [] },
 });
 
 const emit = defineEmits(['cancel', 'submit']);
@@ -141,7 +143,14 @@ function submit() {
       <div v-if="!isTree" class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
       <div v-else class="hint">{{ i18n.t('keymgmt.tree_single_password') }}</div>
 
-      <div v-if="error" class="errbox" role="alert">{{ error }}</div>
+      <div v-if="error" class="errbox" role="alert">
+        {{ error }}
+        <!-- 逐条列出没改成的文件。只说「部分文件失败」用户无从下手：
+             不知道该处理什么，也判断不了损失有多大 -->
+        <ul v-if="errorFiles.length" class="failed">
+          <li v-for="f in errorFiles" :key="f">{{ f }}</li>
+        </ul>
+      </div>
 
       <div class="hr"></div>
 

@@ -56,6 +56,13 @@ export const state = reactive({
   progress: null,
   /** 错误文案。 */
   error: '',
+  /** 错误的逐条明细（例如部分失败时是哪些文件）。
+   *
+   * 必须在这里声明：Vue 的响应式只跟踪初始化时就存在的属性，事后
+   * `state.x = []` 赋上去的字段不会触发重渲染——界面永远是空的，而
+   * console 里看 state 又确实有值，极难排查。
+   */
+  errorDetails: [],
   /** 提示文案（成功类）。 */
   notice: '',
   /** 协议前缀，由后端按平台下发。 */
@@ -1034,6 +1041,8 @@ export async function manageKey(req) {
   }
 
   try {
+    // 上一次的失败清单必须清掉，否则这次成功了，界面上还挂着上次的红字
+    state.errorDetails = [];
     const r = await api.manageKey(req);
     state.credentials = await api.credentialCount().catch(() => state.credentials);
     // 树形改密码后目录名会变（它由密码派生）。正在这棵树里面浏览时，
@@ -1052,7 +1061,18 @@ export async function manageKey(req) {
     );
     return r;
   } catch (e) {
+    // 部分失败要说清是哪些文件。i18n.te() 只按码取文案、不做插值，
+    // 后端带过来的清单会被丢掉——只剩一句「部分文件改写失败」，用户既
+    // 不知道该处理什么，也无法判断损失多大
+    const p = e && typeof e === 'object' ? e.params : null;
+    const files = p && Array.isArray(p.files) ? p.files : [];
+    // 刷新必须在设置错误**之前**：reload -> navigate 里有
+    // `state.error = ''`，反过来会把刚设好的错误和清单一起冲掉，界面上
+    // 对话框开着却什么都不显示，看起来像「什么都没发生」。
+    // 与「选中项被 reload 清掉」是同一类顺序缺陷
+    if (files.length > 0) await reload();
     state.error = i18n.te(api.errCode(e));
+    state.errorDetails = files;
     return null;
   } finally {
     state.busy = false;

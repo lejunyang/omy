@@ -396,7 +396,27 @@ fn run_tree(
     // 带上**是哪些**文件：只给一个「有文件没改成」的提示，用户既不知道
     // 该去处理什么，也无法判断损失有多大
     if !rep.is_complete() {
-        return Err(CmdError::code("tree_partial"));
+        let names: Vec<String> = rep
+            .failed
+            .iter()
+            .map(|(p, err)| {
+                // 只给文件名不给全路径：路径里含密文目录名，又长又无意义。
+                // 名字本身就是密文，用户认不出来，但足以对上列表里的条目
+                let n = p.file_name().map_or_else(
+                    || p.to_string_lossy().into_owned(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                format!("{n}: {err}")
+            })
+            .collect();
+        return Err(CmdError::with(
+            "tree_partial",
+            serde_json::json!({
+                "changed": rep.changed,
+                "failed": rep.failed.len(),
+                "files": names,
+            }),
+        ));
     }
 
     if changing_password {

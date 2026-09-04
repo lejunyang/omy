@@ -1391,6 +1391,23 @@ input {
 
 /* 比 .note 更强的警示：.note 是"顺便说一句"，这个是"你可能理解错了"。
    用 --danger 而不是 --warn，因为它纠正的是一个安全上的错觉 */
+/* 部分失败时逐条列出没改成的文件。
+   限高滚动：一棵大树可能有上百个文件失败，全列出来会把对话框撑到屏幕外，
+   连关闭按钮都够不着 */
+.failed {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 密文文件名很长且不含空格，不强制换行会把对话框横向撑开 */
+.failed li {
+  word-break: break-all;
+}
+
 .warnbox {
   font-size: 11.5px;
   line-height: 1.6;

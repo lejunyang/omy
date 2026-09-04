@@ -77,6 +77,7 @@ const showRestore = ref(false);
 const keyTarget = ref(null);
 /** 密码管理的错误单独存，与解锁框的 error 分开。 */
 const keyError = ref('');
+const keyErrorFiles = ref([]);
 const showUnlock = ref(false);
 const showDevices = ref(false);
 const unlockError = ref('');
@@ -235,6 +236,9 @@ async function onKeySubmit(req) {
     keyError.value = '';
   } else {
     keyError.value = state.error;
+    // 部分失败时后端会带上是哪些文件。挂在对话框上而不是底部提示条：
+    // 提示条 4 秒后自动消失，用户还没读完就没了
+    keyErrorFiles.value = state.errorDetails;
     // 错误已经在对话框里显示，不要再占用底部提示条重复一遍
     state.error = '';
   }
@@ -453,6 +457,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-if="keyTarget"
     :entry="keyTarget"
     :is-tree="!!keyTarget.is_encrypted_dir"
+        :error-files="keyErrorFiles"
     :busy="state.busy"
     :error="keyError"
     @cancel="keyTarget = null"
