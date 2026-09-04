@@ -650,6 +650,28 @@ fn serve_file(
     b.body(data).unwrap_or_else(|_| Response::new(Vec::new()))
 }
 
+/// 按魔数判断图片的 MIME 类型。
+///
+/// 缩略图的格式由加密时的 `thumb_format` 决定（默认 WebP，也可能是 JPEG），
+/// 而这个选择**没有记录在 TLV 里**——所以读取侧只能看字节。
+///
+/// 认不出来时返回 `application/octet-stream` 而不是猜一个：猜错会让对端
+/// 按错误格式解码得到裂图，而 octet-stream 至少能看出是类型问题。
+fn sniff_image_mime(b: &[u8]) -> &'static str {
+    // WebP 是 "RIFF" + 4 字节长度 + "WEBP"，两段都要看：
+    // 只看 RIFF 会把 wav、avi 也认成图片。
+    if b.starts_with(b"RIFF") && b.get(8..12) == Some(&b"WEBP"[..]) {
+        return "image/webp";
+    }
+    if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "image/jpeg";
+    }
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return "image/png";
+    }
+    "application/octet-stream"
+}
+
 /// 返回解密后的缩略图。
 ///
 /// 缩略图存在元信息区的 TLV 里，不在载荷中——所以取它
@@ -671,8 +693,15 @@ fn serve_thumb(state: &Arc<AppState>, entry: &crate::state::FileEntry) -> Respon
     with_common_headers(
         Response::builder()
             .status(StatusCode::OK)
-            // 缩略图统一是 JPEG（由 omy-media 生成时固定）
-            .header(header::CONTENT_TYPE, "image/jpeg")
+            // 按真实字节判断类型，不能写死。
+            //
+            // omy-media 的默认 thumb_format 是 **WebP**（同等质量体积更小），
+            // 这里原先硬编码 image/jpeg，与实际内容不符。声明错的 MIME
+            // 属于「大部分情况下能用」的那类缺陷：WebView 通常会嗅探真实
+            // 格式照样显示，于是本地怎么点都正常；一旦遇到严格按
+            // Content-Type 解码的一方（部分远端浏览器、缓存代理），
+            // 图就变成裂图，而那时很难想到是 MIME 写错了。
+            .header(header::CONTENT_TYPE, sniff_image_mime(&bytes))
             .header(header::CONTENT_LENGTH, bytes.len().to_string()),
     )
     .body(bytes)
@@ -823,7 +852,9 @@ fn serve_remote_thumb(state: &Arc<AppState>, remote: &Arc<RemoteSession>, id: &s
     with_common_headers(
         Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "image/jpeg")
+            // 与本地 /thumb 同一个理由：按真实字节判断，不能写死。
+            // 远端这条路径更要紧——对端可能是任意浏览器，不一定会做嗅探。
+            .header(header::CONTENT_TYPE, sniff_image_mime(&bytes))
             .header(header::CONTENT_LENGTH, bytes.len().to_string()),
     )
     .body(bytes)
@@ -850,6 +881,43 @@ fn open_remote(state: &Arc<AppState>, f: &crate::remote::RemoteFile) -> Option<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumb_mime_follows_actual_bytes() {
+        // 默认缩略图是 WebP。早先这里写死 image/jpeg，本地 WebView 会
+        // 自己嗅探真实格式照样显示，所以怎么点都正常；只有严格按
+        // Content-Type 解码的一方（部分远端浏览器、缓存代理）才会裂图。
+        let webp = {
+            let mut v = b"RIFF".to_vec();
+            v.extend_from_slice(&1234u32.to_le_bytes());
+            v.extend_from_slice(b"WEBPVP8 ");
+            v
+        };
+        assert_eq!(sniff_image_mime(&webp), "image/webp");
+        assert_eq!(sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]), "image/jpeg");
+        assert_eq!(
+            sniff_image_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A]),
+            "image/png"
+        );
+
+        // RIFF 但不是 WebP：wav 也以 RIFF 开头。只看前四字节会把音频
+        // 当成图片，于是给出 image/webp 这种明显错误的类型。
+        let wav = {
+            let mut v = b"RIFF".to_vec();
+            v.extend_from_slice(&999u32.to_le_bytes());
+            v.extend_from_slice(b"WAVEfmt ");
+            v
+        };
+        assert_eq!(
+            sniff_image_mime(&wav),
+            "application/octet-stream",
+            "RIFF 容器不等于 WebP"
+        );
+
+        // 太短的输入不能 panic —— omy-gui 禁用切片索引正是为了这个
+        assert_eq!(sniff_image_mime(&[]), "application/octet-stream");
+        assert_eq!(sniff_image_mime(b"RIFF"), "application/octet-stream");
+    }
 
     #[test]
     fn target_parsing() {
