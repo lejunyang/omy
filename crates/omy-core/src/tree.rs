@@ -407,6 +407,10 @@ pub struct RekeyReport {
     /// （被别的程序占用、权限不对、单个文件损坏），用户需要知道**是哪些**
     /// 才能去处理，而其余文件已经改好了。
     pub failed: Vec<(PathBuf, String)>,
+    /// 是否换掉了文件密钥（轮换）。
+    pub payload_rewritten: bool,
+    /// 轮换时重写的明文总字节数。非轮换恒为 0。
+    pub bytes_rewritten: u64,
 }
 
 impl RekeyReport {
@@ -476,6 +480,46 @@ pub fn rekey_tree(
     vault_salt: &[u8; 16],
     cipher: CipherId,
 ) -> Result<RekeyReport> {
+    rekey_tree_with_progress(root, unlock, keep, vault_salt, cipher, false, None)
+}
+
+/// 进度回调：`(当前文件名, 第几个, 共几个, 该文件已处理字节, 该文件总字节)`。
+///
+/// 带上文件内的字节进度而不只是「第 i / n 个」：轮换一个 4 GB 的视频要几十
+/// 秒，只报文件序号的话进度条会长时间停在同一格，用户无从判断是在跑还是
+/// 卡死了。改密码时字节进度恒为 (0, 0)，调用方据此只显示文件序号即可。
+pub type RekeyProgressFn<'a> = &'a mut dyn FnMut(&str, usize, usize, u64, u64);
+
+/// 同 [`rekey_tree`]，另外支持轮换文件密钥与进度上报。
+///
+/// # `rotate` 的代价
+///
+/// `false` 时只重建每个文件 384 字节的 slot 区，一棵几万文件的树也是秒级。
+/// `true` 时要把每个文件的载荷完整读一遍、用新 FEK 写一遍，耗时与总数据量
+/// 成正比——几十 GB 的树要跑很久。
+///
+/// # 为什么轮换值得做
+///
+/// 改密码只换外层包裹，FEK 没变：**攻击者手里若有旧文件副本，仍能用旧密码
+/// 打开那个副本**。只有换掉 FEK 并重写载荷，才能让旧密码与这份数据彻底
+/// 无关（已经流出去的副本仍是独立密文，本操作对它无能为力——它永远可以
+/// 被旧密码打开，这一点必须让用户知道）。
+///
+/// # 中途失败不会毁数据
+///
+/// 每个文件各自 `write_atomic`，所以任一时刻每个文件要么是完整的旧密文、
+/// 要么是完整的新密文，不存在写坏一半的文件。若同时换了密码，部分失败会
+/// 留下「一半新密码、一半旧密码」——报告里如实列出是哪些，两个密码都提供
+/// 就能重跑补齐。
+pub fn rekey_tree_with_progress(
+    root: &Path,
+    unlock: &[Kek],
+    keep: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+    rotate: bool,
+    mut progress: Option<RekeyProgressFn<'_>>,
+) -> Result<RekeyReport> {
     if keep.is_empty() {
         return Err(Error::MalformedHeader {
             reason: "refusing to leave files with zero key slots; they could never be opened again",
@@ -500,8 +544,22 @@ pub fn rekey_tree(
     // 全部目录项
     let dirname_changed = !same_dirname_key(&old_dkey, &new_dkey, cipher);
 
-    let mut rep = RekeyReport::default();
-    rekey_into(root, unlock, keep, &old_dkey, &new_dkey, cipher, dirname_changed, &mut rep);
+    let mut rep = RekeyReport { payload_rewritten: rotate, ..RekeyReport::default() };
+    // 只有轮换才值得先数一遍：改密码是秒级的，为了显示「第 i / n 个」
+    // 多遍历一次目录反而占了操作本身可观的比例
+    let total = if rotate { count_files(root) } else { 0 };
+    let mut ctx = RekeyCtx {
+        unlock,
+        keep,
+        old_dkey: &old_dkey,
+        new_dkey: &new_dkey,
+        cipher,
+        dirname_changed,
+        rotate,
+        total,
+        done: 0,
+    };
+    rekey_into(root, &mut ctx, &mut progress, &mut rep);
 
     // 根目录自己的名字最后改：它一改，调用方手里的 root 路径就失效了。
     // 新路径通过 RekeyReport::root 返回
@@ -577,15 +635,28 @@ fn find_renamed(orig: &Path, new_dkey: &DirnameKey, cipher: CipherId) -> Option<
 ///
 /// 先递归进子目录处理完，回来再重命名它。反过来做的话，重命名之后手里的
 /// 路径就失效了，后续遍历会找不到文件。
-#[expect(clippy::too_many_arguments, reason = "递归函数，拆成结构体反而更难读")]
-fn rekey_into(
-    dir: &Path,
-    unlock: &[Kek],
-    keep: &[Kek],
-    old_dkey: &DirnameKey,
-    new_dkey: &DirnameKey,
+/// 遍历时共享的那一组参数。
+///
+/// 打成一个结构体而不是继续加形参：递归函数已经有 8 个参数了，再加轮换
+/// 开关、文件总数和进度回调会到 11 个，调用点根本读不出谁是谁。
+struct RekeyCtx<'a> {
+    unlock: &'a [Kek],
+    keep: &'a [Kek],
+    old_dkey: &'a DirnameKey,
+    new_dkey: &'a DirnameKey,
     cipher: CipherId,
     dirname_changed: bool,
+    rotate: bool,
+    /// 待处理的密文文件总数，用于「第 i / n 个」。
+    total: usize,
+    /// 已处理到第几个。
+    done: usize,
+}
+
+fn rekey_into(
+    dir: &Path,
+    ctx: &mut RekeyCtx<'_>,
+    progress: &mut Option<RekeyProgressFn<'_>>,
     rep: &mut RekeyReport,
 ) {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -604,24 +675,59 @@ fn rekey_into(
         if !p.extension().is_some_and(|x| x == "omy") {
             continue;
         }
-        match rekey_one(&p, unlock, keep) {
-            Ok(()) => rep.changed = rep.changed.saturating_add(1),
+        ctx.done = ctx.done.saturating_add(1);
+        let idx = ctx.done;
+        let total = ctx.total;
+        // 磁盘名而不是解出来的原名：这一步还没解密，为了显示一个名字去解
+        // 整个文件头没有道理，何况用户在列表里看到的本来也是这个
+        let shown = p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let mut on_bytes = |done: u64, bytes_total: u64| {
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(&shown, idx, total, done, bytes_total);
+            }
+        };
+        match rekey_one(&p, ctx.unlock, ctx.keep, ctx.rotate, &mut on_bytes) {
+            Ok(written) => {
+                rep.changed = rep.changed.saturating_add(1);
+                rep.bytes_rewritten = rep.bytes_rewritten.saturating_add(written);
+            }
             Err(err) => rep.failed.push((p, err)),
         }
     }
     // 自底向上：先把子目录内部处理完，再改它自己的名字
     for sub in subdirs {
-        rekey_into(&sub, unlock, keep, old_dkey, new_dkey, cipher, dirname_changed, rep);
-        if !dirname_changed {
+        rekey_into(&sub, ctx, progress, rep);
+        if !ctx.dirname_changed {
             continue;
         }
-        match rename_dir(&sub, old_dkey, new_dkey, cipher) {
+        match rename_dir(&sub, ctx.old_dkey, ctx.new_dkey, ctx.cipher) {
             Ok(true) => rep.dirs_renamed = rep.dirs_renamed.saturating_add(1),
             // false = 名字本来就解不开（不是我们加密的目录），跳过不算失败
             Ok(false) => {}
             Err(err) => rep.failed.push((sub, err)),
         }
     }
+}
+
+/// 数一棵树里有多少个密文文件。
+///
+/// 轮换前先数一遍才能显示「第 i / n 个」。多走一次目录遍历的代价远小于
+/// 轮换本身（那要把每个文件的载荷读写一遍），而没有总数的进度条只能转圈，
+/// 用户无从判断还要等多久。
+fn count_files(dir: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut n: usize = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            n = n.saturating_add(count_files(&p));
+        } else if p.extension().is_some_and(|x| x == "omy") {
+            n = n.saturating_add(1);
+        }
+    }
+    n
 }
 
 /// 用新密钥重新加密一个目录的名字。
@@ -672,21 +778,62 @@ fn rename_dir(
 }
 
 /// 改写单个文件。错误转成字符串，好让调用方逐个展示。
-fn rekey_one(path: &Path, unlock: &[Kek], keep: &[Kek]) -> core::result::Result<(), String> {
+fn rekey_one(
+    path: &Path,
+    unlock: &[Kek],
+    keep: &[Kek],
+    rotate: bool,
+    on_bytes: &mut dyn FnMut(u64, u64),
+) -> core::result::Result<u64, String> {
     let data = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
-    let out = crate::keyslot::rewrite_slots(&data, unlock, keep).map_err(|e| e.to_string())?;
+
+    // 两条路径只差这一步：改密码只重建 384 字节的 slot 区，轮换要把载荷
+    // 读一遍再写一遍。前后的检查（自证可打开、原子写回）完全共用——
+    // 分成两个函数的话，将来加一项检查就必然漏掉一边
+    let (bytes, written) = if rotate {
+        // 读与写各占一半：把两个阶段拼成一条 0→100，用户看到的是一条
+        // 匀速推进的进度，而不是「跑到 100% 又归零重来一遍」
+        //
+        // 走 RefCell 是因为 rotate_fek_with_progress 要两个独立的
+        // `&mut dyn FnMut`，而它们都得往同一个回调里写——借用检查器不接受
+        // 两个闭包同时可变借用。运行期两者其实不重叠（解密跑完才轮到加密）
+        let sink = core::cell::RefCell::new(on_bytes);
+        let mut dec = |done: u64, total: u64| {
+            if let Ok(mut f) = sink.try_borrow_mut() {
+                f(done, total.saturating_mul(2));
+            }
+        };
+        let mut enc = |done: u64, total: u64| {
+            if let Ok(mut f) = sink.try_borrow_mut() {
+                f(total.saturating_add(done), total.saturating_mul(2));
+            }
+        };
+        let out = crate::reencrypt::rotate_fek_with_progress(
+            &data,
+            unlock,
+            keep,
+            &crate::file::RandomMaterial::generate(),
+            Some(&mut dec),
+            Some(&mut enc),
+        )
+        .map_err(|e| e.to_string())?;
+        (out.bytes, out.plaintext_size)
+    } else {
+        let out = crate::keyslot::rewrite_slots(&data, unlock, keep).map_err(|e| e.to_string())?;
+        (out.bytes, 0)
+    };
 
     // 写回前自证每个保留密码都能打开新字节。逐个验而不是只验第一个：
     // add 最容易犯的错是新密码能开、原密码被挤掉，只验一个正好漏掉。
     //
     // 顺序不能反——先覆盖再发现打不开，用户就同时失去了文件和访问权
     for k in keep {
-        crate::file::open(&out.bytes, &[k.duplicate()])
+        crate::file::open(&bytes, &[k.duplicate()])
             .map_err(|_| String::from("rewrite verify failed"))?;
     }
 
-    crate::fsatomic::write_atomic(path, &out.bytes).map_err(|e| format!("write: {e}"))?;
-    Ok(())
+    crate::fsatomic::write_atomic(path, &bytes).map_err(|e| format!("write: {e}"))?;
+    Ok(written)
 }
 
 /// 16 字节转小写十六进制。
@@ -885,6 +1032,197 @@ mod tests {
             assert!(crate::file::open(&data, &[old.duplicate()]).is_ok(), "原密码被挤掉了");
             assert!(crate::file::open(&data, &[extra.duplicate()]).is_ok(), "新密码不生效");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_rotate_replaces_the_ciphertext_unlike_a_plain_rekey() {
+        // 轮换与改密码的**唯一**可观察差别就是这个：载荷密文变没变。
+        // 少了这条，一个「悄悄忽略 rotate 参数」的实现能通过其余所有断言
+        let (root, enc_root, salt, cipher) = tree_fixture("rot");
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+
+        let before: std::collections::BTreeMap<String, Vec<u8>> = all_files(&enc_root)
+            .into_iter()
+            .map(|p| {
+                let d = std::fs::read(&p).unwrap();
+                (p.file_name().unwrap().to_string_lossy().into_owned(), d)
+            })
+            .collect();
+
+        let rep = rekey_tree_with_progress(
+            &enc_root,
+            &[old.duplicate()],
+            &[new.duplicate()],
+            &salt,
+            cipher,
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(rep.is_complete(), "{:?}", rep.failed);
+        assert!(rep.payload_rewritten, "报告里要标明换了文件密钥");
+        assert!(rep.bytes_rewritten > 0, "重写的明文字节数不该是 0");
+
+        // 轮换会换掉 file_uuid，所以磁盘名（uuid）也会变——按名字配不上，
+        // 正好说明确实换了。逐字节比对全体内容：只要有一个文件的字节
+        // 原封不动，就是没真的轮换
+        let after: Vec<Vec<u8>> =
+            all_files(&rep.root).iter().map(|p| std::fs::read(p).unwrap()).collect();
+        assert_eq!(after.len(), before.len(), "文件数不该变");
+        for bytes in &after {
+            assert!(
+                !before.values().any(|b| b == bytes),
+                "有文件的密文一字节没变——rotate 没生效"
+            );
+        }
+
+        // 换完还得能用：整棵树用新密码解得开，内容一致
+        let out = root.join("dec");
+        std::fs::create_dir_all(&out).unwrap();
+        let d = decrypt_tree(&rep.root, &out, &[new], &salt, cipher, None).unwrap();
+        assert_eq!(d.files, 2);
+        assert_eq!(std::fs::read(d.root.join("a.txt")).unwrap(), b"AAA");
+        assert_eq!(std::fs::read(d.root.join("sub/b.txt")).unwrap(), b"BBB");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_without_rotate_keeps_the_ciphertext() {
+        // 反证。上一条若因为「所有路径都重写密文」而通过，这条会失败——
+        // 改密码必须只动 slot 区，载荷一字节不改（否则增量备份要重传整份）
+        //
+        // 单独造 fixture 而不用 tree_fixture：那个写的是 3 字节明文，载荷
+        // 密文才 23 字节，比对尾部时很容易倒着切进头部区——而头部本来就
+        // 该变（slot 区重建了），于是断言必然失败，看着像产品缺陷
+        const N: usize = 2000;
+        let root = std::env::temp_dir().join("omy-rekey-norot");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let body: Vec<u8> = (0..N).map(|i| (i % 251) as u8).collect();
+        std::fs::write(src.join("big.bin"), &body).unwrap();
+        let salt = [7u8; 16];
+        let out = root.join("enc");
+        std::fs::create_dir_all(&out).unwrap();
+        let opts = crate::file::EncryptOptions::default();
+        let cipher = opts.cipher;
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+        let enc_root =
+            encrypt_tree(&src, &out, &[old.duplicate()], &salt, &opts, None).unwrap().root;
+
+        let before: std::collections::BTreeMap<String, Vec<u8>> = all_files(&enc_root)
+            .into_iter()
+            .map(|p| {
+                let d = std::fs::read(&p).unwrap();
+                (p.file_name().unwrap().to_string_lossy().into_owned(), d)
+            })
+            .collect();
+        assert_eq!(before.len(), 1);
+
+        let rep =
+            rekey_tree_with_progress(&enc_root, &[old], &[new], &salt, cipher, false, None)
+                .unwrap();
+        assert!(!rep.payload_rewritten);
+        assert_eq!(rep.bytes_rewritten, 0, "没轮换就不该报重写字节数");
+
+        for p in all_files(&rep.root) {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            // 磁盘名就是 file_uuid：改密码不换它，所以按名字一定配得上。
+            // 配不上说明 file_uuid 变了，那正是我们要防的
+            let old_bytes = before.get(&name).expect("改密码不该换掉磁盘名（file_uuid）");
+            let new_bytes = std::fs::read(&p).unwrap();
+            assert_eq!(old_bytes.len(), new_bytes.len(), "长度变了：{p:?}");
+            // 载荷在文件末尾，长度是明文 + AEAD tag。往回取这么多一定落在
+            // 载荷内，不会切进会变的头部区
+            let tail = old_bytes.len().saturating_sub(N);
+            assert_eq!(&old_bytes[tail..], &new_bytes[tail..], "载荷变了：{p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_rotate_reports_progress_for_every_file() {
+        // 进度回调是 GUI 进度条的唯一数据来源。不测的话，一个「压根不调
+        // 回调」的实现完全无声——界面上表现为进度条一直停在 0
+        let (root, enc_root, salt, cipher) = tree_fixture("prog");
+        let old = kek_of(b"old", &salt);
+
+        let mut seen: Vec<(String, usize, usize)> = Vec::new();
+        let mut max_ratio = 0.0f64;
+        let mut cb = |name: &str, idx: usize, total: usize, done: u64, bytes: u64| {
+            let key = (name.to_owned(), idx, total);
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+            if bytes > 0 {
+                #[expect(clippy::cast_precision_loss, reason = "测试里比个比例够用")]
+                let r = done as f64 / bytes as f64;
+                if r > max_ratio {
+                    max_ratio = r;
+                }
+            }
+        };
+        let rep = rekey_tree_with_progress(
+            &enc_root,
+            &[old.duplicate()],
+            &[old],
+            &salt,
+            cipher,
+            true,
+            Some(&mut cb),
+        )
+        .unwrap();
+        assert!(rep.is_complete(), "{:?}", rep.failed);
+
+        assert_eq!(seen.len(), 2, "两个文件都该汇报进度，实际 {seen:?}");
+        for (_, idx, total) in &seen {
+            assert_eq!(*total, 2, "总数应当是文件数");
+            assert!(*idx >= 1 && *idx <= 2, "序号越界: {idx}");
+        }
+        // 序号必须各不相同：都报 1 的话进度条永远停在第一个
+        assert_ne!(seen[0].1, seen[1].1, "两个文件报了同一个序号");
+        // 进度要真的推进到接近完成，而不是只发一次 0
+        assert!(max_ratio > 0.5, "进度最高只到 {max_ratio}，没有推进到末尾");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_rotate_can_keep_the_same_password() {
+        // 「密码不变、只让旧副本作废」是轮换的正当用法。要求必须换密码
+        // 会让这个需求无法表达
+        let (root, enc_root, salt, cipher) = tree_fixture("samepw");
+        let old = kek_of(b"old", &salt);
+        let before: Vec<Vec<u8>> =
+            all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
+
+        let rep = rekey_tree_with_progress(
+            &enc_root,
+            &[old.duplicate()],
+            &[old.duplicate()],
+            &salt,
+            cipher,
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(rep.is_complete(), "{:?}", rep.failed);
+        // 密码没变 → 目录名密钥没变 → 根路径不该变
+        assert_eq!(rep.root, enc_root, "密码没变时不该改目录名");
+
+        // 但密文必须变了：这正是「让旧副本作废」的实质
+        let after: Vec<Vec<u8>> =
+            all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
+        for b in &after {
+            assert!(!before.contains(b), "密文没变，旧副本仍然等价");
+        }
+        // 原密码还能用
+        let out = root.join("dec");
+        std::fs::create_dir_all(&out).unwrap();
+        let d = decrypt_tree(&enc_root, &out, &[old], &salt, cipher, None).unwrap();
+        assert_eq!(d.files, 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 
