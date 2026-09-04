@@ -285,7 +285,9 @@
     "tree_tag": "entire folder",
     "tree_single_password": "An encrypted folder shares one password across the whole tree, so it can only be changed, not added to or removed.",
     "tree_warning": "The folder's name is encrypted with the password too, so it will change to a different string once the password is changed (the contents are unaffected). The list will point at the new folder afterwards.",
-    "done_tree": "Password changed, {{n}} files rewritten"
+    "done_tree": "Password changed, {{n}} files rewritten",
+    "tree_reencrypt_warning": "Every file in this tree will be rewritten; this takes time proportional to the total data size. Afterwards the old file keys are useless — but copies that already left your machine are separate ciphertext and still open with the password they had.",
+    "done_tree_rotate": "Re-encrypted {{n}} files"
   },
   "restore": {
     "title_one": "Restore 1 file",

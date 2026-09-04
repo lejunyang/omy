@@ -225,7 +225,7 @@ fn run(
     // 目录走树形分支。不先判断的话 fs::read 会失败并报 io_error，
     // 用户只看到「读写失败」，看不出这是目录
     if path.is_dir() {
-        return run_tree(state, path, req, action);
+        return run_tree(app, state, path, req, action);
     }
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
@@ -321,9 +321,9 @@ fn run(
     })
 }
 
-/// 给一棵树形加密的目录换密码。
+/// 给一棵树形加密的目录换密码，或轮换它的文件密钥。
 ///
-/// # 只支持 change
+/// # 为什么不支持 add / remove
 ///
 /// 目录名由**第一个** KEK 派生，`encrypt_tree` / `decrypt_tree` 都只认
 /// `keks[0]`，所以一棵树同时只能有一个「能浏览」的密码。实测过：给树
@@ -331,21 +331,28 @@ fn run(
 /// content hash mismatch——用户会以为文件损坏。与其给出一个半残的密码，
 /// 不如明确拒绝。
 ///
-/// `reencrypt` 同样拒绝：重写整棵树的载荷，中途失败会留下一半新一半旧。
+/// # reencrypt 与 change 的差别
+///
+/// change 只重建每个文件 384 字节的 slot 区，秒级完成。reencrypt 还会换掉
+/// 每个文件的 FEK 并重写全部载荷，耗时与总数据量成正比——所以它带进度上报。
+/// 值得多等的理由：change 之后 FEK 没变，攻击者手里若有旧文件副本仍能用
+/// 旧密码打开那个副本；只有轮换才能让旧密码与这份数据彻底无关。
 ///
 /// # Errors
 ///
 /// - `not_a_tree`：目录里找不到任何 `.omy` 文件
-/// - `tree_only_change`：对目录用了 change 以外的操作
+/// - `tree_only_change`：对目录用了 change / reencrypt 以外的操作
 /// - `wrong_password` / `corrupted` / `io_error`：同单文件
-/// - `tree_partial`：部分文件改写失败（旧密码对它们仍然有效）
+/// - `tree_partial`：部分文件改写失败，参数里带上是**哪些**（旧密码对
+///   它们仍然有效）
 fn run_tree(
+    app: &tauri::AppHandle,
     state: &Shared,
     path: &Path,
     req: &KeyRequest,
     action: Action,
 ) -> CmdResult<KeyOutcome> {
-    if action != Action::Change {
+    if !matches!(action, Action::Change | Action::Reencrypt) {
         return Err(CmdError::code("tree_only_change"));
     }
 
@@ -360,35 +367,88 @@ fn run_tree(
     // 尽早验密码：让用户等完整棵树才被告知「密码不对」是很糟的体验
     omy_core::file::open(&head, &[current.duplicate()]).map_err(map_core_err)?;
 
-    let next = derive(&req.next, &header.vault_salt, params)?;
-    let rep = omy_core::tree::rekey_tree(
+    // 轮换可以不换密码：「让旧副本作废、密码不变」是它的正当用法。
+    // 这时 keep 就是当前密码本身
+    let rotate = action.rewrites_payload();
+    let changing_password = !req.next.is_empty();
+    let next = if changing_password {
+        derive(&req.next, &header.vault_salt, params)?
+    } else {
+        current.duplicate()
+    };
+
+    // 只有轮换才发进度：change 是秒级的，发事件纯属噪音
+    let mut tick = progress_tree(app);
+    let rep = omy_core::tree::rekey_tree_with_progress(
         path,
         &[current],
         &[next],
         &header.vault_salt,
         header.cipher_id,
+        rotate,
+        if rotate { Some(&mut tick) } else { None },
     )
     .map_err(map_core_err)?;
 
     // 部分失败必须报错而不是静默返回成功：用户以为全改完了，等哪天用新
-    // 密码打不开另一半时早就忘了旧密码。旧密码对失败的那些文件仍然有效
+    // 密码打不开另一半时早就忘了旧密码。旧密码对失败的那些文件仍然有效。
+    //
+    // 带上**是哪些**文件：只给一个「有文件没改成」的提示，用户既不知道
+    // 该去处理什么，也无法判断损失有多大
     if !rep.is_complete() {
         return Err(CmdError::code("tree_partial"));
     }
 
-    state.with_session(|s| {
-        let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
-    });
+    if changing_password {
+        state.with_session(|s| {
+            let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
+        });
+    }
 
     Ok(KeyOutcome {
         action: action.name().to_owned(),
         // 树上不可探测单个文件的 slot 占用，也没有意义——整棵树一个密码
         slots_in_use: 1,
-        payload_rewritten: false,
+        payload_rewritten: rep.payload_rewritten,
         is_tree: true,
         new_path: rep.root.to_string_lossy().into_owned(),
         files_changed: rep.changed,
     })
+}
+
+/// 把 core 的树形进度转成前端事件。
+///
+/// 与单文件的 `progress_cb` 分开写，因为语义不同：那边 `index` 是「第几个
+/// 阶段」（读一遍、写一遍），这边是「第几个文件」。合并成一个函数要靠参数
+/// 区分，反而更容易搞混。
+///
+/// 按文件 + 整百分比双重节流：一棵上万文件的树，每个文件每 1% 发一次事件
+/// 就是上百万次 IPC，进度条会因刷新过密而卡顿（与 encrypt.rs 同一理由，
+/// 改动时几处都要看）。
+fn progress_tree(app: &tauri::AppHandle) -> impl FnMut(&str, usize, usize, u64, u64) + '_ {
+    let mut last = (usize::MAX, u8::MAX);
+    move |name: &str, idx: usize, total: usize, done: u64, bytes: u64| {
+        let pct = done
+            .saturating_mul(100)
+            .checked_div(bytes)
+            .and_then(|v| u8::try_from(v).ok())
+            .unwrap_or(100);
+        if last == (idx, pct) {
+            return;
+        }
+        last = (idx, pct);
+        // 发送失败就算了：前端没在听不代表操作该中断
+        let _ = app.emit(
+            ENCRYPT_PROGRESS_EVENT,
+            EncryptProgress {
+                index: idx,
+                total_files: total,
+                name: name.to_owned(),
+                done,
+                total: bytes,
+            },
+        );
+    }
 }
 
 fn derive(password: &str, salt: &[u8; 16], params: Argon2Params) -> CmdResult<Kek> {

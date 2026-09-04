@@ -44,14 +44,14 @@ const action = ref(props.isTree ? 'change' : 'add');
 
 /** 这个目标允许哪些操作。
  *
- * 树只给 change：目录名由第一个 KEK 派生，一棵树同时只能有一个能浏览的
- * 密码。add 出来的第二个密码可以打开每一个文件，却解不开目录名——解密时
- * 报「文件损坏」。列出一个做不到的选项比不列糟得多。
+ * 树不给 add / remove：目录名由第一个 KEK 派生，一棵树同时只能有一个能
+ * 浏览的密码。add 出来的第二个密码可以打开每一个文件，却解不开目录名——
+ * 解密时报「文件损坏」。列出一个做不到的选项比不列糟得多。
  *
- * reencrypt 对树也不给：要重写整棵树的载荷，中途失败会留下一半新一半旧。
+ * reencrypt 可以：每个文件各自原子写回，中途失败也不会留下写坏的文件。
  */
 const availableActions = computed(() =>
-  props.isTree ? ['change'] : ['add', 'change', 'remove', 'reencrypt'],
+  props.isTree ? ['change', 'reencrypt'] : ['add', 'change', 'remove', 'reencrypt'],
 );
 const current = ref('');
 const next = ref('');
@@ -72,6 +72,13 @@ const requiresNext = computed(() => action.value === 'add' || action.value === '
 
 /** 这个操作会重写载荷吗——决定底部说明与耗时警示。 */
 const rewrites = computed(() => action.value === 'reencrypt');
+
+/** 这次会不会改掉目录名。
+ *
+ * 目录名密钥由密码派生，所以只有密码真的变了才会改名。轮换时新密码是
+ * 选填的，填了才改。
+ */
+const renamesTree = computed(() => requiresNext.value || next.value.length > 0);
 
 const mismatch = computed(
   () => showsNext.value && next2.value.length > 0 && next.value !== next2.value,
@@ -149,10 +156,17 @@ function submit() {
         </label>
       </div>
 
-      <!-- 目录名由密码派生，换完密码文件夹会改名。不提前说的话，用户
-           回到文件管理器发现「文件夹不见了」会以为数据没了 -->
-      <div v-if="isTree" class="warnbox" role="alert">
+<!-- 目录名由密码派生，换完密码文件夹会改名。不提前说的话，用户
+           回到文件管理器发现「文件夹不见了」会以为数据没了。
+           只在真会改名时显示：轮换若不换密码，目录名密钥没变、名字不动，
+           照旧警告会让用户白担心一场 -->
+      <div v-if="isTree && renamesTree" class="warnbox" role="alert">
         {{ i18n.t('keymgmt.tree_warning') }}
+      </div>
+
+      <!-- 轮换整棵树要按文件逐个重写，比单文件慢得多，得先说清楚 -->
+      <div v-if="isTree && rewrites" class="warnbox" role="alert">
+        {{ i18n.t('keymgmt.tree_reencrypt_warning') }}
       </div>
 
       <!-- 移除会作废其它密码，且旧副本仍可用旧密码打开。后者是最容易
