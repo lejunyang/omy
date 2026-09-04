@@ -31,6 +31,23 @@ use crate::tier::{self, TierVerdict};
 pub enum ThumbSource {
     /// 不生成缩略图。
     None,
+    /// 按实际内容自动选择：图片缩放原图，视频抽帧。
+    ///
+    /// # 为什么必须有这个变体
+    ///
+    /// 调用方（CLI / GUI / 树形加密）拿到的是一堆待加密文件，事先并不知道
+    /// 每个是图片还是视频——扩展名不可信，也不该让每个调用方各自去探测一遍。
+    /// 于是只能二选一地写死，而写死任何一个都是错的：
+    ///
+    /// 早先 CLI 的 `--thumbnail auto` 一律映射到 `VideoAuto`，结果**所有图片
+    /// 都拿不到缩略图**。而且不是静默跳过：ffprobe 会把静态 PNG 识别成
+    /// 单帧视频流（`has_video()` 为真），于是真的去抽帧，最后在 webp 编码器
+    /// 里报 `Cannot allocate memory` 退出码 -12。表面症状只是
+    /// `has_thumbnail=false`，看不出底下有个失败的子进程。
+    ///
+    /// 分派必须放在这里：`prepare` 是唯一已经拿到 `MediaInfo`、能可靠区分
+    /// 图片与视频的地方。
+    Auto,
     /// 图片文件：直接缩放原图。
     Image,
     /// 视频：抽取指定秒数处的帧。
@@ -156,6 +173,9 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
 
     // 图片走纯 Rust 路径，不需要 ffprobe。
     // 先试图片：图片文件占比高，且这条路不起子进程，快得多。
+    //
+    // `Auto` 不在这里处理：此时还没探测，无从判断是图还是视频。
+    // 它在下面拿到 `MediaInfo` 之后再分派。
     if opts.thumbnail == ThumbSource::Image {
         match thumbnail::from_image_bytes(data, opts.thumb_max_edge, opts.thumb_format) {
             Ok(t) => out.thumbnail = Some(t.bytes),
@@ -208,12 +228,51 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
                 .map_or(1.0, |ms| (ms as f64 / 1000.0 * 0.1).clamp(0.0, 600.0));
             gen_video_thumb(data, sec, opts, &info, &mut out);
         }
+        // 探测完才能分派：静态图片同样有一条"视频轨"（ffprobe 把它当成
+        // 单帧视频），所以 `has_video()` 区分不了图和视频，只有 container
+        // 能区分——静态图的容器是 `*_pipe`（png_pipe / mjpeg_pipe……）
+        // 或 image2。
+        //
+        // 走错分支不是无害的：把 PNG 交给抽帧会真的起 ffmpeg，
+        // 然后在 webp 编码器里报 Cannot allocate memory。
+        ThumbSource::Auto => {
+            if is_still_image(&info) {
+                match thumbnail::from_image_bytes(data, opts.thumb_max_edge, opts.thumb_format) {
+                    Ok(t) => out.thumbnail = Some(t.bytes),
+                    Err(e) => out.warnings.push(format!("图片缩略图生成失败：{e}")),
+                }
+            } else {
+                let sec = info
+                    .duration_ms
+                    .map_or(1.0, |ms| (ms as f64 / 1000.0 * 0.1).clamp(0.0, 600.0));
+                gen_video_thumb(data, sec, opts, &info, &mut out);
+            }
+        }
         ThumbSource::None | ThumbSource::Image => {}
     }
 
     out.info = Some(info);
     out.verdict = Some(verdict);
     out
+}
+
+/// 判断探测结果是不是**静态图片**（而非视频）。
+///
+/// # 为什么不能用 `has_video()` 或帧率
+///
+/// ffprobe 把静态图片当成"只有一帧的视频"来报：PNG 会得到一条 png 编码的
+/// 视频轨，`has_video()` 为真；`avg_frame_rate` 还会是伪造的 `25/1`，
+/// `nb_frames` 则是 `N/A`。所以画面轨数量、帧率、帧数全都区分不了图和视频。
+///
+/// 唯一可靠的判据是容器名：静态图片走的是 FFmpeg 的图片解复用器，
+/// 名字形如 `png_pipe` / `mjpeg_pipe` / `webp_pipe`，或者 `image2`。
+///
+/// 注意 `container` 是逗号分隔的多值，必须逐个比较，不能整串 `==`。
+fn is_still_image(info: &crate::probe::MediaInfo) -> bool {
+    info.container
+        .split(',')
+        .map(str::trim)
+        .any(|c| c.eq_ignore_ascii_case("image2") || c.to_ascii_lowercase().ends_with("_pipe"))
 }
 
 /// 抽视频帧，失败只记警告。
@@ -310,9 +369,110 @@ mod tests {
         );
     }
 
+    /// 用固定的 ffprobe JSON 造 MediaInfo，避免依赖本机是否装了 FFmpeg。
+    fn info_with_container(container: &str) -> crate::probe::MediaInfo {
+        // 静态图片和视频在 ffprobe 眼里都有一条视频轨，差别只在 format_name，
+        // 所以这里两者的 streams 段完全一样——正好用来验证判据没有误用轨道信息。
+        let json = format!(
+            r#"{{"format":{{"format_name":"{container}","duration":"2.0"}},
+                "streams":[{{"codec_type":"video","codec_name":"png",
+                "width":320,"height":240,"avg_frame_rate":"25/1"}}]}}"#
+        );
+        crate::probe::parse_probe_json(&json).expect("样本 JSON 应能解析")
+    }
+
     #[test]
-    fn extract_moov_returns_none_for_non_mp4() {
-        // PNG 头
+    fn still_image_containers_are_recognized() {
+        // 这些是 ffprobe 对静态图片实际报出的容器名（已在本机核实：
+        // PNG -> png_pipe，.NET 存的 JPEG -> image2）。
+        // 认错的后果是图片被送去抽帧，ffmpeg 在 webp 编码器里报
+        // Cannot allocate memory，最终缩略图静默缺失。
+        for c in ["png_pipe", "mjpeg_pipe", "webp_pipe", "image2", "PNG_PIPE"] {
+            assert!(
+                is_still_image(&info_with_container(c)),
+                "{c} 应被判定为静态图片"
+            );
+        }
+        // 多值且图片标识不在第一段：ffprobe 的 format_name 常是逗号分隔的
+        // 多值，必须每一段都比较。只看第一段会漏判。
+        assert!(
+            is_still_image(&info_with_container("image2pipe,png_pipe")),
+            "多值容器名里只要有一段是图片就应判为图片"
+        );
+    }
+
+    #[test]
+    fn video_containers_are_not_still_images() {
+        // mp4 的 format_name 是逗号分隔的多值，必须逐段比较。
+        // 若写成整串 ==，"mov,mp4,..." 永远匹配不上任何单值，
+        // 这条能抓住那种写法下视频被误判的情况。
+        for c in ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm", "avi"] {
+            assert!(
+                !is_still_image(&info_with_container(c)),
+                "{c} 不该被判定为静态图片"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_thumbnail_uses_image_path_for_still_images() {
+        // 端到端确认 Auto 的分派：给一张真 PNG（最小合法 1x1），
+        // Auto 必须产出缩略图。
+        //
+        // 不这样会怎样：修复前 CLI 的 auto 映射到 VideoAuto，所有图片
+        // 都拿不到缩略图，而 has_thumbnail=false 看不出底下有个失败的
+        // ffmpeg 子进程，问题极难定位。
+        let png = minimal_png();
+        let opts = PrepareOptions {
+            media_meta: false,
+            moov_cache: false,
+            thumbnail: ThumbSource::Auto,
+            ..PrepareOptions::default()
+        };
+        let out = prepare(&png, &opts);
+        assert!(
+            out.thumbnail.is_some(),
+            "Auto 对静态图片必须走图片路径并产出缩略图，warnings={:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn auto_does_not_warn_on_still_images() {
+        // 走错分支时 ffmpeg 会失败并留下警告。断言无警告，
+        // 才能确认走的是纯 Rust 图片路径而不是"抽帧碰巧成功"。
+        let png = minimal_png();
+        let opts = PrepareOptions {
+            media_meta: false,
+            moov_cache: false,
+            thumbnail: ThumbSource::Auto,
+            ..PrepareOptions::default()
+        };
+        let out = prepare(&png, &opts);
+        assert!(
+            out.warnings.is_empty(),
+            "图片走 Auto 不该有警告：{:?}",
+            out.warnings
+        );
+    }
+
+    /// 最小的合法 PNG（1x1），用于不依赖外部文件的图片测试。
+    fn minimal_png() -> Vec<u8> {
+        // 用 image crate 现编，而不是写死一长串字节：写死既看不出结构，
+        // 也会在 .rodata 里留下可疑的长字节串（见 AGENTS.md），
+        // 而且 CRC 算错就成了"测试用的图本身是坏的"这种难查的问题。
+        let img = image::RgbImage::from_fn(2, 2, |x, y| {
+            image::Rgb([(x * 90) as u8, (y * 70) as u8, 0x40])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("编码 PNG");
+        buf.into_inner()
+    }
+
+    #[test]
+    fn extract_moov_returns_none_for_non_mp4() {        // PNG 头
         let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         assert_eq!(extract_moov(&png).expect("不该报错"), None);
         // 空数据

@@ -181,7 +181,13 @@ fn build_prepare_options(a: &Args) -> Result<omy_media::PrepareOptions> {
         "auto" => match &a.thumbnail_frame {
             // 用户指定了帧：尊重它（需求确认项 B.2）
             Some(tc) => omy_media::ThumbSource::VideoAt(parse_timecode(tc)?),
-            None => omy_media::ThumbSource::VideoAuto,
+            // 交给 prepare 按实际内容分派。
+            //
+            // 早先这里写的是 `VideoAuto`，于是**图片一律拿不到缩略图**：
+            // 静态图会被当成单帧视频送去抽帧，最后在 webp 编码器里报
+            // Cannot allocate memory。这里看不出问题，因为此刻还没读文件内容，
+            // 无从知道它是图还是视频——所以分派只能放在 prepare 里。
+            None => omy_media::ThumbSource::Auto,
         },
         other => bail!(
             "--thumbnail 只接受 auto | none，收到 `{other}`\n\
