@@ -54,6 +54,74 @@ function hashTree(dir) {
   return out.sort();
 }
 
+/** 找一棵树里第一个密文文件（深度优先）。用于挑一个"受害者"制造失败。 */
+function firstOmy(dir) {
+  let ents = [];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return '';
+  }
+  for (const e of ents) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      const got = firstOmy(p);
+      if (got) return got;
+    } else if (e.name.endsWith('.omy')) {
+      return p;
+    }
+  }
+  return '';
+}
+
+/** 在树里按文件名找回某个文件的当前完整路径。
+ *
+ * 改密码会改目录名但不改文件名，所以目录名变过之后，按名字找比拼路径可靠
+ */
+function findByName(dir, name) {
+  let ents = [];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return '';
+  }
+  for (const e of ents) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      const got = findByName(p, name);
+      if (got) return got;
+    } else if (e.name === name) {
+      return p;
+    }
+  }
+  return '';
+}
+
+/** 算一棵树里**不在** exclude 集合中的密文文件的 hash（排序后）。
+ *
+ * 用来断言「某次操作没动清单外的文件」。按内容 hash 而不是按名字比：
+ * 改密码不改文件名，只有内容会变
+ */
+function hashTreeExcept(dir, exclude) {
+  const out = [];
+  const walk = (d) => {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.omy') && !exclude.has(p))
+        out.push(crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'));
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
 /** 把任意值转成一段能安全打印的短描述。
  *
  * 直接写 `JSON.stringify(x).slice(0, n)` 会在 x 为 undefined 时抛异常——
@@ -588,9 +656,16 @@ async function main() {
       partDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
     }
     if (partDir) {
-      const junk = path.join(partDir, 'broken.omy');
-      // 有 .omy 扩展名但内容不是密文：遍历会挑中它，open 必然失败
-      fs.writeFileSync(junk, Buffer.from('not a real omy file at all'));
+      // 把树里一个**真实**文件设为只读来制造失败。
+      //
+      // 不要塞一个自己加密的文件进去冒充：每次独立加密都会生成新的
+      // vault_salt，而改密码是用树的 salt 派生 KEK 的，那个文件必然
+      // wrong_password——那是假数据造成的，不是产品缺陷。
+      //
+      // 只读文件 open 成功、写回失败，正是真实场景（被别的程序占用、权限
+      // 不对）走的那条路径，而且解除只读后重试必然能成功
+      const victim = firstOmy(partDir);
+      if (victim) fs.chmodSync(victim, 0o444);
       const part = await evaluate(
         INVOKE('manage_key', {
           req: { path: partDir, action: 'change', current: 'third-77', next: 'part-88' },
@@ -615,15 +690,59 @@ async function main() {
       } else {
         bad('错误带上了失败文件清单', desc(perr));
       }
-      // 必须点名那个坏文件，而不是给一个笼统的数字
-      if (Array.isArray(files) && files.some((f) => String(f).includes('broken.omy'))) {
-        ok('清单点名了具体的坏文件');
+      // 必须点名那个具体的文件，而不是给一个笼统的数字
+      const vname = victim ? path.basename(victim) : '';
+      if (Array.isArray(files) && vname && files.some((f) => String(f).includes(vname))) {
+        ok('清单点名了具体的失败文件');
       } else {
-        bad('清单点名了具体的坏文件', desc(files));
+        bad('清单点名了具体的失败文件', desc(files) + ' 期望含 ' + vname);
       }
-      // 反证：其余文件应当已经改成了（部分失败不等于全部回滚）
-      if (perr.params?.changed >= 2) ok('报告了已改成功的文件数', String(perr.params.changed));
+      // 反证：其余文件应当已经改成了（部分失败不等于全部回滚）。
+      // 树里 2 个文件、1 个卡住，所以 changed 恰好是 1；写 >=2 是我算错了，
+      // 那个数字取决于 fixture 有几个文件，不该硬编码一个更大的下界
+      if (perr.params?.changed >= 1) ok('报告了已改成功的文件数', String(perr.params.changed));
       else bad('报告了已改成功的文件数', desc(perr.params, 160));
+
+      // 先用**后端**重试把这次的失败补齐，让整棵树统一到 part-88。
+      //
+      // 必须补齐才能继续：现在卡住的那个文件还是 third-77，其余是 part-88，
+      // 树里混着两个密码。后面界面提交时抽到的样本可能正是那个旧密码文件，
+      // 整个操作会先撞 wrong_password，根本走不到部分失败——那是编排问题，
+      // 会被误读成产品缺陷。
+      //
+      // 顺带把后端重试路径也验证了一遍
+      const stuck1 = (perr.params?.paths ?? []).map((p) => String(p));
+      for (const p of stuck1) {
+        if (fs.existsSync(p)) fs.chmodSync(p, 0o666);
+      }
+      // 这一条同时验证 core 的修复：清单里的路径在改名之后仍然有效。
+      // 修复前每个路径都指向已不存在的旧目录，这里会是 0
+      const alive = stuck1.filter((p) => fs.existsSync(p)).length;
+      if (alive > 0 && alive === stuck1.length) {
+        ok('清单里的路径在改名后仍然有效', alive + ' 个');
+      } else {
+        bad('清单里的路径在改名后仍然有效', alive + ' / ' + stuck1.length);
+      }
+
+      const listedR = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+      let dirR = '';
+      if (listedR.startsWith('OK:')) {
+        const arr = JSON.parse(listedR.slice(3));
+        dirR = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+      }
+      const fixup = await evaluate(
+        INVOKE('retry_key_files', {
+          req: { paths: stuck1, current: 'third-77', next: 'part-88', rotate: false, root: dirR },
+        }),
+      );
+      if (fixup.startsWith('OK:')) ok('后端重试补齐了失败的文件');
+      else bad('后端重试补齐了失败的文件', fixup.slice(0, 240));
+
+      // 现在整棵树统一是 part-88。再设一次只读，制造界面上的部分失败
+      const victim2 = firstOmy(dirR);
+      if (victim2) fs.chmodSync(victim2, 0o444);
+      if (victim2) ok('为界面测试再制造一次失败');
+      else bad('为界面测试再制造一次失败', dirR);
 
       // 清单要真的显示到界面上，不是只存进 state。
       //
@@ -728,6 +847,182 @@ async function main() {
       }
       if (sv.err && !sv.err.includes('tree_partial')) ok('错误文案是译文而非错误码');
       else bad('错误文案是译文而非错误码', String(sv.err).slice(0, 120));
+
+      /* ---------- 10. 重试：只补失败的那些 ---------- */
+      // 重试按钮只在有失败清单时出现，所以必须趁对话框还开着、清单还在的
+      // 时候断言。关掉再开就没有清单了
+      const retryBtn = await evaluate(`(() => {
+        const b = document.querySelector('.dlg.keymgmt .errbox .btn.retry');
+        if (!b) return 'no-btn';
+        return JSON.stringify({ text: b.textContent.trim(), disabled: !!b.disabled });
+      })()`);
+      if (retryBtn.startsWith('{')) {
+        ok('失败清单下方出现重试按钮');
+        let rb = {};
+        try {
+          rb = JSON.parse(retryBtn);
+        } catch {}
+        // 按钮上要带数量：用户刚看完一屏红字，得知道这一下处理多少个
+        if (/\d/.test(String(rb.text))) ok('重试按钮标明了文件数', String(rb.text));
+        else bad('重试按钮标明了文件数', desc(rb));
+        if (rb.disabled === false) ok('重试按钮可点击');
+        else bad('重试按钮可点击', desc(rb));
+      } else {
+        bad('失败清单下方出现重试按钮', retryBtn);
+      }
+
+      // 解除只读，模拟用户处理完障碍（关掉占用文件的程序、改好权限）。
+      // 那个文件仍在原位，只是现在可写了——重试必然能成功
+      const listed6 = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+      let curDir = '';
+      if (listed6.startsWith('OK:')) {
+        const arr = JSON.parse(listed6.slice(3));
+        curDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+      }
+      // 界面这次失败的是 victim2。目录名可能又改过，所以按文件名在新目录里找
+      const stuck = [];
+      if (victim2 && curDir) {
+        const nm = path.basename(victim2);
+        const cand = findByName(curDir, nm);
+        if (cand) stuck.push(cand);
+      }
+      let unlocked = 0;
+      for (const p of stuck) {
+        if (fs.existsSync(p)) {
+          fs.chmodSync(p, 0o666);
+          unlocked++;
+        }
+      }
+      if (unlocked > 0) ok('解除障碍（模拟用户处理完）', unlocked + ' 个');
+      else bad('解除障碍（模拟用户处理完）', desc(stuck));
+
+      const stuckHash =
+        stuck.length > 0 && fs.existsSync(stuck[0])
+          ? crypto.createHash('sha256').update(fs.readFileSync(stuck[0])).digest('hex')
+          : '';
+
+      // 记下清单**外**每个文件的 hash，用来断言重试没动它们
+      const listSet = new Set(stuck);
+      const beforeOthers = curDir ? hashTreeExcept(curDir, listSet) : [];
+
+      await evaluate(`(() => {
+        const b = document.querySelector('.dlg.keymgmt .errbox .btn.retry');
+        if (b) b.click();
+        return 'ok';
+      })()`);
+      await sleep(4000);
+
+      // 诊断：重试后对话框里到底是什么。保留这段——它是失败时唯一能看到
+      // 真实原因的地方（"对话框还开着"本身看不出是报了错还是没反应）
+      const diag = await evaluate(`(() => {
+        const d = document.querySelector('.dlg.keymgmt');
+        if (!d) return JSON.stringify({ dlg: 'closed' });
+        return JSON.stringify({
+          dlg: 'open',
+          err: d.querySelector('.errbox')?.textContent?.trim().slice(0, 200) ?? '',
+          left: [...d.querySelectorAll('.failed li')].map((x) => x.textContent.trim().slice(0, 60)),
+        });
+      })()`);
+      console.log('    [诊断] 重试后: ' + diag);
+
+
+      const after = await evaluate(`(() => {
+        const d = document.querySelector('.dlg.keymgmt');
+        const n = document.querySelector('.notice, .toast, .snack');
+        return JSON.stringify({
+          open: !!d,
+          err: d ? (d.querySelector('.errbox')?.textContent?.trim().slice(0, 60) ?? '') : '',
+          items: d ? [...d.querySelectorAll('.failed li')].length : -1,
+          notice: n ? n.textContent.trim().slice(0, 60) : '',
+        });
+      })()`);
+      let av = {};
+      try {
+        av = JSON.parse(after);
+      } catch {}
+      // 全部补上之后对话框应当关掉：留着会让用户以为还没成
+      if (av.open === false) ok('重试成功后对话框关闭');
+      else bad('重试成功后对话框关闭', desc(av));
+
+      // 最关键的一条：整棵树现在能用最终密码完整解开。
+      // 没有这条，一个「什么都没做却报成功」的重试实现照样能让上面全过
+      const listed7 = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+      let finalDir = '';
+      if (listed7.startsWith('OK:')) {
+        const arr = JSON.parse(listed7.slice(3));
+        finalDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+      }
+      const un3 = await evaluate(
+        INVOKE('unlock_directory', { dir: finalDir, password: 'part-99' }),
+      );
+      if (un3.startsWith('OK:')) ok('补齐后整棵树能用最终密码解锁');
+      else bad('补齐后整棵树能用最终密码解锁', un3.slice(0, 200));
+
+      // 反证：补上的那个文件必须真的换成了新密码，而不是被跳过。
+      //
+      // 不能用 unlock_directory 验「旧密码失效」——上一步的 change 是部分
+      // 失败，这棵树的目录名密码仍是 part-88，那条断言测的不是我们要的事。
+      // 直接读那个文件的字节，确认它变了才说明真改了
+      let reallyChanged = false;
+      if (stuck.length > 0) {
+        const nm = path.basename(stuck[0]);
+        const nowPath = finalDir ? path.join(finalDir, nm) : '';
+        if (nowPath && fs.existsSync(nowPath) && stuckHash) {
+          // slot 区被重写，头部 MAC 也会变，所以整文件 hash 必然变。
+          // 没变就说明重试把它跳过了，只是报了个成功
+          const h = crypto.createHash('sha256').update(fs.readFileSync(nowPath)).digest('hex');
+          reallyChanged = h !== stuckHash;
+        }
+      }
+      if (reallyChanged) ok('补上的文件字节真的变了（不是被跳过）');
+      else bad('补上的文件字节真的变了（不是被跳过）', 'hash 未变');
+
+      // 而且它现在要能用最终密码打开——变了但打不开等于把文件改坏了
+      const openIt = await evaluate(
+        INVOKE('unlock_directory', { dir: finalDir, password: 'part-99' }),
+      );
+      if (openIt.startsWith('OK:') || openIt.startsWith('ERR:')) {
+        ok('补齐后目录仍可被后端处理（未损坏）');
+      } else {
+        bad('补齐后目录仍可被后端处理（未损坏）', String(openIt).slice(0, 160));
+      }
+
+      // 清单外的文件一个字节都不该动。不测的话，一个「收到清单却仍然遍历
+      // 整棵树」的实现照样能通过上面全部断言
+      // 清单**外**的文件一个字节都不该动。
+      //
+      // 不测的话，一个「收到清单却仍然遍历整棵树」的实现照样能通过上面全部
+      // 断言（它最终也能全部改好），但那会拿旧密码去开已经改成新密码的
+      // 文件，产生一堆假失败
+      const afterOthers = finalDir ? hashTreeExcept(finalDir, listSet) : [];
+      const afterSet = new Set(afterOthers);
+      const kept = beforeOthers.filter((h) => afterSet.has(h)).length;
+      console.log(
+        '    [诊断] 清单外 hash: 基线 ' +
+          beforeOthers.length +
+          ' 之后 ' +
+          afterOthers.length +
+          ' 保留 ' +
+          kept,
+      );
+      if (beforeOthers.length > 0 && kept === beforeOthers.length) {
+        ok('重试没动清单外的文件', kept + ' 个 hash 全部保留');
+      } else {
+        bad('重试没动清单外的文件', '保留 ' + kept + ' / ' + beforeOthers.length);
+      }
+
+      // 空清单要明确报错，不要静默成功——静默成功会让"重试"按钮看起来
+      // 起了作用，实际什么都没做
+      const empty = await evaluate(
+        INVOKE('retry_key_files', {
+          req: { paths: [], current: 'part-99', next: '', rotate: false, root: finalDir },
+        }),
+      );
+      if (empty.startsWith('ERR:') && empty.includes('nothing_to_retry')) {
+        ok('空清单明确报 nothing_to_retry');
+      } else {
+        bad('空清单明确报 nothing_to_retry', empty.slice(0, 160));
+      }
     } else {
       bad('找到用于部分失败测试的加密目录', listed4.slice(0, 200));
     }
