@@ -33,12 +33,26 @@ const props = defineProps({
   entry: { type: Object, required: true },
   busy: { type: Boolean, default: false },
   error: { type: String, default: '' },
+  /** 目标是树形加密的目录（整棵树共用一个密码）。 */
+  isTree: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['cancel', 'submit']);
 
 /** `add` / `change` / `remove` / `reencrypt` */
-const action = ref('add');
+const action = ref(props.isTree ? 'change' : 'add');
+
+/** 这个目标允许哪些操作。
+ *
+ * 树只给 change：目录名由第一个 KEK 派生，一棵树同时只能有一个能浏览的
+ * 密码。add 出来的第二个密码可以打开每一个文件，却解不开目录名——解密时
+ * 报「文件损坏」。列出一个做不到的选项比不列糟得多。
+ *
+ * reencrypt 对树也不给：要重写整棵树的载荷，中途失败会留下一半新一半旧。
+ */
+const availableActions = computed(() =>
+  props.isTree ? ['change'] : ['add', 'change', 'remove', 'reencrypt'],
+);
 const current = ref('');
 const next = ref('');
 const next2 = ref('');
@@ -111,11 +125,14 @@ function submit() {
       <div class="krow">
         <span class="klabel">{{ i18n.t('keymgmt.target') }}</span>
         <span class="kname">{{ entry.real_name || entry.name }}</span>
+        <span v-if="isTree" class="ktag">{{ i18n.t('keymgmt.tree_tag') }}</span>
       </div>
 
       <!-- 这句必须常驻，不能藏在展开区里：用户对「有几个密码」的第一反应
-           就是去界面上找那个数字，找不到会以为是 bug -->
-      <div class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
+           就是去界面上找那个数字，找不到会以为是 bug。
+           树形不显示：整棵树只有一个密码，说「查不出有几个」反而制造困惑 -->
+      <div v-if="!isTree" class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
+      <div v-else class="hint">{{ i18n.t('keymgmt.tree_single_password') }}</div>
 
       <div v-if="error" class="errbox" role="alert">{{ error }}</div>
 
@@ -123,17 +140,19 @@ function submit() {
 
       <div class="field">
         <div class="flabel">{{ i18n.t('keymgmt.action') }}</div>
-        <label
-          v-for="a in ['add', 'change', 'remove', 'reencrypt']"
-          :key="a"
-          class="radio"
-        >
+        <label v-for="a in availableActions" :key="a" class="radio">
           <input v-model="action" type="radio" :value="a" @change="onActionChange" />
           <span>
             {{ i18n.t(`keymgmt.${a}`) }}
             <div class="d">{{ i18n.t(`keymgmt.${a}_desc`) }}</div>
           </span>
         </label>
+      </div>
+
+      <!-- 目录名由密码派生，换完密码文件夹会改名。不提前说的话，用户
+           回到文件管理器发现「文件夹不见了」会以为数据没了 -->
+      <div v-if="isTree" class="warnbox" role="alert">
+        {{ i18n.t('keymgmt.tree_warning') }}
       </div>
 
       <!-- 移除会作废其它密码，且旧副本仍可用旧密码打开。后者是最容易

@@ -51,5 +51,8 @@
   "unexpected_new_password": "This action does not take a new password",
   "not_encrypted": "This is not an omy encrypted file",
   "rewrite_verify_failed": "The rewritten file could not be opened with the new password; nothing was changed",
-  "corrupted": "The file is damaged or has been tampered with"
+  "corrupted": "The file is damaged or has been tampered with",
+  "not_a_tree": "No encrypted files were found in this folder; it may not be an encrypted folder.",
+  "tree_only_change": "An encrypted folder shares one password across the whole tree, so the password can only be changed, not added or removed.",
+  "tree_partial": "Some files could not be rewritten, so only part of the tree uses the new password. The old password still works for the files that were missed — run it again with the old password to finish the rest."
 }

@@ -452,6 +452,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
   <KeyDialog
     v-if="keyTarget"
     :entry="keyTarget"
+    :is-tree="!!keyTarget.is_encrypted_dir"
     :busy="state.busy"
     :error="keyError"
     @cancel="keyTarget = null"

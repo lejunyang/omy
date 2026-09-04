@@ -379,13 +379,28 @@ export const restorable = computed(() =>
  * 再套一层解锁。
  *
  * 容器内的条目恒为空：它们没有独立的磁盘文件，密码在外层容器上。
+ *
+ * # 树形加密的目录也算
+ *
+ * 加密目录的 `is_encrypted` 恒为 false（那个字段的语义是「内容是密文」，
+ * 目录的内容是子项），要看 `is_encrypted_dir`。只判断前者的话，选中一个
+ * 加密目录时 🔑 按钮压根不出现，用户得不到任何提示。
  */
 export const keyManageable = computed(() => {
   if (state.container) return null;
   if (state.selected.length !== 1) return null;
   const e = state.entries.find((x) => x.path === state.selected[0]);
-  return e && e.is_encrypted && e.unlocked ? e : null;
+  if (!e || !e.unlocked) return null;
+  return e.is_encrypted || e.is_encrypted_dir ? e : null;
 });
+
+/** 当前可管理密码的目标是不是树形加密的目录。
+ *
+ * 决定对话框只给 change：一棵树同时只能有一个密码（目录名由第一个 KEK
+ * 派生），add 出来的第二个密码能开文件却解不开目录名，解密会报「文件
+ * 损坏」。
+ */
+export const keyTargetIsTree = computed(() => !!keyManageable.value?.is_encrypted_dir);
 
 /* ---------------- 右键菜单 ---------------- */
 
@@ -1021,8 +1036,20 @@ export async function manageKey(req) {
   try {
     const r = await api.manageKey(req);
     state.credentials = await api.credentialCount().catch(() => state.credentials);
+    // 树形改密码后目录名会变（它由密码派生）。正在这棵树里面浏览时，
+    // 当前目录本身也失效了，要在刷新前换过去，否则会去列一个不存在的路径
+    const moved = r.is_tree && r.new_path && r.new_path !== req.path;
+    if (moved && state.cwd === req.path) state.cwd = r.new_path;
     await reload();
-    setNotice(i18n.t(`keymgmt.done_${r.action}`));
+    // 选中项必须在 reload **之后**设置：reload -> navigate 里有
+    // `state.selected = []`，放在前面会被清掉。表现是改完密码一项都没选中，
+    // 而列表里的名字又变了，用户会以为操作对象弄错了
+    if (moved) state.selected = [r.new_path];
+    setNotice(
+      r.is_tree
+        ? i18n.t('keymgmt.done_tree', { n: r.files_changed })
+        : i18n.t(`keymgmt.done_${r.action}`),
+    );
     return r;
   } catch (e) {
     state.error = i18n.te(api.errCode(e));

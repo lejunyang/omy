@@ -281,7 +281,11 @@
     "next_optional": "New password (optional)",
     "next_optional_hint": "Leave empty to keep the same password and only replace the file key — this makes the password on older copies useless for this file.",
     "rewrite_note": "The contents are re-encrypted, so this takes as long as the file is big. The original is left untouched until the write succeeds.",
-    "done_reencrypt": "Re-encrypted; the file key has been replaced"
+    "done_reencrypt": "Re-encrypted; the file key has been replaced",
+    "tree_tag": "entire folder",
+    "tree_single_password": "An encrypted folder shares one password across the whole tree, so it can only be changed, not added to or removed.",
+    "tree_warning": "The folder's name is encrypted with the password too, so it will change to a different string once the password is changed (the contents are unaffected). The list will point at the new folder afterwards.",
+    "done_tree": "Password changed, {{n}} files rewritten"
   },
   "restore": {
     "title_one": "Restore 1 file",

@@ -68,6 +68,15 @@ pub struct KeyOutcome {
     /// 显式返回而不是让前端假定：这是"改密码"与"轮换"的唯一可观察差别，
     /// 端到端验证靠它区分两者是否真的走了不同实现。
     pub payload_rewritten: bool,
+    /// 目标是树形加密的目录时为 true。
+    pub is_tree: bool,
+    /// 改密码后这棵树的新路径（树形时非空）。
+    ///
+    /// **目录名会变**：它由密码派生。前端必须用这个值刷新列表与选中项，
+    /// 否则会指向一个已不存在的目录——表现为「改完密码文件夹不见了」。
+    pub new_path: String,
+    /// 树形时改写的文件数。
+    pub files_changed: usize,
 }
 
 /// 给一个已加密文件增删改密码。
@@ -213,6 +222,11 @@ fn run(
     action: Action,
 ) -> CmdResult<KeyOutcome> {
     let path = Path::new(&req.path);
+    // 目录走树形分支。不先判断的话 fs::read 会失败并报 io_error，
+    // 用户只看到「读写失败」，看不出这是目录
+    if path.is_dir() {
+        return run_tree(state, path, req, action);
+    }
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
         _ => CmdError::code("io_error"),
@@ -301,6 +315,79 @@ fn run(
         action: action.name().to_owned(),
         slots_in_use: slot_used,
         payload_rewritten: action.rewrites_payload(),
+        is_tree: false,
+        new_path: req.path.clone(),
+        files_changed: 1,
+    })
+}
+
+/// 给一棵树形加密的目录换密码。
+///
+/// # 只支持 change
+///
+/// 目录名由**第一个** KEK 派生，`encrypt_tree` / `decrypt_tree` 都只认
+/// `keks[0]`，所以一棵树同时只能有一个「能浏览」的密码。实测过：给树
+/// add 第二个密码后，新密码能打开每一个文件却解不开目录名，解密报
+/// content hash mismatch——用户会以为文件损坏。与其给出一个半残的密码，
+/// 不如明确拒绝。
+///
+/// `reencrypt` 同样拒绝：重写整棵树的载荷，中途失败会留下一半新一半旧。
+///
+/// # Errors
+///
+/// - `not_a_tree`：目录里找不到任何 `.omy` 文件
+/// - `tree_only_change`：对目录用了 change 以外的操作
+/// - `wrong_password` / `corrupted` / `io_error`：同单文件
+/// - `tree_partial`：部分文件改写失败（旧密码对它们仍然有效）
+fn run_tree(
+    state: &Shared,
+    path: &Path,
+    req: &KeyRequest,
+    action: Action,
+) -> CmdResult<KeyOutcome> {
+    if action != Action::Change {
+        return Err(CmdError::code("tree_only_change"));
+    }
+
+    // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数。
+    // 同一个 vault 内它们本就一致，所以 Argon2 只需派生一次
+    let sample = omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_a_tree"))?;
+    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
+    let params = header.argon2_params();
+
+    let current = derive(&req.current, &header.vault_salt, params)?;
+    // 尽早验密码：让用户等完整棵树才被告知「密码不对」是很糟的体验
+    omy_core::file::open(&head, &[current.duplicate()]).map_err(map_core_err)?;
+
+    let next = derive(&req.next, &header.vault_salt, params)?;
+    let rep = omy_core::tree::rekey_tree(
+        path,
+        &[current],
+        &[next],
+        &header.vault_salt,
+        header.cipher_id,
+    )
+    .map_err(map_core_err)?;
+
+    // 部分失败必须报错而不是静默返回成功：用户以为全改完了，等哪天用新
+    // 密码打不开另一半时早就忘了旧密码。旧密码对失败的那些文件仍然有效
+    if !rep.is_complete() {
+        return Err(CmdError::code("tree_partial"));
+    }
+
+    state.with_session(|s| {
+        let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
+    });
+
+    Ok(KeyOutcome {
+        action: action.name().to_owned(),
+        // 树上不可探测单个文件的 slot 占用，也没有意义——整棵树一个密码
+        slots_in_use: 1,
+        payload_rewritten: false,
+        is_tree: true,
+        new_path: rep.root.to_string_lossy().into_owned(),
+        files_changed: rep.changed,
     })
 }
 
