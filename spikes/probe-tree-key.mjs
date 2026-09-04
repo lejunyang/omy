@@ -13,6 +13,10 @@
  *    会被上一步的过期提示满足。
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
 const PORT = process.argv[2] || '9378';
 const WORK_DIR = process.argv[3] || '';
 const ENC_NAME = process.argv[4] || '';
@@ -24,6 +28,48 @@ if (!WORK_DIR || !ENC_NAME) {
   console.log('FAIL 参数缺失: argv=' + JSON.stringify(process.argv.slice(2)));
   process.exit(1);
 }
+
+/** 把一棵密文树里每个 .omy 文件的内容摘要列出来。
+ *
+ * 比对摘要而不是「文件是否存在」：轮换成功与否的唯一可观察证据就是密文
+ * 变没变，文件名和数量在轮换前后都是一样的。
+ */
+function hashTree(dir) {
+  const out = [];
+  const walk = (d) => {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.omy'))
+        out.push(crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'));
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
+/** 把任意值转成一段能安全打印的短描述。
+ *
+ * 直接写 `JSON.stringify(x).slice(0, n)` 会在 x 为 undefined 时抛异常——
+ * stringify 返回的是 undefined 而不是字符串。而这恰好发生在**断言失败**
+ * 的路径上：探针在本该报告失败的地方自己崩掉，后面的断言一条都不跑。
+ * 变异测试才会暴露这种问题，正常全绿时完全看不出来。
+ */
+const desc = (v, n = 200) => {
+  let s;
+  try {
+    s = typeof v === 'string' ? v : JSON.stringify(v);
+  } catch {
+    s = String(v);
+  }
+  return String(s ?? v).slice(0, n);
+};
 
 const ok = (name, extra) => results.push({ pass: true, name, extra: extra || '' });
 const bad = (name, extra) => results.push({ pass: false, name, extra: extra || '' });
@@ -87,10 +133,12 @@ async function cdp() {
   return { evaluate, close: () => ws.close() };
 }
 
+// 错误要连 params 一起带回来：部分失败时「是哪些文件」就在 params.files 里，
+// 只取 code 的话，界面该显示的清单在探针里根本看不到
 const INVOKE = (cmd, args) =>
   `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)})
      .then((v) => 'OK:' + JSON.stringify(v))
-     .catch((e) => 'ERR:' + (e && e.code ? e.code : JSON.stringify(e)))`;
+     .catch((e) => 'ERR:' + JSON.stringify(e && e.code ? { code: e.code, params: e.params } : e))`;
 
 async function main() {
   const { evaluate, close } = await cdp();
@@ -219,10 +267,18 @@ async function main() {
       bad('密码管理对话框打开', JSON.stringify(why).slice(0, 400));
     }
 
-    if (dlg.radios?.length === 1 && dlg.radios[0] === 'change') {
-      ok('只提供 change 一个选项');
+    // 树支持改密码与轮换，但 add / remove 做不到（目录名只认第一个 KEK），
+    // 列出一个做不到的选项比不列糟得多
+    const rs = dlg.radios ?? [];
+    if (rs.length === 2 && rs.includes('change') && rs.includes('reencrypt')) {
+      ok('提供 change 与 reencrypt 两个选项');
     } else {
-      bad('只提供 change 一个选项', JSON.stringify(dlg.radios));
+      bad('提供 change 与 reencrypt 两个选项', JSON.stringify(rs));
+    }
+    if (!rs.includes('add') && !rs.includes('remove')) {
+      ok('不列出树做不到的 add / remove');
+    } else {
+      bad('不列出树做不到的 add / remove', JSON.stringify(rs));
     }
     if (dlg.checked === 'change') ok('change 默认选中');
     else bad('change 默认选中', dlg.checked);
@@ -369,6 +425,311 @@ async function main() {
       } else {
         bad('反证：合法的 change 仍被接受', good);
       }
+    }
+    /* ---------- 7. 轮换（reencrypt）---------- */
+    // 取当前加密目录（前面 change 过，名字又变了一次）
+    const listed3 = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+    let rotDir = '';
+    if (listed3.startsWith('OK:')) {
+      const arr = JSON.parse(listed3.slice(3));
+      rotDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+    }
+    if (rotDir) ok('找到待轮换的加密目录');
+    else bad('找到待轮换的加密目录', listed3.slice(0, 200));
+
+    if (rotDir) {
+      // 直接用 fs 读磁盘：探针是普通 node 进程，跟产品同机。
+      // 不为了测试往产品里加调试命令
+      const before = hashTree(rotDir);
+
+      const rot = await evaluate(
+        INVOKE('manage_key', {
+          req: { path: rotDir, action: 'reencrypt', current: 'third-77', next: '' },
+        }),
+      );
+      if (rot.startsWith('OK:')) {
+        ok('后端接受对树 reencrypt');
+        const v = JSON.parse(rot.slice(3));
+        // payload_rewritten 是「这次真的重写了载荷」的唯一标记。
+        // 少了它，一个把 reencrypt 当 change 处理的实现完全无声
+        if (v.payload_rewritten === true) ok('返回 payload_rewritten=true');
+        else bad('返回 payload_rewritten=true', JSON.stringify(v));
+        // 不换密码 → 目录名密钥没变 → 路径不该变
+        if (v.new_path === rotDir) ok('不换密码时目录名不变');
+        else bad('不换密码时目录名不变', `${rotDir} -> ${v.new_path}`);
+      } else {
+        bad('后端接受对树 reencrypt', rot.slice(0, 200));
+      }
+
+      // 密文必须真的变了：这是轮换与改密码唯一的可观察差别
+      const after = hashTree(rotDir);
+      const unchanged = after.filter((x) => before.includes(x));
+      if (after.length > 0 && unchanged.length === 0) ok('轮换后密文确实变了');
+      else bad('轮换后密文确实变了', `${unchanged.length}/${after.length} 份没变`);
+      // 文件数不变：轮换是原地覆盖，不该多出或少掉文件
+      if (after.length === before.length && after.length > 0)
+        ok('轮换后文件数不变', String(after.length));
+      else bad('轮换后文件数不变', `${before.length} -> ${after.length}`);
+
+      // 轮换后原密码仍可用（没换密码）
+      const un = await evaluate(
+        INVOKE('unlock_directory', { dir: rotDir, password: 'third-77' }),
+      );
+      if (un.startsWith('OK:')) ok('轮换后原密码仍可用');
+      else bad('轮换后原密码仍可用', un.slice(0, 160));
+    }
+
+    /* ---------- 8. 界面上的轮换选项 ---------- */
+    // 后端支持了不等于用户点得到。改动前树只给 change 一个选项
+    // 先刷新列表。第 6、7 段都走后端 invoke 改了目录名，界面并不知道，
+    // 那一行的 path 指向已经不存在的目录——点它选不中，工具条也就不渲染
+    await evaluate(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) =>
+        x.textContent.includes('⟳'),
+      );
+      if (b) b.click();
+      return 'ok';
+    })()`);
+    await sleep(1500);
+
+    // 选中行的写法必须与前面成功的那段一致：`.click()` 在这套界面上
+    // 不会触发选中，要派发冒泡的 MouseEvent
+    const openDlg = await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.grid .card, .list .lrow')];
+      const t = rows.find((r) => r.querySelector('.encbadge'));
+      if (!t) return 'no-row:' + rows.length;
+      t.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return 'ok';
+    })()`);
+    await sleep(500);
+    if (openDlg === 'ok') {
+      // 必须真的点 🔑 才会开对话框——前一段结尾已经把它关掉了。
+      // 按结构定位：文字里的 🔑 也出现在凭据指示器上
+      const opened = await evaluate(`(() => {
+        const b = [...document.querySelectorAll('.vtoggle button')]
+          .find((x) => x.textContent.includes('🔑'));
+        if (!b) return 'no-btn';
+        if (b.disabled) return 'disabled';
+        b.click();
+        return 'ok';
+      })()`);
+      await sleep(700);
+      if (opened === 'ok') ok('能再次打开密码管理对话框');
+      else bad('能再次打开密码管理对话框', opened);
+      const acts = await evaluate(`(() => {
+        const d = document.querySelector('.dlg.keymgmt');
+        if (!d) return '[]';
+        return JSON.stringify([...d.querySelectorAll('.radio input')].map((i) => i.value));
+      })()`);
+      let list = [];
+      try {
+        list = JSON.parse(acts);
+      } catch {}
+      if (list.includes('reencrypt')) ok('界面提供轮换选项', acts);
+      else bad('界面提供轮换选项', acts);
+      if (list.includes('change')) ok('界面仍提供改密码选项');
+      else bad('界面仍提供改密码选项', acts);
+      // add / remove 对树做不到，不能列出来
+      if (!list.includes('add') && !list.includes('remove')) ok('界面不列出树做不到的 add/remove');
+      else bad('界面不列出树做不到的 add/remove', acts);
+
+      // 选中轮换后，新密码应变成可选（不填也能提交）
+      const optional = await evaluate(`(() => {
+        const d = document.querySelector('.dlg.keymgmt');
+        if (!d) return 'no-dlg';
+        const r = [...d.querySelectorAll('.radio input')].find((i) => i.value === 'reencrypt');
+        if (!r) return 'no-radio';
+        r.click();
+        return 'ok';
+      })()`);
+      await sleep(200);
+      if (optional === 'ok') {
+        const st = await evaluate(`(() => {
+          const d = document.querySelector('.dlg.keymgmt');
+          if (!d) return '{}';
+          const cur = d.querySelector('#k-cur');
+          const btn = d.querySelector('.acts .btn.primary');
+          return JSON.stringify({
+            warn: [...d.querySelectorAll('.warnbox')].map((w) => w.textContent.trim().slice(0, 30)),
+            hasCur: !!cur,
+            btnDisabled: btn ? btn.disabled : null,
+          });
+        })()`);
+        // 轮换的耗时警示必须出现，否则用户不知道为什么要等这么久
+        if (st.includes('重写') || st.toLowerCase().includes('rewritten') || st.includes('逐个'))
+          ok('显示了轮换的耗时警示', st.slice(0, 120));
+        else bad('显示了轮换的耗时警示', st.slice(0, 200));
+        // 键名原文出现说明 i18n 键写错了层级（嵌套 vs 扁平）
+        if (!st.includes('keymgmt.')) ok('警示是译文而非键名');
+        else bad('警示是译文而非键名', st.slice(0, 200));
+      }
+      // 关掉对话框，别影响后面
+      await evaluate(`(() => {
+        const b = [...document.querySelectorAll('.dlg.keymgmt .acts button')]
+          .find((x) => !x.classList.contains('primary'));
+        if (b) b.click();
+        return 'ok';
+      })()`);
+      await sleep(200);
+    } else {
+      bad('能选中加密目录打开对话框', openDlg);
+    }
+
+    /* ---------- 9. 部分失败要说清是哪些文件 ---------- */
+    // 制造真实的部分失败：往树里塞一个损坏的 .omy。它通不过 open，
+    // 其余文件正常，于是 rekey 报部分失败。
+    //
+    // 不这么做就没法测这条路径——而「只给一个错误码、不说是哪些文件」
+    // 恰好是这次要补的缺口，没有断言的话它退化了也没人知道
+    const listed4 = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+    let partDir = '';
+    if (listed4.startsWith('OK:')) {
+      const arr = JSON.parse(listed4.slice(3));
+      partDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+    }
+    if (partDir) {
+      const junk = path.join(partDir, 'broken.omy');
+      // 有 .omy 扩展名但内容不是密文：遍历会挑中它，open 必然失败
+      fs.writeFileSync(junk, Buffer.from('not a real omy file at all'));
+      const part = await evaluate(
+        INVOKE('manage_key', {
+          req: { path: partDir, action: 'change', current: 'third-77', next: 'part-88' },
+        }),
+      );
+      if (part.startsWith('ERR:')) ok('部分失败时报错而非静默成功');
+      else bad('部分失败时报错而非静默成功', part.slice(0, 200));
+
+      let perr = {};
+      try {
+        perr = JSON.parse(part.slice(4));
+      } catch {
+        // 解不出来也要继续：探针自己崩掉会丢掉前面所有已收集的结果，
+        // 最后只剩一句 "Cannot read properties of undefined"
+      }
+      if (perr.code === 'tree_partial') ok('错误码是 tree_partial');
+      else bad('错误码是 tree_partial', part.slice(0, 200));
+
+      const files = perr.params?.files;
+      if (Array.isArray(files) && files.length > 0) {
+        ok('错误带上了失败文件清单', String(files.length) + ' 条');
+      } else {
+        bad('错误带上了失败文件清单', desc(perr));
+      }
+      // 必须点名那个坏文件，而不是给一个笼统的数字
+      if (Array.isArray(files) && files.some((f) => String(f).includes('broken.omy'))) {
+        ok('清单点名了具体的坏文件');
+      } else {
+        bad('清单点名了具体的坏文件', desc(files));
+      }
+      // 反证：其余文件应当已经改成了（部分失败不等于全部回滚）
+      if (perr.params?.changed >= 2) ok('报告了已改成功的文件数', String(perr.params.changed));
+      else bad('报告了已改成功的文件数', desc(perr.params, 160));
+
+      // 清单要真的显示到界面上，不是只存进 state。
+      //
+      // 先用新密码解锁：上一步的 change 已经把密码换成 part-88 并改了目录名，
+      // 会话里存的还是旧密码，这棵树在界面看来是「未解锁」——而
+      // keyManageable 要求 unlocked，🔑 按钮不会出现。
+      //
+      // 这不是产品缺陷：命令行改了密码，界面当然不知道新密码。真实用户在
+      // 界面里改密码时，store 会把新密码存进会话
+      const listed5 = await evaluate(INVOKE('browse_directory', { dir: WORK_DIR }));
+      let newDir = '';
+      if (listed5.startsWith('OK:')) {
+        const arr = JSON.parse(listed5.slice(3));
+        newDir = (arr.find((e) => e.is_encrypted_dir) ?? {}).path ?? '';
+      }
+      const un2 = await evaluate(
+        INVOKE('unlock_directory', { dir: newDir, password: 'part-88' }),
+      );
+      if (un2.startsWith('OK:')) ok('部分失败后用新密码仍能解锁（其余文件已改）');
+      else bad('部分失败后用新密码仍能解锁（其余文件已改）', un2.slice(0, 160));
+
+      await evaluate(`(() => {
+        const b = [...document.querySelectorAll('button')].find((x) =>
+          x.textContent.includes('⟳'),
+        );
+        if (b) b.click();
+        return 'ok';
+      })()`);
+      await sleep(1500);
+      await evaluate(`(() => {
+        const rows = [...document.querySelectorAll('.grid .card, .list .lrow')];
+        const t = rows.find((r) => r.querySelector('.encbadge'));
+        if (t) t.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return 'ok';
+      })()`);
+      await sleep(500);
+      // 单独断言点没点上：这一段最容易出问题的地方就在这里，
+      // 而「对话框没打开」这个现象本身看不出是按钮不在、禁用，还是别的
+      const clickKey = await evaluate(`(() => {
+        const b = [...document.querySelectorAll('.vtoggle button')]
+          .find((x) => x.textContent.includes('🔑'));
+        if (!b) return 'no-btn';
+        if (b.disabled) return 'disabled';
+        b.click();
+        return 'ok';
+      })()`);
+      if (clickKey === 'ok') ok('部分失败测试：🔑 按钮可点击');
+      else bad('部分失败测试：🔑 按钮可点击', clickKey);
+      await sleep(700);
+      // 按下标填，与前面成功的那段完全一致。当前密码是 part-88
+      // （上一步 change 换过），坏文件还在树里，所以这次提交同样会
+      // 部分失败——正是我们要看的界面表现
+      await evaluate(`(() => {
+        const f = document.querySelector('.dlg.keymgmt');
+        if (!f) return 'no-dialog';
+        const set = (el, v) => {
+          el.value = v;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const ins = [...f.querySelectorAll('input[type=password]')];
+        if (!ins.length) return 'no-inputs';
+        set(ins[0], 'part-88');
+        if (ins[1]) set(ins[1], 'part-99');
+        if (ins[2]) set(ins[2], 'part-99');
+        return 'ok';
+      })()`);
+      await sleep(600);
+      // 断言按钮可用：禁用时点击被静默吃掉，看着像是清单功能坏了
+      const sub9 = await evaluate(`(() => {
+        const b = document.querySelector('.dlg.keymgmt .acts .btn.primary');
+        return b ? String(!!b.disabled) : 'no-btn';
+      })()`);
+      if (sub9 === 'false') ok('部分失败测试：提交按钮可用');
+      else bad('部分失败测试：提交按钮可用', sub9);
+      await evaluate(`(() => {
+        const b = document.querySelector('.dlg.keymgmt .acts .btn.primary');
+        if (b) b.click();
+        return 'ok';
+      })()`);
+      await sleep(4000);
+      const shown = await evaluate(`(() => {
+        const d = document.querySelector('.dlg.keymgmt');
+        if (!d) return JSON.stringify({ open: false });
+        return JSON.stringify({
+          open: true,
+          err: d.querySelector('.errbox')?.textContent?.trim().slice(0, 60) ?? '',
+          items: [...d.querySelectorAll('.failed li')].map((li) =>
+            li.textContent.trim().slice(0, 40),
+          ),
+        });
+      })()`);
+      let sv = {};
+      try {
+        sv = JSON.parse(shown);
+      } catch {}
+      if (sv.open) ok('部分失败后对话框保持打开（便于阅读清单）');
+      else bad('部分失败后对话框保持打开（便于阅读清单）', shown.slice(0, 200));
+      if (Array.isArray(sv.items) && sv.items.length > 0) {
+        ok('界面上真的列出了失败文件', String(sv.items.length) + ' 条');
+      } else {
+        bad('界面上真的列出了失败文件', shown.slice(0, 300));
+      }
+      if (sv.err && !sv.err.includes('tree_partial')) ok('错误文案是译文而非错误码');
+      else bad('错误文案是译文而非错误码', String(sv.err).slice(0, 120));
+    } else {
+      bad('找到用于部分失败测试的加密目录', listed4.slice(0, 200));
     }
   } finally {
     close();
