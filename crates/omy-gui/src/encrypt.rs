@@ -298,6 +298,19 @@ fn encrypt_one(
     };
     let original_size = data.len() as u64;
 
+    // 媒体附加信息：缩略图、媒体元信息、MP4 的 moov 副本。
+    //
+    // 只对单文件做。目录打包后的载荷是一个容器格式，整体既不是图片也不是
+    // 视频，探测它只会白起一个 ffprobe 进程。
+    //
+    // 不做这一步的后果是列表页永远没有缩略图——而且很难看出是这里漏了：
+    // 读取侧（thumbnail()、has_thumbnail）一直都在，只是永远读到空。
+    let prepared = if src.is_dir() {
+        omy_media::Prepared::default()
+    } else {
+        omy_media::prepare(&data, &media_prepare_options())
+    };
+
     let filename = src
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -309,6 +322,9 @@ fn encrypt_one(
         compress: req.compress,
         chunk_size: req.chunk_size,
         folder_index,
+        thumbnail: prepared.thumbnail,
+        media_meta: prepared.media_meta,
+        moov_cache: prepared.moov_cache,
         // 必须显式传入！头部记录的 KDF 参数取自这里，而 KEK 是用
         // 外面那份 `params` 派生的。两者不一致时，解密方读头部按错误的
         // 参数派生，就得到一个**永远打不开这个文件的 KEK**——
@@ -406,6 +422,20 @@ fn encrypt_one(
 ///
 /// `encrypted_size` 要遍历产物累加：逐个文件加密时没有一个「密文总字节数」
 /// 可以直接拿到。少算的话用户会以为加密后体积缩水了。
+/// GUI 加密时的媒体探测选项。
+///
+/// GUI 没有对应的开关，所以固定全开、缩略图走 `Auto` 按内容分派。
+/// 抽成函数是为了让容器模式与树形模式共用同一份配置：
+/// 两处各写一遍的话，迟早出现「单文件有缩略图、树里没有」这种不一致。
+fn media_prepare_options() -> omy_media::PrepareOptions {
+    omy_media::PrepareOptions {
+        media_meta: true,
+        moov_cache: true,
+        thumbnail: omy_media::ThumbSource::Auto,
+        ..omy_media::PrepareOptions::default()
+    }
+}
+
 fn encrypt_one_as_tree(
     src: &Path,
     out_dir: &Path,
@@ -427,8 +457,23 @@ fn encrypt_one_as_tree(
         ..EncryptOptions::default()
     };
 
-    let rep = omy_core::tree::encrypt_tree(src, out_dir, keks, vault_salt, &opts, None)
-        .map_err(|_| String::from("tree_encrypt_failed"))?;
+    // 逐个文件生成媒体附加信息。警告在 GUI 里没有承载位置，
+    // 而且非媒体文件占多数，所以丢弃——真正需要排查时用 CLI 的 -v。
+    let mut on_media = |data: &[u8], _name: &str| {
+        let p = omy_media::prepare(data, &media_prepare_options());
+        (p.thumbnail, p.media_meta, p.moov_cache)
+    };
+
+    let rep = omy_core::tree::encrypt_tree_with_media(
+        src,
+        out_dir,
+        keks,
+        vault_salt,
+        &opts,
+        None,
+        Some(&mut on_media),
+    )
+    .map_err(|_| String::from("tree_encrypt_failed"))?;
 
     let mut original_size = 0u64;
     sum_file_sizes(src, &mut original_size);
