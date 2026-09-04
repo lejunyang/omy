@@ -118,8 +118,72 @@ try {
     $o7 = & $exe key change $plain --password-file $old --new-password-file $new --yes 2>&1 | Out-String
     Check '对普通目录报「不是树形加密目录」' ($o7 -match '不是树形加密') $o7
 
-    $o8 = & $exe key reencrypt $newPath --password-file $new --yes 2>&1 | Out-String
-    Check 'reencrypt 对目录明确拒绝' ($LASTEXITCODE -ne 0 -and $o8 -match '暂不支持目录') $o8
+    Write-Output '=== 6b. reencrypt（轮换文件密钥）==='
+    # 先记下轮换前每个密文文件的字节，轮换后逐一比对。
+    # 只查退出码的话，一个「悄悄按改密码处理」的实现照样能通过
+    $beforeBytes = @{}
+    Get-ChildItem $newPath -Recurse -File -Filter *.omy | ForEach-Object {
+        $beforeBytes[$_.Name] = [System.IO.File]::ReadAllBytes($_.FullName)
+    }
+    Check '轮换前有 2 个密文文件' ($beforeBytes.Count -eq 2) "实际 $($beforeBytes.Count)"
+
+    # -v：逐个文件的进度走 detail 级别，默认不输出（大批量时会刷屏）
+    $o8 = & $exe -v key reencrypt $newPath --password-file $new --yes 2>&1 | Out-String
+    Check 'reencrypt 接受目录' ($LASTEXITCODE -eq 0) $o8
+    Check 'reencrypt 报告重写了明文' ($o8 -match '重写明文') $o8
+    Check 'reencrypt 显示逐个文件的进度' ($o8 -match '\[1/2\]' -and $o8 -match '\[2/2\]') $o8
+    # 不换密码时目录名不该变——目录名密钥没变，改名纯属多余
+    Check 'reencrypt 不换密码时目录名不变' (Test-Path $newPath) "路径没了: $newPath"
+
+    $afterBytes = @{}
+    Get-ChildItem $newPath -Recurse -File -Filter *.omy | ForEach-Object {
+        $afterBytes[$_.Name] = [System.IO.File]::ReadAllBytes($_.FullName)
+    }
+    Check '轮换后仍是 2 个文件' ($afterBytes.Count -eq 2) "实际 $($afterBytes.Count)"
+    # 磁盘名必须保持不变。名字只在初次加密时由 file_uuid 生成，轮换是
+    # 原地覆盖——改名会让备份工具把整棵树当成全新文件、全量重传一遍
+    $sameName = 0
+    foreach ($k in $afterBytes.Keys) { if ($beforeBytes.ContainsKey($k)) { $sameName++ } }
+    Check '轮换保持磁盘名不变（原地覆盖）' ($sameName -eq 2) "只有 $sameName 个名字对得上"
+    # 逐字节比对：任一文件内容原封不动就说明没真的轮换
+    $identical = 0
+    foreach ($nb in $afterBytes.Values) {
+        foreach ($ob in $beforeBytes.Values) {
+            if ($nb.Length -eq $ob.Length) {
+                $same = $true
+                for ($i = 0; $i -lt $nb.Length; $i++) {
+                    if ($nb[$i] -ne $ob[$i]) { $same = $false; break }
+                }
+                if ($same) { $identical++ }
+            }
+        }
+    }
+    Check '轮换后密文确实变了' ($identical -eq 0) "有 $identical 份密文一字节没变"
+
+    # 轮换后原密码仍可用（没换密码）
+    $d8 = Join-Path $root 'dec-after-rotate'
+    New-Item -ItemType Directory -Path $d8 -Force | Out-Null
+    & $exe decrypt $newPath --password-file $new --output-dir $d8 --yes 2>&1 | Out-Null
+    Check '轮换后原密码仍可用' ($LASTEXITCODE -eq 0) "退出码 $LASTEXITCODE"
+    $t8 = Get-ChildItem $d8 -Recurse -File -Filter '顶层.txt' | Select-Object -First 1
+    Check '轮换后内容一字不差' ($t8 -and (Get-Content $t8.FullName -Raw).Trim() -eq 'TOP-CONTENT') "$($t8.FullName)"
+
+    # 轮换 + 换密码：这时目录名要变
+    $o8b = & $exe key reencrypt $newPath --password-file $new --new-password-file $third --yes 2>&1 | Out-String
+    Check 'reencrypt 可以同时换密码' ($LASTEXITCODE -eq 0) $o8b
+    $rotated = (Get-ChildItem $root -Directory | Where-Object { $_.Name -like '*.omy' } | Select-Object -First 1)
+    Check '轮换并换密码后目录名变了' ($rotated.FullName -ne $newPath) "仍是 $newPath"
+    $d8c = Join-Path $root 'dec-rotate-third'
+    New-Item -ItemType Directory -Path $d8c -Force | Out-Null
+    & $exe decrypt $rotated.FullName --password-file $third --output-dir $d8c --yes 2>&1 | Out-Null
+    Check '轮换后新密码可用' ($LASTEXITCODE -eq 0) "退出码 $LASTEXITCODE"
+    $d8d = Join-Path $root 'dec-rotate-old-should-fail'
+    New-Item -ItemType Directory -Path $d8d -Force | Out-Null
+    & $exe decrypt $rotated.FullName --password-file $new --output-dir $d8d --yes 2>&1 | Out-Null
+    Check '轮换后旧密码失效' ($LASTEXITCODE -ne 0) "退出码 $LASTEXITCODE"
+    # 后续用例接着用轮换后的路径
+    $newPath = $rotated.FullName
+    $new = $third
 
     $o9 = & $exe key change $newPath --password-file $new --new-password-file $new --yes 2>&1 | Out-String
     Check '新旧密码相同时报错' ($LASTEXITCODE -ne 0 -and $o9 -match '相同') $o9
