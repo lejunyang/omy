@@ -622,13 +622,86 @@ pub fn rekey_tree_with_progress(
             if renamed {
                 rep.dirs_renamed = rep.dirs_renamed.saturating_add(1);
             }
-            find_renamed(root, &new_dkey, cipher).unwrap_or_else(|| root.to_path_buf())
+            let now = find_renamed(root, &new_dkey, cipher).unwrap_or_else(|| root.to_path_buf());
+            // 根目录名一变，报告里所有失败路径的前缀都得跟着变
+            retarget(&mut rep.failed, root, &now);
+            now
         }
         Err(err) => {
             rep.failed.push((root.to_path_buf(), err));
             root.to_path_buf()
         }
     };
+    Ok(rep)
+}
+
+/// 把已记录的失败路径从 `from` 前缀换成 `to` 前缀。
+///
+/// 为什么需要：失败是在改名**之前**记下的，改完名那些路径就指向不存在的
+/// 位置。调用方拿它去重试或展示，得到的是「文件不存在」——实测确认过部分
+/// 失败时每一条路径的 `exists()` 都是 false。
+fn retarget(failed: &mut [(PathBuf, String)], from: &Path, to: &Path) {
+    if from == to {
+        return;
+    }
+    for (p, _) in failed.iter_mut() {
+        if let Ok(rel) = p.strip_prefix(from) {
+            *p = to.join(rel);
+        }
+    }
+}
+
+/// 只对给定的这些文件改密码，不碰目录名，也不遍历整棵树。
+///
+/// 用于重试上一次 [`rekey_tree_with_progress`] 报告里失败的那些文件。
+///
+/// # 为什么不重走整棵树
+///
+/// 上一次已经改好的文件现在用**新**密码，重走时拿旧密码去开必然失败，于是
+/// 报告里会多出一堆假失败——用户分不清哪些是真问题。而且目录名在第一次
+/// 就已经改完了，再改一次等于把整棵树的名字又换一遍。
+///
+/// # 参数
+///
+/// `files` 是绝对路径（报告里返回的就是绝对路径）。不接受相对路径：
+/// 相对于谁很容易搞错，而调用方手里本来就有绝对路径。
+///
+/// # Errors
+///
+/// `keep` 为空时拒绝：那会留下永远打不开的文件。
+pub fn retry_files(
+    files: &[PathBuf],
+    unlock: &[Kek],
+    keep: &[Kek],
+    rotate: bool,
+    mut progress: Option<RekeyProgressFn<'_>>,
+) -> Result<RekeyReport> {
+    if keep.is_empty() {
+        return Err(Error::MalformedHeader {
+            reason: "refusing to leave files with zero key slots; they could never be opened again",
+        });
+    }
+    let mut rep = RekeyReport { payload_rewritten: rotate, ..RekeyReport::default() };
+    let total = files.len();
+    for (i, path) in files.iter().enumerate() {
+        let idx = i.saturating_add(1);
+        let shown =
+            path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let mut on_bytes = |done: u64, bytes: u64| {
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(&shown, idx, total, done, bytes);
+            }
+        };
+        match rekey_one(path, unlock, keep, rotate, &mut on_bytes) {
+            Ok(written) => {
+                rep.changed = rep.changed.saturating_add(1);
+                rep.bytes_rewritten = rep.bytes_rewritten.saturating_add(written);
+            }
+            Err(err) => rep.failed.push((path.clone(), err)),
+        }
+    }
+    // 没改目录名，所以根路径无从得知也无需变化。留空表示「路径没变」，
+    // 调用方不该拿它去刷新界面
     Ok(rep)
 }
 
@@ -751,7 +824,15 @@ fn rekey_into(
             continue;
         }
         match rename_dir(&sub, ctx.old_dkey, ctx.new_dkey, ctx.cipher) {
-            Ok(true) => rep.dirs_renamed = rep.dirs_renamed.saturating_add(1),
+            Ok(true) => {
+                rep.dirs_renamed = rep.dirs_renamed.saturating_add(1);
+                // 改完名，之前记下的失败路径就指向不存在的位置了。
+                // 必须立刻跟着改：调用方拿这些路径去重试或展示，得到的是
+                // 「文件不存在」——实测确认过每一条 exists() 都是 false
+                if let Some(now) = find_renamed(&sub, ctx.new_dkey, ctx.cipher) {
+                    retarget(&mut rep.failed, &sub, &now);
+                }
+            }
             // false = 名字本来就解不开（不是我们加密的目录），跳过不算失败
             Ok(false) => {}
             Err(err) => rep.failed.push((sub, err)),
@@ -1083,6 +1164,172 @@ mod tests {
             assert!(crate::file::open(&data, &[extra.duplicate()]).is_ok(), "新密码不生效");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 造一棵树并让其中一个文件写入失败，返回 (root, 报告, 两个 KEK, cipher)。
+    ///
+    /// 用「设为只读」制造失败而不是塞垃圾文件：只读文件 open 成功、写回失败，
+    /// 正是真实场景（被别的程序占用、权限不对）走的那条路径。塞垃圾文件走的
+    /// 是 open 失败，测不到「改到一半」的状态。
+    ///
+    /// 只在 Windows 上编译：POSIX 的写入权限看的是**目录**，只读文件照样能被
+    /// rename 覆盖，所以这个手法在那里造不出失败。与其写一段在 Unix 上静默
+    /// 失效的测试，不如明确限定平台
+    #[cfg(windows)]
+    fn partial_failure_fixture(tag: &str) -> (PathBuf, RekeyReport, Kek, Kek, CipherId) {
+        let (root, enc_root, salt, cipher) = tree_fixture(tag);
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+
+        let victim = all_files(&enc_root).into_iter().next().expect("树里应当有文件");
+        let mut perm = std::fs::metadata(&victim).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&victim, perm).unwrap();
+
+        let rep =
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+
+        // 解除只读，让调用方可以接着测重试。
+        // clippy 提醒 set_readonly(false) 在 Unix 上等于全局可写——这里整个
+        // fixture 已经限定 windows，不存在那个问题
+        for (p, _) in &rep.failed {
+            if let Ok(md) = std::fs::metadata(p) {
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "仅 Windows 编译，不存在 Unix 上全局可写的问题"
+                )]
+                {
+                    let mut perm = md.permissions();
+                    perm.set_readonly(false);
+                    let _ = std::fs::set_permissions(p, perm);
+                }
+            }
+        }
+        (root, rep, old, new, cipher)
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn partial_failure_reports_paths_that_still_exist() {
+        // 修复前这里每一条 exists() 都是 false：失败是在改名之前记下的，
+        // 之后父目录被逐层改名，路径全部指向不存在的位置。
+        //
+        // 不这样会怎样：CLI 把一串不存在的路径打印给用户，GUI 也没法按它
+        // 重试——「重试」拿到的每个目标都是「文件不存在」
+        let (root, rep, _old, _new, _cipher) = partial_failure_fixture("partpath");
+
+        assert!(!rep.is_complete(), "只读文件应当导致部分失败");
+        assert_eq!(rep.failed.len(), 1, "只有一个文件被设为只读：{:?}", rep.failed);
+        assert!(rep.dirs_renamed > 0, "目录名应当已经改过（这正是路径失效的原因）");
+
+        for (p, _) in &rep.failed {
+            assert!(p.exists(), "报告里的失败路径不存在：{p:?}");
+            // 而且必须落在改名后的新树里，不能是旧前缀
+            assert!(
+                p.starts_with(&rep.root),
+                "失败路径不在报告返回的新根目录下：{p:?} 不以 {:?} 开头",
+                rep.root
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn retry_files_finishes_the_job_without_touching_the_rest() {
+        // 重试的完整闭环：只处理清单里的文件，处理完整棵树能用新密码解开。
+        let (root, rep, old, new, cipher) = partial_failure_fixture("retryok");
+        let salt = [7u8; 16];
+        let before = rep.changed;
+        let list: Vec<PathBuf> = rep.failed.iter().map(|(p, _)| p.clone()).collect();
+
+        // 目录名不该再变一次：改名在第一次就完成了
+        let names_before: Vec<String> = walk_dirs(&rep.root);
+
+        let r2 = retry_files(&list, &[old.duplicate()], &[new.duplicate()], false, None).unwrap();
+        assert!(r2.is_complete(), "重试应当成功：{:?}", r2.failed);
+        assert_eq!(r2.changed, list.len(), "改写数应当等于清单长度");
+
+        assert_eq!(walk_dirs(&rep.root), names_before, "重试不该改动目录名");
+        assert!(rep.root.exists(), "重试不该动根目录");
+
+        // 最终判据：整棵树用新密码完整解开，内容一字不差
+        let out = root.join("dec");
+        std::fs::create_dir_all(&out).unwrap();
+        let d = decrypt_tree(&rep.root, &out, &[new], &salt, cipher, None).unwrap();
+        assert_eq!(
+            d.files,
+            before.saturating_add(r2.changed),
+            "解出的文件数应当等于第一次改好的 + 重试补上的"
+        );
+        assert_eq!(std::fs::read(d.root.join("a.txt")).unwrap(), b"AAA");
+        assert_eq!(std::fs::read(d.root.join("sub/b.txt")).unwrap(), b"BBB");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn retry_files_only_touches_the_listed_files() {
+        // 反证：清单外的文件一个字节都不能动。
+        //
+        // 不测的话，一个「收到清单却仍然遍历整棵树」的实现照样能让上一条
+        // 通过（它最终也能全部改好），但那会拿旧密码去开已经改成新密码的
+        // 文件，产生一堆假失败，用户分不清哪些是真问题
+        let (root, rep, old, new, cipher) = partial_failure_fixture("retryscope");
+        let list: Vec<PathBuf> = rep.failed.iter().map(|(p, _)| p.clone()).collect();
+
+        // 记下清单外每个文件的字节
+        let others: Vec<(PathBuf, Vec<u8>)> = all_files(&rep.root)
+            .into_iter()
+            .filter(|p| !list.contains(p))
+            .map(|p| {
+                let b = std::fs::read(&p).unwrap();
+                (p, b)
+            })
+            .collect();
+        assert!(!others.is_empty(), "应当有清单外的文件");
+
+        let r2 = retry_files(&list, &[old], &[new], false, None).unwrap();
+        assert!(r2.is_complete(), "{:?}", r2.failed);
+        assert_eq!(r2.changed, list.len(), "改写数不该超过清单长度");
+
+        for (p, was) in &others {
+            assert_eq!(&std::fs::read(p).unwrap(), was, "动了清单外的文件：{p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = cipher;
+    }
+
+    #[test]
+    fn retry_files_refuses_to_leave_a_file_unopenable() {
+        // keep 为空会写出永远打不开的文件。空清单则应当直接成功（无事可做），
+        // 不要为此报错——调用方可能在循环里无条件调用
+        let empty: Vec<PathBuf> = Vec::new();
+        let salt = [7u8; 16];
+        let k = kek_of(b"x", &salt);
+        assert!(retry_files(&empty, &[k.duplicate()], &[], false, None).is_err());
+        let rep = retry_files(&empty, &[k.duplicate()], &[k], false, None).unwrap();
+        assert_eq!(rep.changed, 0);
+        assert!(rep.is_complete());
+    }
+
+    /// 列出一棵树里所有子目录的磁盘名（排序后），用于断言「没改名」。
+    #[cfg(windows)]
+    fn walk_dirs(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        fn rec(d: &Path, out: &mut Vec<String>) {
+            let Ok(rd) = std::fs::read_dir(d) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.push(p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+                    rec(&p, out);
+                }
+            }
+        }
+        rec(root, &mut out);
+        out.sort();
+        out
     }
 
     #[test]
