@@ -371,21 +371,71 @@ fn random_nonce() -> [u8; NONCE_LEN] {
 /// 只需改这里。
 ///
 /// 深度优先向下找：根目录下可能只有子目录而没有直接的文件。
+/// # 优先选头部能解析的
+///
+/// 树里可能混进损坏的、或压根不是本格式的 `.omy`。拿它当样本会让整个操作
+/// 报「文件已损坏」——而那棵树其余部分完好，本该点名那一个文件、照改剩下的。
+/// 更糟的是这个结果**随目录枚举顺序变化**：同一棵树、同一条命令，两次运行
+/// 可能给出完全不同的错误。实测遇到过，是最难查的一类不确定性。
+///
+/// 全都解析不过时退回第一个 `.omy`，让调用方如实报「已损坏」；压根没有
+/// `.omy` 才返回 `None`，报「不是密文树」。这三种处境对用户是三件不同的
+/// 事——「坏了」和「不是」指向完全不同的排查方向，不该压成同一个结果。
 #[must_use]
 pub fn find_any_file(root: &Path) -> Option<PathBuf> {
-    let rd = std::fs::read_dir(root).ok()?;
+    let mut damaged = None;
+    find_sample(root, &mut damaged).or(damaged)
+}
+
+/// 深度优先找一个头部能解析的密文文件，顺带记下第一个解析不过的。
+fn find_sample(dir: &Path, damaged: &mut Option<PathBuf>) -> Option<PathBuf> {
+    // 读不了这一层不代表整棵树没救：继续往别的分支找
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return None;
+    };
     let mut dirs = Vec::new();
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
             dirs.push(p);
-        } else if p.extension().is_some_and(|x| x == "omy") {
-            // 边车文件叫 `.omy-name`，扩展名不是 `omy`，所以不会被误取。
-            // 但它确实以 `.omy` 开头，靠「名字含 .omy」判断就会中招
+            continue;
+        }
+        // 边车文件叫 `.omy-name`，扩展名不是 `omy`，所以不会被误取。
+        // 但它确实以 `.omy` 开头，靠「名字含 .omy」判断就会中招
+        if !p.extension().is_some_and(|x| x == "omy") {
+            continue;
+        }
+        if header_parses(&p) {
             return Some(p);
         }
+        if damaged.is_none() {
+            *damaged = Some(p);
+        }
     }
-    dirs.into_iter().find_map(|d| find_any_file(&d))
+    dirs.into_iter().find_map(|d| find_sample(&d, damaged))
+}
+
+/// 这个文件的头部能不能解析。
+///
+/// 只读前面一小段：判断是不是本格式不需要整份文件，而样本文件可能有几个 GB。
+fn header_parses(path: &Path) -> bool {
+    use std::io::Read as _;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; crate::scan::MIN_PROBE_SIZE];
+    let mut got = 0usize;
+    while got < buf.len() {
+        let Some(dst) = buf.get_mut(got..) else { break };
+        match f.read(dst) {
+            Ok(0) => break,
+            Ok(n) => got = got.saturating_add(n),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    buf.truncate(got);
+    crate::file::peek_header(&buf).is_ok()
 }
 
 /// 批量改密码的结果。
@@ -1032,6 +1082,47 @@ mod tests {
             assert!(crate::file::open(&data, &[old.duplicate()]).is_ok(), "原密码被挤掉了");
             assert!(crate::file::open(&data, &[extra.duplicate()]).is_ok(), "新密码不生效");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_any_file_skips_files_whose_header_does_not_parse() {
+        // 树里混进一个坏 .omy 时，样本必须绕过它。
+        //
+        // 不这样会怎样：拿坏文件当样本 → peek_header 失败 → 整个操作报
+        // 「文件已损坏」，而那棵树其余部分完好。更糟的是结果**随目录枚举
+        // 顺序变化**：同一棵树同一条命令，两次运行给出不同的错误。实测
+        // 遇到过，是最难查的一类不确定性
+        let (root, enc_root, _salt, _cipher) = tree_fixture("skipbad");
+
+        // 名字排在真密文之前，尽量让它被先枚举到
+        let junk = enc_root.join("0000-broken.omy");
+        std::fs::write(&junk, b"not an omy file at all").unwrap();
+
+        let found = find_any_file(&enc_root).expect("应当仍能找到样本文件");
+        assert_ne!(found, junk, "选中了头部解析不过的文件");
+        // 自证选到的那个真的能解析，而不是碰巧躲开了坏文件
+        let data = std::fs::read(&found).unwrap();
+        assert!(
+            crate::file::peek_header(&data).is_ok(),
+            "选中的样本头部也解析不过：{found:?}"
+        );
+
+        // 全是坏文件时要退回那个坏文件，好让调用方报「已损坏」。
+        // 返回 None 会被报成「这不是密文树」——可它确实是，只是文件坏了，
+        // 把「坏了」说成「不是」会让用户往错的方向排查
+        let only_bad = root.join("onlybad");
+        std::fs::create_dir_all(&only_bad).unwrap();
+        let bad_one = only_bad.join("x.omy");
+        std::fs::write(&bad_one, b"garbage").unwrap();
+        assert_eq!(find_any_file(&only_bad).as_deref(), Some(bad_one.as_path()));
+
+        // 压根没有 .omy 才是 None：这时才该报「不是密文树」
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(empty.join("readme.txt"), b"hi").unwrap();
+        assert!(find_any_file(&empty).is_none(), "没有密文文件时应当返回 None");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
