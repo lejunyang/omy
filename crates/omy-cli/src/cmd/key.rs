@@ -161,6 +161,11 @@ fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
 }
 
 fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
+    // 目录走树形分支。不先判断的话，std::fs::read 会返回一个含糊的 IO
+    // 错误（Windows 上是「拒绝访问」），用户看不出这是「该用树形方式」
+    if a.file.is_dir() {
+        return modify_tree(ctx, a, op);
+    }
     let data = std::fs::read(&a.file)
         .with_context(|| format!("读取 {} 失败", a.file.display()))?;
     let h = omy_core::file::peek_header(&data)?;
@@ -352,6 +357,160 @@ fn read_prefix(p: &std::path::Path, n: usize) -> Result<Vec<u8>> {
     }
     buf.truncate(got);
     Ok(buf)
+}
+
+/// 给一棵树形加密的目录换密码。
+///
+/// # 与单文件的差别
+///
+/// 目录没有头部，所以 `vault_salt` 与 KDF 参数要从树里任意一个 `.omy`
+/// 文件取——同一个 vault 内它们本就一致（与 `decrypt` 的树形分支同一套
+/// 做法）。取到之后 Argon2 只派生一次，整棵树复用。
+///
+/// `reencrypt` 不支持：它要重写每个文件的全部载荷，一棵几十 GB 的树
+/// 中途失败会留下一半新一半旧、且两个密码各开一半的状态。单文件上这个
+/// 风险是有界的，整棵树上不是。宁可明确拒绝，也不要提供一个大概率
+/// 半途而废的操作。
+fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
+    if op.rewrites_payload() {
+        bail!(
+            "key {} 暂不支持目录：重新加密要重写整棵树的载荷，\n\
+             中途失败会留下一半文件用新密钥、一半用旧密钥的状态。\n\
+             如果确实需要，请先 decrypt 再重新 encrypt。",
+            op.name()
+        );
+    }
+    // 树只能有一个密码，所以 add / remove 在这里没有意义。
+    //
+    // 目录名由**第一个** KEK 派生（encrypt_tree / decrypt_tree 都只认
+    // keks[0]），多出来的密码只能打开文件、解不开目录名。实测的表现是
+    // decrypt 报 content hash mismatch——用户会以为文件损坏了。与其给出
+    // 一个半残的密码，不如直说不支持
+    if matches!(op, Op::Add | Op::Remove) {
+        bail!(
+            "key {} 不支持目录：树形加密的目录名由密码派生，\n\
+             一棵树同时只能有一个密码。多加的密码能打开文件却解不开目录名，\n\
+             解密时会报「文件损坏」。\n\
+             要换密码请用 key change。",
+            op.name()
+        );
+    }
+
+    // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数
+    let Some(sample) = omy_core::tree::find_any_file(&a.file) else {
+        bail!(
+            "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
+            a.file.display()
+        );
+    };
+    let head = read_prefix(&sample, omy_core::scan::MIN_PROBE_SIZE)?;
+    let h = omy_core::file::peek_header(&head)?;
+
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let old = read_password(&src, t("prompt.password"), false)?;
+    let old_kek = Kek::from_password(&old, &h.vault_salt, h.argon2_params())?;
+
+    // 尽早验密码：让用户白输一遍新密码再报「旧密码不对」是很糟的体验。
+    // 拿样本文件试，成本是一次小文件读取
+    let sample_data = std::fs::read(&sample)
+        .with_context(|| format!("读取 {} 失败", sample.display()))?;
+    omy_core::file::open(&sample_data, &[old_kek.duplicate()])
+        .context("现有密码不正确（用树里的一个文件验证过）")?;
+
+    if !op.accepts_new_password()
+        && (a.new_password_file.is_some() || a.new_password_env.is_some())
+    {
+        bail!(
+            "key {} 不接受 --new-password-file / --new-password-env：\
+             它只保留当前密码，不设置新密码",
+            op.name()
+        );
+    }
+
+    let new_kek = if op.needs_new_password() {
+        let nsrc = PasswordSource {
+            env: a.new_password_env.clone(),
+            file: a.new_password_file.clone(),
+            stdin: false,
+        };
+        let pw = read_password(&nsrc, t("prompt.new_password"), nsrc.is_interactive())?;
+        if pw == old {
+            bail!("新密码与现有密码相同，没有变化");
+        }
+        Some(Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?)
+    } else {
+        None
+    };
+
+    let keep: Vec<Kek> = match op {
+        Op::Change => match new_kek {
+            Some(k) => vec![k],
+            None => bail!("change 需要一个新密码"),
+        },
+        // 上面已经逐一拒绝。不用 unreachable!：omy-cli 虽然没有 omy-gui
+        // 那么严的禁用规则，但一个能被将来的改动触发的 panic 不值得留
+        Op::Add | Op::Remove | Op::Reencrypt => {
+            bail!("key {} 不支持目录", op.name())
+        }
+    };
+
+    ctx.out.warn("修改后，原密码将无法再打开这棵树里的任何文件。");
+    // 目录名会变这件事必须提前说：用户回到文件管理器发现文件夹「不见了」
+    // 是很吓人的，而它只是改了名
+    ctx.out
+        .warn("目录名由密码派生，换密码后整棵树的目录名都会变（内容不变）。");
+    if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
+        ctx.out.info(t("msg.cancelled"));
+        return Ok(());
+    }
+
+    let rep = omy_core::tree::rekey_tree(
+        &a.file,
+        &[old_kek],
+        &keep,
+        &h.vault_salt,
+        h.cipher_id,
+    )?;
+
+    // 部分失败要显式报出来，并且退出码不能是 0——用户以为全改完了，
+    // 等哪天用新密码打不开另一半时早忘了旧密码
+    if !rep.is_complete() {
+        for (p, err) in &rep.failed {
+            ctx.out.warn(&format!("  {} : {}", p.display(), err));
+        }
+        bail!(
+            "{} 个文件已改，{} 个失败。旧密码对失败的那些文件仍然有效，\n\
+             把新旧两个密码都提供给本命令可以补齐（已改好的会报错跳过）。",
+            rep.changed,
+            rep.failed.len()
+        );
+    }
+
+    let human = format!(
+        "{} 完成\n目录        {}\n改写文件    {}\n重命名目录  {}\n新路径      {}",
+        op.name(),
+        a.file.display(),
+        rep.changed,
+        rep.dirs_renamed,
+        rep.root.display()
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "path": a.file.display().to_string(),
+            "mode": "tree",
+            "action": op.name(),
+            "files_changed": rep.changed,
+            "dirs_renamed": rep.dirs_renamed,
+            "new_root": rep.root.display().to_string(),
+            "payload_rewritten": false,
+        }),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
