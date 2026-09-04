@@ -400,7 +400,7 @@ fn run_tree(
             .failed
             .iter()
             .map(|(p, err)| {
-                // 只给文件名不给全路径：路径里含密文目录名，又长又无意义。
+                // 展示用短名：路径里含密文目录名，又长又无意义。
                 // 名字本身就是密文，用户认不出来，但足以对上列表里的条目
                 let n = p.file_name().map_or_else(
                     || p.to_string_lossy().into_owned(),
@@ -409,12 +409,19 @@ fn run_tree(
                 format!("{n}: {err}")
             })
             .collect();
+        // 完整路径单独给一份，供「重试」原样传回。
+        //
+        // 不能让前端从短名拼路径：名字拼不回目录层级，而且不同子目录下
+        // 可能有同名文件。core 已经保证这些路径在改名之后仍然有效
+        let paths: Vec<String> =
+            rep.failed.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
         return Err(CmdError::with(
             "tree_partial",
             serde_json::json!({
                 "changed": rep.changed,
                 "failed": rep.failed.len(),
                 "files": names,
+                "paths": paths,
             }),
         ));
     }
@@ -432,6 +439,140 @@ fn run_tree(
         payload_rewritten: rep.payload_rewritten,
         is_tree: true,
         new_path: rep.root.to_string_lossy().into_owned(),
+        files_changed: rep.changed,
+    })
+}
+
+/// 重试的入参。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetryRequest {
+    /// 上次失败的那些文件，取自 `tree_partial` 错误里的 `paths`。
+    pub paths: Vec<String>,
+    /// 用于打开这些文件的密码。
+    ///
+    /// 失败的文件**没有被改写**，所以这里要填**原来的**密码，而不是新密码。
+    /// 这是最容易搞错的地方：用户刚输过新密码，很容易以为重试也该用新的。
+    pub current: String,
+    /// 目标密码。留空表示沿用 `current`（只重新加密、不改密码时）。
+    #[serde(default)]
+    pub next: String,
+    /// 是否同时轮换文件密钥。
+    #[serde(default)]
+    pub rotate: bool,
+    /// 树里任意一个文件，用来取 `vault_salt` 与 KDF 参数。
+    ///
+    /// 目录没有头部，而重试的目标是散落的文件，所以要调用方给一个锚点。
+    /// 取报告返回的新根目录即可。
+    pub root: String,
+}
+
+/// 只重试上次失败的那些文件。
+///
+/// # 为什么不直接重跑整个操作
+///
+/// 重跑会拿旧密码去开已经改成新密码的文件，产生一堆假失败——用户分不清
+/// 哪些是真问题。而且轮换时重跑意味着把已经处理过的文件再读写一遍，
+/// 几十 GB 的树要多等一倍时间。
+///
+/// # Errors
+///
+/// - `not_a_tree`：`root` 下找不到可用的样本文件
+/// - `wrong_password`：给的密码打不开这些文件
+/// - `tree_partial`：仍有文件失败（清单同 `manage_key`）
+#[tauri::command]
+pub async fn retry_key_files(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Shared>,
+    req: RetryRequest,
+) -> CmdResult<KeyOutcome> {
+    let handle = std::sync::Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || run_retry(&app, &handle, &req))
+        .await
+        .map_err(|_| CmdError::code("internal"))?
+}
+
+fn run_retry(
+    app: &tauri::AppHandle,
+    state: &Shared,
+    req: &RetryRequest,
+) -> CmdResult<KeyOutcome> {
+    if req.paths.is_empty() {
+        return Err(CmdError::code("nothing_to_retry"));
+    }
+    let root = std::path::PathBuf::from(&req.root);
+    // 参数来自 vault 里任意一个文件，与 run_tree 同一套做法
+    let sample =
+        omy_core::tree::find_any_file(&root).ok_or_else(|| CmdError::code("not_a_tree"))?;
+    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
+    let params = header.argon2_params();
+
+    let current = derive(&req.current, &header.vault_salt, params)?;
+    let files: Vec<std::path::PathBuf> =
+        req.paths.iter().map(std::path::PathBuf::from).collect();
+
+    // 尽早验密码，但要拿**失败的那些文件之一**来验，不能用样本文件：
+    // 样本很可能已经改成新密码了，用它验会把正确的旧密码判成错的
+    let first = files.first().ok_or_else(|| CmdError::code("nothing_to_retry"))?;
+    let probe = std::fs::read(first).map_err(|_| CmdError::code("io_error"))?;
+    omy_core::file::open(&probe, &[current.duplicate()]).map_err(map_core_err)?;
+
+    let changing = !req.next.is_empty();
+    let next = if changing {
+        derive(&req.next, &header.vault_salt, params)?
+    } else {
+        current.duplicate()
+    };
+
+    let mut tick = progress_tree(app);
+    let rep = omy_core::tree::retry_files(
+        &files,
+        &[current],
+        &[next],
+        req.rotate,
+        if req.rotate { Some(&mut tick) } else { None },
+    )
+    .map_err(map_core_err)?;
+
+    if !rep.is_complete() {
+        let names: Vec<String> = rep
+            .failed
+            .iter()
+            .map(|(p, err)| {
+                let n = p.file_name().map_or_else(
+                    || p.to_string_lossy().into_owned(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                format!("{n}: {err}")
+            })
+            .collect();
+        let paths: Vec<String> =
+            rep.failed.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
+        return Err(CmdError::with(
+            "tree_partial",
+            serde_json::json!({
+                "changed": rep.changed,
+                "failed": rep.failed.len(),
+                "files": names,
+                "paths": paths,
+            }),
+        ));
+    }
+
+    if changing {
+        state.with_session(|s| {
+            let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
+        });
+    }
+
+    Ok(KeyOutcome {
+        action: String::from("retry"),
+        slots_in_use: 1,
+        payload_rewritten: rep.payload_rewritten,
+        is_tree: true,
+        // 重试不改目录名，所以路径没变。回显 root 而不是空串：前端拿它
+        // 定位当前树，空串会被当成「路径失效」
+        new_path: req.root.clone(),
         files_changed: rep.changed,
     })
 }

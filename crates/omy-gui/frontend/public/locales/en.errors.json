@@ -54,5 +54,6 @@
   "corrupted": "The file is damaged or has been tampered with",
   "not_a_tree": "No encrypted files were found in this folder; it may not be an encrypted folder.",
   "tree_only_change": "An encrypted folder shares one password across the whole tree, so the password can only be changed, not added or removed.",
-  "tree_partial": "Some files could not be rewritten. The old password still opens them; run this again providing both passwords to finish the job."
+  "tree_partial": "Some files could not be rewritten. The old password still opens them; run this again providing both passwords to finish the job.",
+  "nothing_to_retry": "No files to retry"
 }

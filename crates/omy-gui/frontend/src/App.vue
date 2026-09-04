@@ -47,7 +47,9 @@ import {
   openWithSystem,
   enterContainer,
   enterContainerDir,
+  clearRetry,
   manageKey,
+  retryKeyFiles,
   ctxMenu,
   ctxItems,
   openContextMenu,
@@ -242,6 +244,33 @@ async function onKeySubmit(req) {
     // 错误已经在对话框里显示，不要再占用底部提示条重复一遍
     state.error = '';
   }
+}
+
+/** 关闭密钥对话框。顺手清掉重试上下文——里面存着密码，没有再留的理由。 */
+function onKeyCancel() {
+  keyTarget.value = null;
+  keyErrorFiles.value = [];
+  clearRetry();
+}
+
+/** 只重试上次失败的那些文件。 */
+async function onKeyRetry() {
+  const r = await retryKeyFiles();
+  // 全成了才关对话框。仍有失败就留着，让用户看清还剩哪些——
+  // 关掉的话那份清单就没了，用户只能重新走一遍整个操作才知道
+  if (r) {
+    keyTarget.value = null;
+    keyError.value = '';
+    keyErrorFiles.value = [];
+    return;
+  }
+  // 失败时两个都要更新。只更新清单的话，对话框里显示的还是**上一次**的
+  // 错误文案，而清单已经换成这次的——界面上出现「有错误、但没有失败
+  // 文件」这种自相矛盾的状态，用户完全判断不出这次重试到底怎么了
+  keyError.value = state.error;
+  keyErrorFiles.value = state.errorDetails;
+  // 错误已经在对话框里显示，不要再占用底部提示条重复一遍
+  state.error = '';
 }
 
 /* ---------------- 右键菜单 ---------------- */
@@ -457,10 +486,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
     v-if="keyTarget"
     :entry="keyTarget"
     :is-tree="!!keyTarget.is_encrypted_dir"
-        :error-files="keyErrorFiles"
+    :error-files="keyErrorFiles"
+    :retry-count="state.retry ? state.retry.paths.length : 0"
     :busy="state.busy"
     :error="keyError"
-    @cancel="keyTarget = null"
+    @cancel="onKeyCancel"
+    @retry="onKeyRetry"
     @submit="onKeySubmit"
   />
 

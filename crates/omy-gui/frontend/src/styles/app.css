@@ -1408,6 +1408,13 @@ input {
   word-break: break-all;
 }
 
+/* 重试按钮在失败清单里，跟清单同宽、留出间距——挤在红字下面
+   会像是清单的一部分 */
+.errbox .btn.retry {
+  margin-top: 8px;
+  width: 100%;
+}
+
 .warnbox {
   font-size: 11.5px;
   line-height: 1.6;

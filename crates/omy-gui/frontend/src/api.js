@@ -97,6 +97,17 @@ export const onDecryptProgress = (handler) =>
  */
 export const manageKey = (req) => invoke('manage_key', { req });
 
+/**
+ * 只重试上次失败的那些文件。
+ *
+ * `paths` 取自 `tree_partial` 错误里的 `paths`（完整路径，不是展示用的短名）。
+ * `current` 要填**原来的**密码：失败的文件没被改写，还是旧密码——填新密码
+ * 会得到 wrong_password。
+ *
+ * 不重跑整个操作，是因为重跑会拿旧密码去开已经改好的文件，产生一堆假失败。
+ */
+export const retryKeyFiles = (req) => invoke('retry_key_files', { req });
+
 /* ---------------- 会话 ---------------- */
 
 /** 探测目录里有哪些 vault（每个有独立的 salt）。 */

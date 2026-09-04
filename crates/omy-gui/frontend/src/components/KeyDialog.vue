@@ -37,9 +37,17 @@ const props = defineProps({
   isTree: { type: Boolean, default: false },
   /** 部分失败时，具体是哪些文件没改成。 */
   errorFiles: { type: Array, default: () => [] },
+  /**
+   * 可重试的文件数。0 表示没有可重试的。
+   *
+   * 与 errorFiles.length 分开传：展示清单是「给人看」，能不能重试取决于
+   * 后端有没有给回完整路径。两者不一定相等，用长度代替会渲染出一个点了
+   * 没反应的按钮
+   */
+  retryCount: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['cancel', 'submit']);
+const emit = defineEmits(['cancel', 'retry', 'submit']);
 
 /** `add` / `change` / `remove` / `reencrypt` */
 const action = ref(props.isTree ? 'change' : 'add');
@@ -150,6 +158,18 @@ function submit() {
         <ul v-if="errorFiles.length" class="failed">
           <li v-for="f in errorFiles" :key="f">{{ f }}</li>
         </ul>
+        <!-- 重试按钮挨着清单放：它作用于上面这些文件，隔远了看不出关系。
+             不放进底部按钮区——那里是取消/提交，混进去会被当成另一种提交。
+             按钮上带数量：用户刚看完一屏红字，得知道这一下处理多少个 -->
+        <button
+          v-if="retryCount > 0"
+          type="button"
+          class="btn retry"
+          :disabled="busy"
+          @click="$emit('retry')"
+        >
+          {{ i18n.t('keymgmt.retry_failed', { n: retryCount }) }}
+        </button>
       </div>
 
       <div class="hr"></div>

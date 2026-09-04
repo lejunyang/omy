@@ -63,6 +63,14 @@ export const state = reactive({
    * console 里看 state 又确实有值，极难排查。
    */
   errorDetails: [],
+  /**
+   * 重试所需的上下文：上次失败的完整路径，以及那次用的密码。
+   *
+   * 留着密码是为了让用户不用再输一遍——重试要用**原来的**密码（失败的文件
+   * 没被改写），而用户刚输过新密码，让他自己回想很容易填错。代价是密码
+   * 多在内存里待一会儿，所以对话框一关就清掉
+   */
+  retry: null,
   /** 提示文案（成功类）。 */
   notice: '',
   /** 协议前缀，由后端按平台下发。 */
@@ -1016,6 +1024,67 @@ function restoreNotice(items) {
  * 是解锁还是锁定要重新算。不刷新的话界面还显示旧状态，用户点开会
  * 发现和刚才的操作对不上。
  */
+/** 放弃重试并擦掉留在内存里的密码。对话框关闭时调用。 */
+export function clearRetry() {
+  state.retry = null;
+  state.errorDetails = [];
+}
+
+/**
+ * 只重试上次失败的那些文件。
+ *
+ * 与重跑整个操作的区别：重跑会拿旧密码去开已经改成新密码的文件，产生一堆
+ * 假失败，用户分不清哪些是真问题；轮换时还要把已处理的文件再读写一遍。
+ */
+export async function retryKeyFiles() {
+  const ctx = state.retry;
+  if (!ctx || ctx.paths.length === 0) return null;
+
+  state.busy = true;
+  state.busyKey = ctx.rotate ? 'busy.reencrypting' : 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  state.progress = null;
+
+  let unlisten = null;
+  if (ctx.rotate) {
+    try {
+      unlisten = await api.onEncryptProgress((p) => {
+        state.progress = p;
+      });
+    } catch {
+      unlisten = null;
+    }
+  }
+
+  try {
+    state.errorDetails = [];
+    const r = await api.retryKeyFiles(ctx);
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
+    // 全都补上了，重试上下文就该丢掉——留着会让"重试"按钮继续显示，
+    // 用户再点一次会拿旧密码去开已经改好的文件，得到 wrong_password
+    state.retry = null;
+    await reload();
+    setNotice(i18n.t('keymgmt.done_retry', { n: r.files_changed }));
+    return r;
+  } catch (e) {
+    const p = e && typeof e === 'object' ? e.params : null;
+    const files = p && Array.isArray(p.files) ? p.files : [];
+    const paths = p && Array.isArray(p.paths) ? p.paths : [];
+    if (files.length > 0) await reload();
+    state.error = i18n.te(api.errCode(e));
+    state.errorDetails = files;
+    // 仍有失败就缩小清单：只留这次还没成的，别让用户重复处理已经好了的
+    if (paths.length > 0) state.retry = { ...ctx, paths };
+    return null;
+  } finally {
+    if (unlisten) unlisten();
+    state.busy = false;
+    state.busyKey = '';
+    state.progress = null;
+  }
+}
+
 export async function manageKey(req) {
   const rewrites = req.action === 'reencrypt';
   state.busy = true;
@@ -1066,6 +1135,13 @@ export async function manageKey(req) {
     // 不知道该处理什么，也无法判断损失多大
     const p = e && typeof e === 'object' ? e.params : null;
     const files = p && Array.isArray(p.files) ? p.files : [];
+    const paths = p && Array.isArray(p.paths) ? p.paths : [];
+    // 攒好重试要用的东西。密码用 req.current 而不是 req.next：失败的文件
+    // 没被改写，还是旧密码
+    state.retry =
+      paths.length > 0
+        ? { paths, current: req.current, next: req.next || '', rotate: rewrites, root: state.cwd }
+        : null;
     // 刷新必须在设置错误**之前**：reload -> navigate 里有
     // `state.error = ''`，反过来会把刚设好的错误和清单一起冲掉，界面上
     // 对话框开着却什么都不显示，看起来像「什么都没发生」。
