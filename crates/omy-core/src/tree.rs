@@ -388,6 +388,307 @@ pub fn find_any_file(root: &Path) -> Option<PathBuf> {
     dirs.into_iter().find_map(|d| find_any_file(&d))
 }
 
+/// 批量改密码的结果。
+#[derive(Debug, Default)]
+pub struct RekeyReport {
+    /// 成功改写的文件数。
+    pub changed: usize,
+    /// 重新加密了名字的目录数（含根目录）。
+    pub dirs_renamed: usize,
+    /// 改密码后这棵树的根路径。
+    ///
+    /// **根目录名会变**：它由 KEK 派生的密钥加密，换密码就得换名字。调用方
+    /// 必须用这个值，原来手里的路径已经失效——不返回的话，GUI 刷新列表时
+    /// 会指向一个不存在的目录，表现为「改完密码文件夹不见了」。
+    pub root: PathBuf,
+    /// 失败的：`(路径, 原因)`。
+    ///
+    /// 逐个记而不是只留一个总的错误码：一棵树里可能只有个别文件出问题
+    /// （被别的程序占用、权限不对、单个文件损坏），用户需要知道**是哪些**
+    /// 才能去处理，而其余文件已经改好了。
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+impl RekeyReport {
+    /// 是否整棵树都改成功了。
+    #[must_use]
+    // 不标 const：Vec::is_empty 在 const 上下文要 Rust 1.87，
+    // 本仓库 MSRV 是 1.85
+    pub fn is_complete(&self) -> bool {
+        self.failed.is_empty()
+    }
+}
+
+/// 给整棵密文树里的每个文件改密码（增删改），载荷一字节不动。
+///
+/// `unlock` 用于解开现有文件，`keep` 是改写后应当能打开这些文件的**全部**
+/// KEK。语义与 [`crate::keyslot::rewrite_slots`] 完全一致，只是作用于整棵树。
+///
+/// 目录名也会一并用新密钥重新加密——只改文件会留下一个两个密码都用不了的
+/// 状态（新密码开得了文件但解不开目录名，旧密码反之）。所以**根目录名会变**，
+/// 新路径在 [`RekeyReport::root`] 里返回。
+///
+/// # 为什么可以只派生一次 KEK
+///
+/// 同一棵树里所有文件共用一个 `vault_salt` 与一组 KDF 参数（`encrypt_tree`
+/// 把同一个 salt 传给每个文件），所以 Argon2 只需跑一次。这很关键：Argon2
+/// 每次几百毫秒，若每个文件都要派生，1000 个文件就是好几分钟。
+///
+/// 而改写本身只动 384 字节 slot 区 + 32 字节 MAC，所以整棵树的成本约等于
+/// 「一次 Argon2 + N 次小文件读写」。
+///
+/// # 部分失败是**如实报告**，不回滚
+///
+/// 这是这个操作最需要想清楚的地方。改到第 50 个文件时断电或出错，前 49 个
+/// 已经是新密码、后面还是旧密码，于是两个密码各能开一半。
+///
+/// 三种可能的处理方式，选第三种：
+///
+/// 1. **回滚**——要先把 N 个文件的原始字节全留一份，一棵大树可能是几十 GB；
+///    而且回滚本身也会中途失败，那时状态更难描述。
+/// 2. **假装成功**——最糟。用户以为密码已经全换了，实际一半没换；等他哪天
+///    用新密码打不开另一半，早已不知道该用哪个旧密码。
+/// 3. **如实报告**（本实现）——返回改了哪些、哪些没改。**旧密码不会失效**，
+///    所以用户手上一定有一个能打开剩余文件的密码，重跑一次即可补齐。
+///
+/// 第三种之所以安全，前提是 `keep` 里通常仍包含用户当前用的密码，或者用户
+/// 知道旧密码。调用方在文案上必须讲清「哪些文件还是旧密码」，否则用户不知道
+/// 该重跑。
+///
+/// 幂等性：对已经改好的文件重跑会失败（`unlock` 里的旧密码打不开它了），
+/// 所以补跑时应当把新旧密码都放进 `unlock`。
+///
+/// # 为什么不先全部改好再统一落盘
+///
+/// 那需要把 N 个文件的新字节全部驻留内存。改写只动头部，但 `rewrite_slots`
+/// 返回的是**完整文件字节**——一棵 50 GB 的树就是 50 GB 内存。
+///
+/// # Errors
+///
+/// - [`Error::MalformedHeader`]：`keep` 为空
+/// - [`Error::MalformedHeader`]：`root` 下找不到任何加密文件
+///
+/// 单个文件的失败不会中断遍历，记进 `failed`。
+pub fn rekey_tree(
+    root: &Path,
+    unlock: &[Kek],
+    keep: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<RekeyReport> {
+    if keep.is_empty() {
+        return Err(Error::MalformedHeader {
+            reason: "refusing to leave files with zero key slots; they could never be opened again",
+        });
+    }
+    // 先确认这确实是一棵密文树。不查的话，对一个普通目录执行会得到
+    // 「0 个文件已改写」——看起来像成功，其实什么都没发生
+    if find_any_file(root).is_none() {
+        return Err(Error::MalformedHeader {
+            reason: "no encrypted file found under the given directory",
+        });
+    }
+
+    // 目录名密钥由**第一个** KEK 派生（与 encrypt_tree / decrypt_tree 一致）。
+    // 旧的用来解出原名，新的用来重新加密
+    let old_kek = unlock.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
+    let new_kek = keep.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
+    let old_dkey = DirnameKey::derive(old_kek, vault_salt);
+    let new_dkey = DirnameKey::derive(new_kek, vault_salt);
+    // 密钥没变就完全不碰目录名。`add` 保留原密码作第一个 KEK 时正是这种
+    // 情形：改名既没必要，又会让调用方以为整棵结构变了，增量备份还要重传
+    // 全部目录项
+    let dirname_changed = !same_dirname_key(&old_dkey, &new_dkey, cipher);
+
+    let mut rep = RekeyReport::default();
+    rekey_into(root, unlock, keep, &old_dkey, &new_dkey, cipher, dirname_changed, &mut rep);
+
+    // 根目录自己的名字最后改：它一改，调用方手里的 root 路径就失效了。
+    // 新路径通过 RekeyReport::root 返回
+    if !dirname_changed {
+        rep.root = root.to_path_buf();
+        return Ok(rep);
+    }
+    rep.root = match rename_dir(root, &old_dkey, &new_dkey, cipher) {
+        Ok(renamed) => {
+            if renamed {
+                rep.dirs_renamed = rep.dirs_renamed.saturating_add(1);
+            }
+            find_renamed(root, &new_dkey, cipher).unwrap_or_else(|| root.to_path_buf())
+        }
+        Err(err) => {
+            rep.failed.push((root.to_path_buf(), err));
+            root.to_path_buf()
+        }
+    };
+    Ok(rep)
+}
+
+/// 两个目录名密钥是否等价。
+///
+/// `DirnameKey` 不暴露比较（密钥不该随便比），所以用同一个固定 nonce 加密
+/// 同一个探针名字，看密文是否一致——AEAD 在密钥、nonce、明文都相同时输出
+/// 确定，所以密文相同即密钥相同。
+///
+/// 探针名字用不可能与真实目录冲突的常量；nonce 固定是刻意的，这里要的正是
+/// 确定性，与「加密真实目录名必须用随机 nonce」是两回事。
+fn same_dirname_key(a: &DirnameKey, b: &DirnameKey, cipher: CipherId) -> bool {
+    const PROBE: &str = "omy-dirname-key-probe";
+    let nonce = [0u8; NONCE_LEN];
+    let ea = crate::dirname::encrypt_dirname(PROBE, a, &nonce, cipher);
+    let eb = crate::dirname::encrypt_dirname(PROBE, b, &nonce, cipher);
+    match (ea, eb) {
+        (Ok(x), Ok(y)) => x == y,
+        // 算不出来就当作「变了」：宁可多改一次名，也不要该改却没改——
+        // 后者会留下两个密码都用不了的树
+        _ => false,
+    }
+}
+
+/// 改名后在父目录里找回这棵树的新路径。
+///
+/// 不靠 `rename_dir` 直接返回新路径：它可能因为「名字本来就解不开」而没改，
+/// 那时原路径仍然有效。统一在这里按「能用新密钥解开的那个目录」来找。
+fn find_renamed(orig: &Path, new_dkey: &DirnameKey, cipher: CipherId) -> Option<PathBuf> {
+    if orig.is_dir() {
+        return Some(orig.to_path_buf());
+    }
+    let parent = orig.parent()?;
+    std::fs::read_dir(parent).ok()?.flatten().map(|e| e.path()).find(|p| {
+        if !p.is_dir() {
+            return false;
+        }
+        let n = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let sc = std::fs::read(p.join(crate::dirname::DIRNAME_SIDECAR)).ok();
+        crate::dirname::decrypt_dirname(&n, sc.as_deref(), new_dkey, cipher).is_ok()
+    })
+}
+
+/// 递归改写一层：先文件，再子目录名。
+///
+/// # 目录名必须一起改
+///
+/// 目录名由 `DirnameKey::derive(keep[0], vault_salt)` 加密，KEK 一换密钥就
+/// 变了。只改文件的话会留下一个**两个密码都用不了**的状态：新密码开得了
+/// 文件却解不开目录名（进不去），旧密码解得开目录名却开不了文件。这比
+/// 「不能改密码」糟得多，所以两者必须在同一个操作里完成。
+///
+/// # 为什么自底向上
+///
+/// 先递归进子目录处理完，回来再重命名它。反过来做的话，重命名之后手里的
+/// 路径就失效了，后续遍历会找不到文件。
+#[expect(clippy::too_many_arguments, reason = "递归函数，拆成结构体反而更难读")]
+fn rekey_into(
+    dir: &Path,
+    unlock: &[Kek],
+    keep: &[Kek],
+    old_dkey: &DirnameKey,
+    new_dkey: &DirnameKey,
+    cipher: CipherId,
+    dirname_changed: bool,
+    rep: &mut RekeyReport,
+) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        rep.failed.push((dir.to_path_buf(), String::from("read_dir failed")));
+        return;
+    };
+    let mut subdirs = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            subdirs.push(p);
+            continue;
+        }
+        // 只处理真正的密文文件。边车 `.omy-name` 的扩展名不是 `omy`，
+        // 与 find_any_file 用同一条判据
+        if !p.extension().is_some_and(|x| x == "omy") {
+            continue;
+        }
+        match rekey_one(&p, unlock, keep) {
+            Ok(()) => rep.changed = rep.changed.saturating_add(1),
+            Err(err) => rep.failed.push((p, err)),
+        }
+    }
+    // 自底向上：先把子目录内部处理完，再改它自己的名字
+    for sub in subdirs {
+        rekey_into(&sub, unlock, keep, old_dkey, new_dkey, cipher, dirname_changed, rep);
+        if !dirname_changed {
+            continue;
+        }
+        match rename_dir(&sub, old_dkey, new_dkey, cipher) {
+            Ok(true) => rep.dirs_renamed = rep.dirs_renamed.saturating_add(1),
+            // false = 名字本来就解不开（不是我们加密的目录），跳过不算失败
+            Ok(false) => {}
+            Err(err) => rep.failed.push((sub, err)),
+        }
+    }
+}
+
+/// 用新密钥重新加密一个目录的名字。
+///
+/// 返回 `false` 表示这个目录名用旧密钥解不开——它多半不是本 vault 的产物，
+/// 跳过而不是报错。返回 `true` 表示确实改名了。
+fn rename_dir(
+    dir: &Path,
+    old_dkey: &DirnameKey,
+    new_dkey: &DirnameKey,
+    cipher: CipherId,
+) -> core::result::Result<bool, String> {
+    let disk = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if !crate::dirname::looks_encrypted(&disk) {
+        return Ok(false);
+    }
+    let sidecar_path = dir.join(crate::dirname::DIRNAME_SIDECAR);
+    let sidecar = std::fs::read(&sidecar_path).ok();
+    let Ok(plain) = crate::dirname::decrypt_dirname(&disk, sidecar.as_deref(), old_dkey, cipher)
+    else {
+        return Ok(false);
+    };
+
+    // nonce 每次重新随机：同一个名字用同一个密钥加密两次应当得到不同密文，
+    // 否则「改密码前后磁盘名没变」会泄露「这两个目录同名」
+    let enc = crate::dirname::encrypt_dirname(&plain, new_dkey, &random_nonce(), cipher)
+        .map_err(|e| e.to_string())?;
+
+    let parent = dir.parent().ok_or_else(|| String::from("no parent"))?;
+    let dst = parent.join(&enc.disk_name);
+
+    // 边车要在改名**之前**写好：改完名再写的话，中途失败会留下一个
+    // 名字截断、却没有边车的目录——那个名字就永远解不开了
+    if let Some(blob) = enc.sidecar.as_ref() {
+        std::fs::write(dir.join(crate::dirname::DIRNAME_SIDECAR), blob)
+            .map_err(|e| format!("write sidecar: {e}"))?;
+    } else if sidecar.is_some() {
+        // 新名字不需要边车，旧的必须删掉：留着的话解名时会优先读它，
+        // 拿到的是用旧密钥加密的内容
+        std::fs::remove_file(&sidecar_path).map_err(|e| format!("remove sidecar: {e}"))?;
+    }
+
+    if dst == dir {
+        return Ok(true);
+    }
+    std::fs::rename(dir, &dst).map_err(|e| format!("rename: {e}"))?;
+    Ok(true)
+}
+
+/// 改写单个文件。错误转成字符串，好让调用方逐个展示。
+fn rekey_one(path: &Path, unlock: &[Kek], keep: &[Kek]) -> core::result::Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
+    let out = crate::keyslot::rewrite_slots(&data, unlock, keep).map_err(|e| e.to_string())?;
+
+    // 写回前自证每个保留密码都能打开新字节。逐个验而不是只验第一个：
+    // add 最容易犯的错是新密码能开、原密码被挤掉，只验一个正好漏掉。
+    //
+    // 顺序不能反——先覆盖再发现打不开，用户就同时失去了文件和访问权
+    for k in keep {
+        crate::file::open(&out.bytes, &[k.duplicate()])
+            .map_err(|_| String::from("rewrite verify failed"))?;
+    }
+
+    crate::fsatomic::write_atomic(path, &out.bytes).map_err(|e| format!("write: {e}"))?;
+    Ok(())
+}
+
 /// 16 字节转小写十六进制。
 fn hex16(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
@@ -407,6 +708,235 @@ fn hex16(b: &[u8; 16]) -> String {
 mod tests {
     use super::*;
     use crate::crypto::Argon2Params;
+    use crate::header::FixedHeader;
+
+    /// 造一棵小树并加密，返回 (工作目录, 密文根, salt, cipher)。
+    ///
+    /// cipher 一并返回而不是让调用方硬写常量：写错的话目录名会用错算法
+    /// 解密、报 content hash mismatch，看起来像「加密坏了」这种严重缺陷。
+    fn tree_fixture(tag: &str) -> (PathBuf, PathBuf, [u8; 16], CipherId) {
+        let root = std::env::temp_dir().join(format!("omy-rekey-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"AAA").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"BBB").unwrap();
+
+        let salt = [7u8; 16];
+        let kek = Kek::from_password(b"old", &salt, Argon2Params::TEST_WEAK).unwrap();
+        let out = root.join("enc");
+        std::fs::create_dir_all(&out).unwrap();
+        let opts = crate::file::EncryptOptions::default();
+        let rep = encrypt_tree(&src, &out, &[kek], &salt, &opts, None).unwrap();
+        (root, rep.root, salt, opts.cipher)
+    }
+
+    fn kek_of(pw: &[u8], salt: &[u8; 16]) -> Kek {
+        Kek::from_password(pw, salt, Argon2Params::TEST_WEAK).unwrap()
+    }
+
+    #[test]
+    fn rekey_tree_changes_every_file_and_old_password_stops_working() {
+        let (root, enc_root, salt, cipher) = tree_fixture("change");
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+
+        let rep =
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+        assert_eq!(rep.changed, 2, "两个文件都该改到；漏掉深层文件是最可能的缺陷");
+        assert!(rep.is_complete(), "失败项: {:?}", rep.failed);
+        // 根目录名由 KEK 派生，换密码后必须跟着变，否则新密码进不去
+        assert_ne!(rep.root, enc_root, "根目录名没变——新密码将解不开它");
+        assert!(rep.root.is_dir(), "返回的新根路径不存在");
+        assert!(!enc_root.exists(), "旧根路径还在，说明是复制而不是改名");
+        let enc_root = rep.root.clone();
+
+        // 正面：新密码能打开每一个文件
+        let mut checked = 0;
+        for f in all_files(&enc_root) {
+            let data = std::fs::read(&f).unwrap();
+            let opened = crate::file::open(&data, &[new.duplicate()]).unwrap();
+            // 取出原文件名：能解出来就说明 FEK 是对的（文件名用 FEK 加密）
+            assert!(opened.filename().unwrap().ends_with(".txt"));
+            checked += 1;
+            // 反证：旧密码必须打不开了，否则「改密码」根本没生效
+            assert!(
+                crate::file::open(&data, &[old.duplicate()]).is_err(),
+                "旧密码仍能打开 {f:?}——改密码没生效，而用户以为已经换了"
+            );
+        }
+        assert_eq!(checked, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_keeps_payload_byte_identical() {
+        // 改密码只该动 384 字节 slot 区 + 32 字节 MAC。若实现退化成
+        // 「解密后重新加密」，载荷和 file_uuid 都会变——对增量备份来说
+        // 整棵树都要重传，而且大文件会慢几个数量级
+        let (root, enc_root, salt, cipher) = tree_fixture("payload");
+        // 按**磁盘文件名**索引而不是完整路径：目录名会随改密码变化，
+        // 完整路径在 rekey 之后就失效了。文件名是随机 uuid，不会变
+        let before: std::collections::BTreeMap<String, Vec<u8>> = all_files(&enc_root)
+            .into_iter()
+            .map(|p| {
+                let d = std::fs::read(&p).unwrap();
+                (p.file_name().unwrap().to_string_lossy().into_owned(), d)
+            })
+            .collect();
+
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+        let rep = rekey_tree(&enc_root, &[old], &[new], &salt, cipher).unwrap();
+
+        for p in all_files(&rep.root) {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let old_bytes = before.get(&name).expect("改密码后出现了新文件名——uuid 不该变");
+            let new_bytes = std::fs::read(&p).unwrap();
+            assert_eq!(old_bytes.len(), new_bytes.len(), "长度变了：{p:?}");
+            let old_bytes = old_bytes.clone();
+            // 头部固定区 + slot 区 + MAC 之后的部分必须逐字节相同。
+            // 用 header_len 定位载荷起点，不靠硬编码偏移
+            let h = FixedHeader::parse(&new_bytes).unwrap();
+            let start = h.header_len as usize;
+            assert_eq!(
+                &old_bytes[start..],
+                &new_bytes[start..],
+                "载荷被改写了：{p:?}——说明退化成了解密后重新加密"
+            );
+            // file_uuid 也必须不变
+            let h0 = FixedHeader::parse(&old_bytes).unwrap();
+            assert_eq!(h0.file_uuid, h.file_uuid, "file_uuid 变了：{p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_refuses_empty_keep() {
+        // keep 为空会留下永远打不开的文件，等同于销毁数据
+        let (root, enc_root, salt, cipher) = tree_fixture("empty");
+        let old = kek_of(b"old", &salt);
+        assert!(rekey_tree(&enc_root, &[old], &[], &salt, cipher).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_rejects_a_plain_directory() {
+        // 对普通目录执行必须报错，不能返回「0 个已改写」——那看着像成功，
+        // 而用户其实选错了目录
+        let root = std::env::temp_dir().join("omy-rekey-plain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("x.txt"), b"not encrypted").unwrap();
+        let salt = [7u8; 16];
+        let k = kek_of(b"pw", &salt);
+        assert!(
+            rekey_tree(&root, &[k.duplicate()], &[k], &salt, CipherId::ChaCha20Poly1305).is_err(),
+            "对普通目录应当报错，而不是静默返回 0 个已改写"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_reports_wrong_password_per_file_without_touching_them() {
+        // 密码不对时：一个都不该改，且要逐个报出来
+        let (root, enc_root, salt, cipher) = tree_fixture("wrongpw");
+        let before: Vec<Vec<u8>> =
+            all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
+
+        let bad = kek_of(b"bad", &salt);
+        let new = kek_of(b"new", &salt);
+        let rep = rekey_tree(&enc_root, &[bad], &[new], &salt, cipher).unwrap();
+        assert_eq!(rep.changed, 0);
+        assert_eq!(rep.failed.len(), 2, "两个文件都该报失败");
+        assert!(!rep.is_complete());
+
+        // 磁盘上必须一字节没动。写坏了才报错的实现会让用户既没改成密码、
+        // 又丢了文件
+        let after: Vec<Vec<u8>> =
+            all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
+        assert_eq!(before, after, "密码不对却动了文件");
+        // 目录名也不该动：密码都不对，改名只会让树更难恢复
+        assert!(enc_root.is_dir(), "密码不对却把根目录改名了");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_can_add_a_second_password_keeping_the_first() {
+        // add 的语义：两个密码都能开。最容易犯的错是新密码把原密码挤掉
+        let (root, enc_root, salt, cipher) = tree_fixture("add");
+        let old = kek_of(b"old", &salt);
+        let extra = kek_of(b"extra", &salt);
+        let rep = rekey_tree(
+            &enc_root,
+            &[old.duplicate()],
+            &[old.duplicate(), extra.duplicate()],
+            &salt,
+            cipher,
+        )
+        .unwrap();
+        assert!(rep.is_complete(), "{:?}", rep.failed);
+        // add 保留了原密码作为第一个 KEK，所以目录名密钥不变、根路径不变。
+        // 这是 add 与 change 的一个可观察差别
+        assert_eq!(rep.root, enc_root, "add 保留原密码时根目录名不该变");
+
+        for f in all_files(&enc_root) {
+            let data = std::fs::read(&f).unwrap();
+            assert!(crate::file::open(&data, &[old.duplicate()]).is_ok(), "原密码被挤掉了");
+            assert!(crate::file::open(&data, &[extra.duplicate()]).is_ok(), "新密码不生效");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rekey_tree_leaves_directory_names_openable() {
+        // 目录名由 keep 的**第一个** KEK 派生。如果改密码后第一个 KEK 变了，
+        // 目录名就解不开、整个分支进不去。这条守的是「换密码后树还能浏览」
+        let (root, enc_root, salt, cipher) = tree_fixture("dirname");
+        let old = kek_of(b"old", &salt);
+        let new = kek_of(b"new", &salt);
+        let rk =
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+        assert!(rk.is_complete(), "{:?}", rk.failed);
+        assert_eq!(rk.dirs_renamed, 2, "根 + 子目录都该改名");
+
+        // 用新密码解整棵树。这一条是整个改动的核心：只改文件不改目录名的话，
+        // 新密码开得了文件却解不开目录名，旧密码反之——两个密码都用不了
+        let out = root.join("dec");
+        std::fs::create_dir_all(&out).unwrap();
+        let rep = decrypt_tree(&rk.root, &out, &[new], &salt, cipher, None).unwrap();
+        assert_eq!(rep.files, 2, "换密码后整棵树应当仍能解开，失败: {:?}", rep.skipped);
+        assert!(rep.root.join("sub/b.txt").is_file(), "子目录结构没还原对");
+
+        // 反证：旧密码不该还能解开这棵树
+        let out2 = root.join("dec-old");
+        std::fs::create_dir_all(&out2).unwrap();
+        assert!(
+            decrypt_tree(&rk.root, &out2, &[old], &salt, cipher, None).is_err(),
+            "旧密码仍能解开整棵树——改密码没生效"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 收集树里所有密文文件，按路径排序好让比较稳定。
+    fn all_files(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out.sort();
+        out
+    }
+
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "omy") {
+                out.push(p);
+            }
+        }
+    }
 
     fn kek() -> Kek {
         Kek::from_password(b"pw", &[3u8; 16], Argon2Params::TEST_WEAK).unwrap()
