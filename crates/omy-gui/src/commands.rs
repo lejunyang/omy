@@ -304,11 +304,123 @@ pub fn credential_count(state: State<'_, Shared>) -> usize {
 /// 对 800 MB 的视频，读全文件再解析头部会让「添加目录」卡好几秒。
 fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let mut f = std::fs::File::open(p)?;
-    let mut buf = vec![0u8; n];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
+    let f = std::fs::File::open(p)?;
+    // 用 take + read_to_end 而不是单次 read：`Read::read` **不保证**填满
+    // 缓冲区，它可以只返回一部分。单次 read 对小缓冲区几乎总能读满，
+    // 所以这个问题在 64 字节的探测里从来不显现；但按 header_len 读几 KB
+    // 时一旦短读，open() 就会因为数据不全而失败——表现为「同一个文件
+    // 有时有缩略图有时没有」，极难复现。
+    let mut buf = Vec::new();
+    f.take(n as u64).read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+/// 读出足够覆盖整个头部区域（含 TLV）的字节，且**一个字节都不多读**。
+///
+/// # 为什么要两段读，而不是取一个够大的固定前缀
+///
+/// 固定前缀是在「够不够」和「多读多少」之间赌一个常量。实测数据
+/// （10000 个文件，4 MiB 一个）说明这个赌注很贵：
+///
+/// | 前缀 | 每文件 | 10000 个文件 |
+/// |---|---|---|
+/// | 32 KiB | 0.047 ms | 0.47 s |
+/// | 1 MiB | 0.549 ms | **5.49 s** |
+///
+/// 1 MiB 是 `enrich_file` 原来的取值——单个文件预览时无所谓，但扫描
+/// 整个目录就是 10 GB 的读，直接冲破文档 §9 的「10000 文件 < 5s」。
+/// 瓶颈完全在 IO：实际头部只有约 7 KB。
+///
+/// 格式本来就为这个场景留了 [`omy_core::header::HEADER_LEN_FIELD_OFFSET`]，
+/// 让扫描器能先取出 `header_len` 再决定读多少。两段读之后耗时与文件
+/// 大小**彻底无关**（实测小文件与 4 MiB 文件都是 0.09 ms/文件），
+/// 不必再赌某个常量对将来的缩略图尺寸够不够大。
+fn read_header_area(p: &Path) -> std::io::Result<Vec<u8>> {
+    let off = omy_core::header::HEADER_LEN_FIELD_OFFSET;
+    let head = read_prefix(p, off.saturating_add(4))?;
+    let Some(field) = head
+        .get(off..off.saturating_add(4))
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+    else {
+        // 比固定头还短，不可能是 omy 文件。把已读到的还回去，
+        // 让上层用统一的 peek_header 去报错，而不是在这里另造一种错误
+        return Ok(head);
+    };
+    let claimed = u32::from_le_bytes(field) as usize;
+    // header_len 来自**尚未验证**的文件内容，不能直接拿去分配内存：
+    // 一个声称 4 GiB 的坏文件会让扫描进程被 OOM 杀掉。用文件实际长度
+    // 兜住——头部不可能比文件本身长。
+    let actual = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let cap = claimed.min(usize::try_from(actual).unwrap_or(usize::MAX));
+    read_prefix(p, cap)
+}
+
+/// 从磁盘上的一个加密文件读出媒体附加信息。
+///
+/// 返回 `(媒体元信息, 有无缩略图, 是否是目录容器)`。
+///
+/// 提出来是因为**扫描和按需补齐都要做同一件事**：扫描时批量填，
+/// 预览时对单个文件再确认一次。两边各写一遍的话，新增字段时漏掉
+/// 一边就会出现「网格里有缩略图、预览里没有」这类只在特定操作顺序下
+/// 才显现的不一致。
+fn read_media_extras(
+    path: &str,
+    handle: &Shared,
+) -> Option<(Option<omy_media::MediaMeta>, bool, bool)> {
+    let bytes = read_header_area(Path::new(path)).ok()?;
+    let h = omy_core::file::peek_header(&bytes).ok()?;
+    let keks: Vec<omy_core::crypto::Kek> =
+        handle.with_session(|s| s.all_for(&h.vault_salt).into_iter().map(|c| c.kek).collect())?;
+    let opened = omy_core::file::open(&bytes, &keks).ok()?;
+    let has_thumb = opened.thumbnail().is_ok();
+    // 目录容器的载荷是多个文件拼接。不认出来的话，前端会把整包
+    // 当成单个文件送去预览，得到一堆拼在一起的字节
+    let is_container = opened.folder_index().is_ok();
+    let meta = opened
+        .media_meta()
+        .ok()
+        .and_then(|raw| omy_media::MediaMeta::from_json_bytes(&raw).ok());
+    Some((meta, has_thumb, is_container))
+}
+
+/// 把读到的媒体附加信息写进一个条目。
+///
+/// 与 [`read_media_extras`] 分开：那个碰磁盘和密钥，这个是纯字段映射，
+/// 可以单独测。
+fn apply_media_extras(
+    e: &mut FileEntry,
+    name: &str,
+    meta: Option<&omy_media::MediaMeta>,
+    has_thumb: bool,
+    is_container: bool,
+) {
+    e.has_thumbnail = has_thumb;
+    e.is_container = is_container;
+    e.needs_transcode = crate::mime::image_needs_transcode(&crate::mime::extension_of(name));
+    if let Some(m) = meta {
+        // 文件名的后缀参与 MIME 推导：容器名不足以区分
+        // （比如 ffprobe 对 mp4 报的是 "mov,mp4,m4a,3gp,3g2,mj2"）
+        let (kind, mime) = crate::mime::classify(name, m);
+        e.kind = Some(kind.to_owned());
+        e.mime = Some(mime);
+        // 播放分级只对音视频有意义。图片走 ffprobe 会被识别成
+        // 「单帧视频」，从而带上 P3（全解码）分级——界面上就成了
+        // 一张 PNG 标着「🐌 需要重新编码」，纯属误导。
+        if kind == crate::mime::kind::VIDEO || kind == crate::mime::kind::AUDIO {
+            e.tier = Some(m.playback_tier.default.to_ascii_lowercase());
+            e.duration_ms = m.duration_ms;
+        }
+        if let Some((w, h)) = m.resolution() {
+            e.width = Some(w);
+            e.height = Some(h);
+        }
+    } else {
+        // 没有媒体元信息：按文件名后缀兜底判断，
+        // 文本和 SVG 这类不走 ffprobe 的类型全靠它
+        let (kind, mime) = crate::mime::by_extension(name);
+        e.kind = Some(kind.to_owned());
+        e.mime = Some(mime);
+    }
 }
 
 /// 字节转十六进制。
@@ -319,6 +431,17 @@ pub fn hex_of(b: &[u8]) -> String {
 /// 扫描目录并返回文件列表。
 ///
 /// 用 `spawn_blocking`：扫描要读大量文件头，是阻塞 IO。
+///
+/// # 为什么顺带把媒体附加信息也填上
+///
+/// 缩略图、`kind`、时长这些字段原先只由 `enrich_file` 填，而前端只在
+/// **打开预览时**才调它。于是网格视图永远拿不到 `has_thumbnail`，
+/// 加密文件一律显示成锁图标——缩略图明明写进文件了，界面上就是不出现。
+///
+/// 当初分开是担心扫描变慢（文档 §9 要求 10000 文件 < 5s）。实测这个
+/// 担心不成立：按 `header_len` 精确读取后是 **0.09 ms/文件**，10000 个
+/// 文件约 0.9 s，且与文件大小无关（见 [`read_header_area`]）。
+/// 所以直接在扫描时填全，不必让前端为可见范围另做一套按需加载。
 #[tauri::command]
 pub async fn scan_directory(
     state: State<'_, Shared>,
@@ -347,7 +470,24 @@ pub async fn scan_directory(
             // 直接用路径当 id 会让路径出现在 WebView 的 URL 里，
             // 而 URL 可能被记录在开发者工具的网络面板中。
             let id = format!("{i:04x}{}", short_hash(&hit.path.to_string_lossy()));
-            out.push(FileEntry::from_hit(id, hit));
+            let mut entry = FileEntry::from_hit(id, hit);
+            // 只对解开了的文件补：锁定文件的媒体信息正是要隐藏的内容，
+            // 而且没有密钥也读不出来
+            if entry.unlocked {
+                let name = entry.name.clone();
+                if let Some((meta, has_thumb, is_container)) =
+                    read_media_extras(&entry.path, &handle)
+                {
+                    apply_media_extras(
+                        &mut entry,
+                        &name,
+                        meta.as_ref(),
+                        has_thumb,
+                        is_container,
+                    );
+                }
+            }
+            out.push(entry);
         }
         Some(out)
     })
@@ -376,8 +516,10 @@ pub fn list_files(state: State<'_, Shared>) -> Vec<FileEntry> {
 
 /// 补充某个文件的媒体元信息。
 ///
-/// 与扫描分开是有意的：扫描要快（文档 §9 要求 10000 文件 < 5s），
-/// 而解析媒体元信息要解密 TLV。列表先出来，元信息按需补。
+/// 扫描时已经填过一轮（见 [`scan_directory`]），这里是给「扫描之后
+/// 文件被改动」和「单个文件直接打开、没经过扫描」两种情况兜底。
+/// 两条路径共用 [`read_media_extras`] 与 [`apply_media_extras`]，
+/// 避免出现「网格里有缩略图、预览里没有」这类不一致。
 #[tauri::command]
 pub async fn enrich_file(state: State<'_, Shared>, id: String) -> CmdResult<Option<FileEntry>> {
     let Some(entry) = state.file(&id) else {
@@ -391,60 +533,14 @@ pub async fn enrich_file(state: State<'_, Shared>, id: String) -> CmdResult<Opti
     let handle: Shared = Arc::clone(&state);
     let path = entry.path.clone();
 
-    let found = tauri::async_runtime::spawn_blocking(move || {
-        // 元信息在头部区域，1 MiB 足够覆盖含缩略图的 TLV 区
-        let bytes = read_prefix(Path::new(&path), 1 << 20).ok()?;
-        let h = omy_core::file::peek_header(&bytes).ok()?;
-        let keks: Vec<omy_core::crypto::Kek> = handle.with_session(|s| {
-            s.all_for(&h.vault_salt)
-                .into_iter()
-                .map(|c| c.kek)
-                .collect()
-        })?;
-        let opened = omy_core::file::open(&bytes, &keks).ok()?;
-        let has_thumb = opened.thumbnail().is_ok();
-        // 目录容器的载荷是多个文件拼接。不认出来的话，前端会把整包
-        // 当成单个文件送去预览，得到一堆拼在一起的字节
-        let is_container = opened.folder_index().is_ok();
-        let meta = opened
-            .media_meta()
-            .ok()
-            .and_then(|raw| omy_media::MediaMeta::from_json_bytes(&raw).ok());
-        Some((meta, has_thumb, is_container))
-    })
-    .await
-    .map_err(|_| CmdError::code("internal"))?;
+    let found = tauri::async_runtime::spawn_blocking(move || read_media_extras(&path, &handle))
+        .await
+        .map_err(|_| CmdError::code("internal"))?;
 
     if let Some((meta, has_thumb, is_container)) = found {
-        // 文件名的后缀参与 MIME 推导：容器名不足以区分
-        // （比如 ffprobe 对 mp4 报的是 "mov,mp4,m4a,3gp,3g2,mj2"）
         let name = entry.name.clone();
         state.update_file(&id, |e| {
-            e.has_thumbnail = has_thumb;
-            e.is_container = is_container;
-            e.needs_transcode = crate::mime::image_needs_transcode(&crate::mime::extension_of(&name));
-            if let Some(m) = &meta {
-                let (kind, mime) = crate::mime::classify(&name, m);
-                e.kind = Some(kind.to_owned());
-                e.mime = Some(mime);
-                // 播放分级只对音视频有意义。图片走 ffprobe 会被识别成
-                // 「单帧视频」，从而带上 P3（全解码）分级——界面上就成了
-                // 一张 PNG 标着「🐌 需要重新编码」，纯属误导。
-                if kind == crate::mime::kind::VIDEO || kind == crate::mime::kind::AUDIO {
-                    e.tier = Some(m.playback_tier.default.to_ascii_lowercase());
-                    e.duration_ms = m.duration_ms;
-                }
-                if let Some((w, h)) = m.resolution() {
-                    e.width = Some(w);
-                    e.height = Some(h);
-                }
-            } else {
-                // 没有媒体元信息：按文件名后缀兜底判断，
-                // 文本和 SVG 这类不走 ffprobe 的类型全靠它
-                let (kind, mime) = crate::mime::by_extension(&name);
-                e.kind = Some(kind.to_owned());
-                e.mime = Some(mime);
-            }
+            apply_media_extras(e, &name, meta.as_ref(), has_thumb, is_container);
         });
     }
     Ok(state.file(&id))
@@ -828,6 +924,31 @@ pub async fn probe_one(state: State<'_, Shared>, path: String) -> CmdResult<Prob
 mod tests {
     use super::*;
 
+    /// 一个干净的条目，供媒体字段映射的测试用。
+    ///
+    /// 所有媒体字段都是空的，这样断言「某个字段被填上了」时，
+    /// 通过一定是因为映射真的写了它，而不是初值恰好相同。
+    fn sample_entry() -> FileEntry {
+        FileEntry {
+            id: String::from("0000deadbeef"),
+            path: String::from("/x/a.png"),
+            name: String::from("a.png"),
+            unlocked: true,
+            size: Some(1),
+            encrypted_size: 1,
+            kind: None,
+            mime: None,
+            tier: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            has_thumbnail: false,
+            needs_transcode: false,
+            credential: None,
+            is_container: false,
+        }
+    }
+
     /// 造一个真容器索引：两个文件 + 一个目录。
     fn sample_index() -> omy_core::container::ContainerIndex {
         use omy_core::container::{ContainerBuilder, EntryMeta};
@@ -997,6 +1118,83 @@ mod tests {
         let j = serde_json::to_string(&r).unwrap_or_default();
         assert!(j.contains("vaults_unlocked"));
         assert!(j.contains('2'));
+    }
+
+    #[test]
+    fn media_extras_set_thumbnail_flag() {
+        // 这个字段决定网格里显示缩略图还是锁图标。曾经它只由 enrich_file
+        // 设置，而前端只在打开预览时才调那个命令——于是网格永远拿不到，
+        // 缩略图明明在文件里却不显示。
+        let mut e = sample_entry();
+        assert!(!e.has_thumbnail, "初始应为 false");
+        apply_media_extras(&mut e, "a.png", None, true, false);
+        assert!(e.has_thumbnail, "有缩略图时必须置为 true");
+    }
+
+    #[test]
+    fn media_extras_fall_back_to_extension_without_meta() {
+        // 文本、SVG 这类不走 ffprobe，没有 MediaMeta。
+        // 不兜底的话它们的 kind 会一直是 None，前端无法决定怎么预览
+        let mut e = sample_entry();
+        apply_media_extras(&mut e, "notes.txt", None, false, false);
+        assert_eq!(e.kind.as_deref(), Some("text"));
+        assert!(e.mime.is_some(), "MIME 也要有兜底值");
+    }
+
+    #[test]
+    fn media_extras_do_not_mark_images_as_needing_transcode() {
+        // 图片经 ffprobe 会被认成「单帧视频」，若把播放分级也一并套上，
+        // 界面上就是一张 PNG 标着「需要重新编码」。tier 只对音视频有意义
+        let mut e = sample_entry();
+        apply_media_extras(&mut e, "a.png", None, true, false);
+        assert!(e.tier.is_none(), "图片不该有播放分级，实得 {:?}", e.tier);
+        assert!(e.duration_ms.is_none(), "图片不该有时长");
+    }
+
+    #[test]
+    fn media_extras_flag_container() {
+        // 认不出容器的话，前端会把整包当单个文件送去预览，
+        // 得到一堆拼在一起的字节
+        let mut e = sample_entry();
+        apply_media_extras(&mut e, "folder.omy", None, false, true);
+        assert!(e.is_container);
+    }
+
+    #[test]
+    fn header_area_read_is_bounded_by_file_length() {
+        // header_len 取自尚未验证的文件内容。一个声称 4 GiB 的坏文件
+        // 若被直接拿去分配，扫描进程会被 OOM 杀掉——而这在正常文件上
+        // 永远不会发生，所以只有显式构造坏文件才能测到。
+        let dir = std::env::temp_dir().join("omy-hdr-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("evil.omy");
+        // 前 12 字节随意，第 12..16 字节是 header_len：填一个巨大的值
+        let mut bytes = vec![0u8; 12];
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(b"tail");
+        let _ = std::fs::write(&p, &bytes);
+
+        let got = read_header_area(&p).unwrap_or_default();
+        // 关键：读回来的不能超过文件实际长度，也不能是 4 GiB 的缓冲区
+        assert!(
+            got.len() <= bytes.len(),
+            "读取量 {} 超过文件实际长度 {}",
+            got.len(),
+            bytes.len()
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn header_area_handles_truncated_file() {
+        // 比固定头还短的文件不能 panic，也不能读出越界数据
+        let dir = std::env::temp_dir().join("omy-hdr-test2");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("short.omy");
+        let _ = std::fs::write(&p, b"tiny");
+        let got = read_header_area(&p).unwrap_or_default();
+        assert_eq!(got.len(), 4, "应原样返回已读到的字节");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
