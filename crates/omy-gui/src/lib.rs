@@ -65,6 +65,12 @@ pub fn run() {
     let shared: commands::Shared = Arc::new(AppState::new());
     let for_protocol = Arc::clone(&shared);
     let device_session: device_cmds::SharedDevices = Arc::new(devices::DeviceSession::new());
+    // setup 闭包要用它设置安卓的设备库路径。单独克隆一份：
+    // 闭包是 move 的，不能借用外层变量。桌面端不需要这条路——
+    // 那里 dirs::config_dir() 本来就能解析出正确位置
+    #[cfg(target_os = "android")]
+    let for_setup_devices = Arc::clone(&device_session);
+
     let pair_task: device_cmds::SharedPair = Arc::new(lan::PairTask::new());
     let share_task: device_cmds::SharedShare = Arc::new(lan::ShareTask::new());
     let remote_session: Arc<remote::RemoteSession> = Arc::new(remote::RemoteSession::new());
@@ -144,33 +150,55 @@ pub fn run() {
             remote_cmds::remote_vaults,
         ])
         .setup(move |app| {
-            let mut builder = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("omy")
-            .inner_size(1180.0, 780.0)
-            .min_inner_size(720.0, 480.0);
+            #[cfg(target_os = "android")]
+            {
+                // 安卓的窗口由 tauri.android.conf.json 覆盖成 create: true，
+                // Tauri 在 setup 前就按它建好了 WebView，这里只补设备库路径。
+                android_setup(app, &for_setup_devices);
+                let _ = &debug_port;
+            }
 
-            if let Some(port) = &debug_port {
+            // 桌面端自己建窗口：additional_browser_args 没有配置项对应，
+            // 只能在构造时给，而 CDP 端口就藏在那串参数里。
+            //
+            // 所以主配置里那条 window 记的是 create: false，仅供桌面读取尺寸；
+            // 安卓靠 tauri.android.conf.json 覆盖成 create: true，由 Tauri
+            // 在 setup 之前建好 WebView——移动端没有 WebviewWindowBuilder 这条路。
+            //
+            // 不要改成「先让配置建好、需要 CDP 时再关掉重建」：close() 只是投递
+            // 关闭事件，同步接着建会撞上 label 未释放，而等它释放又会让事件循环
+            // 认为最后一个窗口已关闭、直接退出进程。
+            #[cfg(not(target_os = "android"))]
+            {
                 // wry 对 additional_browser_args 用 unwrap_or_else：
                 // 一旦自定义就会丢掉默认参数，必须把默认值一并带上，
                 // 否则 mini menu 与 SmartScreen 的禁用会失效。
                 //
                 // --remote-allow-origins=* 是必需的：Chromium 会校验
                 // WebSocket 握手的 Origin，不在允许列表时返回 403。
-                let args = format!(
-                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                     --remote-debugging-port={port} \
-                     --remote-allow-origins=* \
-                     --autoplay-policy=no-user-gesture-required"
+                let mut args = String::from(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
                 );
-                eprintln!("[omy] CDP 已启用，端口 {port}");
-                builder = builder.additional_browser_args(&args);
-            }
+                if let Some(port) = &debug_port {
+                    args.push_str(&format!(
+                        " --remote-debugging-port={port} \
+                         --remote-allow-origins=* \
+                         --autoplay-policy=no-user-gesture-required"
+                    ));
+                    eprintln!("[omy] CDP 已启用，端口 {port}");
+                }
 
-            builder.build()?;
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("omy")
+                .inner_size(1180.0, 780.0)
+                .min_inner_size(720.0, 480.0)
+                .additional_browser_args(&args)
+                .build()?;
+            }
             Ok(())
         })
         .run(tauri::generate_context!());
@@ -179,4 +207,30 @@ pub fn run() {
         eprintln!("[omy] 启动失败: {e}");
         std::process::exit(1);
     }
+}
+
+/// 安卓启动时的路径准备。
+///
+/// 设备库（本机身份 + 已配对设备）默认落在 `dirs::config_dir()`，
+/// 那个函数在安卓上读 `$HOME`——应用进程里没有这个变量，于是返回
+/// `None`，配对功能会直接报「没有可用的存储位置」，局域网共享根本
+/// 用不起来。
+///
+/// 路径从 Tauri 的 `PathResolver` 取而不是硬编码 `/data/data/<包名>`：
+/// 包名写在 tauri.conf.json 里，在代码里再写一遍就是两处真相。
+#[cfg(target_os = "android")]
+fn android_setup(app: &tauri::App, devices: &device_cmds::SharedDevices) {
+    use tauri::Manager as _;
+
+    let Ok(dir) = app.path().app_config_dir() else {
+        eprintln!("[omy] 取不到应用配置目录，设备库将不可用");
+        return;
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("[omy] 建配置目录失败: {e}");
+        return;
+    }
+
+    devices.set_default_path(dir.join("devices.omy"));
 }

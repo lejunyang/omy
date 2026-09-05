@@ -7,7 +7,17 @@
     "frontendDist": "dist"
   },
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "omy",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 720,
+        "minHeight": 480,
+        "create": false
+      }
+    ],
     "security": {
       "csp": {
         "default-src": "'none'",

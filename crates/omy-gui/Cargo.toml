@@ -32,7 +32,13 @@ omy-media = { path = "../omy-media" }
 omy-net = { path = "../omy-net" }
 # 不启用 protocol-asset：所有内容都走自定义的 omystream:// 协议。
 # asset 协议会直接暴露文件系统路径，与「明文不落盘」的目标相悖。
-tauri = { version = "2", features = [] }
+#
+# custom-protocol 必须开：它决定前端资源是「从二进制里读」还是
+# 「向 dev server 发 HTTP 请求取」（tauri 的 build.rs 里 dev = !custom-protocol）。
+# 不开时移动端会去代理一个并不存在的 dev server，整个页面加载失败，
+# 报 "error sending request for url (http://tauri.localhost/)" 后白屏。
+# 桌面端看不出问题——那条代理分支是 cfg(all(dev, mobile))，只在移动端生效。
+tauri = { version = "2", features = ["custom-protocol"] }
 # 原生目录选择器。只在 Rust 侧调用并封装成自己的命令，
 # 因此 capabilities 里**不开放** dialog 权限给前端——
 # 前端拿不到任意路径选择能力，只能走我们受控的入口。
