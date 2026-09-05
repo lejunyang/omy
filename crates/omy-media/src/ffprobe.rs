@@ -28,6 +28,33 @@ const DIAG_LIMIT: usize = 2048;
 /// （`docs/research/04-media-playback.md` §14 要求「超时强杀」）。
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Windows 上不给子进程建控制台窗口。
+///
+/// GUI 程序（没有附着的控制台）启动一个控制台子进程时，Windows 会**新建
+/// 一个控制台窗口**。加密一个视频要起好几次 ffprobe/ffmpeg，于是屏幕上
+/// 一连串黑框闪现——用户能明确感知到「有东西在偷偷跑」，而且窗口可能抢
+/// 走焦点。CLI 里不明显是因为它本就有控制台可继承。
+///
+/// 0x0800_0000 是 `CREATE_NO_WINDOW`。不用 winapi 依赖，就为一个常量
+/// 引入一个 crate 不值得。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 构造子进程命令，并在 Windows 上抑制控制台窗口。
+///
+/// 所有起 ffprobe/ffmpeg 的地方都必须走这里，不要直接用 `Command::new`：
+/// 漏一处就会有一处闪黑框，而这种缺陷在 Linux/macOS 上根本不出现，
+/// 只在 Windows 的 GUI 里才看得见。
+fn command_for(exe: &Path) -> Command {
+    let mut c = Command::new(exe);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 /// 可执行文件的种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -180,7 +207,7 @@ pub fn ffmpeg_path() -> Option<PathBuf> {
 /// 工具版本首行，用于 `doctor`。
 pub fn version(tool: Tool) -> Result<String> {
     let exe = tool_path(tool).ok_or_else(|| unavailable(tool))?;
-    let out = Command::new(exe)
+    let out = command_for(exe)
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -245,7 +272,7 @@ fn truncate_diag(bytes: &[u8]) -> String {
 pub fn run_piped(tool: Tool, args: &[&str], input: Vec<u8>) -> Result<Output> {
     let exe = tool_path(tool).ok_or_else(|| unavailable(tool))?;
 
-    let mut child = Command::new(exe)
+    let mut child = command_for(exe)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -294,7 +321,7 @@ pub fn run_with_timeout(
     let exe = tool_path(tool).ok_or_else(|| unavailable(tool))?;
     let limit = timeout.unwrap_or(DEFAULT_TIMEOUT);
 
-    let mut child = Command::new(exe)
+    let mut child = command_for(exe)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
