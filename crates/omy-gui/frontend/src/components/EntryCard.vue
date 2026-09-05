@@ -15,6 +15,7 @@
 import { computed, ref, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n.js';
 import { thumbUrl } from '../store.js';
+import { useThumbLoad } from '../thumbload.js';
 import { isMobile } from '../viewport.js';
 
 const props = defineProps({
@@ -156,6 +157,12 @@ const sizeText = computed(() =>
 );
 
 const known = computed(() => props.entry.meta || null);
+
+// 缩略图按可见性加载：一次性渲染几千张图会让 WebView 吃掉几 GB 内存
+// （每张解码后约 300 KB，与压缩后的几 KB 完全是两回事），同时几千个
+// /thumb 请求会把后端协议线程占满，表现是整个界面卡住。
+// 细节与两个边距的取舍见 thumbload.js
+const { thumbEl, shouldLoad } = useThumbLoad();
 const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
 </script>
 
@@ -230,9 +237,9 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
     @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div class="thumb">
+    <div ref="thumbEl" class="thumb">
       <img
-        v-if="known?.has_thumbnail"
+        v-if="known?.has_thumbnail && shouldLoad"
         :src="thumbUrl(entry.entry_id)"
         alt=""
         loading="lazy"
