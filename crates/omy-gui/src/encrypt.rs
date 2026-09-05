@@ -74,6 +74,18 @@ pub struct EncryptRequest {
     /// 泄露文件数与树形（N6），必须由用户明确选择，不能是默认值。
     #[serde(default = "default_container")]
     pub folder_mode: String,
+    /// 缩略图模式：`auto` 自动生成，`none` 完全不生成。
+    ///
+    /// 默认 auto。缩略图存在加密 TLV 里，只有拿到密码才能读，所以生成它
+    /// 不泄露内容；但它确实让文件变大几 KB，也有人不想要，故留出开关。
+    #[serde(default = "default_auto")]
+    pub thumbnail: String,
+    /// 视频取帧时间点（秒）。`None` 表示自动取时长 10% 处。
+    ///
+    /// 只对视频有效。自动取的那一帧可能正好是片头黑帧或转场，
+    /// 所以要允许用户自己指定。
+    #[serde(default)]
+    pub thumbnail_frame: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -84,6 +96,9 @@ fn default_chunk() -> u32 {
 }
 fn default_profile() -> String {
     String::from("moderate")
+}
+fn default_auto() -> String {
+    String::from("auto")
 }
 fn default_keep() -> String {
     String::from("keep")
@@ -308,7 +323,7 @@ fn encrypt_one(
     let prepared = if src.is_dir() {
         omy_media::Prepared::default()
     } else {
-        omy_media::prepare(&data, &media_prepare_options())
+        omy_media::prepare(&data, &media_prepare_options(req))
     };
 
     let filename = src
@@ -427,11 +442,29 @@ fn encrypt_one(
 /// GUI 没有对应的开关，所以固定全开、缩略图走 `Auto` 按内容分派。
 /// 抽成函数是为了让容器模式与树形模式共用同一份配置：
 /// 两处各写一遍的话，迟早出现「单文件有缩略图、树里没有」这种不一致。
-fn media_prepare_options() -> omy_media::PrepareOptions {
+/// 按请求构造媒体附加信息的生成选项。
+///
+/// 缩略图关掉时**媒体元信息与 moov 副本照旧生成**：那两者是播放要用的
+/// （时长、分辨率、起播免 seek），与「要不要一张预览图」是两件事。
+/// 一起关掉会让视频在界面上变成没有时长、无法判断能否直接播的条目。
+fn media_prepare_options(req: &EncryptRequest) -> omy_media::PrepareOptions {
+    let thumbnail = if req.thumbnail == "none" {
+        omy_media::ThumbSource::None
+    } else if let Some(sec) = req.thumbnail_frame {
+        // 负数与非有限值会被 from_video_bytes 拒绝，这里先挡掉，
+        // 免得每个文件都白起一次 FFmpeg 再失败
+        if sec.is_finite() && sec >= 0.0 {
+            omy_media::ThumbSource::VideoAt(sec)
+        } else {
+            omy_media::ThumbSource::Auto
+        }
+    } else {
+        omy_media::ThumbSource::Auto
+    };
     omy_media::PrepareOptions {
         media_meta: true,
         moov_cache: true,
-        thumbnail: omy_media::ThumbSource::Auto,
+        thumbnail,
         ..omy_media::PrepareOptions::default()
     }
 }
@@ -460,7 +493,7 @@ fn encrypt_one_as_tree(
     // 逐个文件生成媒体附加信息。警告在 GUI 里没有承载位置，
     // 而且非媒体文件占多数，所以丢弃——真正需要排查时用 CLI 的 -v。
     let mut on_media = |data: &[u8], _name: &str| {
-        let p = omy_media::prepare(data, &media_prepare_options());
+        let p = omy_media::prepare(data, &media_prepare_options(req));
         (p.thumbnail, p.media_meta, p.moov_cache)
     };
 
@@ -648,7 +681,71 @@ mod tests {
             kdf_profile: String::from("interactive"),
             original: String::from("keep"),
             folder_mode: String::from("container"),
+            thumbnail: String::from("auto"),
+            thumbnail_frame: None,
         }
+    }
+
+    #[test]
+    fn thumbnail_none_disables_only_the_thumbnail() {
+        // 关掉缩略图不该顺带关掉媒体元信息和 moov 副本：那两者是播放要用的
+        // （时长、分辨率、起播免 seek），与「要不要一张预览图」是两件事。
+        // 一起关掉会让视频在界面上没有时长、也无法判断能否直接播。
+        let mut req = req_with(vec![]);
+        req.thumbnail = String::from("none");
+        let o = media_prepare_options(&req);
+        assert_eq!(o.thumbnail, omy_media::ThumbSource::None);
+        assert!(o.media_meta, "元信息不该被一起关掉");
+        assert!(o.moov_cache, "moov 副本不该被一起关掉");
+    }
+
+    #[test]
+    fn thumbnail_frame_selects_video_time() {
+        let mut req = req_with(vec![]);
+        req.thumbnail_frame = Some(12.5);
+        assert_eq!(
+            media_prepare_options(&req).thumbnail,
+            omy_media::ThumbSource::VideoAt(12.5)
+        );
+    }
+
+    #[test]
+    fn invalid_frame_falls_back_to_auto() {
+        // 负数与 NaN 会被 from_video_bytes 拒绝。若原样传下去，
+        // 每个文件都要白起一次 FFmpeg 再失败——用户看到的是「一个缩略图
+        // 都没有」，却不知道是自己填的时间点有问题。退回 auto 更有用。
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let mut req = req_with(vec![]);
+            req.thumbnail_frame = Some(bad);
+            assert_eq!(
+                media_prepare_options(&req).thumbnail,
+                omy_media::ThumbSource::Auto,
+                "非法时间点 {bad} 应退回 auto"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_zero_is_honoured_not_treated_as_absent() {
+        // 0 是合法的取帧时间点（就要第一帧）。若用 `unwrap_or(0.0)` 之类
+        // 的写法把它当成「没填」，用户明确选了首帧却被改成自动取 10% 处。
+        let mut req = req_with(vec![]);
+        req.thumbnail_frame = Some(0.0);
+        assert_eq!(
+            media_prepare_options(&req).thumbnail,
+            omy_media::ThumbSource::VideoAt(0.0)
+        );
+    }
+
+    #[test]
+    fn default_request_generates_thumbnails() {
+        // 默认必须开着。若默认变成 none，界面上一张缩略图都不会有，
+        // 而这种回归从代码上很难看出来
+        let req = req_with(vec![]);
+        assert_eq!(
+            media_prepare_options(&req).thumbnail,
+            omy_media::ThumbSource::Auto
+        );
     }
 
     #[test]

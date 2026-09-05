@@ -33,6 +33,66 @@ const original = ref('keep');
  */
 const folderMode = ref('container');
 
+/** 是否生成缩略图。
+ *
+ * 默认开：缩略图存在加密 TLV 里，只有拿到密码才能读，所以它不泄露内容，
+ * 而没有缩略图的网格视图基本没法用。留出开关是因为它确实让文件大几 KB。
+ */
+const thumbnail = ref(true);
+/** 视频取帧时间点，形如 `12`、`12.5`、`1:23`、`00:01:23`。
+ *
+ * 空串表示自动取时长 10% 处。存成字符串而不是数字：用户习惯写 `1:23`，
+ * 而 number 类型的 input 收不下冒号。
+ */
+const frameText = ref('');
+
+/** 视频扩展名。
+ *
+ * 只用来决定「要不要显示取帧输入框」，判错了不影响加密结果——真正的
+ * 图/视频分派在后端按容器探测（扩展名可以是骗人的）。
+ */
+const VIDEO_EXT = [
+  'mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'wmv', 'flv', 'mpg', 'mpeg', 'ts', 'm2ts', '3gp',
+];
+
+/** 选中的条目里有没有视频。
+ *
+ * 文件夹也算：里面很可能有视频，而这里看不到内容。
+ */
+const hasVideo = computed(() =>
+  props.targets.some((x) => {
+    if (x.is_dir) return true;
+    const i = (x.name || '').lastIndexOf('.');
+    if (i < 0) return false;
+    return VIDEO_EXT.includes(x.name.slice(i + 1).toLowerCase());
+  }),
+);
+
+/** 把 `1:23.5` / `83.5` 解析成秒。非法或空串返回 null。
+ *
+ * 不用 parseFloat 直接吞：`parseFloat('1:23')` 得 1，会把「1 分 23 秒」
+ * 静默变成第 1 秒——用户拿到的缩略图不是他选的那一帧，却没有任何提示。
+ */
+function parseFrame(s) {
+  const v = (s || '').trim();
+  if (!v) return null;
+  const parts = v.split(':');
+  if (parts.length > 3) return null;
+  let sec = 0;
+  for (const p of parts) {
+    // 每段必须是纯数字（末段可带小数），否则视为非法
+    if (!/^\d*\.?\d*$/.test(p) || p === '' || p === '.') return null;
+    sec = sec * 60 + parseFloat(p);
+  }
+  if (!Number.isFinite(sec) || sec < 0) return null;
+  return sec;
+}
+
+/** 取帧时间点填了但解析不出来。 */
+const frameInvalid = computed(
+  () => frameText.value.trim().length > 0 && parseFrame(frameText.value) === null,
+);
+
 /** 可选的分块大小。
  *
  * 下限 64 KiB：再小的话每块的 nonce 与 tag 开销占比过高。
@@ -50,7 +110,7 @@ const mismatch = computed(
 );
 
 const canSubmit = computed(
-  () => password.value.length > 0 && !mismatch.value && !props.busy,
+  () => password.value.length > 0 && !mismatch.value && !frameInvalid.value && !props.busy,
 );
 
 const totalSize = computed(() =>
@@ -68,6 +128,8 @@ function submit() {
     kdf_profile: strength.value,
     original: original.value,
     folder_mode: folderMode.value,
+    thumbnail: thumbnail.value ? 'auto' : 'none',
+    thumbnail_frame: thumbnail.value ? parseFrame(frameText.value) : null,
   });
 }
 </script>
@@ -157,6 +219,31 @@ function submit() {
             <div class="d">{{ i18n.t('encrypt.compress_desc') }}</div>
           </span>
         </label>
+      </div>
+
+      <div class="field">
+        <label class="radio">
+          <input v-model="thumbnail" type="checkbox" />
+          <span>
+            {{ i18n.t('encrypt.thumbnail') }}
+            <div class="d">{{ i18n.t('encrypt.thumbnail_desc') }}</div>
+          </span>
+        </label>
+        <!-- 取帧时间点只在选中项里可能有视频时出现：对一堆文档显示
+             「视频取帧时间点」只会让人困惑。关掉缩略图后也不显示，
+             那时它没有任何作用。 -->
+        <div v-if="thumbnail && hasVideo" class="subfield">
+          <label class="flabel" for="e-frame">{{ i18n.t('encrypt.thumbnail_frame') }}</label>
+          <input
+            id="e-frame"
+            v-model="frameText"
+            type="text"
+            inputmode="text"
+            placeholder="00:00:03"
+          />
+          <div v-if="frameInvalid" class="ferr">{{ i18n.t('encrypt.thumbnail_frame_bad') }}</div>
+          <div v-else class="fhint">{{ i18n.t('encrypt.thumbnail_frame_hint') }}</div>
+        </div>
       </div>
 
       <div class="field">
