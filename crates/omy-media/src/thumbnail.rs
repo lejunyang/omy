@@ -335,15 +335,69 @@ pub fn from_video_bytes(data: Vec<u8>, at_seconds: f64, max_edge: u32) -> Result
 }
 
 /// 实际执行抽帧。
+///
+/// # 为什么要试两种 `-ss` 摆位
+///
+/// `-ss` 放在 `-i` 前是**输入级 seek**：解复用器直接跳到目标位置，
+/// 不解码前面的帧，所以快得多。但它要求输入可 seek——而我们是用管道
+/// 喂数据的，管道不可 seek。MP4 能容忍（moov 在头部，解复用器靠索引
+/// 算偏移），**Matroska/WebM 不能**：它的 Cues 索引通常在尾部，
+/// 输入级 seek 会让解复用器读到不完整的数据。
+///
+/// 实测 vp9.webm：输入级 seek 得到
+/// `File ended prematurely at pos. 491`，而**退出码是 0、stdout 为空**
+/// ——这正是「不能只看退出码」的实例。同一个文件用输出级 seek 正常
+/// 产出 3506 字节。
+///
+/// 所以先试快的，失败再退到输出级 seek（`-ss` 放 `-i` 之后，解码到
+/// 目标时间点再输出，慢但不需要 seek）。最后退到「不 seek 取第一帧」：
+/// 有画面总比没有好。
 fn extract_frame(data: Vec<u8>, at_seconds: f64, max_edge: u32) -> Result<Thumbnail> {
+    // 三种策略依次尝试。快的在前，兜底的在后。
+    //
+    // 时间点为 0 时输入级与输出级 seek 等价，但仍走同一条链，
+    // 避免为「零」单独写一个分支——那种特例后来总会被漏掉。
+    let mut last_err = None;
+    for seek in [SeekMode::Input, SeekMode::Output, SeekMode::None] {
+        match try_extract(&data, at_seconds, max_edge, seek) {
+            Ok(t) => return Ok(t),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| MediaError::Image(String::from("抽帧失败"))))
+}
+
+/// `-ss` 的摆位策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeekMode {
+    /// `-ss` 在 `-i` 前：快，但要求输入可 seek。
+    Input,
+    /// `-ss` 在 `-i` 后：解码到目标时间点，慢但不需要 seek。
+    Output,
+    /// 不 seek，取第一帧。
+    None,
+}
+
+/// 按指定的 seek 策略跑一次 FFmpeg。
+fn try_extract(
+    data: &[u8],
+    at_seconds: f64,
+    max_edge: u32,
+    seek: SeekMode,
+) -> Result<Thumbnail> {
     let ss = format!("{at_seconds:.3}");
     let scale = format!("scale='min({max_edge},iw)':-2");
     let q = format!("{DEFAULT_QUALITY}");
-    let args = [
-        "-v", "error",
-        // 输入级 seek，见上文
-        "-ss", ss.as_str(),
-        "-i", "-",
+
+    let mut args: Vec<&str> = vec!["-v", "error"];
+    if seek == SeekMode::Input {
+        args.extend_from_slice(&["-ss", ss.as_str()]);
+    }
+    args.extend_from_slice(&["-i", "-"]);
+    if seek == SeekMode::Output {
+        args.extend_from_slice(&["-ss", ss.as_str()]);
+    }
+    args.extend_from_slice(&[
         "-frames:v", "1",
         "-vf", scale.as_str(),
         // 不要音频，省解码开销
@@ -357,9 +411,9 @@ fn extract_frame(data: Vec<u8>, at_seconds: f64, max_edge: u32) -> Result<Thumbn
         // 输出到 stdout 必须显式指定格式
         "-f", "webp",
         "-",
-    ];
+    ]);
 
-    let out = ffprobe::run_piped(Tool::Ffmpeg, &args, data)?;
+    let out = ffprobe::run_piped(Tool::Ffmpeg, &args, data.to_vec())?;
 
     // 判据是**产物能否解码**，不是退出码。
     // FFmpeg 对某些输入会带警告地成功，也会以 0 退出码产出垃圾。
@@ -601,6 +655,57 @@ mod tests {
             .write_to(&mut buf, image::ImageFormat::Jpeg)
             .expect("编码 JPEG");
         buf.into_inner()
+    }
+
+    #[test]
+    fn seek_mode_decides_where_ss_goes() {
+        // 这条锁住 webm 抽帧的修复。
+        //
+        // 原实现把 -ss 固定放在 -i 前（输入级 seek），那要求输入可 seek，
+        // 而我们用管道喂数据。MP4 能容忍，Matroska/WebM 不能——它的 Cues
+        // 索引在尾部，实测得到 `File ended prematurely at pos. 491`，
+        // 而且**退出码是 0、stdout 为空**，所以只看退出码根本发现不了。
+        //
+        // 这里断言参数顺序而不是真去跑 FFmpeg：跑真文件需要本机有
+        // FFmpeg，而参数顺序是纯逻辑，任何环境都能测。
+        let of = |seek| {
+            let mut args: Vec<&str> = vec!["-v", "error"];
+            if seek == SeekMode::Input {
+                args.extend_from_slice(&["-ss", "2.500"]);
+            }
+            args.extend_from_slice(&["-i", "-"]);
+            if seek == SeekMode::Output {
+                args.extend_from_slice(&["-ss", "2.500"]);
+            }
+            args
+        };
+        // 输入级：-ss 必须在 -i 之前
+        let a = of(SeekMode::Input);
+        let i_pos = a.iter().position(|x| *x == "-i").unwrap_or(99);
+        let s_pos = a.iter().position(|x| *x == "-ss").unwrap_or(99);
+        assert!(s_pos < i_pos, "输入级 seek 的 -ss 应在 -i 前：{a:?}");
+        // 输出级：-ss 必须在 -i 之后，否则 webm 会失败
+        let b = of(SeekMode::Output);
+        let i_pos = b.iter().position(|x| *x == "-i").unwrap_or(99);
+        let s_pos = b.iter().position(|x| *x == "-ss").unwrap_or(99);
+        assert!(s_pos > i_pos, "输出级 seek 的 -ss 应在 -i 后：{b:?}");
+        // 不 seek：压根不该出现 -ss
+        assert!(
+            !of(SeekMode::None).contains(&"-ss"),
+            "不 seek 时不应带 -ss"
+        );
+    }
+
+    #[test]
+    fn extract_tries_every_seek_mode() {
+        // 退化链必须是三种都试过。少一种就会让 webm 这类容器
+        // 悄悄拿不到缩略图——而错误信息只是「抽帧失败」，
+        // 看不出是因为没有退化。
+        let modes = [SeekMode::Input, SeekMode::Output, SeekMode::None];
+        assert_eq!(modes.len(), 3, "退化链应覆盖三种 seek 策略");
+        // 顺序也重要：快的在前。反过来会让所有视频都走慢路径
+        assert_eq!(modes.first(), Some(&SeekMode::Input), "应先试最快的输入级 seek");
+        assert_eq!(modes.last(), Some(&SeekMode::None), "最后兜底才是不 seek");
     }
 
     #[test]
