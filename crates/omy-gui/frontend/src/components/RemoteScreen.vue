@@ -20,9 +20,24 @@
 
 import { computed } from 'vue';
 import * as i18n from '../i18n.js';
+import { isMobile } from '../viewport.js';
 import { state, remoteThumbUrl, disconnectRemote, reloadRemote } from '../store.js';
 
-defineEmits(['open', 'unlock']);
+const emit = defineEmits(['open', 'unlock']);
+
+/** 打开一个远端条目（移动端单击触发）。
+ *
+ * 触屏上没有双击这个手势：dblclick 在移动 WebView 里要么不触发，
+ * 要么被系统当成双击缩放吃掉。只绑 dblclick 的结果是手机上远端文件
+ * 一个都打不开，而界面看着完全正常——这种缺陷截图和 CSS 审查都发现不了。
+ *
+ * 与主界面（EntryCard、MainScreen 列表行）保持同一套语义：
+ * 两个界面的打开方式若不同，用户切过来就得重新学一遍。
+ */
+function onEntryClick(f) {
+  if (!isMobile.value || !f.unlocked) return;
+  emit('open', f);
+}
 
 const visible = computed(() => {
   const q = state.query.trim().toLowerCase();
@@ -113,6 +128,7 @@ function icon(f) {
           :class="{ locked: !f.unlocked }"
           tabindex="0"
           @dblclick="f.unlocked && $emit('open', f)"
+          @click="onEntryClick(f)"
           @keydown.enter.prevent="f.unlocked && $emit('open', f)"
         >
           <div class="thumb">
@@ -142,6 +158,7 @@ function icon(f) {
           class="lrow"
           tabindex="0"
           @dblclick="f.unlocked && $emit('open', f)"
+          @click="onEntryClick(f)"
           @keydown.enter.prevent="f.unlocked && $emit('open', f)"
         >
           <span class="ic">{{ icon(f) }}</span>
