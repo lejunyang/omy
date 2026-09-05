@@ -1208,6 +1208,12 @@ input {
   .titlebar.mob {
     gap: calc(var(--sp) * 1.5);
     padding-inline: calc(var(--sp) * 2);
+    /* 状态栏（时间、电量那一条）会盖住顶栏：viewport-fit=cover 让页面
+       延伸到了状态栏下面，不把内容顶下来的话搜索框和汉堡键有一半点不到。
+       高度要同步撑高，否则内边距把 48px 里的内容挤扁 */
+    padding-block-start: env(safe-area-inset-top, 0px);
+    height: calc(48px + env(safe-area-inset-top, 0px));
+    flex-basis: calc(48px + env(safe-area-inset-top, 0px));
   }
 
   .titlebar.mob .search {
@@ -1227,10 +1233,12 @@ input {
   }
 
   /* 侧栏改抽屉：脱离文档流盖在内容上，而不是挤压主区域。
-     移动端主区域只有 300 多 px，被挤掉 210px 就没法看了 */
+     移动端主区域只有 300 多 px，被挤掉 210px 就没法看了。
+     顶部起点要跟着顶栏的实际高度走（含状态栏），写死 48px 会让
+     抽屉钻到顶栏下面去 */
   .side.drawer {
     position: fixed;
-    inset-block: 48px 0;
+    inset-block: calc(48px + env(safe-area-inset-top, 0px)) 0;
     inset-inline-start: 0;
     z-index: 40;
     width: 240px;
@@ -1247,7 +1255,7 @@ input {
   /* 遮罩：点空白收起抽屉。移动端没有 Esc */
   .scrim {
     position: fixed;
-    inset-block: 48px 0;
+    inset-block: calc(48px + env(safe-area-inset-top, 0px)) 0;
     inset-inline: 0;
     z-index: 35;
     background: rgb(0 0 0 / 45%);
@@ -1307,11 +1315,37 @@ input {
     margin-block-end: 52px;
   }
 
-  /* 对话框铺满宽度：桌面的固定宽度在手机上会露出两侧无用留白 */
-  .dlg {
+  /* 对话框铺满宽度：桌面的固定宽度在手机上会露出两侧无用留白。
+     .dlg.wide / .dlg.narrow 要一起写：它们是两个类（权重 0,2,0），
+     光写 .dlg（0,1,0）盖不住——媒体查询不加权重。漏掉的表现是
+     设备面板仍按 560px 渲染，整个弹窗超出屏幕、能横向拖动 */
+  .dlg,
+  .dlg.wide,
+  .dlg.narrow {
     width: calc(100vw - var(--sp) * 6);
     max-width: none;
     max-height: 88vh;
+  }
+
+  /* 对话框自身也要避开状态栏和手势条：它是 fixed 居中的，
+     真机上顶部会有一截钻到状态栏下面 */
+  .dlg-overlay {
+    padding-block: calc(env(safe-area-inset-top, 0px) + var(--sp) * 2)
+      calc(env(safe-area-inset-bottom, 0px) + var(--sp) * 2);
+  }
+
+  /* 指纹是 44 字符不带空格的 base64，break-all 只在有换行机会时生效。
+     设备行是 flex，子项默认不收缩，一行长码会把行撑宽 */
+  .drow,
+  .selfbox .row {
+    min-width: 0;
+  }
+
+  .drow .nm,
+  .drow .fp,
+  .selfbox .fp {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .toast {
