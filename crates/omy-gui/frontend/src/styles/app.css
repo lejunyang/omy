@@ -788,6 +788,23 @@ input {
   line-height: 1.5;
 }
 
+/* 字段下方的补充说明。
+ *
+ * 与 `.radio .d` 分开：那个是紧贴单选项标签的，靠 1px 上边距与标签
+ * 抱在一起；字段说明要与输入框留出可读的间距，两者的排版需求相反。
+ *
+ * 之所以单独列出来，是因为 KeyDialog 里曾把字段说明也写成 `.d`。
+ * 但选择器是 `.radio .d`，那段文字不在 `.radio` 里，于是**一条规则
+ * 都没命中**——字号、颜色、间距全是浏览器默认值，比周围文字大一号、
+ * 紧贴输入框，看起来像漏了样式。这类问题在 CSS 审查里很难发现：
+ * `.d` 明明有定义，只有连上祖先选择器看才知道没生效。 */
+.fhint {
+  font-size: 11.5px;
+  color: var(--fg2);
+  line-height: 1.5;
+  margin-block-start: calc(var(--sp) * 1.5);
+}
+
 .hr {
   height: 1px;
   background: var(--border);

@@ -219,7 +219,7 @@ function submit() {
           type="password"
           autocomplete="current-password"
         />
-        <div class="d">{{ i18n.t('keymgmt.current_hint') }}</div>
+        <div class="fhint">{{ i18n.t('keymgmt.current_hint') }}</div>
       </div>
 
       <template v-if="showsNext">
@@ -229,7 +229,7 @@ function submit() {
           </label>
           <input id="k-new" v-model="next" type="password" autocomplete="new-password" />
           <div v-if="same" class="ferr">{{ i18n.t('keymgmt.same') }}</div>
-          <div v-if="!requiresNext" class="d">
+          <div v-if="!requiresNext" class="fhint">
             {{ i18n.t('keymgmt.next_optional_hint') }}
           </div>
         </div>

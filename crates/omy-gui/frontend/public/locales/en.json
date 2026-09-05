@@ -262,7 +262,7 @@
     "remove": "Keep only the current password",
     "remove_desc": "Every other password on this file stops working (if there are any).",
     "current": "Current password",
-    "current_hint": "All three actions need a password that can currently open this file.",
+    "current_hint": "Every operation above needs a password that can already open this file.",
     "next": "New password",
     "next_again": "New password again",
     "mismatch": "The two new passwords do not match",
