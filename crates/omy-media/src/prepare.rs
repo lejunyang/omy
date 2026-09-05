@@ -218,7 +218,18 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
     // 视频缩略图。图片路径已在前面处理过
     match opts.thumbnail {
         ThumbSource::VideoAt(sec) => {
-            gen_video_thumb(data, sec, opts, &info, &mut out);
+            // 同样要先判是不是静态图片。
+            //
+            // 用户在界面上指定取帧时间点后，选中的文件里往往图片和视频
+            // 混在一起——这个选项对图片没有意义，但不能因此让图片**拿不到
+            // 缩略图**，更不能把 PNG 交给抽帧（那会真的起 ffmpeg，然后在
+            // webp 编码器里报 Cannot allocate memory）。
+            // 所以图片照旧走缩放原图那条路，时间点对它无效即可。
+            if is_still_image(&info) {
+                gen_image_thumb(data, opts, &mut out);
+            } else {
+                gen_video_thumb(data, sec, opts, &info, &mut out);
+            }
         }
         ThumbSource::VideoAuto => {
             // 取 10% 处：片头常有黑帧或台标，取首帧往往是纯黑。
@@ -237,10 +248,7 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
         // 然后在 webp 编码器里报 Cannot allocate memory。
         ThumbSource::Auto => {
             if is_still_image(&info) {
-                match thumbnail::from_image_bytes(data, opts.thumb_max_edge, opts.thumb_format) {
-                    Ok(t) => out.thumbnail = Some(t.bytes),
-                    Err(e) => out.warnings.push(format!("图片缩略图生成失败：{e}")),
-                }
+                gen_image_thumb(data, opts, &mut out);
             } else {
                 let sec = info
                     .duration_ms
@@ -273,6 +281,18 @@ fn is_still_image(info: &crate::probe::MediaInfo) -> bool {
         .split(',')
         .map(str::trim)
         .any(|c| c.eq_ignore_ascii_case("image2") || c.to_ascii_lowercase().ends_with("_pipe"))
+}
+
+/// 缩放原图生成缩略图，失败只记警告。
+///
+/// 提出来是因为 `Auto` 与 `VideoAt` 两条分支都要做同一件事：
+/// 后者在遇到静态图片时也走这里（取帧时间点对图片无意义，但不能因此
+/// 让图片拿不到缩略图）。两处各写一遍的话，将来改动容易只改一处。
+fn gen_image_thumb(data: &[u8], opts: &PrepareOptions, out: &mut Prepared) {
+    match thumbnail::from_image_bytes(data, opts.thumb_max_edge, opts.thumb_format) {
+        Ok(t) => out.thumbnail = Some(t.bytes),
+        Err(e) => out.warnings.push(format!("图片缩略图生成失败：{e}")),
+    }
 }
 
 /// 抽视频帧，失败只记警告。
