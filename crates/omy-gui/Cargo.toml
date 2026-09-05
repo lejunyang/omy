@@ -15,6 +15,13 @@ license = "GPL-3.0-or-later"
 name = "omy-gui"
 path = "src/main.rs"
 
+# 移动端（Android/iOS）通过 JNI/FFI 加载 cdylib 库，而不是执行
+# 独立二进制：Tauri 的 MainActivity 会 dlopen 这个库再调入口。
+# rlib 供桌面 bin 与测试复用，staticlib/cdylib 供移动端链接。
+[lib]
+name = "omy_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

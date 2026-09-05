@@ -741,40 +741,52 @@ pub fn stream_base() -> String {
 /// 这一个受控入口，将来要加审计或路径限制也只需改这里。
 #[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Option<String>> {
-    use tauri_plugin_dialog::DialogExt as _;
-
-    // 自动化验证用的旁路：原生对话框是 OS 窗口，CDP 点不到它，
-    // 不留入口的话 GUI 端到端测试会永久卡在这里等一个没人点的窗口。
-    //
-    // 为什么这样做是安全的：这个变量只与 OMY_GUI_CDP_PORT 同场景使用，
-    // 而后者本身就意味着「远程调试端口已开放」——真要攻击，
-    // 直接通过 CDP 接管 WebView 比设这个变量容易得多。
-    // 换言之它没有扩大攻击面。
-    //
-    // 为什么不用 #[cfg(test)]：单元测试跑不起 Tauri 运行时，
-    // 这条路径只有真实 GUI 进程里才走得到。
-    if let Ok(forced) = std::env::var("OMY_GUI_PICK_FOLDER") {
-        if !forced.is_empty() {
-            return Ok(Some(forced));
-        }
+    // 安卓没有文件夹选择器：应用跑在沙箱里，不能浏览任意目录，
+    // tauri-plugin-dialog 在移动端也不提供 pick_folder。
+    // 明确报不支持而不是静默返回 None——前端靠错误码区分「取消了」和「用不了」。
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, title);
+        return Err(CmdError::code("unsupported"));
     }
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog()
-        .file()
-        .set_title(if title.is_empty() { "选择文件夹" } else { &title })
-        .pick_folder(move |picked| {
-            // 发送失败只意味着接收端已经走了（窗口关闭等），
-            // 没有可做的补救，也不该让它 panic
-            let _ = tx.send(picked);
-        });
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_dialog::DialogExt as _;
 
-    // 在阻塞线程上等：命令本身是 async，直接 recv 会占死执行器线程
-    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
-        .await
-        .map_err(|_| CmdError::code("internal"))?;
+        // 自动化验证用的旁路：原生对话框是 OS 窗口，CDP 点不到它，
+        // 不留入口的话 GUI 端到端测试会永久卡在这里等一个没人点的窗口。
+        //
+        // 为什么这样做是安全的：这个变量只与 OMY_GUI_CDP_PORT 同场景使用，
+        // 而后者本身就意味着「远程调试端口已开放」——真要攻击，
+        // 直接通过 CDP 接管 WebView 比设这个变量容易得多。
+        // 换言之它没有扩大攻击面。
+        //
+        // 为什么不用 #[cfg(test)]：单元测试跑不起 Tauri 运行时，
+        // 这条路径只有真实 GUI 进程里才走得到。
+        if let Ok(forced) = std::env::var("OMY_GUI_PICK_FOLDER") {
+            if !forced.is_empty() {
+                return Ok(Some(forced));
+            }
+        }
 
-    Ok(picked.map(|p| p.to_string()))
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dialog()
+            .file()
+            .set_title(if title.is_empty() { "选择文件夹" } else { &title })
+            .pick_folder(move |picked| {
+                // 发送失败只意味着接收端已经走了（窗口关闭等），
+                // 没有可做的补救，也不该让它 panic
+                let _ = tx.send(picked);
+            });
+
+        // 在阻塞线程上等：命令本身是 async，直接 recv 会占死执行器线程
+        let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+            .await
+            .map_err(|_| CmdError::code("internal"))?;
+
+        Ok(picked.map(|p| p.to_string()))
+    }
 }
 
 /// 打开原生文件选择器，可多选。
