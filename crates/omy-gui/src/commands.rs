@@ -408,6 +408,9 @@ fn apply_media_extras(
         // 一张 PNG 标着「🐌 需要重新编码」，纯属误导。
         if kind == crate::mime::kind::VIDEO || kind == crate::mime::kind::AUDIO {
             e.tier = Some(m.playback_tier.default.to_ascii_lowercase());
+            // 理由是这个角标唯一有用的部分：光看 🐌 用户猜不出含义，
+            // 实测就有人问「蜗牛是什么意思」。界面把它做成悬停提示。
+            e.tier_reason = Some(m.playback_tier.reason.clone());
             e.duration_ms = m.duration_ms;
         }
         if let Some((w, h)) = m.resolution() {
@@ -939,6 +942,7 @@ mod tests {
             kind: None,
             mime: None,
             tier: None,
+            tier_reason: None,
             duration_ms: None,
             width: None,
             height: None,
@@ -1149,6 +1153,13 @@ mod tests {
         apply_media_extras(&mut e, "a.png", None, true, false);
         assert!(e.tier.is_none(), "图片不该有播放分级，实得 {:?}", e.tier);
         assert!(e.duration_ms.is_none(), "图片不该有时长");
+        // 理由与分级必须同进同退：只清 tier 而留下 reason，界面上会出现
+        // 「没有角标却有悬停说明」，或反过来把视频的理由套到图片上
+        assert!(
+            e.tier_reason.is_none(),
+            "图片不该有分级理由，实得 {:?}",
+            e.tier_reason
+        );
     }
 
     #[test]

@@ -57,6 +57,11 @@ import {
   doDelete,
   doRename,
   doCreateFolder,
+  // 右键菜单的「密码管理」与「在文件管理器中显示」要用这两个。
+  // 漏掉它们不会有构建错误，只在点菜单那一刻抛 ReferenceError，
+  // 而 onCtxPick 的异常没人接——表现就是「点了完全没反应」。
+  keyManageable,
+  revealEntry,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
@@ -325,7 +330,7 @@ async function onCtxPick(key) {
       await doDelete(false);
       break;
     case 'reveal':
-      await onReveal(entry);
+      await revealEntry(entry);
       break;
     default:
       break;

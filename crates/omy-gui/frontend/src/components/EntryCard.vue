@@ -164,6 +164,20 @@ const known = computed(() => props.entry.meta || null);
 // 细节与两个边距的取舍见 thumbload.js
 const { thumbEl, shouldLoad } = useThumbLoad();
 const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
+
+/** 角标的悬停说明。
+ *
+ * 光一个 🐌 用户无从理解，实测就有人问「蜗牛是什么意思」。后端已经算好
+ * tier_reason（如「容器与编码均被 WebView 原生支持」），优先用它；
+ * 拿不到时退回按分级给一句通用解释，不能让 title 是空的。
+ */
+const tierTitle = computed(() => {
+  const tier = known.value?.tier;
+  if (!tier) return '';
+  const label = i18n.t(`tier.${tier}`);
+  const reason = known.value?.tier_reason;
+  return reason ? `${label} — ${reason}` : label;
+});
 </script>
 
 <template>
@@ -245,7 +259,7 @@ const tierIcon = computed(() => TIER_ICONS[known.value?.tier]);
         loading="lazy"
       />
       <span v-else aria-hidden="true">🔓</span>
-      <span v-if="tierIcon" class="tier">{{ tierIcon }}</span>
+      <span v-if="tierIcon" class="tier" :title="tierTitle">{{ tierIcon }}</span>
     </div>
     <div class="cname" :title="displayName">{{ displayName }}</div>
     <div class="cmeta">

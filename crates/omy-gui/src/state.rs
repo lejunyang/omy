@@ -52,6 +52,11 @@ pub struct FileEntry {
     pub mime: Option<String>,
     /// 播放分级 `p1` / `p2` / `p3`，对应 UI 的 ⚡🔄🐌。
     pub tier: Option<String>,
+    /// 分级理由，如「容器与编码均被 WebView 原生支持」。
+    ///
+    /// 界面把它做成角标的悬停提示：单看一个 🐌 用户无从理解，
+    /// 有人直接问过「蜗牛是什么意思」。
+    pub tier_reason: Option<String>,
     /// 时长（毫秒），音视频才有。
     pub duration_ms: Option<u64>,
     /// 画面尺寸。
@@ -119,6 +124,7 @@ impl FileEntry {
             kind: None,
             mime: None,
             tier: None,
+            tier_reason: None,
             duration_ms: None,
             width: None,
             height: None,
@@ -369,6 +375,7 @@ mod tests {
             kind: Some(String::from("document")),
             mime: None,
             tier: None,
+            tier_reason: None,
             duration_ms: None,
             width: None,
             height: None,
@@ -429,6 +436,7 @@ mod tests {
             kind: None,
             mime: None,
             tier: None,
+            tier_reason: None,
             duration_ms: None,
             width: None,
             height: None,

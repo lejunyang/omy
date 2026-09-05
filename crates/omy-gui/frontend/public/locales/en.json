@@ -168,6 +168,11 @@
     "other": "Other",
     "folder_encrypted": "Encrypted folder"
   },
+  "tier": {
+    "p1": "Plays directly",
+    "p2": "Needs remuxing",
+    "p3": "Needs re-encoding"
+  },
   "device": {
     "title": "Devices & sharing",
     "manage": "Devices & sharing",
