@@ -517,6 +517,8 @@ fn drive_roots() -> Vec<DirEntry> {
         token: None,
         preview: None,
         mime: None,
+        is_container: false,
+        is_encrypted_dir: false,
     }]
 }
 
