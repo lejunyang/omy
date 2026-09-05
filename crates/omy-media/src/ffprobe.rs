@@ -46,6 +46,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 漏一处就会有一处闪黑框，而这种缺陷在 Linux/macOS 上根本不出现，
 /// 只在 Windows 的 GUI 里才看得见。
 fn command_for(exe: &Path) -> Command {
+    // mut 只有 windows 分支要用（creation_flags 取 &mut self）。
+    // 非 Windows 平台不加这个属性会报「变量不需要 mut」，
+    // 而 Android 构建开着 -D warnings 就直接失败
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut c = Command::new(exe);
     #[cfg(windows)]
     {

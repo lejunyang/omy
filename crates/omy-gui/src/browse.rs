@@ -432,44 +432,117 @@ fn take_number(s: &str, pos: usize) -> (u128, usize) {
 /// 侧栏需要一个「从哪开始浏览」的入口。没有这个，用户每次都得
 /// 点「选择文件夹」走原生对话框，很笨重。
 #[tauri::command]
-pub fn list_places() -> Vec<DirEntry> {
+pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
+    // 安卓完全是另一套：应用跑在沙箱里，`/` 和 `/sdcard` 都是
+    // Permission denied，`dirs::home_dir()` 之类返回的路径同样读不到
+    // （它读 $HOME，而安卓上那个值对应用无意义）。照桌面的逻辑走，
+    // 侧栏会列出一堆点进去就报 read_failed 的入口。
+    #[cfg(target_os = "android")]
+    {
+        return android_places(&app);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let mut out = Vec::new();
+
+        // 常用目录优先——比盘符更常用
+        for (label, dir) in [
+            ("home", dirs::home_dir()),
+            ("desktop", dirs::desktop_dir()),
+            ("documents", dirs::document_dir()),
+            ("downloads", dirs::download_dir()),
+            ("pictures", dirs::picture_dir()),
+            ("videos", dirs::video_dir()),
+        ] {
+            if let Some(p) = dir
+                && p.is_dir()
+            {
+                out.push(DirEntry {
+                    path: p.to_string_lossy().into_owned(),
+                    // name 用固定标签而不是目录名：前端据此查翻译，
+                    // 这样中文系统显示「下载」而不是「Downloads」
+                    name: String::from(label),
+                    is_dir: true,
+                    size: None,
+                    is_encrypted: false,
+                    unlocked: false,
+                    real_name: None,
+                    entry_id: None,
+                    ext: None,
+                    token: None,
+                    preview: None,
+                    mime: None,
+                    is_container: false,
+                    is_encrypted_dir: false,
+                });
+            }
+        }
+
+        out.extend(drive_roots());
+        out
+    }
+}
+
+/// 安卓上的可访问位置。
+///
+/// 只列应用沙箱内的目录：这些是不申请任何运行时权限就能读写的地方。
+/// 想访问相册、下载那些公共目录需要 MANAGE_EXTERNAL_STORAGE 或
+/// SAF 授权，那是另一件事；在没有它们之前，列出去只会得到
+/// 「无法读取」，比不列更让人困惑。
+///
+/// 目录不存在时创建：首次启动时 files/ 之外的子目录都还没有，
+/// 不建的话侧栏是空的，用户以为应用坏了。
+#[cfg(target_os = "android")]
+fn android_places(app: &tauri::AppHandle) -> Vec<DirEntry> {
+    use tauri::Manager as _;
+
     let mut out = Vec::new();
 
-    // 常用目录优先——比盘符更常用
-    for (label, dir) in [
-        ("home", dirs::home_dir()),
-        ("desktop", dirs::desktop_dir()),
-        ("documents", dirs::document_dir()),
-        ("downloads", dirs::download_dir()),
-        ("pictures", dirs::picture_dir()),
-        ("videos", dirs::video_dir()),
-    ] {
-        if let Some(p) = dir
-            && p.is_dir()
-        {
-            out.push(DirEntry {
-                path: p.to_string_lossy().into_owned(),
-                // name 用固定标签而不是目录名：前端据此查翻译，
-                // 这样中文系统显示「下载」而不是「Downloads」
-                name: String::from(label),
-                is_dir: true,
-                size: None,
-                is_encrypted: false,
-                unlocked: false,
-                real_name: None,
-                entry_id: None,
-                ext: None,
-                token: None,
-                preview: None,
-                mime: None,
-                is_container: false,
-                is_encrypted_dir: false,
-            });
+    // 私有文档区：用户自己的文件放这儿。外部私有目录（sdcard 上的
+    // Android/data/<pkg>）优先，因为它能用 USB 或文件管理器从电脑侧看到，
+    // 便于把待加密的文件传进来；取不到再退回内部 files/
+    let docs = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("documents"))
+        .filter(|d| std::fs::create_dir_all(d).is_ok());
+
+    if let Some(p) = docs {
+        out.push(android_entry(&p, "documents"));
+    }
+
+    // 应用缓存：解密临时文件落在这里，让用户能看到并手动清理
+    if let Ok(p) = app.path().app_cache_dir() {
+        if std::fs::create_dir_all(&p).is_ok() {
+            out.push(android_entry(&p, "cache"));
         }
     }
 
-    out.extend(drive_roots());
     out
+}
+
+/// 构造一个安卓侧栏条目。
+#[cfg(target_os = "android")]
+fn android_entry(path: &Path, label: &str) -> DirEntry {
+    DirEntry {
+        path: path.to_string_lossy().into_owned(),
+        name: String::from(label),
+        is_dir: true,
+        size: None,
+        is_encrypted: false,
+        unlocked: false,
+        real_name: None,
+        entry_id: None,
+        ext: None,
+        token: None,
+        preview: None,
+        mime: None,
+        is_container: false,
+        is_encrypted_dir: false,
+    }
 }
 
 /// 磁盘根。
@@ -502,7 +575,11 @@ fn drive_roots() -> Vec<DirEntry> {
 }
 
 /// 磁盘根。
-#[cfg(not(windows))]
+///
+/// 排除 android：那里 `/` 是 Permission denied，`list_places` 走
+/// [`android_places`] 另一条路，不会调到这里。不排除的话安卓构建
+/// 会报「函数从未使用」。
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn drive_roots() -> Vec<DirEntry> {
     vec![DirEntry {
         path: String::from("/"),

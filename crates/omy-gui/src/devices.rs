@@ -35,6 +35,20 @@ use zeroize::Zeroizing;
 /// 设备库会话：解开后的 `Store` 与用于保存的密码。
 pub struct DeviceSession {
     inner: Mutex<Option<Opened>>,
+    /// 设备库路径的显式覆盖。
+    ///
+    /// 安卓上必须有这条路：`omy_net::store::default_path()` 最终落到
+    /// `dirs::config_dir()`，而后者在安卓读 `$HOME`——应用进程里没有
+    /// 这个变量，于是返回 `None`，配对功能直接报「没有可用存储位置」。
+    ///
+    /// 为什么不在启动时设 `OMY_DEVICE_STORE` 环境变量：`set_var` 是
+    /// unsafe，而本 crate 是 `unsafe_code = "forbid"`。这个约束不该
+    /// 为一个路径破例。
+    ///
+    /// 用 `OnceLock` 而不是构造参数：真实路径要靠 Tauri 的
+    /// `PathResolver` 才能拿到（包名在配置里，不该在代码里再写一遍），
+    /// 而那个东西只有 `setup` 阶段才有——比会话对象的构造晚一步。
+    override_path: std::sync::OnceLock<PathBuf>,
 }
 
 /// 已打开的设备库。
@@ -93,12 +107,31 @@ impl From<&DeviceRecord> for PairedInfo {
 }
 
 impl DeviceSession {
-    /// 创建一个空会话（未打开）。
+    /// 创建一个空会话（未打开），设备库位置按默认规则解析。
     #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            override_path: std::sync::OnceLock::new(),
         }
+    }
+
+    /// 指定设备库文件位置，仅在尚未指定过时生效。
+    ///
+    /// 供安卓在 `setup` 阶段调用，见 `override_path` 字段说明。
+    /// 重复调用会被忽略而不是覆盖：路径中途变更意味着已打开的会话
+    /// 指向旧文件、后续保存写到新文件，那是静默的数据分裂。
+    #[cfg(target_os = "android")]
+    pub fn set_default_path(&self, path: PathBuf) {
+        let _ = self.override_path.set(path);
+    }
+
+    /// 设备库文件应当在哪。
+    ///
+    /// 环境变量仍然优先于这里的覆盖值——`OMY_DEVICE_STORE` 是给测试和
+    /// 便携模式用的显式指令，不该被平台默认值盖掉。
+    fn store_path(&self) -> Option<PathBuf> {
+        omy_net::store::default_path().or_else(|| self.override_path.get().cloned())
     }
 
     /// 打开或创建设备库。
@@ -110,7 +143,8 @@ impl DeviceSession {
     ///
     /// 密码错误、文件损坏或写盘失败时返回。
     pub fn open(&self, password: &[u8], default_name: &str) -> Result<DeviceStatus, DeviceError> {
-        let path = omy_net::store::default_path().ok_or(DeviceError::NoStorePath)?;
+        let path = self.store_path().ok_or(DeviceError::NoStorePath)?;
+
 
         let store = if path.exists() {
             Store::load(&path, password).map_err(|_| DeviceError::WrongPassword)?
@@ -137,7 +171,7 @@ impl DeviceSession {
     /// 当前状态。未打开时也要能回答——界面要据此决定显示
     /// 「设置设备库密码」还是「输入设备库密码」。
     pub fn status(&self) -> DeviceStatus {
-        let exists = omy_net::store::default_path().is_some_and(|p| p.exists());
+        let exists = self.store_path().is_some_and(|p| p.exists());
         match self.inner.lock() {
             Ok(g) => match g.as_ref() {
                 Some(o) => status_of(&o.store, exists),
