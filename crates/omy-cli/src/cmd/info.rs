@@ -40,6 +40,12 @@ pub struct Args {
     /// 从标准输入读取密码
     #[arg(long)]
     pub password_stdin: bool,
+
+    /// 把缩略图导出到指定路径（需要密码）
+    ///
+    /// 用于确认自选的取帧时间点是否如预期。缩略图格式为 WebP。
+    #[arg(long, value_name = "PATH")]
+    pub extract_thumbnail: Option<PathBuf>,
 }
 
 /// 执行 `info`。
@@ -69,6 +75,8 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     // 媒体信息只有解锁后才能读——它存在加密的 TLV 里
     let mut media: Option<omy_media::MediaMeta> = None;
     let mut has_moov = false;
+    // 导出的缩略图字节数，用于 JSON 输出里回报结果
+    let mut thumb_written: Option<(PathBuf, usize)> = None;
     if a.with_password
         || a.password_env.is_some()
         || a.password_file.is_some()
@@ -90,6 +98,24 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             .media_meta()
             .ok()
             .and_then(|b| omy_media::MediaMeta::from_json_bytes(&b).ok());
+
+        // 导出缩略图。
+        //
+        // 这个开关存在的理由是「自选缩略图」需要能被验证：光看
+        // has_thumbnail=true 无法判断取的是哪一帧——取帧时间点被忽略时
+        // 照样有缩略图。把字节导出来才能确认选对了。
+        if let Some(dest) = &a.extract_thumbnail {
+            let bytes = opened.thumbnail().with_context(|| {
+                format!("{} 没有缩略图，或解密失败", a.file.display())
+            })?;
+            std::fs::write(dest, &bytes)
+                .with_context(|| format!("写入 {} 失败", dest.display()))?;
+            thumb_written = Some((dest.clone(), bytes.len()));
+        }
+    } else if a.extract_thumbnail.is_some() {
+        // 缩略图存在加密 TLV 里，没有密码根本读不出来。
+        // 静默忽略会让用户以为导出成功了却找不到文件
+        anyhow::bail!("导出缩略图需要密码，请加 --with-password 或 --password-env 等");
     }
 
     let human = render_human(
@@ -153,6 +179,10 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
                 "audio_tracks": m.audio.len(),
                 "subtitle_tracks": m.subtitles.len(),
             })
+        }),
+        // 导出结果：未导出时为 null，脚本据此判断有没有做这件事
+        "thumbnail_extracted": thumb_written.as_ref().map_or(json!(null), |(p, n)| {
+            json!({ "path": p.display().to_string(), "bytes": n })
         }),
     });
 
