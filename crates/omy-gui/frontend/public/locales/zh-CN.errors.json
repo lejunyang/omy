@@ -19,6 +19,7 @@
   "delete_failed": "加密成功，但无法删除原文件",
   "trash_not_supported": "加密成功，但移到回收站尚未实现，原文件已保留",
   "internal": "内部错误",
+  "unsupported": "当前平台不支持此操作",
   "load_failed": "加载失败",
   "preview_failed": "无法预览此文件",
   "no_store_path": "无法确定设备库位置",

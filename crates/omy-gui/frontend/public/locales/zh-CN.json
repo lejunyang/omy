@@ -12,6 +12,7 @@
     "pictures": "图片",
     "videos": "视频",
     "drives": "磁盘",
+    "cache": "缓存",
     "devices": "附近设备",
     "no_devices": "没有发现设备",
     "scanning": "正在搜索…"

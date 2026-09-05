@@ -19,6 +19,7 @@
   "delete_failed": "Encrypted, but the original file could not be deleted",
   "trash_not_supported": "Encrypted, but moving to trash is not implemented; the original was kept",
   "internal": "Internal error",
+  "unsupported": "This platform does not support that",
   "load_failed": "Load failed",
   "preview_failed": "Cannot preview this file",
   "no_store_path": "Cannot determine where to keep the device store",

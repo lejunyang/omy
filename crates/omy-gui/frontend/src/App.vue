@@ -363,7 +363,15 @@ async function onUnlockSubmit({ password }) {
 }
 
 async function onPick() {
-  const dir = await api.pickFolder(i18n.t('nav.pick_folder')).catch(() => null);
+  // 不能静默吞错误：移动端根本没有文件夹选择器，后端会返回
+  // unsupported。吞掉的话点了完全没反应，用户只会以为按钮坏了
+  let dir = null;
+  try {
+    dir = await api.pickFolder(i18n.t('nav.pick_folder'));
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return;
+  }
   if (dir) await navigate(dir);
 }
 

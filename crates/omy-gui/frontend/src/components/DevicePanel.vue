@@ -138,10 +138,18 @@ async function revoke(fp) {
 
 /** 开始共享一个目录。 */
 async function pickAndShare() {
-  const dir = await api.pickFolder(i18n.t('device.pick_share_dir')).catch(() => null);
+  error.value = '';
+  // 与 App.vue 的 onPick 同理：移动端没有文件夹选择器，静默吞掉
+  // unsupported 会让「共享目录」这个按钮看起来是坏的
+  let dir = null;
+  try {
+    dir = await api.pickFolder(i18n.t('device.pick_share_dir'));
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e));
+    return;
+  }
   if (!dir) return;
   busy.value = true;
-  error.value = '';
   try {
     share.value = await api.startShare(dir, 0, true);
   } catch (e) {
