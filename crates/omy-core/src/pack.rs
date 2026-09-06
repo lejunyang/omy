@@ -86,6 +86,12 @@ pub struct PackedFolder {
     pub file_count: usize,
     /// 目录数。
     pub dir_count: usize,
+    /// 符号链接数。
+    ///
+    /// 单独计数而不是并进 `file_count`：还原时链接可能因平台限制建不出来
+    /// （Windows 无特权就必然失败），报告要能说清「10 个文件都好了，2 个
+    /// 链接没能还原」。混在一起就只能说「12 项里有 2 项有问题」。
+    pub link_count: usize,
     /// 被跳过的条目，需如实展示给用户。
     pub skipped: Vec<SkippedEntry>,
 }
@@ -114,6 +120,14 @@ pub struct WalkItem {
     pub is_dir: bool,
     /// 文件系统元数据，供调用方提取 mtime 等。
     pub meta: EntryMeta,
+    /// 符号链接的目标；非链接时为 `None`。
+    ///
+    /// 由 `walk_dir` 交给调用方而不是自行跳过，是因为两种加密模式对链接
+    /// 的处理能力不同：容器模式有索引可以存目标，树形模式把每个条目落成
+    /// 独立 `.omy` 文件、没有地方记这个字段。让 `walk_dir` 只负责「如实
+    /// 报告这是个链接」，各模式自己决定存还是跳过——遍历判定规则仍然只有
+    /// 一处，符合本模块与 `tree` 共用 `walk_dir` 的约定。
+    pub link_target: Option<String>,
 }
 
 /// 遍历目录树，对每个条目调用 `visit`。
@@ -180,15 +194,31 @@ pub fn walk_dir(
                 continue;
             };
 
-            if md.file_type().is_symlink() {
-                skipped.push(SkippedEntry {
-                    path: comps.join("/"),
-                    reason: SkipReason::Symlink,
-                });
-                continue;
-            }
-
             let meta = meta_from_fs(&md);
+
+            if md.file_type().is_symlink() {
+                // 读链接目标。读不出来才跳过——能读出来就交给调用方，
+                // 由它按自己的存储能力决定存进索引还是记为跳过。
+                //
+                // 注意这里不跟随链接去看目标是文件还是目录：目标可能不
+                // 存在（悬空链接）或指向环，跟随就等于把 symlink_metadata
+                // 挡掉的那两个问题又放回来。类型判断留到还原时做。
+                match std::fs::read_link(&path) {
+                    Ok(target) => {
+                        visit(&WalkItem {
+                            path,
+                            comps,
+                            is_dir: false,
+                            meta,
+                            link_target: Some(target.to_string_lossy().into_owned()),
+                        })?;
+                    }
+                    Err(_) => skipped.push(SkippedEntry {
+                        path: comps.join("/"),
+                        reason: SkipReason::Unreadable,
+                    }),
+                }
+                continue;            }
 
             if md.is_dir() {
                 visit(&WalkItem {
@@ -196,10 +226,17 @@ pub fn walk_dir(
                     comps: comps.clone(),
                     is_dir: true,
                     meta,
+                    link_target: None,
                 })?;
                 subdirs.push((path, comps, depth.saturating_add(1)));
             } else if md.is_file() {
-                visit(&WalkItem { path, comps, is_dir: false, meta })?;
+                visit(&WalkItem {
+                    path,
+                    comps,
+                    is_dir: false,
+                    meta,
+                    link_target: None,
+                })?;
             } else {
                 // 设备文件、FIFO、socket 等
                 skipped.push(SkippedEntry {
@@ -253,12 +290,19 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
     let mut skipped = Vec::new();
     let mut file_count = 0usize;
     let mut dir_count = 0usize;
+    let mut link_count = 0usize;
     // 闭包里读不出来的文件单独收集：`skipped` 已被 walk_dir 可变借走，
     // 闭包不能同时碰它。遍历结束后合并
     let mut unreadable: Vec<String> = Vec::new();
 
     walk_dir(root, &mut skipped, &mut |item| {
-        if item.is_dir {
+        // 链接必须在读文件之前判断。否则 `std::fs::read` 会跟随链接，
+        // 把**目标的内容**当成链接自身的内容存进容器——还原出来就是一个
+        // 普通文件而不是链接，内容看着还对，属于静默的错误结果。
+        if let Some(target) = &item.link_target {
+            builder.add_symlink(item.comps.clone(), target.clone(), item.meta.clone())?;
+            link_count = link_count.saturating_add(1);
+        } else if item.is_dir {
             builder.add_dir(item.comps.clone(), item.meta.clone())?;
             dir_count = dir_count.saturating_add(1);
         } else {
@@ -297,6 +341,7 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
         root_name,
         file_count,
         dir_count,
+        link_count,
         skipped,
     })
 }
@@ -473,35 +518,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinks_are_skipped_not_followed() {
-        // 跟随符号链接会导致两个问题：环状链接死循环，
-        // 以及把链接目标的内容重复打包进去
+    fn symlinks_are_stored_not_followed() {
+        // 链接要被**存下来**（容器索引记得住目标），但绝不能被跟随：
+        // 跟随会导致环状链接死循环，以及把目标内容当成链接自身的内容
+        // 打包进去——后者最危险，因为解出来内容看着是对的，只是类型
+        // 从链接变成了普通文件，不比对类型根本发现不了
         let root = std::env::temp_dir().join("omy-pack-symlink");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("real.txt"), b"real").unwrap();
-        std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("real.txt", root.join("link.txt")).unwrap();
 
         let p = pack_folder(&root, None).unwrap();
-        assert_eq!(p.file_count, 1, "只有真文件被打包");
-        assert_eq!(p.skipped.len(), 1);
-        assert_eq!(p.skipped[0].reason, SkipReason::Symlink);
+        assert_eq!(p.file_count, 1, "链接不算文件，只有 real.txt 是");
+        assert_eq!(p.link_count, 1, "链接要计数");
+        assert!(p.skipped.is_empty(), "不再跳过，实际 {:?}", p.skipped);
+
+        // 载荷里只有 real.txt 的内容。链接不占载荷——如果被跟随了，
+        // 这里会变成 8 字节（"real" 出现两次）
+        assert_eq!(p.payload, b"real", "链接不该往载荷里加内容");
+
+        let link = p
+            .index
+            .entries
+            .iter()
+            .find(|e| e.path == ["link.txt"])
+            .expect("索引里要有链接条目");
+        assert_eq!(link.kind, crate::container::EntryKind::Symlink);
+        assert_eq!(
+            link.target.as_deref(),
+            Some("real.txt"),
+            "目标要原样存下来，否则还原出的链接指向错误位置"
+        );
+        assert_eq!(link.size, 0, "链接不占载荷区间");
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]
     #[test]
-    fn directory_junctions_are_skipped_not_followed() {
-        // Windows 上的补位测试。原来的符号链接测试是 `#[cfg(unix)]`，
-        // 于是「改用 metadata 会跟随链接」这个缺陷在 Windows 开发机上
-        // **压根没有测试覆盖**——变异测试把这个盲区暴露了出来。
+    fn directory_junctions_are_stored_not_followed() {
+        // Windows 上的补位测试。上面那条是 `#[cfg(unix)]`，于是「改用
+        // metadata 会跟随链接」这个缺陷在 Windows 开发机上**压根没有
+        // 测试覆盖**——变异测试把这个盲区暴露了出来。
         //
         // 创建符号链接在 Windows 上需要特权（实测 WinError 1314），但
         // **目录联接（junction）不需要**，而 Rust 同样把它报成 symlink。
         // 于是不必提权就能覆盖这条路径。
-        //
-        // 为什么必须跳过：环状联接会让遍历死循环，且会把目标内容重复打包。
         let root = std::env::temp_dir().join("omy-pack-junction");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("real")).unwrap();
@@ -524,10 +587,22 @@ mod tests {
             p.file_count, 1,
             "只有 real/inside.txt 该被打包；联接被跟随的话会变成 2"
         );
+        assert_eq!(p.link_count, 1, "联接要作为链接存下来");
+        assert_eq!(
+            p.payload, b"content",
+            "载荷里只该有一份内容；被跟随会变成两份"
+        );
+
+        let e = p
+            .index
+            .entries
+            .iter()
+            .find(|e| e.path == ["link"])
+            .expect("索引里要有联接条目");
+        assert_eq!(e.kind, crate::container::EntryKind::Symlink);
         assert!(
-            p.skipped.iter().any(|s| s.reason == SkipReason::Symlink),
-            "联接必须如实报告为符号链接，实际 {:?}",
-            p.skipped
+            e.target.as_deref().is_some_and(|t| !t.is_empty()),
+            "联接的目标不能是空串，否则还原时无从下手"
         );
 
         let _ = std::fs::remove_dir_all(&root);

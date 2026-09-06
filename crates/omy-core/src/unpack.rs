@@ -44,6 +44,8 @@ pub struct ExtractReport {
     pub files: usize,
     /// 创建的目录数。
     pub dirs: usize,
+    /// 成功创建的符号链接数。
+    pub links: usize,
     /// 因平台限制被改名的条目（原路径）。
     ///
     /// 必须报告：文件名被悄悄改掉的话，用户按原名找不到文件，
@@ -75,6 +77,12 @@ pub fn extract_container(
 
     let mut files = 0usize;
     let mut dirs = 0usize;
+    let mut links = 0usize;
+    // 平台不允许建链接的条目数。累计计数而不是逐条记录：报告要说
+    // 「3 个链接因平台限制未还原」，不是重复三行同样的话。
+    let mut unsupported_links = 0usize;
+    // 建链接时的真实失败（区别于平台不支持），带路径和原因。
+    let mut link_failures: Vec<(String, String)> = Vec::new();
     let mut adjusted: Vec<String> = Vec::new();
     let mut skipped: Vec<SkippedEntry> = Vec::new();
 
@@ -122,29 +130,215 @@ pub fn extract_container(
                 std::fs::write(&p, bytes).map_err(Error::Io)?;
                 files = files.saturating_add(1);
             }
-            EntryKind::Symlink => {
-                // 符号链接跨平台差异大（Windows 需要管理员权限或开发者
-                // 模式），按决策 N3：不静默丢弃，明确报告
-                skipped.push(SkippedEntry {
-                    path: e.display_path(),
-                    reason: "symlink",
-                });
+            EntryKind::Symlink | EntryKind::Dir => {}
+        }
+    }
+
+    // 链接单独走一遍，必须在所有文件和目录都落盘之后。
+    //
+    // 原因是目标类型：Windows 分 symlink_file 与 symlink_dir 两个不同的
+    // 系统调用，选错会建出类型不符的链接。判断依据是目标当前是不是目录，
+    // 而容器内的链接完全可能指向索引里排在它后面的条目——放在同一个循环里
+    // 就会在目标还没落盘时去判断，把指向目录的链接建成文件型。
+    //
+    // 顺带也让「链接指向同容器内的文件」这种常见情况不再是悬空链接。
+    for e in &idx.entries {
+        if e.kind != EntryKind::Symlink {
+            continue;
+        }
+        let (p, was_adjusted) = safe_join(&root, &e.path)?;
+        if was_adjusted {
+            adjusted.push(e.display_path());
+        }
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        // 目标缺失的链接条目在 container 层就被拒了（见
+        // `symlink_without_target_rejected`），这里再兜一次：
+        // 拿不到目标就没法建，如实报告而不是建一个空链接。
+        let Some(target) = &e.target else {
+            skipped.push(SkippedEntry {
+                path: e.display_path(),
+                reason: "symlink_no_target",
+            });
+            continue;
+        };
+
+        // 指向容器之外的链接不还原。
+        //
+        // 这是一个真实的逃逸口：`safe_join` 只管住了链接**自身**要落在哪，
+        // 完全没看它**指向**哪。一个恶意容器可以放 `link -> C:\Windows` 或
+        // `link -> ../../../etc/passwd`，解开后用户在文件管理器里点进去，
+        // 就在容器外面操作了——而他以为自己还在解出来的目录里。
+        //
+        // 拒绝而不是改写成安全路径：改写会得到一个指向别处的链接，看着正常
+        // 却指错地方，比不建更难发现。如实报告，让用户知道容器里有这么一项。
+        if !link_target_stays_inside(&root, &p, target) {
+            skipped.push(SkippedEntry {
+                path: e.display_path(),
+                reason: "symlink_escapes_root",
+            });
+            continue;
+        }
+
+        match create_symlink(target, &p) {
+            Ok(()) => links = links.saturating_add(1),
+            Err(err) if is_privilege_error(&err) => {
+                // 平台不允许建链接（Windows 未开开发者模式时必然如此）。
+                // 归 unsupported 而不是 failure：目标仍在加密文件里，换
+                // 环境能还原，报成失败会让人反复重试一件不可能成功的事。
+                unsupported_links = unsupported_links.saturating_add(1);
             }
-            EntryKind::Dir => {}
+            Err(err) => {
+                // 其他失败是这次操作的问题（同名文件已占位、磁盘问题），
+                // 重试可能就好了，要如实报错。
+                link_failures.push((e.display_path(), err.to_string()));
+            }
         }
     }
 
     // 必须在这里——所有条目都已落盘。见模块文档
-    let metadata = crate::restore::restore_metadata(&root, idx);
+    let mut metadata = crate::restore::restore_metadata(&root, idx);
+
+    // 链接的结果并进同一份报告，而不是在 ExtractReport 上另开两个字段：
+    // 对用户来说「链接没能还原」和「权限位没能还原」是同一类信息——这次
+    // 拿不到但值还在加密文件里，展示与翻译都该走同一条路径。
+    metadata.note_unsupported_n(
+        crate::restore::UnsupportedKind::Symlink,
+        unsupported_links,
+    );
+    for (path, reason) in link_failures {
+        metadata.push_failure(path, "symlink", reason);
+    }
 
     Ok(ExtractReport {
         root,
         files,
         dirs,
+        links,
         adjusted,
         skipped,
         metadata,
     })
+}
+
+/// 创建一个符号链接，`target` 是链接内容，`link` 是要创建的路径。
+///
+/// # 为什么 Windows 要分两个调用
+///
+/// Windows 的 `CreateSymbolicLinkW` 要在创建时就声明目标是文件还是目录
+/// （Unix 只有一个 `symlink`，不关心目标类型）。声明错了会得到一个类型
+/// 不符的链接：资源管理器里点开报错，`std::fs::metadata` 跟随后也拿不到
+/// 正确的类型——是个能建成功但不可用的产物，比直接失败更难查。
+///
+/// 判断依据是**目标当前是不是目录**。目标不存在（悬空链接）时只能猜，
+/// 这里按文件处理：文件型是更常见的情况，而且猜错的代价对悬空链接来说
+/// 暂时不显现（等目标出现后才可能暴露）。
+///
+/// # 尚未在本机验证
+///
+/// 这个函数的 Windows 分支**没有在开发机上实际执行过**：本机未开开发者
+/// 模式、非管理员，`CreateSymbolicLinkW` 一律返回 1314，所有调用都在
+/// `is_privilege_error` 那条分支上就返回了。已实测确认的是「目标此刻
+/// 一定已经落盘」（链接在文件之后才建，见调用处），也就是 `is_dir()`
+/// 有正确的依据可用；但 `symlink_dir` / `symlink_file` 究竟选对没有，
+/// 要在开了开发者模式的机器或 CI 上才能验证。
+#[cfg(windows)]
+fn create_symlink(target: &str, link: &Path) -> std::io::Result<()> {
+    // 相对目标要相对链接所在目录解析，不是相对进程当前目录——
+    // 用当前目录判断会在链接不在 cwd 下时得到错误的类型判断。
+    let base = link.parent().unwrap_or(Path::new("."));
+    let resolved = base.join(target);
+
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &str, link: &Path) -> std::io::Result<()> {
+    // Unix 不区分目标类型，一个调用搞定
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// 链接目标解析后是否仍落在 `root` 内。
+///
+/// `link` 是链接自身的落盘路径，`target` 是要写进链接的内容。
+///
+/// # 为什么不用 `canonicalize`
+///
+/// 目标此刻可能还不存在（悬空链接是合法的），`canonicalize` 会直接报错，
+/// 于是所有悬空链接都会被误判成逃逸。这里改用纯路径推演：不碰文件系统，
+/// 只按组件消解 `.` 与 `..`。
+///
+/// 顺带的好处是不受符号链接自身影响——`canonicalize` 会跟随路径上已存在的
+/// 链接，攻击者可以借此让「检查时」和「使用时」看到不同的结果。
+fn link_target_stays_inside(root: &Path, link: &Path, target: &str) -> bool {
+    let t = Path::new(target);
+
+    // 绝对路径（含 Windows 的盘符与 UNC）一律拒绝。就算它字面上落在 root
+    // 里，也是一条写死了本机位置的链接：换台机器解开必然指向不存在的地方，
+    // 还把原机器的目录结构泄进了容器
+    if t.is_absolute() || t.has_root() {
+        return false;
+    }
+
+    // 相对目标以链接**所在目录**为基准解析，不是以进程当前目录
+    let Some(base) = link.parent() else {
+        return false;
+    };
+
+    // 按组件消解。用 `pop` 处理 `..` 而不是留给系统：留着 `..` 的话
+    // `starts_with` 会把 `root/a/../../x` 判成在 root 内
+    let mut acc = base.to_path_buf();
+    for comp in t.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                // 已经退到 root 就不能再退。这里必须先判断再 pop：
+                // pop 到 root 之上再比较就已经晚了
+                if acc == root {
+                    return false;
+                }
+                if !acc.pop() {
+                    return false;
+                }
+            }
+            std::path::Component::CurDir => {}
+            // 绝对路径成分在上面已经挡掉，剩下的只可能是普通名字
+            other => acc.push(other.as_os_str()),
+        }
+    }
+
+    acc.starts_with(root)
+}
+
+/// 这个错误是不是「平台/权限不允许建符号链接」。
+///
+/// 决定报 unsupported 还是 failure，两者对用户的含义完全不同（见
+/// [`crate::restore::RestoreReport`] 的文档）。
+///
+/// Windows 上不能只看 [`std::io::ErrorKind`]：无特权时返回的是
+/// `ERROR_PRIVILEGE_NOT_HELD`（1314），而它并**不**映射成
+/// `ErrorKind::PermissionDenied`，只看 kind 会把这个必然失败的情况
+/// 报成普通失败，用户于是反复重试。实测本机（未开发者模式、未提权）
+/// 建任何链接都得到这个错误。
+#[cfg(windows)]
+fn is_privilege_error(e: &std::io::Error) -> bool {
+    /// `ERROR_PRIVILEGE_NOT_HELD`：调用方没有 `SeCreateSymbolicLinkPrivilege`。
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+    e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+        || e.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(windows))]
+fn is_privilege_error(e: &std::io::Error) -> bool {
+    // Unix 上建链接不需要特权，权限不足是真的目录权限问题。
+    // 仍归 unsupported：换个可写位置就能还原，和 Windows 一致。
+    e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 /// 安全拼接路径，拒绝任何逃出 `root` 的结果，并报告是否改过名。
@@ -341,11 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn symlinks_are_reported_not_silently_dropped() {
-        // 「跳过了」和「没有这一项」对用户是两件事。静默丢弃会让人以为
-        // 容器里本来就没有这个链接
+    fn symlinks_are_restored_or_reported_never_silently_dropped() {
+        // 这条测试在两种环境下都必须有意义，所以按实际能力分支断言：
+        // 能建链接（Unix，或开了开发者模式的 Windows）就要求真的建出来；
+        // 不能建（本机实测：未提权的 Windows 必然失败）就要求归到
+        // unsupported 而不是 failures。
+        //
+        // 无论哪种，都不允许「既没建出来又没报告」——那会让用户以为容器
+        // 里本来就没有这个链接。
         let root = tmp("symlink");
         let mut b = ContainerBuilder::new("f");
+        b.add_file(vec!["target.txt".into()], 3, None, EntryMeta::default())
+            .unwrap();
         b.add_symlink(
             vec!["link".into()],
             "target.txt".into(),
@@ -354,10 +555,212 @@ mod tests {
         .unwrap();
         let idx = b.finish().unwrap();
 
+        let rep = extract_container(&idx, b"abc", &root).unwrap();
+        let link = rep.root.join("link");
+
+        let unsupported_links = rep
+            .metadata
+            .unsupported
+            .iter()
+            .find(|(k, _)| *k == crate::restore::UnsupportedKind::Symlink)
+            .map(|(_, n)| *n)
+            .unwrap_or(0);
+
+        if rep.links == 1 {
+            // 建成功了：查磁盘上的真实类型，不只看计数——计数是自己报的。
+            // 用 symlink_metadata，metadata 会跟随链接看到目标的类型
+            let md = std::fs::symlink_metadata(&link).expect("链接该在磁盘上");
+            assert!(
+                md.file_type().is_symlink(),
+                "报告说建了链接，磁盘上却不是链接"
+            );
+            assert_eq!(
+                std::fs::read_link(&link).unwrap().to_string_lossy(),
+                "target.txt",
+                "目标要和存进去的一致，指错地方等于没还原"
+            );
+            assert_eq!(unsupported_links, 0, "建成功了就不该报不支持");
+            assert!(rep.metadata.failures.is_empty(), "建成功了不该有失败");
+        } else {
+            assert_eq!(rep.links, 0, "要么建成 1 个，要么 0 个");
+            assert_eq!(
+                unsupported_links, 1,
+                "建不出来必须报成 unsupported（换环境能还原），\
+                 而不是 failures（让人反复重试）或干脆不报；实际 {:?} / {:?}",
+                rep.metadata.unsupported, rep.metadata.failures
+            );
+            assert!(
+                rep.metadata.failures.is_empty(),
+                "平台限制不该记进 failures，实际 {:?}",
+                rep.metadata.failures
+            );
+        }
+
+        // 不管链接建没建成，同容器里的普通文件都要正常落盘——
+        // 链接失败不该拖累其他条目
+        assert_eq!(rep.files, 1);
+        assert_eq!(
+            std::fs::read(rep.root.join("target.txt")).unwrap(),
+            b"abc",
+            "链接的成败不该影响文件内容"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_to_dir_inside_container_gets_right_type() {
+        // 锁住「链接在所有文件目录落盘之后才创建」这个顺序约束。
+        //
+        // 索引里链接排在它的目标**之前**（add_symlink 先调用），如果实现
+        // 把链接和文件放在同一个循环里处理，创建链接时目标还不存在：
+        // Windows 上就会把指向目录的链接建成文件型（能建成功但不可用），
+        // Unix 上则会得到一个瞬时悬空的链接。
+        //
+        // 这条在 Unix 上的判据是「链接能当目录用」——跟随它读到里面的文件。
+        let root = tmp("linkorder");
+        let mut b = ContainerBuilder::new("f");
+        b.add_symlink(vec!["dlink".into()], "sub".into(), EntryMeta::default())
+            .unwrap();
+        b.add_dir(vec!["sub".into()], EntryMeta::default()).unwrap();
+        b.add_file(
+            vec!["sub".into(), "inside.txt".into()],
+            2,
+            None,
+            EntryMeta::default(),
+        )
+        .unwrap();
+        let idx = b.finish().unwrap();
+
+        let rep = extract_container(&idx, b"hi", &root).unwrap();
+        assert_eq!(rep.links, 1, "链接该建出来");
+
+        // 透过链接读目标目录里的文件。顺序错了的话这里读不到
+        let via_link = rep.root.join("dlink").join("inside.txt");
+        assert_eq!(
+            std::fs::read(&via_link).unwrap(),
+            b"hi",
+            "该能透过链接访问目录内容，说明链接类型正确且目标已就位"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn symlink_entry_without_target_is_reported() {
+        // 正常路径下 container 层就拒了没目标的链接条目，所以这里要手工
+        // 构造。仍要测：损坏或手工拼的容器不该让我们建出一个空链接，
+        // 也不该静默忽略
+        let root = tmp("notarget");
+        let mut b = ContainerBuilder::new("f");
+        b.add_symlink(vec!["link".into()], "t".into(), EntryMeta::default())
+            .unwrap();
+        let mut idx = b.finish().unwrap();
+        // 绕过 builder 校验，模拟坏容器
+        for e in &mut idx.entries {
+            if e.kind == EntryKind::Symlink {
+                e.target = None;
+            }
+        }
+
         let rep = extract_container(&idx, b"", &root).unwrap();
-        assert_eq!(rep.skipped.len(), 1, "必须报告");
-        assert_eq!(rep.skipped[0].reason, "symlink");
-        assert_eq!(rep.skipped[0].path, "link");
+        assert_eq!(rep.links, 0, "没目标建不出链接");
+        assert!(
+            rep.skipped.iter().any(|s| s.reason == "symlink_no_target"),
+            "必须如实报告，实际 {:?}",
+            rep.skipped
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn link_targets_pointing_outside_are_refused() {
+        // 纯函数级别地把逃逸判断的边界钉死。`safe_join` 只管链接自身落在
+        // 哪，管不到它指向哪，所以这道检查是唯一的防线。
+        let root = Path::new("/vault/root");
+        let link = root.join("sub").join("l");
+
+        // 该放行的：容器内的相对目标
+        for ok in ["a.txt", "./a.txt", "d/e.txt", "../sibling.txt", "../a/../b"] {
+            assert!(
+                link_target_stays_inside(root, &link, ok),
+                "{ok} 落在容器内，该放行"
+            );
+        }
+
+        // 该拒绝的：爬出去、绝对路径、盘符、UNC
+        for bad in [
+            "../../outside.txt",
+            "../../../../../../etc/passwd",
+            // 先进子目录再爬出去，抵消掉的层数刚好越界。
+            // 只做字符串前缀匹配的实现会漏掉这个
+            "d/../../../outside.txt",
+        ] {
+            assert!(
+                !link_target_stays_inside(root, &link, bad),
+                "{bad} 爬出了容器，必须拒绝"
+            );
+        }
+
+        // 绝对路径一律拒绝，即便字面上指回容器内——它写死了本机位置
+        for abs in ["/etc/passwd", "/vault/root/a.txt"] {
+            assert!(
+                !link_target_stays_inside(root, &link, abs),
+                "{abs} 是绝对路径，必须拒绝"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_link_targets_are_refused() {
+        // Windows 特有的几种绝对形式。`Path::is_absolute` 对 `\foo` 这种
+        // 「有根但无盘符」的路径返回 false，所以实现里还查了 has_root——
+        // 漏掉它就会放行一条指向当前盘根目录的链接
+        let root = Path::new(r"C:\vault\root");
+        let link = root.join("l");
+        for bad in [
+            r"C:\Windows\System32",
+            r"\\server\share\x",
+            r"\Windows",
+            r"C:\vault\root\a.txt",
+        ] {
+            assert!(
+                !link_target_stays_inside(root, &link, bad),
+                "{bad} 必须拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn escaping_link_is_reported_not_created() {
+        // 端到端确认：恶意容器里指向外面的链接不落盘，且如实报告。
+        // 静默忽略会让用户以为容器里本来就没这项
+        let root = tmp("escape");
+        let mut b = ContainerBuilder::new("f");
+        b.add_symlink(
+            vec!["evil".into()],
+            "../../../../outside.txt".into(),
+            EntryMeta::default(),
+        )
+        .unwrap();
+        let idx = b.finish().unwrap();
+
+        let rep = extract_container(&idx, b"", &root).unwrap();
+        assert_eq!(rep.links, 0, "逃逸的链接不该被创建");
+        assert!(
+            rep.skipped
+                .iter()
+                .any(|s| s.reason == "symlink_escapes_root"),
+            "必须如实报告，实际 {:?}",
+            rep.skipped
+        );
+        assert!(
+            !rep.root.join("evil").exists(),
+            "磁盘上不该出现这个链接"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -722,7 +722,10 @@ fn for_each_file(root: &Path, cb: &mut dyn FnMut(u64)) {
 /// 与容器模式共用：同一个原因在两种模式下说法不一致，用户会以为是两回事。
 fn skip_why(reason: SkipReason) -> &'static str {
     match reason {
-        SkipReason::Symlink => "符号链接暂不支持，见设计文档 05 号 §4.2",
+        // 只有树形模式会报这个了：容器模式把链接存进索引，不再跳过。
+        // 说清是「这个模式」而不是「omy」不支持，否则用户不知道换个
+        // 模式就能保留。
+        SkipReason::Symlink => "树形模式存不下符号链接，改用 --mode container 可保留",
         SkipReason::NotRegular => "非常规文件（设备/管道/套接字）",
         SkipReason::Unreadable => "读取失败（权限不足，或文件正被占用）",
         SkipReason::TooDeep => "目录层级超过上限",
@@ -758,10 +761,18 @@ fn build_container(ctx: &Ctx<'_>, root: &Path) -> Result<(Vec<u8>, Vec<u8>, Stri
         ));
     }
 
+    // 链接数只在真有链接时才说。绝大多数目录不含链接，无条件加一句
+    // 「0 个符号链接」只是噪音，还会让人以为这里有什么要注意的
+    let links = if packed.link_count > 0 {
+        format!("、{} 个符号链接", packed.link_count)
+    } else {
+        String::new()
+    };
     ctx.out.detail(&format!(
-        "容器：{} 个文件、{} 个目录，载荷 {}",
+        "容器：{} 个文件、{} 个目录{}，载荷 {}",
         packed.file_count,
         packed.dir_count,
+        links,
         human_bytes(packed.payload.len() as u64)
     ));
 

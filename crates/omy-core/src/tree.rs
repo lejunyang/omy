@@ -193,6 +193,20 @@ pub fn encrypt_tree_with_media(
             return Ok(());
         };
 
+        if item.link_target.is_some() {
+            // 树形模式存不了链接：每个条目落成独立 `.omy` 文件，没有容器
+            // 索引那样的地方记录链接目标。容器模式能存（见 `pack_folder`）。
+            //
+            // 必须显式跳过，不能落到下面的分支去：那里会 `std::fs::read`，
+            // 而它跟随链接，于是**目标的内容**会被加密成一个普通文件，还原
+            // 出来内容看着对、类型却错了——静默的错误结果。
+            rep.skipped.push(SkippedEntry {
+                path: item.comps.join("/"),
+                reason: SkipReason::Symlink,
+            });
+            return Ok(());
+        }
+
         if item.is_dir {
             let enc = encrypt_dirname(name, &dkey, &random_nonce(), opts.cipher)?;
             let dir_out = parent_out.join(&enc.disk_name);
@@ -1768,6 +1782,39 @@ mod tests {
 
     fn opts() -> EncryptOptions {
         EncryptOptions { argon2: Argon2Params::TEST_WEAK, ..EncryptOptions::default() }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_mode_reports_symlinks_as_skipped_and_does_not_follow() {
+        // 树形模式存不下链接（每个条目是独立 .omy 文件，没有容器索引那样的
+        // 地方记目标），所以必须如实报成跳过。
+        //
+        // 更重要的是不能跟随：`std::fs::read` 会读到**目标的内容**，于是
+        // 链接被加密成一个普通文件。解出来内容看着完全正常，只是类型从
+        // 链接变成了文件——不比对类型根本发现不了。
+        let root = std::env::temp_dir().join("omy-tree-symlink-src");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real.txt"), b"real body").unwrap();
+        std::os::unix::fs::symlink("real.txt", root.join("link.txt")).unwrap();
+
+        let out = std::env::temp_dir().join("omy-tree-symlink-out");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+
+        let ks = [kek()];
+        let rep = encrypt_tree(&root, &out, &ks, &[3u8; 16], &opts(), None).unwrap();
+
+        assert_eq!(rep.files, 1, "只有 real.txt 该被加密；跟随链接会变成 2");
+        assert!(
+            rep.skipped.iter().any(|s| s.reason == SkipReason::Symlink),
+            "链接必须如实报成跳过，实际 {:?}",
+            rep.skipped
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]

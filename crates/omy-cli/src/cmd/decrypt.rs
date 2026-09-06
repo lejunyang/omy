@@ -366,11 +366,18 @@ fn extract_container(
 ) -> Result<serde_json::Value> {
     let rep = omy_core::unpack::extract_container(idx, payload, target)?;
 
+    // 同 encrypt：没有链接就不提，免得每次都多一句「0 个符号链接」
+    let links = if rep.links > 0 {
+        format!("、{} 个符号链接", rep.links)
+    } else {
+        String::new()
+    };
     ctx.out.success(&format!(
-        "已解开容器到 {}：{} 个文件、{} 个目录",
+        "已解开容器到 {}：{} 个文件、{} 个目录{}",
         rep.root.display(),
         rep.files,
-        rep.dirs
+        rep.dirs,
+        links
     ));
 
     // 元数据还原报告：不支持的项必须明确报告（决策 N3）
@@ -396,6 +403,7 @@ fn extract_container(
         "root": rep.root.display().to_string(),
         "files": rep.files,
         "dirs": rep.dirs,
+        "links": rep.links,
         "adjusted_names": rep.adjusted,
         "skipped": rep.skipped.iter().map(|s| json!({
             "path": s.path,
@@ -411,7 +419,12 @@ fn extract_container(
 /// 标识，直接显示给用户就成了「symlink」这种半英文。
 fn skip_label(reason: &str) -> &'static str {
     match reason {
-        "symlink" => "符号链接",
+        // 容器里的链接条目没记目标。正常不会出现（container 层会拒收），
+        // 只可能来自手工构造或损坏的容器
+        "symlink_no_target" => "符号链接缺少目标",
+        // 说清「指向容器外」而不只是「已拒绝」：用户要能判断这是不是
+        // 自己当初有意建的链接，还是容器来路不正
+        "symlink_escapes_root" => "符号链接指向容器外，已拒绝还原",
         _ => "未知原因",
     }
 }
@@ -469,6 +482,10 @@ fn meta_item_label(kind: omy_core::restore::UnsupportedKind) -> &'static str {
         U::Btime => "创建时间",
         U::Owner => "属主（uid/gid）",
         U::Xattr => "扩展属性",
+        // 说清「这次不行」而不只是「符号链接」：用户看到光秃秃的
+        // 「符号链接」不知道该做什么，而这一项恰好是开了开发者模式
+        // 就能解决的
+        U::Symlink => "符号链接（本机不允许创建）",
     }
 }
 
@@ -508,7 +525,25 @@ mod tests {
     fn skip_labels_cover_known_reasons() {
         // reason 是 core 给的稳定代号，这里保证每个已知代号都有中文说明。
         // 漏一个的话界面上会显示「未知原因」，而原因其实是知道的
-        assert_eq!(skip_label("symlink"), "符号链接");
+        assert_eq!(skip_label("symlink_no_target"), "符号链接缺少目标");
+        assert_eq!(
+            skip_label("symlink_escapes_root"),
+            "符号链接指向容器外，已拒绝还原"
+        );
+    }
+
+    #[test]
+    fn every_unsupported_kind_has_a_label() {
+        use omy_core::restore::UnsupportedKind as U;
+        // 新增 UnsupportedKind 时 match 是穷尽的，编译器会拦住漏写；
+        // 但「写了却写成 code() 那种英文代号」编译器管不了，所以这里
+        // 额外确认每一项都不是代号原文——直接显示 "symlink" 给用户，
+        // 和显示「未知原因」一样没用
+        for k in [U::Mode, U::Btime, U::Owner, U::Xattr, U::Symlink] {
+            let label = meta_item_label(k);
+            assert_ne!(label, k.code(), "{:?} 的说明不能直接用英文代号", k);
+            assert!(!label.is_empty(), "{:?} 缺中文说明", k);
+        }
     }
 
     // sanitize_filename / safe_join 的测试跟着实现一起搬到了

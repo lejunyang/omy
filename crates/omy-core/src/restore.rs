@@ -69,6 +69,14 @@ pub enum UnsupportedKind {
     Owner,
     /// 扩展属性。
     Xattr,
+    /// 符号链接（当前平台不允许创建）。
+    ///
+    /// Windows 上创建符号链接需要 `SeCreateSymbolicLinkPrivilege`，普通
+    /// 账号未开开发者模式时**必然失败**（实测报「需要管理员权限」）。这属于
+    /// 环境的既有事实而不是这次操作出错，所以归 unsupported：报成 failure
+    /// 会让人反复重试一件不可能成功的事。链接目标仍完整保存在加密文件里，
+    /// 换台机器或开了开发者模式就能还原。
+    Symlink,
 }
 
 impl UnsupportedKind {
@@ -83,6 +91,7 @@ impl UnsupportedKind {
             Self::Btime => "btime",
             Self::Owner => "owner",
             Self::Xattr => "xattr",
+            Self::Symlink => "symlink",
         }
     }
 }
@@ -140,6 +149,28 @@ impl RestoreReport {
         } else {
             self.unsupported.push((kind, 1));
         }
+    }
+
+    /// 一次记入 `n` 项平台不支持。
+    ///
+    /// 供 [`crate::unpack`] 汇报符号链接：链接是在元数据还原之前创建的
+    /// （目标类型判断依赖文件已落盘），所以那边先自己计数，再合并到本
+    /// 报告里，而不是每建一个链接就回调一次。
+    ///
+    /// `n` 为 0 时不产生任何条目——否则报告里会出现「0 个链接不支持」
+    /// 这种让人以为出了问题的空条目。
+    pub fn note_unsupported_n(&mut self, kind: UnsupportedKind, n: usize) {
+        for _ in 0..n {
+            self.note_unsupported(kind);
+        }
+    }
+
+    /// 追加一条还原失败记录。
+    ///
+    /// 同样供 [`crate::unpack`] 汇报链接创建失败，理由见
+    /// [`Self::note_unsupported_n`]。
+    pub fn push_failure(&mut self, path: String, item: &'static str, reason: String) {
+        self.failures.push(RestoreFailure { path, item, reason });
     }
 }
 
@@ -669,5 +700,6 @@ mod tests {
         assert_eq!(UnsupportedKind::Btime.code(), "btime");
         assert_eq!(UnsupportedKind::Owner.code(), "owner");
         assert_eq!(UnsupportedKind::Xattr.code(), "xattr");
+        assert_eq!(UnsupportedKind::Symlink.code(), "symlink");
     }
 }
