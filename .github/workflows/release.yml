@@ -1,0 +1,372 @@
+# 发布流水线。
+#
+# # 两个触发条件，对应两种发布动作
+#
+# 1. 推 v* 标签   → 构建各平台产物并创建 GitHub Release
+# 2. 提交信息含 [publish] → 额外发布到 crates.io
+#
+# 分开是因为两者的可逆性完全不同：GitHub Release 删了可以重发，
+# 而 **crates.io 的版本一经发布就无法删除**（只能 yank，且号不能复用）。
+# 所以上传 registry 必须由提交信息里的显式标记触发，不能顺带发生。
+#
+# # 平台策略
+#
+# 与测试流水线一致：Windows 与 Android 是已验证平台，构建失败即发布失败；
+# Linux 与 macOS 尚未验证，continue-on-error，缺了产物也照样出 Release
+# （Release 说明里会写明这一点，不让用户以为下载到的是验证过的东西）。
+
+name: 发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_crates:
+        description: '同时发布到 crates.io（不可撤销）'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ---- 先判断这次要做什么 ----
+
+  decide:
+    name: 判定触发条件
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.d.outputs.release }}
+      publish: ${{ steps.d.outputs.publish }}
+      version: ${{ steps.d.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 需要读提交信息。fetch-depth: 0 是必须的：默认浅克隆下
+          # git log 拿不到完整信息，判定会静默变成「不发布」
+          fetch-depth: 0
+
+      - name: 判定
+        id: d
+        env:
+          # 提交信息经环境变量传入，不做字符串插值。
+          # 直接把 ${{ github.event.head_commit.message }} 写进 shell 里，
+          # 提交信息带反引号或 $() 就会被当成命令执行——这是脚本注入。
+          MSG: ${{ github.event.head_commit.message }}
+          MANUAL: ${{ inputs.publish_crates }}
+        run: |
+          release=false
+          publish=false
+          version=""
+
+          # 推标签 → 出 Release
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            release=true
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          # 提交信息含 [publish] → 发 crates.io
+          case "$MSG" in
+            *'[publish]'*) publish=true ;;
+          esac
+
+          # 手动触发时以输入为准
+          if [ "$MANUAL" = "true" ]; then
+            publish=true
+          fi
+
+          # 没有标签时从 Cargo.toml 读版本，供 crates.io 发布使用
+          if [ -z "$version" ]; then
+            version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          fi
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          echo "出 Release   = $release"
+          echo "发 crates.io = $publish"
+          echo "版本         = $version"
+
+  # ---- 构建产物 ----
+
+  build-windows:
+    name: 构建 Windows（已验证）
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: release-windows
+
+      - name: 构建 CLI
+        run: cargo build --release -p omy-cli
+
+      - name: 构建 GUI
+        # GUI 的 build.rs 会自动构建前端，所以这里不需要单独装 Node 依赖
+        run: cargo build --release -p omy-gui
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target\release\omy.exe dist\
+          Copy-Item target\release\omy-gui.exe dist\
+          Copy-Item README.md dist\
+          Compress-Archive -Path dist\* `
+            -DestinationPath omy-${{ needs.decide.outputs.version }}-x86_64-pc-windows-msvc.zip
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows
+          path: '*.zip'
+
+  build-android:
+    name: 构建 Android（已验证）
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust 与 Android 目标
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - uses: actions/setup-java@v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4.0.1
+
+      - name: 安装 NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: release-android
+
+      - name: 安装 tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: 构建 APK
+        working-directory: crates/omy-gui
+        # 产出的是未签名 APK：签名密钥不能进仓库，也不该由 CI 代持。
+        # 需要正式签名版时由维护者本地签，或另配 secrets 后在此加签名步骤。
+        run: cargo tauri android build --apk
+
+      - name: 收集 APK
+        run: |
+          mkdir -p out
+          find . -name '*.apk' -path '*release*' -exec cp {} out/ \;
+          ls -la out/
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: android
+          path: out/*.apk
+
+  build-linux:
+    name: 构建 Linux（未验证）
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: release-linux
+
+      - name: 构建
+        run: |
+          cargo build --release -p omy-cli
+          cargo build --release -p omy-gui
+
+      - name: 打包
+        run: |
+          mkdir -p dist
+          cp target/release/omy target/release/omy-gui README.md dist/
+          tar -czf omy-${{ needs.decide.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: linux
+          path: '*.tar.gz'
+
+  build-macos:
+    name: 构建 macOS（未验证）
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: release-macos
+
+      - name: 构建
+        run: |
+          cargo build --release -p omy-cli
+          cargo build --release -p omy-gui
+
+      - name: 打包
+        run: |
+          mkdir -p dist
+          cp target/release/omy target/release/omy-gui README.md dist/
+          tar -czf omy-${{ needs.decide.outputs.version }}-aarch64-apple-darwin.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: macos
+          path: '*.tar.gz'
+
+  # ---- 创建 Release ----
+
+  release:
+    name: 创建 GitHub Release
+    needs: [decide, build-windows, build-android, build-linux, build-macos]
+    # always()：linux/macos 允许失败，若用默认的「全部成功才跑」，
+    # 未验证平台一挂就整个 Release 出不来，等于把它们变成了必过项
+    if: always() && needs.decide.outputs.release == 'true' && needs.build-windows.result == 'success' && needs.build-android.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 下载全部产物
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -laR artifacts/
+
+      - name: 生成 Release 说明
+        env:
+          LINUX_RESULT: ${{ needs.build-linux.result }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          {
+            echo "## omy v${VERSION}"
+            echo
+            echo "### 平台验证状态"
+            echo
+            echo "| 平台 | 状态 |"
+            echo "|---|---|"
+            echo "| Windows | 已实测 |"
+            echo "| Android | 已实测 |"
+            echo "| Linux | **尚未验证**（本次构建：${LINUX_RESULT}） |"
+            echo "| macOS | **尚未验证**（本次构建：${MACOS_RESULT}） |"
+            echo
+            echo "Linux 与 macOS 的产物由未经验证的构建任务产出，可能缺失或不可用。"
+            echo
+            echo "### 说明"
+            echo
+            echo "- \`omy\` 是命令行工具，\`omy-gui\` 是图形界面"
+            echo "- APK **未签名**，安装需允许未知来源"
+            echo "- 装完建议先跑 \`omy doctor\` 确认本机实际能力"
+            echo
+            echo "密码遗忘将导致数据永久丢失——设计上不存在找回机制。"
+          } > notes.md
+          cat notes.md
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          body_path: notes.md
+          files: artifacts/**/*
+          # 未验证平台可能缺产物，不能因此报错
+          fail_on_unmatched_files: false
+
+  # ---- 发布到 crates.io ----
+
+  publish:
+    name: 发布到 crates.io
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        # omy-cli 依赖 omy-media 与 omy-net，publish 默认会验证构建。
+        # 这些不需要 WebKit（omy-gui 才需要，而它 publish = false），
+        # 但 openssl 等基础库仍要有
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: publish
+
+      - name: 先做一次 dry-run
+        # 真上传之前必须过一遍：crates.io 的版本发布后**无法删除**，
+        # 只能 yank，而且同一个版本号不能再用。
+        # dry-run 能抓出缺 version 的 path 依赖、缺失的元数据等问题。
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --dry-run
+
+      - name: 发布
+        # --workspace 让 cargo 自己算依赖顺序（core → media → net → cli），
+        # 并等每个包在 registry 上可见后再发下一个。
+        # 手写顺序加 sleep 是旧做法，cargo 1.98 已经内置处理。
+        #
+        # omy-gui 在它的 Cargo.toml 里标了 publish = false，会被自动跳过：
+        # 它的 build.rs 需要 Node 工具链，而前端产物不入库。
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace
+
+      - name: 汇总
+        run: |
+          echo "已发布 v${{ needs.decide.outputs.version }} 到 crates.io"
+          echo "omy-core / omy-media / omy-net / omy-cli"
+          echo "omy-gui 不发布到 registry（见其 Cargo.toml 的说明）"

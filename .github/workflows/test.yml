@@ -1,0 +1,275 @@
+# 测试流水线。
+#
+# # 平台策略：为什么 Linux/macOS 允许失败
+#
+# 这个项目目前只在 Windows 与 Android 上实测过。Linux 与 macOS 的代码路径
+# 写了但从未在真机上跑过，直接设成必过会让 main 长期挂红——那样红叉就失去
+# 意义，真正的回归也会被忽略。
+#
+# 所以分成两类：
+#   - windows / android：必过，挂了就是真的坏了
+#   - linux / macos：continue-on-error，只作为「未来要修什么」的信息来源
+#
+# 等某个平台连续绿了并且有人真的在上面用过，就把它的 continue-on-error 删掉，
+# 同时改掉 site 与 README 里「尚未验证」的说法。
+#
+# # 为什么必过任务用 stable 而不是 MSRV
+#
+# Cargo.toml 声明 rust-version = "1.85"，但**这个下限没有在本机验证过**
+# （本地 rustup 走的镜像不提供该版本）。把没验证过的版本设成门禁，一旦
+# 代码里用了 1.85 之后的特性，两个必过任务会同时挂，而原因是「我们假设错了」
+# 而不是「代码坏了」。
+#
+# 所以：必过任务用 stable（本机实测通过：688 项测试 + clippy 零告警），
+# MSRV 单独一个非阻塞任务去核实。等它连续绿了再考虑提升为必过。
+
+name: 测试
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # 允许手动触发，便于在改完平台适配后单独验一次
+  workflow_dispatch:
+
+# 同一分支上新的推送会取消仍在跑的旧任务：这里的任务动辄十几分钟，
+# 连续推几次会把并发额度堆满
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI 上没人看增量编译的收益，关掉能少占缓存空间
+  CARGO_INCREMENTAL: 0
+  # 编译失败时直接给出可读的 backtrace，省一轮复现
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---- 已验证平台：必过 ----
+
+  windows:
+    name: Windows（已验证）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: windows
+
+      - name: 构建
+        run: cargo build --workspace --all-targets
+
+      - name: 测试
+        run: cargo test --workspace
+
+      - name: clippy
+        # -D warnings 是刻意的：omy-gui 禁用 unwrap/expect/panic/切片索引，
+        # 这些在加密与文件操作里会变成数据丢失或拒绝服务，不能只当建议
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 这里**不加** cargo fmt --check。
+      #
+      # 实测当前有 89 个文件、649 处不符合 rustfmt 默认风格：本仓库的中文注释
+      # 与对齐是手写的，rustfmt 会把它们重排。加这个门禁会让 CI 从第一次运行
+      # 就红，而唯一的修法是全仓库重排格式——那是独立的决定，不该顺带塞进
+      # 「新增流水线」这件事里。AGENTS.md 的提交前要求也只列了 test 与 clippy。
+      #
+      # 若将来要引入，正确顺序是：先单独提一次全仓库 fmt，再加这一步。
+
+  android:
+    name: Android（已验证）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust 与 Android 目标
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - uses: actions/setup-java@v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4.0.1
+
+      - name: 安装 NDK
+        # zstd-sys 是 C 代码，交叉编译必须有 NDK 里的 clang。
+        # 缺它的话连 omy-core 都编不过，而报错看起来跟 Tauri 毫无关系
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: android
+
+      - name: 交叉编译 omy-core（aarch64）
+        # 只编 core：它是纯 Rust 加上 zstd-sys，最能反映交叉编译工具链是否可用。
+        # 完整的 GUI 打包要 gradle 与签名配置，放在发布流水线里做
+        run: cargo build -p omy-core --target aarch64-linux-android
+
+      - name: 交叉编译 omy-core（armv7）
+        run: cargo build -p omy-core --target armv7-linux-androideabi
+
+      - name: 单元测试（在宿主上跑）
+        # 交叉编译产物没法在 runner 上执行，所以逻辑测试仍在 x86_64 上跑。
+        # 这一步保证「代码逻辑没坏」，上面两步保证「能为 Android 编出来」
+        run: cargo test -p omy-core
+
+  # ---- 前端与文档：与平台无关 ----
+
+  frontend:
+    name: 前端与文档
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+
+      - name: 构建文档站
+        working-directory: site
+        # 站点配置里 ignoreDeadLinks: false，所以死链会让这一步失败。
+        # 文档站最常见的退化就是改了文件名忘了改链接
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: 上传站点产物
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: site
+          path: site/dist
+          retention-days: 7
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: 检查 i18n 键
+        # 缺键的症状是界面上直接显示 remote.readonly 这种原始键名——
+        # 构建不报错，测试也不失败，只有肉眼能发现，所以必须单独检查
+        run: python spikes/check-i18n-keys.py
+
+  # ---- 非阻塞核实：MSRV 与未验证平台 ----
+
+  msrv:
+    name: MSRV 1.85（未核实）
+    runs-on: ubuntu-latest
+    # Cargo.toml 声明的下限从未实测。这里去核实它，但先不设成门禁：
+    # 万一声明本身是错的，不该让所有 PR 陪着挂红。
+    # 连续绿之后再把这个 continue-on-error 删掉。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 安装 Rust 1.85
+        run: rustup toolchain install 1.85 --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: msrv
+
+      - name: 用 MSRV 编译
+        # 只 build 不 test：这一步要回答的是「声明的下限站得住吗」，
+        # 测试行为由 stable 任务保证
+        run: cargo +1.85 build --workspace --all-targets
+
+  linux:
+    name: Linux（未验证）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        # Tauri v2 需要 WebKitGTK 4.1。omy-gui 依赖它，
+        # 缺了会在链接期才报错，而报错信息不会提到缺哪个包
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: linux
+
+      - name: 构建
+        run: cargo build --workspace --all-targets
+
+      - name: 测试
+        run: cargo test --workspace
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  macos:
+    name: macOS（未验证）
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: macos
+
+      - name: 构建
+        run: cargo build --workspace --all-targets
+
+      - name: 测试
+        run: cargo test --workspace
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ---- 汇总：让分支保护只需盯一个检查项 ----
+
+  result:
+    name: 测试结论
+    if: always()
+    needs: [windows, android, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查必过任务
+        # 只看已验证平台与前端。msrv/linux/macos 不在 needs 里，
+        # 它们的红叉是信息，不是门禁。
+        #
+        # 必须显式判断 result：needs 里任一任务被 skip 或 cancel 时，
+        # 这一步默认仍会跑，若不判断就会把「没跑」当成「通过」
+        env:
+          W: ${{ needs.windows.result }}
+          A: ${{ needs.android.result }}
+          F: ${{ needs.frontend.result }}
+        run: |
+          echo "windows  = $W"
+          echo "android  = $A"
+          echo "frontend = $F"
+          if [ "$W" != "success" ] || [ "$A" != "success" ] || [ "$F" != "success" ]; then
+            echo "必过任务未全部通过"
+            exit 1
+          fi
+          echo "已验证平台全部通过"
