@@ -1,7 +1,28 @@
 工作流说明
 ==========
 
-两条流水线，以及它们为什么这么设计。
+三条流水线，以及它们为什么这么设计。
+
+pages.yml
+---------
+
+把 `site/` 部署到 GitHub Pages。只在 main 上、且站点相关文件有改动时触发
+（`site/**` 或本工作流自身），也可手动触发。
+
+### 首次启用要手动配一次
+
+仓库 **Settings → Pages → Source 选 `GitHub Actions`**。不配这一项，
+部署任务会失败并报没有启用 Pages。
+
+站点地址是 `https://lejunyang.github.io/omy/`，与 `site/.vitepress/config.js`
+里的 `base: '/omy/'` 对应。**换成自定义域名时两处要一起改**：只改一处会
+让页面能打开但 CSS 和 JS 全部 404。
+
+### 为什么和 test.yml 里的站点构建分开
+
+test.yml 的 `frontend` 任务也构建站点，但目的是「站点没坏」（死链、i18n
+缺键），要跑在 PR 上；部署只该在 main 上发生。混在一条里得给部署步骤套
+一堆条件，而且 PR 的构建也会带上 Pages 的写权限——那是不必要的权限扩大。
 
 test.yml
 --------
@@ -86,7 +107,18 @@ registry 上的包对没有 Node 工具链的人是编不过的。GUI 通过 Rel
 |---|---|
 | `CARGO_REGISTRY_TOKEN` | 发布到 crates.io。在 crates.io 的 Account Settings 生成 |
 
-`GITHUB_TOKEN` 由 Actions 自动提供，不用配。
+`GITHUB_TOKEN` 由 Actions 自动提供，不用配。Pages 部署用的是工作流里声明
+的 `pages: write` / `id-token: write` 权限，也不需要额外 secret。
+
+### 工具链版本与 osdk.toml 保持一致
+
+Android 相关任务里的 JDK 与 NDK 版本必须和仓库根 `osdk.toml` 一致
+（当前 JDK 21、NDK 29.0.14206865）。两边不一致会出现「本地能编过 CI 编不过」
+或反过来，而排查方向会完全跑偏——JDK 版本不对时 gradle 在配置期崩溃，
+报错只有一行版本号，看不出是 JDK 的问题。
+
+JDK 不能超过 21：Gradle 8.14 上限是 24，Kotlin 1.9.25 的 JVM target 上限
+是 21，两条约束叠加后 21 就是上限。
 
 ### APK 未签名
 

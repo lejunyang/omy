@@ -152,14 +152,17 @@ jobs:
       - uses: actions/setup-java@v6.0.0
         with:
           distribution: temurin
-          java-version: '17'
+          # 与 osdk.toml 固定的 java 版本一致，理由见 test.yml 里的说明
+          java-version: '21'
 
       - uses: android-actions/setup-android@v4.0.1
 
       - name: 安装 NDK
+        env:
+          NDK_VERSION: '29.0.14206865'
         run: |
-          sdkmanager --install "ndk;27.2.12479018"
-          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          sdkmanager --install "ndk;${NDK_VERSION}"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@v2.2.0
         with:

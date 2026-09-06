@@ -1,0 +1,86 @@
+# 把文档站部署到 GitHub Pages。
+#
+# # 为什么单独一条流水线
+#
+# test.yml 里的 frontend 任务也构建站点，但它的目的是「站点没坏」（死链、
+# i18n 缺键），跑在 PR 上；部署只该在 main 上发生。混在一条里就得给部署
+# 步骤套一堆 if，而且 PR 的构建产物也会带上部署权限——那是不必要的权限扩大。
+#
+# # 路径过滤
+#
+# 只有站点相关文件变了才部署。改 Rust 代码不会动站点内容，没必要每次都
+# 重新发布一遍。
+#
+# 注意 paths 里必须包含本文件自身：改了部署逻辑却不触发部署，会让人以为
+# 改动没生效。
+
+name: 部署文档站
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  # 允许手动触发：首次启用 Pages、或想在不改站点的情况下重新发布时用
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # 这两个是 Pages 部署必须的，且刻意只给到这条流水线
+  pages: write
+  id-token: write
+
+# 部署不能并发：两个任务同时推 Pages 会互相覆盖。
+# 但也不 cancel-in-progress——正在发布的部署被打断可能留下半旧半新的站点
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+
+      - name: 配置 Pages
+        # 这一步会输出 base_path 等信息。放在构建之前，
+        # 因为它可能影响构建时的路径处理
+        uses: actions/configure-pages@v6.0.0
+
+      - name: 安装依赖
+        working-directory: site
+        # --frozen-lockfile：CI 上不允许悄悄升级依赖。
+        # 若 lockfile 与 package.json 不一致，这里直接失败比装出一个
+        # 和本地不同的版本树要好
+        run: bun install --frozen-lockfile
+
+      - name: 构建
+        working-directory: site
+        # 站点 config 里 ignoreDeadLinks 为 false，死链会让这一步失败。
+        # base 固定为 '/omy/'（项目页的路径前缀），不从 configure-pages
+        # 的输出动态取——那个值在自定义域名下会变成 '/'，
+        # 而站点里已经有按 '/omy/' 写死的资源引用
+        run: bun run build
+
+      - name: 上传产物
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: site/dist
+
+  deploy:
+    name: 部署
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署到 Pages
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1

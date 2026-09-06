@@ -195,9 +195,51 @@ CRLF 会被原样写进库。
 配套的坑：Python `subprocess` 用 `text=True` 时，Windows 上会把 `\n`
 写成 `\r\n`。读写 git 对象一律走字节。
 
+## 改了功能就要 review 文档站
+
+`site/` 是对外的文档站，介绍安装和使用。**凡是改动了用户可见行为，就必须
+去 review 一遍站点里对应的功能说明，该改的改。**
+
+用户可见行为包括：命令或子命令的增删、选项与默认值、输出文件的命名规则、
+退出码、配置项、界面上的操作方式、平台支持范围、安装方式。
+
+### 为什么必须连带改
+
+文档不同步不会让任何检查失败：`cargo test` 过、clippy 过、站点也照样构建
+成功（`ignoreDeadLinks` 只管链接，管不了内容对不对）。于是错误的说明会
+一直留在站上，而**照着文档做的人会卡住，并且以为是工具坏了**。
+
+这类错误已经出现过。写站点时对照实现核实，抓到设计文档里的
+`omy mount`、`--keyring` 其实并不存在，以及 `encrypt` 是在完整文件名后
+追加 `.omy`（`note.txt` 变成 `note.txt.omy`，不是替换后缀）。照抄设计稿
+就会写出一份跑不通的文档。
+
+### 中英两份都要改
+
+`site/guide/` 与 `site/en/guide/`、`site/reference/` 与
+`site/en/reference/` 是一一对应的。**只改中文会让英文页留下过期说明**，
+而且没有任何检查会报错——这比两边都没写更糟，因为英文读者会以为那是当前
+行为。
+
+### 以实测为准，不以设计文档为准
+
+`docs/research/` 下的设计文档记录的是当初的打算，实现可能已经偏离。写
+站点说明时以真实行为为准：跑一遍 `--help`，跑一遍实际命令，看真实输出和
+真实退出码，而不是照抄设计稿或凭印象。
+
+### 平台支持范围写在三处
+
+目前只在 Windows 与 Android 上实测过。这个状态同时写在
+`site/index.md`、`site/en/index.md`、`site/guide/install.md`，并且和
+`.github/workflows/test.yml` 里哪些任务是 `continue-on-error` 对应。
+**某个平台转为已验证时，这四处要一起改**，否则会出现「流水线已把它当必过，
+文档还说没验证过」这种自相矛盾的状态。
+
 ## 提交前
 
 - `cargo test`、`cargo clippy -- -D warnings` 必须通过。
   omy-gui 禁用 `unwrap` / `expect` / `panic` / 切片索引。
 - 改了前端文案要跑 `python spikes\check-i18n-keys.py`，并确认中英键一致。
+- 改了用户可见行为要 review `site/` 里对应的说明，中英两份都改。
+- 改了 `site/` 要跑 `cd site; bun run build` 确认能构建（死链会让它失败）。
 - 不要把调试用的临时脚本留在仓库里。

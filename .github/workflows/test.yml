@@ -96,16 +96,29 @@ jobs:
       - uses: actions/setup-java@v6.0.0
         with:
           distribution: temurin
-          java-version: '17'
+          # 21，与仓库根 osdk.toml 固定的 java 版本一致。
+          #
+          # 不能用更高的：Gradle 8.14 最高支持 JDK 24，而 Kotlin 1.9.25 的
+          # JVM target 上限是 21，两条约束叠加后 21 就是上限。JDK 26 会让
+          # gradle 在配置期崩溃，报错只有一行版本号，完全看不出是 JDK 的问题。
+          #
+          # 也不能用更低的 17：本地已经固定成 21，CI 用别的版本就失去了
+          # 「CI 复现本地」的意义。改这里必须同时改 osdk.toml。
+          java-version: '21'
 
       - uses: android-actions/setup-android@v4.0.1
 
       - name: 安装 NDK
         # zstd-sys 是 C 代码，交叉编译必须有 NDK 里的 clang。
-        # 缺它的话连 omy-core 都编不过，而报错看起来跟 Tauri 毫无关系
+        # 缺它的话连 omy-core 都编不过，而报错看起来跟 Tauri 毫无关系。
+        #
+        # 版本与 osdk.toml 的 android-ndk 一致；两边不一致时，本地能编过而
+        # CI 编不过（或反过来），排查方向会完全跑偏
+        env:
+          NDK_VERSION: '29.0.14206865'
         run: |
-          sdkmanager --install "ndk;27.2.12479018"
-          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          sdkmanager --install "ndk;${NDK_VERSION}"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2.9.2
         with:
