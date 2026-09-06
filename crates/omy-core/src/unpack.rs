@@ -236,25 +236,45 @@ pub fn extract_container(
 /// 这里按文件处理：文件型是更常见的情况，而且猜错的代价对悬空链接来说
 /// 暂时不显现（等目标出现后才可能暴露）。
 ///
-/// # 尚未在本机验证
+/// # 实测结论（开发者模式下）
 ///
-/// 这个函数的 Windows 分支**没有在开发机上实际执行过**：本机未开开发者
-/// 模式、非管理员，`CreateSymbolicLinkW` 一律返回 1314，所有调用都在
-/// `is_privilege_error` 那条分支上就返回了。已实测确认的是「目标此刻
-/// 一定已经落盘」（链接在文件之后才建，见调用处），也就是 `is_dir()`
-/// 有正确的依据可用；但 `symlink_dir` / `symlink_file` 究竟选对没有，
-/// 要在开了开发者模式的机器或 CI 上才能验证。
+/// 这段判断**不是**多余的保险，类型选错的后果已经实测过：把两个调用对调
+/// 之后，链接照样建得出来（`is_symlink` 仍为 true），但 `metadata` 跟随
+/// 时 `dlink` 报 permission denied、`flink` 报 not a directory，读文件
+/// 直接「拒绝访问」——正是那种「能创建但不可用」的产物。
+///
+/// 另一个实测得到的细节：Windows 沿链接**路径**穿越时并不校验这个类型
+/// 标记，所以即便类型选错，「透过 dlink 读 sub/inside.txt」照样成功。
+/// 判断链接是否健康只能对链接自身取 `metadata`，不能靠能不能穿过去读文件
+/// （`link_to_dir_inside_container_gets_right_type` 的注释里记了这一点，
+/// 因为拿后者当判据的测试是抓不到缺陷的）。
+///
+/// 悬空链接在有特权时也能正常创建，所以不需要为它推迟或跳过。
+///
+/// # 分隔符必须换成反斜杠
+///
+/// 容器里的路径一律用 `/` 分隔（跨平台的容器格式只能这样），但 Windows
+/// **不接受目标里的正斜杠**。这个错误的形态很坏：链接照样**创建成功**，
+/// `is_symlink` 为 true、`read_link` 也读得回来，只有跟随时才报
+/// `winerror 123`（`InvalidFilename`）。也就是说不转换的话，`links` 会
+/// 报成功，磁盘上却是一个点开就报错的坏链接。
+///
+/// 受影响的是任何目标带子目录的链接（`../lib/libfoo.so` 这类很常见），
+/// 尤其是在 Unix 上打包、拿到 Windows 解开的容器。
 #[cfg(windows)]
 fn create_symlink(target: &str, link: &Path) -> std::io::Result<()> {
+    // 见上：正斜杠会让链接建得出来却跟随不了
+    let target = target.replace('/', "\\");
+
     // 相对目标要相对链接所在目录解析，不是相对进程当前目录——
     // 用当前目录判断会在链接不在 cwd 下时得到错误的类型判断。
     let base = link.parent().unwrap_or(Path::new("."));
-    let resolved = base.join(target);
+    let resolved = base.join(&target);
 
     if resolved.is_dir() {
-        std::os::windows::fs::symlink_dir(target, link)
+        std::os::windows::fs::symlink_dir(&target, link)
     } else {
-        std::os::windows::fs::symlink_file(target, link)
+        std::os::windows::fs::symlink_file(&target, link)
     }
 }
 
@@ -608,21 +628,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn link_to_dir_inside_container_gets_right_type() {
-        // 锁住「链接在所有文件目录落盘之后才创建」这个顺序约束。
+        // 锁住两件事：链接类型选对了，以及「链接在所有文件目录落盘之后
+        // 才创建」这个顺序约束。
         //
-        // 索引里链接排在它的目标**之前**（add_symlink 先调用），如果实现
-        // 把链接和文件放在同一个循环里处理，创建链接时目标还不存在：
-        // Windows 上就会把指向目录的链接建成文件型（能建成功但不可用），
-        // Unix 上则会得到一个瞬时悬空的链接。
+        // 索引里链接排在它的目标**之前**（add_symlink 先调用）。如果实现
+        // 把链接和文件放在同一个循环里处理，创建链接时目标还不存在，
+        // Windows 上 `is_dir()` 对不存在的路径返回 false，于是指向目录的
+        // 链接被建成文件型——能建成功但不可用。
         //
-        // 这条在 Unix 上的判据是「链接能当目录用」——跟随它读到里面的文件。
+        // # 判据为什么是「对链接自身取 metadata」
+        //
+        // 变异测试实测过（把 symlink_dir / symlink_file 对调）：
+        //
+        // - `metadata(dlink)` 报 permission denied、`metadata(flink)` 报
+        //   not a directory——**能抓到**。
+        // - 而「透过 dlink 读 sub/inside.txt」在变异后**照样成功**：Windows
+        //   沿链接路径穿越时并不校验这个类型标记。拿它当判据等于没测。
+        //
+        // 所以查的是链接自身跟随后的类型，不是能不能穿过去读到文件。
         let root = tmp("linkorder");
         let mut b = ContainerBuilder::new("f");
         b.add_symlink(vec!["dlink".into()], "sub".into(), EntryMeta::default())
             .unwrap();
+        b.add_symlink(
+            vec!["flink".into()],
+            "sub/inside.txt".into(),
+            EntryMeta::default(),
+        )
+        .unwrap();
         b.add_dir(vec!["sub".into()], EntryMeta::default()).unwrap();
         b.add_file(
             vec!["sub".into(), "inside.txt".into()],
@@ -634,14 +669,29 @@ mod tests {
         let idx = b.finish().unwrap();
 
         let rep = extract_container(&idx, b"hi", &root).unwrap();
-        assert_eq!(rep.links, 1, "链接该建出来");
 
-        // 透过链接读目标目录里的文件。顺序错了的话这里读不到
-        let via_link = rep.root.join("dlink").join("inside.txt");
+        // 建不出链接的环境（未开开发者模式的 Windows）跳过后半段——那里由
+        // symlinks_are_restored_or_reported_never_silently_dropped 覆盖，
+        // 本条测的是「建出来之后类型对不对」
+        if rep.links == 0 {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        assert_eq!(rep.links, 2, "两个链接都该建出来");
+
+        // 目录链接跟随后必须是目录。类型选错时这里直接报错而不是返回 false
+        let dmd = std::fs::metadata(rep.root.join("dlink"))
+            .expect("目录链接跟随失败，说明类型选错了");
+        assert!(dmd.is_dir(), "dlink 跟随后该是目录");
+
+        // 文件链接跟随后必须是文件，且内容读得出来
+        let fmd = std::fs::metadata(rep.root.join("flink"))
+            .expect("文件链接跟随失败，说明类型选错了");
+        assert!(fmd.is_file(), "flink 跟随后该是文件");
         assert_eq!(
-            std::fs::read(&via_link).unwrap(),
+            std::fs::read(rep.root.join("flink")).expect("读文件链接失败"),
             b"hi",
-            "该能透过链接访问目录内容，说明链接类型正确且目标已就位"
+            "透过文件链接该读到目标内容"
         );
 
         let _ = std::fs::remove_dir_all(&root);
