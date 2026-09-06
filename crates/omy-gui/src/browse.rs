@@ -439,7 +439,7 @@ pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
     // 侧栏会列出一堆点进去就报 read_failed 的入口。
     #[cfg(target_os = "android")]
     {
-        return android_places(&app);
+        android_places(&app)
     }
 
     #[cfg(not(target_os = "android"))]

@@ -747,7 +747,7 @@ pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Opti
     #[cfg(target_os = "android")]
     {
         let _ = (app, title);
-        return Err(CmdError::code("unsupported"));
+        Err(CmdError::code("unsupported"))
     }
 
     #[cfg(not(target_os = "android"))]
