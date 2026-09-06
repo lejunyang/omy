@@ -5,9 +5,18 @@
 """
 import json, io, re, glob, os
 
-base = r'E:\Projects\omy\crates\omy-gui\frontend'
-loc = json.load(io.open(f'{base}\\public\\locales\\zh-CN.json', encoding='utf-8'))
-errloc = json.load(io.open(f'{base}\\public\\locales\\zh-CN.errors.json', encoding='utf-8'))
+# 路径由本文件位置推出，不能写死。
+#
+# 原来写的是绝对路径 E:\Projects\omy\...，有两个后果：
+# 一是在 CI 的 Linux runner 上直接 FileNotFoundError；二是在 worktree 里跑时
+# 它读的是**另一个** worktree 的文案文件，于是「检查通过」检查的根本不是
+# 当前这份代码——这种假通过比报错更危险。
+_here = os.path.dirname(os.path.abspath(__file__))
+base = os.path.join(os.path.dirname(_here), 'crates', 'omy-gui', 'frontend')
+_locales = os.path.join(base, 'public', 'locales')
+
+loc = json.load(io.open(os.path.join(_locales, 'zh-CN.json'), encoding='utf-8'))
+errloc = json.load(io.open(os.path.join(_locales, 'zh-CN.errors.json'), encoding='utf-8'))
 
 
 def flat(d, prefix=''):
@@ -31,7 +40,8 @@ pat_e = re.compile(r"i18n\.te\(\s*'([a-zA-Z0-9_.]+)'")
 
 missing = []
 missing_err = []
-for f in glob.glob(f'{base}\\src\\**\\*.vue', recursive=True) + glob.glob(f'{base}\\src\\*.js'):
+for f in glob.glob(os.path.join(base, 'src', '**', '*.vue'), recursive=True) + \
+         glob.glob(os.path.join(base, 'src', '*.js')):
     s = io.open(f, encoding='utf-8').read()
     name = os.path.basename(f)
     for k in pat_t.findall(s):
@@ -52,7 +62,7 @@ for f in glob.glob(f'{base}\\src\\**\\*.vue', recursive=True) + glob.glob(f'{bas
 pat_single = re.compile(r'(?<!\{)\{(\w+)\}(?!\})')
 bad_ph = []
 for locname in ('zh-CN', 'en'):
-    data = json.load(io.open(f'{base}\\public\\locales\\{locname}.json', encoding='utf-8'))
+    data = json.load(io.open(os.path.join(_locales, f'{locname}.json'), encoding='utf-8'))
 
     def walk_ph(node, prefix=''):
         if isinstance(node, dict):
@@ -66,8 +76,8 @@ for locname in ('zh-CN', 'en'):
     walk_ph(data)
 
 # 中英键集合必须完全一致：缺一边的话切语言时那一处显示原始键名
-en_ui = flat(json.load(io.open(f'{base}\\public\\locales\\en.json', encoding='utf-8')))
-en_err = set(json.load(io.open(f'{base}\\public\\locales\\en.errors.json', encoding='utf-8')))
+en_ui = flat(json.load(io.open(os.path.join(_locales, 'en.json'), encoding='utf-8')))
+en_err = set(json.load(io.open(os.path.join(_locales, 'en.errors.json'), encoding='utf-8')))
 ui_diff = have ^ en_ui
 err_diff = haveerr ^ en_err
 
