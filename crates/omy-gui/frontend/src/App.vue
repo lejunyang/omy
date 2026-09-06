@@ -32,6 +32,8 @@ import {
   navigate,
   reload,
   loadPlaces,
+  loadStorageAccess,
+  grantStorageAccess,
   encryptSelected,
   restoreSelected,
   tryUnlock,
@@ -443,12 +445,35 @@ function onKey(e) {
   }
 }
 
+/** 回到前台时重查存储权限。
+ *
+ * 安卓上用户可能在设置里把权限关掉再切回来，也可能是从我们跳出去的
+ * 设置页返回。两种情况应用都收不到通知，只能在 resume 时重查。
+ *
+ * 只在状态**变化**时刷侧栏：每次切前台都无条件重列会让侧栏闪一下，
+ * 而绝大多数切换其实什么都没变。
+ */
+async function onVisible() {
+  if (document.visibilityState !== 'visible') return;
+  if (state.storage.mode === 'not-applicable') return;
+  const before = state.storage.granted;
+  await loadStorageAccess();
+  if (state.storage.granted !== before) await loadPlaces();
+}
+
 onMounted(async () => {
   document.addEventListener('keydown', onKey);
+  document.addEventListener('visibilitychange', onVisible);
+  // 必须先查权限：list_places 的结果取决于授权状态，顺序颠倒会让
+  // 首屏侧栏停在「未授权」的那份列表上，直到下一次刷新才对
+  await loadStorageAccess();
   await loadPlaces();
   await refreshDeviceOverview();
 });
-onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKey);
+  document.removeEventListener('visibilitychange', onVisible);
+});
 </script>
 
 <template>

@@ -56,5 +56,8 @@
   "not_a_tree": "No encrypted files were found in this folder; it may not be an encrypted folder.",
   "tree_only_change": "An encrypted folder shares one password across the whole tree, so the password can only be changed, not added or removed.",
   "tree_partial": "Some files could not be rewritten. The old password still opens them; run this again providing both passwords to finish the job.",
-  "nothing_to_retry": "No files to retry"
+  "nothing_to_retry": "No files to retry",
+  "storage_permission_lost": "Cannot access device storage. All files access may have been turned off. Please grant it again from the sidebar.",
+  "storage_permission_query_failed": "Could not check the storage permission state",
+  "storage_permission_request_failed": "Could not open the system permission screen. Please enable All files access under Settings → Apps → omy."
 }

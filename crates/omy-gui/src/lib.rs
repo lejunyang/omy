@@ -52,6 +52,7 @@ mod protocol;
 mod remote;
 mod remote_cmds;
 mod state;
+mod storage;
 
 use state::AppState;
 use std::sync::Arc;
@@ -81,8 +82,15 @@ pub fn run() {
     // WebView，而它里面是解密后的内容。
     let debug_port = std::env::var("OMY_GUI_CDP_PORT").ok();
 
-    let result = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    // 安卓的全盘存储访问权限插件。桌面端没有对应概念，整个注册跳过——
+    // 不要为了让链式调用整齐而注册一个空插件占位：那会在插件列表里留下
+    // 一个永远不做事的条目，之后排查插件相关问题时得先确认它是不是嫌疑人。
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(storage::init());
+
+    let result = builder
         .manage(Arc::clone(&shared))
         .manage(Arc::clone(&device_session))
         .manage(Arc::clone(&pair_task))
@@ -119,6 +127,8 @@ pub fn run() {
             browse::browse_directory,
             browse::list_places,
             browse::parent_of,
+            storage::storage_access,
+            storage::request_storage_access,
             plain::open_external,
             plain::reveal_in_folder,
             encrypt::encrypt_paths,

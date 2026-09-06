@@ -39,6 +39,23 @@ export const listPlaces = () => invoke('list_places');
 /** 上一级目录。已在根时返回 null。 */
 export const parentOf = (path) => invoke('parent_of', { path });
 
+/* ---------------- 存储权限（安卓） ---------------- */
+
+/** 查询存储访问权限状态。
+ *
+ * 返回 `{ granted, mode }`。非安卓平台恒为
+ * `{ granted: true, mode: 'not-applicable' }`——桌面端进程本来就能
+ * 读写文件系统，前端不必为此分叉。
+ */
+export const storageAccess = () => invoke('storage_access');
+
+/** 申请存储访问权限。
+ *
+ * 安卓 API 30+ 会跳到系统设置页，这个 Promise 要等到用户从设置页
+ * 返回才 resolve，可能是几十秒。返回的状态是重新实查的结果。
+ */
+export const requestStorageAccess = () => invoke('request_storage_access');
+
 /** 探测单个文件是不是加密文件、当前会话能否打开。 */
 export const probeOne = (path) => invoke('probe_one', { path });
 

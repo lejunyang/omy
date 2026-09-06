@@ -56,5 +56,8 @@
   "not_a_tree": "这个文件夹里找不到任何加密文件，它可能不是加密文件夹。",
   "tree_only_change": "加密文件夹整棵共用一个密码，只能更换密码，不能增加或移除。",
   "tree_partial": "部分文件没能改写。旧密码对它们仍然有效，把新旧两个密码都提供一次可以补齐。",
-  "nothing_to_retry": "没有需要重试的文件"
+  "nothing_to_retry": "没有需要重试的文件",
+  "storage_permission_lost": "无法访问手机存储，「所有文件访问权限」可能已被关闭。请在侧栏重新授权。",
+  "storage_permission_query_failed": "无法查询存储权限状态",
+  "storage_permission_request_failed": "打不开系统的权限设置页，请在「设置 → 应用 → omy」里手动开启「所有文件访问权限」"
 }
