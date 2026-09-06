@@ -10,6 +10,13 @@ authors.workspace = true
 # core/net 用 MIT OR Apache-2.0 保持可复用，cli/gui 用 GPL-3.0 保障用户自由。
 # 依赖 LGPL 的 omy-media 在这个方向上是允许的。
 license = "GPL-3.0-or-later"
+# 不发布到 crates.io。
+#
+# build.rs 在前端产物缺失时会去跑 pnpm，而 dist/ 不入库（见 .gitignore 的说明），
+# 所以 crates.io 上的 .crate 包里没有可用界面：使用者 `cargo install omy-gui`
+# 时若机器上没有 Node 工具链，构建会在 build.rs 里失败。
+# GUI 的正确分发渠道是 Release 里的安装包与 APK，不是 registry。
+publish = false
 
 [[bin]]
 name = "omy-gui"

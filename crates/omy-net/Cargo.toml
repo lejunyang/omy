@@ -9,7 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-omy-core = { path = "../omy-core" }
+# 必须同时写 path 与 version：本地构建走 path，发布到 crates.io 时
+# cargo 会去掉 path 只留 version。缺 version 时 `cargo package` 直接报
+# 「all dependencies must have a version requirement specified」，
+# 发布流水线会在打包阶段失败。
+omy-core = { path = "../omy-core", version = "0.0.1" }
 
 # Noise Protocol：IK 模式，1-RTT 且提供前向保密
 snow = "0.10"

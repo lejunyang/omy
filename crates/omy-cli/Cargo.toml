@@ -15,14 +15,16 @@ name = "omy"
 path = "src/main.rs"
 
 [dependencies]
-omy-core = { path = "../omy-core" }
+# path 与 version 都要写：本地构建用 path，发布到 crates.io 时 cargo 去掉
+# path 只留 version。缺 version 时 `cargo package` 会直接失败。
+omy-core = { path = "../omy-core", version = "0.0.1" }
 # LGPL-2.1+ 依赖。GPL-3.0 兼容 LGPL-2.1+（后者可升级为 GPL-3.0），
 # 故这个方向的依赖是允许的；反向（core 依赖 media）则会让 MIT 的 core
 # 被 LGPL 传染，绝不可以。
-omy-media = { path = "../omy-media" }
+omy-media = { path = "../omy-media", version = "0.0.1" }
 # 局域网共享。omy-net 是 MIT OR Apache-2.0，被 GPL-3.0 的 CLI 依赖，
 # 方向正确（宽松许可可被 GPL 吸收，反过来不行）
-omy-net = { path = "../omy-net" }
+omy-net = { path = "../omy-net", version = "0.0.1" }
 tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
