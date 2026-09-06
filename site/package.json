@@ -1,0 +1,15 @@
+{
+  "name": "omy-site",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "omy 官网与文档站。VitePress + bun，中英双语。",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}
