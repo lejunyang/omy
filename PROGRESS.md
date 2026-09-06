@@ -3,19 +3,19 @@
 > 本文件是**跨会话的权威状态来源**。每完成一个可验证的阶段就更新，
 > 并随代码一起提交，以便任何时候都能接续。
 >
-> 最后更新：2026-08-30
+> 最后更新：2026-09-06
 
 ## 状态速览
 
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
-| `omy-core` | 🟢 格式核心可用 | 142 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
+| `omy-core` | 🟢 格式核心可用 | 134 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV |
 | `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
 | `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
 | `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
-| `omy-gui` | 🟢 桌面端可用，移动端 UI 就绪 | 111 项 + 43 项端到端 + 25 项响应式实测 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门；**设备发现/配对/共享已接入** |
+| `omy-gui` | 🟢 桌面端可用，Android 已在模拟器实测 | 143 项 + 43 项端到端 + 25 项响应式实测 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门；**设备发现/配对/共享已接入**；Android 全盘文件访问已跑通 |
 
-合计 **529 项自动化测试 + 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言 + 35 项 GUI 设备与共享实测断言 + 33 项双机远端浏览实测断言 + 21 项 KDF 档位实测断言 + 26 项预览与提示实测断言 + 28 项文件夹加密实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+合计 **690 项自动化测试**（core 134 + 集成 106、cli 69、gui 143、media 121、net 117）**+ 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言 + 35 项 GUI 设备与共享实测断言 + 33 项双机远端浏览实测断言 + 21 项 KDF 档位实测断言 + 26 项预览与提示实测断言 + 28 项文件夹加密实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
 
 ### Spike 结论
 
@@ -899,7 +899,7 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `omy-gui`：移到回收站（`trash` crate，实测可从系统回收站还原）
 - [x] `omy-gui`：加密进度条（Tauri 事件按整百分比节流，前端实时渲染）
 - [x] `omy-gui`：响应式 UI（≤768px 走移动端布局：抽屉侧栏 + 2 列网格 + 底部导航）
-- [ ] Android 打包（前端已就绪，卡在本机缺 JDK / SDK / NDK，见「Android 现状」）
+- [x] Android 打包与实机验证（API 35 x86_64 模拟器上跑通构建 / 安装 / 全盘访问授权 / 撤销后报错，见「Android 现状」）
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 
 ## 已定决定
@@ -1449,9 +1449,9 @@ CSS 审查都发现不了。
   毁掉。卡片、列表行、导航项上禁用 `-webkit-touch-callout` 与
   `user-select`，并去掉点击蓝色高亮。
 
-### Android 现状：代码侧已处理，卡在工具链
+### Android 现状：已在模拟器上跑通
 
-已经修掉的**真实缺陷**（不修的话真机必炸）：
+代码侧修掉的**真实缺陷**（不修的话真机必炸）：
 
 - `plain.rs` 的 `launch` / `reveal` 用 `cfg(all(unix, not(macos)))` 分支
   调 `xdg-open`。**Android 也满足这个 cfg**，但 Android 上没有
@@ -1462,42 +1462,62 @@ CSS 审查都发现不了。
   `[target.'cfg(not(target_os = "android"))'.dependencies]`，调用点分两支。
   Android 分支返回 `trash_not_supported`，**绝不降级为永久删除**——
   用户选回收站就是想要能后悔。
+- scoped storage 下无权限时 `read_dir` **不报错，而是返回过滤后的残缺
+  列表**。原先只在 `Err(PermissionDenied)` 时报 `storage_permission_lost`，
+  那条分支永远走不到，表现是「侧栏点进去看到个空目录」，像是目录真的空。
+  已改为进入沙箱外目录前先查授权状态。
 
-本机工具链缺口（跑 `pwsh -NoProfile -File spikes\check-android-env.ps1`
-可复查）：
+工具链已由 `osdk.toml` 固定（JDK 21 / NDK 29 / build-tools 37 /
+platform-tools 37 / emulator 37）。JDK 上限是 **21**，两条独立约束叠加：
+Gradle 8.14 最高支持 JDK 24，而 Kotlin 1.9.25 的 JVM target 上限是 21
+（更高会报 `JVM target N is not supported`）。Kotlin 与 AGP 版本是 Tauri
+生成模板写死的，未改动。
 
-| 项 | 状态 |
-|---|---|
-| Rust 目标 aarch64 / armv7-linux-android | ✅ 已装 |
-| tauri-cli 2.11.4 | ✅ 已装 |
-| JDK 17+ | ❌ 缺 |
-| Android SDK | ❌ 缺 |
-| Android NDK | ❌ 缺 |
-| NDK 里的 clang | ❌ 缺 |
+已实测通过（API 35 x86_64 模拟器）：构建 → 安装 → 授权全盘访问 → 侧栏
+列出整机 13 项系统目录 → 撤销权限后如实报 `storage_permission_lost`。
 
-最后一项容易被忽略：`omy-core` 依赖 `zstd-sys`，那是 C 代码，交叉编译
-必须有 NDK 的 clang。已实测确认——`cargo check -p omy-core --target
-aarch64-linux-android` 报
-`error occurred in cc-rs: failed to find tool "clang.exe"`，**连 core 都
-编不过，与 Tauri 无关**。
+顺带确认了一件对 `fsatomic` 很关键的事：**FUSE 上原子写的三个前提全部
+成立**——`open(dir)`、`fsync(dirfd)`、同目录 `rename` 覆盖都可用，回读
+正确，`ftruncate` 也支持。所以 `fsatomic` 不需要 Android 分支。
 
-剩下四项都是 Android Studio / NDK，GB 级下载且要接受许可协议，属于
-环境决策，没有代劳。补齐后：
+#### 仍有摩擦的地方
 
-```powershell
-pwsh -NoProfile -File spikes\check-android-env.ps1   # 确认 7/7
-cd crates\omy-gui
-cargo tauri android init
-cargo tauri android build
-```
+- **Windows 上打包最后一步需要创建符号链接的权限。** 非管理员且未开
+  开发者模式时 `cargo tauri android build` 会在 symlink 步骤失败（Rust
+  编译本身已经成功）。开开发者模式，或用 `secpol.msc` 只把「创建符号
+  链接」权限给自己的账号即可。
+- **`ANDROID_AVD_HOME` 不在 osdk 注入的变量里。** osdk 把 AVD 建到
+  `<osdk-data>\data\avd\`，而 emulator 只搜 `$ANDROID_AVD_HOME`、
+  `$ANDROID_SDK_HOME\avd`、`$HOME\.android\avd`，于是
+  `osdk android avd list` 列得出来、`emulator -avd` 却报
+  `Unknown AVD name`。手动设这个变量可绕过。
+- **不要给命令加 `-NoProfile`。** osdk 的环境注入在 profile 里，带上它
+  `JAVA_HOME` 会退回全局默认（26），然后在 `:buildSrc` 配置期崩掉，
+  报错只有一行 `> 26.0.2.1`，指不到真正原因。
+
+#### debug APK 体积（541 MB）不是缺陷
+
+实测拆解 x86_64 debug APK：`lib/x86_64/libomy_gui_lib.so` 占 267.04 MB
+（98.6%），其中 `.debug*` 段合计 239.30 MB（`.debug_info` 97 MB、
+`.debug_loc` 56 MB、`.debug_str` 51 MB），真正的 `.text` 只有 11.11 MB。
+实际 strip 一遍：**267.04 MB → 20.25 MB**。
+
+workspace 的 `[profile.release]` 本来就配了 `strip = true` / `lto =
+"thin"` / `codegen-units = 1` / `panic = "abort"`，所以 release APK 约
+20 MB 出头。
+
+两个顺带发现：`.so` 在 APK 内**完全未压缩**（AGP 4.0+ 的默认行为，为了
+让系统直接 mmap；Play 分发会重新压缩，只影响侧载体积）；`assets/` 是
+0 项，不是漏打——Tauri 2 把 `frontendDist` 编进了 Rust 二进制。
 
 
 ## 两个「面向用户的输出」缺陷（本轮）
 
-Android 与局域网双机验证都在等环境，所以这轮转向已有代码里能就地
-验证的东西。查 `not_implemented|未实现|TODO` 时发现两处真实缺陷，
-都属于「产品能跑，但告诉用户的信息是错的」——这类问题不会让测试
-变红，只会让用户做出错误判断。
+Android 与局域网双机验证在**当时**都在等环境（Android 已于 2026-09-06
+在模拟器上跑通，见「Android 现状」；双机 mDNS 仍未做），所以这轮转向
+已有代码里能就地验证的东西。查 `not_implemented|未实现|TODO` 时发现两处
+真实缺陷，都属于「产品能跑，但告诉用户的信息是错的」——这类问题不会让
+测试变红，只会让用户做出错误判断。
 
 ### 1. `doctor` 报假消息
 
