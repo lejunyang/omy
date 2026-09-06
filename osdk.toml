@@ -1,0 +1,9 @@
+[tools]
+java = "21.0.12.1+1"
+android-ndk = "29.0.14206865"
+rust = "1.98.0"
+android-platform-tools = "37.0.1"
+android-emulator = "37.1.11"
+android-build-tools = "37.0.0"
+android-cmdline-tools = "latest"
+android-system-images = "android-35;google_apis;x86_64"

@@ -93,8 +93,28 @@ pub struct DirEntry {
 /// - `not_a_directory`：路径不是目录
 /// - `read_failed`：没有权限或路径消失
 #[tauri::command]
-pub async fn browse_directory(state: State<'_, Shared>, dir: String) -> CmdResult<Vec<DirEntry>> {
+pub async fn browse_directory(
+    app: tauri::AppHandle,
+    state: State<'_, Shared>,
+    dir: String,
+) -> CmdResult<Vec<DirEntry>> {
     let root = PathBuf::from(&dir);
+
+    // 安卓上必须在读之前就拦住，不能等 read_dir 报错。
+    //
+    // scoped storage 下，没有全盘权限的应用去 read_dir 一个共享目录不会
+    // 失败，而是**成功返回被过滤过的内容**——只剩该应用自己创建的那些
+    // 条目。实测撤销权限后 /sdcard/Download 里三个条目只剩一个，read_dir
+    // 返回 Ok。所以 read_dir_error 那条 PermissionDenied 分支根本不会
+    // 触发，用户看到的是一个静默残缺的目录，会以为文件被删了。
+    //
+    // 这里按授权状态判断而不是比对条目数：条目数没有可信的期望值。
+    #[cfg(target_os = "android")]
+    if !is_app_private(&root) && !crate::storage::is_granted(&app) {
+        return Err(CmdError::code("storage_permission_lost"));
+    }
+    let _ = &app;
+
     if !root.is_dir() {
         return Err(CmdError::code("not_a_directory"));
     }
@@ -107,9 +127,45 @@ pub async fn browse_directory(state: State<'_, Shared>, dir: String) -> CmdResul
         .map_err(|_| CmdError::code("internal"))?
 }
 
+/// 把 `read_dir` 的失败翻译成前端能给出可行建议的错误码。
+///
+/// # 为什么不能一律 read_failed
+///
+/// 安卓上用户随时可以去系统设置里关掉「所有文件访问权限」，应用收不到
+/// 任何通知。此后每个整机路径都会 `PermissionDenied`，而「无法读取该
+/// 目录」这句话完全指不到真正的原因——用户只会以为应用坏了，或者以为
+/// 这个目录本来就打不开。必须明确说「权限被关闭了，去重新授权」。
+///
+/// 桌面端不做这个区分：那里的 PermissionDenied 通常是真的目录权限问题
+/// （系统目录、别人的用户目录），提示去申请全盘权限反而误导。
+fn read_dir_error(root: &Path, e: &std::io::Error) -> CmdError {
+    #[cfg(target_os = "android")]
+    if e.kind() == std::io::ErrorKind::PermissionDenied && !is_app_private(root) {
+        // 沙箱外的 PermissionDenied 只有一个成因：全盘权限没有或被撤销。
+        // 沙箱内的要排除掉——那种是真的目录权限问题，让用户去开全盘
+        // 权限也解决不了，只会白跑一趟设置页。
+        return CmdError::code("storage_permission_lost");
+    }
+
+    let _ = root;
+    let _ = e;
+    CmdError::code("read_failed")
+}
+
+/// 该路径是否位于应用私有沙箱内。
+///
+/// 用路径前缀判断而不是比较 `app_data_dir()`：这个函数在 `list_dir` 里被
+/// 每次列目录调用，拿 `AppHandle` 得把它一路传进来，而这两个前缀是
+/// 安卓的固定布局，不会变。
+#[cfg(target_os = "android")]
+fn is_app_private(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.starts_with("/data/") || s.contains("/Android/data/")
+}
+
 /// 实际的目录读取。
 fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
-    let rd = std::fs::read_dir(root).map_err(|_| CmdError::code("read_failed"))?;
+    let rd = std::fs::read_dir(root).map_err(|e| read_dir_error(root, &e))?;
 
     let mut dirs = Vec::new();
     let mut files = Vec::new();
@@ -433,13 +489,16 @@ fn take_number(s: &str, pos: usize) -> (u128, usize) {
 /// 点「选择文件夹」走原生对话框，很笨重。
 #[tauri::command]
 pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
-    // 安卓完全是另一套：应用跑在沙箱里，`/` 和 `/sdcard` 都是
+    // 安卓完全是另一套：应用默认跑在沙箱里，`/` 和 `/sdcard` 都是
     // Permission denied，`dirs::home_dir()` 之类返回的路径同样读不到
     // （它读 $HOME，而安卓上那个值对应用无意义）。照桌面的逻辑走，
     // 侧栏会列出一堆点进去就报 read_failed 的入口。
+    //
+    // 拿到全盘权限后能列整机，但入口仍由 android_places 按实时授权
+    // 状态决定，不走桌面这条路——存储卷的挂载点得问系统要。
     #[cfg(target_os = "android")]
     {
-        return android_places(&app);
+        android_places(&app)
     }
 
     #[cfg(not(target_os = "android"))]
@@ -487,18 +546,30 @@ pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
 
 /// 安卓上的可访问位置。
 ///
-/// 只列应用沙箱内的目录：这些是不申请任何运行时权限就能读写的地方。
-/// 想访问相册、下载那些公共目录需要 MANAGE_EXTERNAL_STORAGE 或
-/// SAF 授权，那是另一件事；在没有它们之前，列出去只会得到
-/// 「无法读取」，比不列更让人困惑。
+/// 分两种情况，取决于有没有拿到全盘访问权限（见 [`crate::storage`]）：
 ///
-/// 目录不存在时创建：首次启动时 files/ 之外的子目录都还没有，
-/// 不建的话侧栏是空的，用户以为应用坏了。
+/// - **未授权**：只列应用沙箱内的目录。这些是不申请任何权限就能读写的
+///   地方。此时列出整机路径只会得到「无法读取」，比不列更让人困惑。
+/// - **已授权**：列出各存储卷根目录与其下的常用目录（下载、相册等）。
+///   这才是文件管理器该有的样子。
+///
+/// 授权状态每次实查，不缓存：用户随时可能去系统设置里关掉开关，
+/// 而应用收不到任何通知。缓存的后果是侧栏继续显示整机路径，
+/// 点进去全部 EACCES。
+///
+/// 沙箱目录在两种情况下都列：即使有了全盘权限，应用私有目录仍然是
+/// 「解密临时文件在哪」的答案，用户需要能找到并清理它。
 #[cfg(target_os = "android")]
 fn android_places(app: &tauri::AppHandle) -> Vec<DirEntry> {
     use tauri::Manager as _;
 
     let mut out = Vec::new();
+
+    // 有权限时先列整机：用户来这个应用是为了处理相册、下载里的文件，
+    // 沙箱目录是次要的，放前面会挡住主路径。
+    if crate::storage::is_granted(app) {
+        out.extend(android_volume_places(app));
+    }
 
     // 私有文档区：用户自己的文件放这儿。外部私有目录（sdcard 上的
     // Android/data/<pkg>）优先，因为它能用 USB 或文件管理器从电脑侧看到，
@@ -518,6 +589,55 @@ fn android_places(app: &tauri::AppHandle) -> Vec<DirEntry> {
     if let Ok(p) = app.path().app_cache_dir() {
         if std::fs::create_dir_all(&p).is_ok() {
             out.push(android_entry(&p, "cache"));
+        }
+    }
+
+    out
+}
+
+/// 已授权时可列出的整机位置：各存储卷根 + 主卷下的常用目录。
+///
+/// 常用目录用固定的英文子目录名拼接，而不是调 `Environment` 的
+/// `DIRECTORY_DOWNLOADS` 之类：那些常量的值本来就是这些英文名，
+/// 而系统显示的中文名由前端的翻译键负责。
+///
+/// 逐个 `is_dir()` 过滤：这些目录并非每台设备都有（例如从未用过相机的
+/// 设备没有 DCIM）。列出不存在的路径会让用户点到一个报错的入口。
+#[cfg(target_os = "android")]
+fn android_volume_places(app: &tauri::AppHandle) -> Vec<DirEntry> {
+    let mut out = Vec::new();
+
+    for vol in crate::storage::volumes(app) {
+        let root = Path::new(&vol.path);
+
+        if vol.primary {
+            // 主存储：先给常用目录，再给根。用户找「下载」的频率远高于
+            // 从根目录一层层点进去。
+            for (label, sub) in [
+                ("downloads", "Download"),
+                ("pictures", "Pictures"),
+                ("camera", "DCIM"),
+                ("documents_shared", "Documents"),
+                ("movies", "Movies"),
+                ("music", "Music"),
+            ] {
+                let p = root.join(sub);
+                if p.is_dir() {
+                    out.push(android_entry(&p, label));
+                }
+            }
+            out.push(android_entry(root, "internal_storage"));
+        } else if root.is_dir() {
+            // SD 卡 / U 盘：名字用系统给的本地化描述（「SD 卡」等），
+            // 取不到时退回路径末段。不能退回固定文案：插两张卡时
+            // 两个条目会同名，用户分不清哪个是哪个。
+            let name = vol.label.clone().unwrap_or_else(|| {
+                root.file_name()
+                    .map_or_else(|| vol.path.clone(), |n| n.to_string_lossy().into_owned())
+            });
+            let mut e = android_entry(root, "removable");
+            e.real_name = Some(name);
+            out.push(e);
         }
     }
 

@@ -34,6 +34,16 @@ export const state = reactive({
   entries: [],
   /** 侧栏的起点：常用目录与磁盘根。 */
   places: [],
+  /**
+   * 存储访问权限状态：`{ granted, mode }`。
+   *
+   * 初值刻意设成 `granted: true`：绝大多数平台（桌面）确实如此，
+   * 而首次查询是异步的。设成 false 的话每次启动都会先闪一下授权提示，
+   * 然后在查询返回后消失。
+   *
+   * `mode` 为 `not-applicable` 时前端完全不显示授权相关的界面。
+   */
+  storage: { granted: true, mode: 'not-applicable' },
   /** 已识别的加密文件，按路径索引，用于预览。 */
   known: {},
   /** 选中的路径集合。 */
@@ -787,6 +797,33 @@ export async function reload() {
 /** 载入侧栏起点。 */
 export async function loadPlaces() {
   state.places = await api.listPlaces().catch(() => []);
+}
+
+/** 查询存储访问权限状态。
+ *
+ * 查询失败时保持原值不动：把它当成「没权限」会让桌面端也弹出授权提示，
+ * 而那里根本没有可申请的东西。
+ */
+export async function loadStorageAccess() {
+  const s = await api.storageAccess().catch(() => null);
+  if (s) state.storage = s;
+}
+
+/** 申请存储访问权限，成功后重新载入侧栏。
+ *
+ * 安卓上这会跳到系统设置页，用户回来后 Promise 才 resolve。
+ * 必须重新 loadPlaces：拿到权限后可列的位置完全不同，不刷新的话
+ * 侧栏还是那两个沙箱目录，用户以为授权没生效。
+ */
+export async function grantStorageAccess() {
+  const s = await api.requestStorageAccess().catch((e) => {
+    state.error = i18n.te(e?.code, e?.message);
+    return null;
+  });
+  if (!s) return false;
+  state.storage = s;
+  if (s.granted) await loadPlaces();
+  return s.granted;
 }
 
 /** 面包屑的各段。
