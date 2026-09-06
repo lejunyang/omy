@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "omy-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "omy-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "omy-gui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "omy-media"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "image",
  "serde",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "omy-net"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chacha20poly1305",
  "dirs",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "omy-spike-lan"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "hex",

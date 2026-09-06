@@ -1,7 +1,7 @@
 {
   "name": "omy-gui-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "omy 图形界面前端。Vue 3 + Vite，产物输出到 ../dist 供 Tauri 加载。",
   "scripts": {

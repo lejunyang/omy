@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 # edition 2024 的最低要求即 1.85。omy-core 定位为可复用库，MSRV 保持低位是优点。
 # resolver="3" 会做 MSRV 感知的版本选择，因此依赖会解析到与 1.85 兼容的版本 ——
