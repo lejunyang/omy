@@ -200,7 +200,15 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(currentState())
   }
 
-  /** 以系统实际状态为唯一真相，不缓存——用户随时可能去设置里关掉。 */
+  /**
+   * 以系统实际状态为唯一真相，不缓存——用户随时可能去设置里关掉。
+   *
+   * 注意 mode 表达的是「这台设备用哪种授权机制」，和当前有没有授权无关：
+   * API 30+ 恒为 all-files，低版本恒为 legacy，撤销权限后也不变，变的只有
+   * granted。前端据此决定要不要显示授权入口（not-applicable 时不显示），
+   * 所以不能改成「未授权就报 not-applicable」——那样按钮会消失，用户再也
+   * 点不回来。
+   */
   private fun currentState(): JSObject {
     val granted: Boolean
     val mode: String

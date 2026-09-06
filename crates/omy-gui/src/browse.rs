@@ -93,8 +93,28 @@ pub struct DirEntry {
 /// - `not_a_directory`：路径不是目录
 /// - `read_failed`：没有权限或路径消失
 #[tauri::command]
-pub async fn browse_directory(state: State<'_, Shared>, dir: String) -> CmdResult<Vec<DirEntry>> {
+pub async fn browse_directory(
+    app: tauri::AppHandle,
+    state: State<'_, Shared>,
+    dir: String,
+) -> CmdResult<Vec<DirEntry>> {
     let root = PathBuf::from(&dir);
+
+    // 安卓上必须在读之前就拦住，不能等 read_dir 报错。
+    //
+    // scoped storage 下，没有全盘权限的应用去 read_dir 一个共享目录不会
+    // 失败，而是**成功返回被过滤过的内容**——只剩该应用自己创建的那些
+    // 条目。实测撤销权限后 /sdcard/Download 里三个条目只剩一个，read_dir
+    // 返回 Ok。所以 read_dir_error 那条 PermissionDenied 分支根本不会
+    // 触发，用户看到的是一个静默残缺的目录，会以为文件被删了。
+    //
+    // 这里按授权状态判断而不是比对条目数：条目数没有可信的期望值。
+    #[cfg(target_os = "android")]
+    if !is_app_private(&root) && !crate::storage::is_granted(&app) {
+        return Err(CmdError::code("storage_permission_lost"));
+    }
+    let _ = &app;
+
     if !root.is_dir() {
         return Err(CmdError::code("not_a_directory"));
     }
