@@ -59,6 +59,18 @@ Desktop opens entries by double-click, a gesture touchscreens do not have (`dblc
 
 Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is not offered.
 
+### Storage access permission
+
+On first launch the sidebar shows "Allow access to phone files". Only after granting it does the sidebar list locations such as internal storage, SD card, camera, documents, movies and music.
+
+This uses Android's all-files access (`MANAGE_EXTERNAL_STORAGE`). On API 30 and above it opens the system settings page; on API 29 and below it is the standard runtime permission dialog.
+
+::: tip Why not the system file picker (SAF)?
+SAF hands out `content://` URIs. After a rename the URI changes and the granted permission stops working — which breaks exactly the precondition encrypted writes rely on, atomic replacement within the same directory. All-files access keeps real file paths.
+:::
+
+The permission state is queried live every time, never cached in the app. That is deliberate: a cached "granted" flag would keep claiming access after the user revokes it in system settings, and every file operation would then fail with a permission error whose message points nowhere near the real cause. When access is revoked the sidebar reports an error instead of returning a partial listing.
+
 ## Launching
 
 Desktop:
