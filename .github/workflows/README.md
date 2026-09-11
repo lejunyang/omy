@@ -104,10 +104,25 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 
 ### 为什么必过任务用 stable 而不是 MSRV
 
-`Cargo.toml` 写着 `rust-version = "1.85"`，但这个下限没有验证过。把没验证过
-的版本设成门禁，一旦代码用了 1.85 之后的特性，会在两个必过任务上同时挂，
-而原因是假设错了、不是代码坏了。所以 stable 负责门禁，`msrv` 任务单独去
-核实那个声明；等它稳定为绿再考虑提升。
+`Cargo.toml` 写着 `rust-version = "1.85"`。这个下限**已在本机核实**：装上
+1.85 工具链后 `cargo +1.85 check --workspace --all-targets` 通过。
+
+但仍然由 stable 负责门禁、`msrv` 任务非阻塞。首次核实就抓到 5 处 let-chain
+（`if let Some(x) = a && cond`，该语法 1.88 才稳定），说明这条线以前没人盯，
+短期内还可能再冒出别的 1.85 不支持的写法。等它在 CI 上连续绿再提升为必过。
+
+### 跑测试的任务都要装 FFmpeg
+
+`omy-media` 有一批测试需要 FFmpeg：有损 WebP 编码走的是它的 libwebp，抽帧和
+媒体探测也要它。runner 镜像**不带 ffmpeg**，不装的话这些测试只会跳过——
+流水线是绿的，但那些路径根本没被覆盖。
+
+windows 用 `choco`、linux 用 `apt`、macos 用 `brew`，都装在「测试」步骤之前。
+
+android 任务只跑 `cargo test -p omy-core`，core 不碰 FFmpeg，所以不用装。
+
+注意这不会掩盖「没装 FFmpeg 时怎么降级」那条路径：相关单元测试直接调降级
+函数，不依赖 runner 上缺不缺 ffmpeg。
 
 ### 为什么没有 cargo fmt --check
 

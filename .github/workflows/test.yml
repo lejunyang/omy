@@ -15,13 +15,14 @@
 #
 # # 为什么必过任务用 stable 而不是 MSRV
 #
-# Cargo.toml 声明 rust-version = "1.85"，但**这个下限没有在本机验证过**
-# （本地 rustup 走的镜像不提供该版本）。把没验证过的版本设成门禁，一旦
-# 代码里用了 1.85 之后的特性，两个必过任务会同时挂，而原因是「我们假设错了」
-# 而不是「代码坏了」。
+# Cargo.toml 声明 rust-version = "1.85"。这个下限**已在本机核实过**：装上
+# 1.85 工具链后 `cargo +1.85 check --workspace --all-targets` 通过。
 #
-# 所以：必过任务用 stable（本机实测通过：688 项测试 + clippy 零告警），
-# MSRV 单独一个非阻塞任务去核实。等它连续绿了再考虑提升为必过。
+# 但仍先不把它设成门禁，等它在 CI 上连续绿了再提升——首次核实时就抓到 5 处
+# let-chain（`if let Some(x) = a && cond`，1.88 才稳定），说明这条线以前没人
+# 盯，短期内还可能再冒出别的。
+#
+# 所以：必过任务用 stable，MSRV 单独一个非阻塞任务去核实。
 
 name: 测试
 
@@ -85,6 +86,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: windows
+
+      # FFmpeg 是可选依赖，但没有它时 omy-media 的一批测试只能跳过
+      # （有损 WebP 编码、抽帧、探测都要它）。runner 镜像不带 ffmpeg，
+      # 装上才能真正覆盖这些路径，否则 CI 绿了也不代表它们没坏。
+      #
+      # 「没装 FFmpeg 时如何降级」由单元测试直接调降级函数来覆盖，
+      # 不依赖 runner 缺不缺 ffmpeg，所以这里装了不会掩盖那条路径。
+      - name: 安装 FFmpeg
+        run: choco install ffmpeg --no-progress -y
 
       - name: 构建
         run: cargo build --workspace --all-targets
@@ -236,8 +246,8 @@ jobs:
   msrv:
     name: MSRV 1.85（未核实）
     runs-on: ubuntu-latest
-    # Cargo.toml 声明的下限从未实测。这里去核实它，但先不设成门禁：
-    # 万一声明本身是错的，不该让所有 PR 陪着挂红。
+    # 声明的下限已在本机核实（见文件头），但还没在 CI 上连续绿过，
+    # 所以先不设门禁：万一还有别的 1.85 不支持的写法，不该让所有 PR 陪着挂红。
     # 连续绿之后再把这个 continue-on-error 删掉。
     continue-on-error: true
     steps:
@@ -281,11 +291,13 @@ jobs:
       - name: 安装系统依赖
         # Tauri v2 需要 WebKitGTK 4.1。omy-gui 依赖它，
         # 缺了会在链接期才报错，而报错信息不会提到缺哪个包
+        #
+        # ffmpeg 见 windows 任务的说明：不装的话 omy-media 的一批测试只会跳过
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
             curl wget file libxdo-dev libssl-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+            libayatana-appindicator3-dev librsvg2-dev ffmpeg
 
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal --component clippy
@@ -334,6 +346,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: macos
+
+      # 见 windows 任务的说明
+      - name: 安装 FFmpeg
+        run: brew install ffmpeg
 
       - name: 构建
         run: cargo build --workspace --all-targets
