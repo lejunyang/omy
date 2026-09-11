@@ -596,6 +596,18 @@ mod tests {
     fn webp_beats_jpeg_on_photo_content() {
         // 这条锁住「不要退回 JPEG」这个决定。若有人把 WebP 改回无损，
         // 或把超限路径改回 JPEG，这条会失败。
+        //
+        // 有损 WebP 要靠 FFmpeg 的 libwebp（见 `encode` 的注释），而 FFmpeg
+        // 是可选依赖。没装时 `encode` 会静默退回 JPEG，两条路径产出**同一份
+        // 字节**，这条断言必然失败——它测的是「本机装没装 FFmpeg」，
+        // 而不是我们的格式选择。CI 的 runner 正是这种环境。
+        //
+        // 所以没有 FFmpeg 时跳过。不改成「小于等于」蒙混过关：那样即使
+        // 真的退回了 JPEG 也照样通过，这条测试就白写了。
+        if !crate::ffprobe::has_ffmpeg() {
+            eprintln!("跳过 WebP/JPEG 体积对比：本机没有 FFmpeg，WebP 会退回 JPEG");
+            return;
+        }
         let photo = photo_like(640, 480);
         let w = from_image_bytes(&photo, 320, ThumbFormat::WebP).expect("WebP 应成功");
         let j = from_image_bytes(&photo, 320, ThumbFormat::Jpeg).expect("JPEG 应成功");
