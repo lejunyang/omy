@@ -74,8 +74,16 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
 
-          # 提交信息含 [publish] → 发 crates.io
-          case "$MSG" in
+          # 提交信息**首行**含 [publish] → 发 crates.io。
+          #
+          # 只看首行，是因为原先的全文子串匹配踩过一次：某次提交在正文里
+          # 解释了「[publish] 这个标记怎么用」，结果那次推送直接触发了发布
+          # 流水线。讨论、引用、revert 说明、把它写进注释，全都会误触发——
+          # 而这是个**发出去就删不掉**的动作，不能靠「注意别提它」来避免。
+          #
+          # 首行是提交标题，写进标题即视为明确的发布意图。
+          subject=$(printf '%s\n' "$MSG" | head -n 1)
+          case "$subject" in
             *'[publish]'*) publish=true ;;
           esac
 

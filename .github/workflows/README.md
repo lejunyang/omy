@@ -124,16 +124,21 @@ release.yml
 | 想做的事 | 怎么触发 |
 |---|---|
 | 出 GitHub Release（含各平台产物） | 推 `v*` 标签，例如 `git tag v0.0.1 && git push origin v0.0.1` |
-| 发布到 crates.io | 提交信息里含 `[publish]` |
+| 发布到 crates.io | 提交信息**首行**含 `[publish]` |
 | 手动发布到 crates.io | Actions 页面手动触发并勾选 |
 
-两者独立，可同时发生（推标签且该提交信息含 `[publish]`）。
+两者独立，可同时发生（推标签且该提交标题含 `[publish]`）。
 
 ### 为什么 crates.io 要单独的标记
 
 **crates.io 上的版本发布后无法删除**，只能 yank，而且版本号不能复用。
 GitHub Release 删了可以重发，registry 不行。所以上传 registry 必须由提交
 信息里的显式标记触发，不能作为推标签的副作用顺带发生。
+
+标记只认**提交信息首行**（标题）。原先是全文子串匹配，已经误触发过一次：
+某次提交在正文里解释「`[publish]` 这个标记怎么用」，推上去就把发布流水线
+拉起来了。讨论、引用、revert 说明都会命中，而这是个删不掉的动作，不能靠
+「注意别提它」来避免。写进标题才算数。
 
 真正上传前会先跑一次 `cargo publish --workspace --dry-run`。
 
