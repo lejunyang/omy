@@ -1031,23 +1031,33 @@ mod tests {
         //   - 对照组也列不到 → 是环境不支持列举，跳过判据。
         // 对照组走 trash::delete，与被测路径相互独立：若有人把
         // move_to_trash 换成 remove_file，对照组照样列得到，缺陷仍会被抓出来。
-        let control_name = format!("omy-trash-control-{}.txt", std::process::id());
-        let control = dir.join(&control_name);
-        std::fs::write(&control, b"control").unwrap();
-        let control_ok = trash::delete(&control).is_ok();
+        //
+        // 只在提供 os_limited 的平台上做这一段：trash 5.2 的 os_limited
+        // 用 cfg 排除了 macOS / iOS / Android，无条件引用会在 macOS 上直接
+        // 编译失败（cannot find `os_limited` in `trash`）。上面「原件已移走」
+        // 那两条断言在所有平台都跑，macOS 至少仍然覆盖到那部分。
+        #[cfg(any(
+            target_os = "windows",
+            all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))
+        ))]
+        {
+            let control_name = format!("omy-trash-control-{}.txt", std::process::id());
+            let control = dir.join(&control_name);
+            std::fs::write(&control, b"control").unwrap();
+            let control_ok = trash::delete(&control).is_ok();
 
-        let listed = trash::os_limited::list().unwrap_or_default();
-        let control_listed =
-            control_ok && listed.iter().any(|it| it.name == control_name.as_str());
-        if !control_listed {
-            eprintln!("跳过可还原性判据：当前环境无法列举回收站（对照组也没列到）");
-            return;
+            let listed = trash::os_limited::list().unwrap_or_default();
+            let control_listed =
+                control_ok && listed.iter().any(|it| it.name == control_name.as_str());
+            if control_listed {
+                assert!(
+                    listed.iter().any(|it| it.name == name.as_str()),
+                    "回收站里应能找到 {name}，否则说明是永久删除而非可还原"
+                );
+            } else {
+                eprintln!("跳过可还原性判据：当前环境无法列举回收站（对照组也没列到）");
+            }
         }
-
-        assert!(
-            listed.iter().any(|it| it.name == name.as_str()),
-            "回收站里应能找到 {name}，否则说明是永久删除而非可还原"
-        );
     }
 
     #[test]
