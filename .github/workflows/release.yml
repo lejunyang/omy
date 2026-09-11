@@ -110,6 +110,15 @@ jobs:
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
 
+      # omy-gui 的 build.rs 需要 pnpm，否则前端构建那步直接 panic。版本固定的理由见 test.yml 的 windows 任务
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
+
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: release-windows
@@ -118,7 +127,8 @@ jobs:
         run: cargo build --release -p omy-cli
 
       - name: 构建 GUI
-        # GUI 的 build.rs 会自动构建前端，所以这里不需要单独装 Node 依赖
+        # GUI 的 build.rs 会自动构建前端，所以这里不需要单独跑前端命令；
+        # 但**必须**已经装好 Node 与 pnpm，见上面的说明
         run: cargo build --release -p omy-gui
 
       - name: 打包
@@ -168,6 +178,16 @@ jobs:
         with:
           bun-version: latest
 
+      # 这里装 bun 是不够的：build.rs 按 frontend/ 下的 lockfile 选包管理器，
+      # 看到 pnpm-lock.yaml 就只调 pnpm，不会退回 bun 或 npm
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
+
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: release-android
@@ -211,6 +231,15 @@ jobs:
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
 
+      # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
+
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: release-linux
@@ -242,6 +271,15 @@ jobs:
 
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
+
+      # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
 
       - uses: Swatinem/rust-cache@v2.9.2
         with:
