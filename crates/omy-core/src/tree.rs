@@ -1784,6 +1784,38 @@ mod tests {
         EncryptOptions { argon2: Argon2Params::TEST_WEAK, ..EncryptOptions::default() }
     }
 
+    /// 造一个「够长到触发截断 + 边车、又能真正创建出来」的目录名。
+    ///
+    /// 两个约束是相反方向的，必须同时满足：
+    ///
+    /// - **下限**：明文超过 128 字节，密文 base32 编码后才会超过 255，
+    ///   走截断 + 边车那条路。低于它测的就不是这条路径了。
+    /// - **上限**：Linux 单个路径组件上限是 255 **字节**，超了
+    ///   `create_dir_all` 直接报 `File name too long`（ENAMETOOLONG）。
+    ///
+    /// 这里刻意不写 `"某某".repeat(45)` 这种字面量：Windows 按 UTF-16
+    /// 计数，同样的字面量在本机建得出来、在 Linux 上建不出来，于是
+    /// **本地全绿而 CI 挂**，报错还只是一句 os error 36，看不出是名字太长。
+    /// 按字节算长度就不会有这种平台差异。
+    fn long_dir_name(unit: &str) -> String {
+        let unit_len = unit.len();
+        assert!(unit_len > 0, "重复单元不能为空");
+        // 取 200 字节上下：稳稳越过 128 的下限，又离 255 有余量
+        let times = 200_usize.div_euclid(unit_len).max(1);
+        let name = unit.repeat(times);
+        assert!(
+            name.len() > 128,
+            "目录名 {} 字节，不足以触发截断+边车",
+            name.len()
+        );
+        assert!(
+            name.len() <= 255,
+            "目录名 {} 字节，超过 Linux 单组件上限，测试自身会建不出目录",
+            name.len()
+        );
+        name
+    }
+
     #[cfg(unix)]
     #[test]
     fn tree_mode_reports_symlinks_as_skipped_and_does_not_follow() {
@@ -2027,7 +2059,8 @@ mod tests {
         // 不代表调用方写了它
         let root = std::env::temp_dir().join("omy-tree-long");
         let _ = std::fs::remove_dir_all(&root);
-        let long = "很长的目录名".repeat(35);
+        // 长度要同时满足两个约束，见 `long_dir_name` 的说明
+        let long = long_dir_name("很长的目录名");
         std::fs::create_dir_all(root.join(&long)).unwrap();
         std::fs::write(root.join(&long).join("x.txt"), b"deep").unwrap();
 
@@ -2068,7 +2101,7 @@ mod tests {
         // 用户会在自己的目录里看到一个莫名的 .omy-name
         let root = std::env::temp_dir().join("omy-tree-sc");
         let _ = std::fs::remove_dir_all(&root);
-        let long = "长目录名".repeat(45);
+        let long = long_dir_name("长目录名");
         std::fs::create_dir_all(root.join(&long)).unwrap();
         std::fs::write(root.join(&long).join("f.txt"), b"x").unwrap();
 
@@ -2081,6 +2114,15 @@ mod tests {
 
         let rep =
             encrypt_tree(&root, &enc_parent, &[kek()], &[3u8; 16], &opts(), None).unwrap();
+        // 前提校验：这条测试的意义在于「边车文件存在时不被当用户数据还原」，
+        // 所以必须先确认真的产生了边车。否则名字一旦不够长就不走截断那条路，
+        // 测试会在什么都没覆盖的情况下照样变绿——变异测试实测到过这个假绿。
+        assert!(
+            rep.long_names >= 1,
+            "该用例需要触发截断+边车，实际 long_names={}",
+            rep.long_names
+        );
+
         let out = decrypt_tree(
             &rep.root,
             &dec_parent,
