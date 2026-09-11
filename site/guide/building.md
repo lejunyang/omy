@@ -114,6 +114,20 @@ pwsh -NoProfile -File spikes\check-android-env.ps1
 `zstd-sys` 是 C 代码，交叉编译必须有 NDK 的 clang。缺它的话连 `omy-core` 都编不过，报错看起来与 Tauri 无关。
 :::
 
+::: warning 报「找不到 aarch64-linux-android-clang」时
+`cc-rs` 找的是**不带 API 级别**的 `aarch64-linux-android-clang`，而 NDK 从 r19 起只提供带级别的 wrapper（`aarch64-linux-android24-clang` 之类）。如果 PATH 上没有别的 `clang` 可退回，交叉编译就会失败。
+
+显式指定编译器即可（24 对应本项目的 `minSdk`）：
+
+```bash
+BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"   # Windows 换成 windows-x86_64
+export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang"
+export CC_armv7_linux_androideabi="$BIN/armv7a-linux-androideabi24-clang"
+```
+
+注意 armv7 的 wrapper 前缀是 `armv7a-`（多一个 a），与 Rust 的目标名 `armv7-linux-androideabi` 不一致，写错了仍然报「找不到工具」。
+:::
+
 齐了之后：
 
 ```bash

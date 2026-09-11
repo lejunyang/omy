@@ -51,6 +51,17 @@ jobs:
       - name: 配置 Pages
         # 这一步会输出 base_path 等信息。放在构建之前，
         # 因为它可能影响构建时的路径处理
+        #
+        # **首次部署前必须先在仓库 Settings → Pages 里把 Source 选成
+        # 「GitHub Actions」**，否则这一步会失败并报
+        # 「Get Pages site failed ... Not Found」——看起来像 action 坏了，
+        # 实际只是缺一次仓库设置。
+        #
+        # 这里刻意**不加** enablement: true 来自动启用：那个参数明确要求
+        # 「除 GITHUB_TOKEN 之外的令牌」（PAT 需 repo 或 Pages 写权限，
+        # GitHub App 需 administration:write），而本流水线只用自动提供的
+        # GITHUB_TOKEN。加上它并不会生效，只会把「缺一次设置」变成
+        # 「缺一个 secret」，问题更难看懂
         uses: actions/configure-pages@v6.0.0
 
       - name: 安装依赖

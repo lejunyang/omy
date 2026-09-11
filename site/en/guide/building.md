@@ -114,6 +114,20 @@ It reports each missing item and how to obtain it:
 `zstd-sys` is C code, so cross-compiling requires clang from the NDK. Without it even `omy-core` fails to build, with an error that looks unrelated to Tauri.
 :::
 
+::: warning If you see "failed to find tool aarch64-linux-android-clang"
+`cc-rs` looks for `aarch64-linux-android-clang` **without an API level**, but since r19 the NDK only ships the versioned wrappers (`aarch64-linux-android24-clang` and friends). If no other `clang` is on `PATH` to fall back to, cross-compilation fails.
+
+Point it at the real compiler (24 matches this project's `minSdk`):
+
+```bash
+BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"   # use windows-x86_64 on Windows
+export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang"
+export CC_armv7_linux_androideabi="$BIN/armv7a-linux-androideabi24-clang"
+```
+
+Note the armv7 wrapper is prefixed `armv7a-` (with an extra `a`), which does not match Rust's target name `armv7-linux-androideabi`. Getting it wrong still reports "failed to find tool".
+:::
+
 Once ready:
 
 ```bash

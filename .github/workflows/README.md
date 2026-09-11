@@ -12,7 +12,13 @@ pages.yml
 ### 首次启用要手动配一次
 
 仓库 **Settings → Pages → Source 选 `GitHub Actions`**。不配这一项，
-部署任务会失败并报没有启用 Pages。
+部署任务会失败并报没有启用 Pages——报错原文是
+`Get Pages site failed ... Not Found`，看起来像 action 坏了，实际只是缺这次设置。
+
+工作流里刻意**不用** `configure-pages` 的 `enablement: true` 去自动启用：
+那个参数明确要求「除 `GITHUB_TOKEN` 之外的令牌」（PAT 需 `repo` 或 Pages 写
+权限，GitHub App 需 `administration:write`），而这条流水线只用自动提供的
+`GITHUB_TOKEN`。加上它并不会生效，只会把「缺一次设置」变成「缺一个 secret」。
 
 站点地址是 `https://lejunyang.github.io/omy/`，与 `site/.vitepress/config.js`
 里的 `base: '/omy/'` 对应。**换成自定义域名时两处要一起改**：只改一处会
@@ -41,6 +47,50 @@ test.yml
 
 **分支保护只需要勾 `测试结论` 这一项。** 它只看 windows / android /
 frontend；未验证平台的红叉不会阻塞合并。
+
+### 每个编 omy-gui 的任务都要装 Node 与 pnpm
+
+`omy-gui` 的 `build.rs` 在 `dist/` 缺失时会调包管理器构建前端，而 `dist/`
+不入库——所以**凡是会编到 omy-gui 的任务**（windows / linux / macos / msrv，
+以及 release 里的各构建任务）都必须先装 Node 与 pnpm。
+
+runner 镜像自带 node 与 npm，但**不带 pnpm**。缺它时 `build.rs` 直接 panic，
+而报错长得跟 Rust 毫无关系：
+
+- Windows：`'pnpm' is not recognized as an internal or external command`（退出码 1）
+- Linux / macOS：`无法执行 pnpm（No such file or directory）`（退出码 101）
+
+`build.rs` 按 `frontend/` 下的 lockfile 选包管理器，看到 `pnpm-lock.yaml`
+就只会调 pnpm，**不会**退回 npm 或 bun。所以装了 bun 也不能替代
+（release 的 build-android 任务一度只装了 bun，就是这个坑）。
+
+pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
+`frontend/pnpm-lock.yaml` 是 `lockfileVersion 9.0`，pnpm 跨大版本会改 lockfile
+格式与默认行为，让 CI 装出一棵和本地不同的依赖树。另外仓库根目录没有
+`package.json`，`pnpm/action-setup` 读不到 `packageManager` 字段，
+**必须显式写 `version`**。
+
+### Android 交叉编译要显式指定 CC
+
+只装 NDK 是不够的。`cc-rs` 会去找**不带 API 级别**的
+`aarch64-linux-android-clang`，而 NDK 从 r19 起只提供带级别的 wrapper
+（`aarch64-linux-android24-clang` 之类）。实测 NDK 29 里确实没有不带级别的
+那个，于是 `zstd-sys` 的 build script 报
+`failed to find tool "aarch64-linux-android-clang"`，整个任务挂掉。
+
+所以两条流水线的 Android 任务都有一步「指定交叉编译用的 C 编译器」，
+把 `CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。两个易错点：
+
+- API 级别要和 `gen/android/app/build.gradle.kts` 的 `minSdk`（当前 24）一致。
+  用更高的级别会让 `.so` 在低版本系统上加载失败，而那只有真机能发现。
+  **改 minSdk 时这里要跟着改。**
+- armv7 的目标三元组与 clang 前缀不一致：Rust 叫 `armv7-linux-androideabi`，
+  NDK 的 wrapper 叫 `armv7a-`（多一个 a）。少写那个 a 还是「找不到工具」，
+  报错完全看不出差在哪。
+
+注意本机（Windows + osdk）**不会**复现这个失败：PATH 上有别的 `clang`，
+`cc-rs` 在找不到带前缀的 wrapper 后会退回它，加上 `--target=` 照样编得过。
+所以「本地能编」不能证明 CI 能编，判断要看有没有显式设 `CC_<target>`。
 
 ### 为什么 linux / macos 允许失败
 
@@ -119,6 +169,13 @@ Android 相关任务里的 JDK 与 NDK 版本必须和仓库根 `osdk.toml` 一�
 
 JDK 不能超过 21：Gradle 8.14 上限是 24，Kotlin 1.9.25 的 JVM target 上限
 是 21，两条约束叠加后 21 就是上限。
+
+### APK 要装四个 Rust 目标
+
+APK 默认打四个 ABI（`gen/android/buildSrc` 里的 `targetList` 是
+aarch64 / armv7 / i686 / x86_64），所以 `build-android` 要把这四个 Rust 目标
+都装上，`CC_<target>` 也要配齐四个。只配前两个时，gradle 会在编 x86 那一档
+才报错，而前面几档已经编了十几分钟。
 
 ### APK 未签名
 
