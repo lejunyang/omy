@@ -1020,10 +1020,34 @@ mod tests {
         assert!(failed.is_empty(), "移到回收站不该报错，实际: {failed:?}");
         assert!(!f.exists(), "原件必须已从原位置移走");
 
-        let found = trash::os_limited::list()
-            .map(|items| items.into_iter().any(|it| it.name == name.as_str()))
-            .unwrap_or(false);
-        assert!(found, "回收站里应能找到 {name}，否则说明是永久删除而非可还原");
+        // 能不能**列举**回收站取决于运行环境，不取决于我们的实现：
+        // GitHub Actions 的 windows runner 跑在没有交互式会话的服务账号下，
+        // 列举拿不到桌面用户的回收站，这条测试因此在 CI 上必挂，而实现是对的。
+        //
+        // 但不能因此简单地「列不到就跳过」——那样真的退化成永久删除时也会
+        // 被跳过，这条测试就白写了。所以先放一个**对照组**：直接用 trash
+        // crate 扔一个文件进去，再看它能不能被列举到。
+        //   - 对照组列得到 → 环境正常，那么被测对象列不到就是真缺陷；
+        //   - 对照组也列不到 → 是环境不支持列举，跳过判据。
+        // 对照组走 trash::delete，与被测路径相互独立：若有人把
+        // move_to_trash 换成 remove_file，对照组照样列得到，缺陷仍会被抓出来。
+        let control_name = format!("omy-trash-control-{}.txt", std::process::id());
+        let control = dir.join(&control_name);
+        std::fs::write(&control, b"control").unwrap();
+        let control_ok = trash::delete(&control).is_ok();
+
+        let listed = trash::os_limited::list().unwrap_or_default();
+        let control_listed =
+            control_ok && listed.iter().any(|it| it.name == control_name.as_str());
+        if !control_listed {
+            eprintln!("跳过可还原性判据：当前环境无法列举回收站（对照组也没列到）");
+            return;
+        }
+
+        assert!(
+            listed.iter().any(|it| it.name == name.as_str()),
+            "回收站里应能找到 {name}，否则说明是永久删除而非可还原"
+        );
     }
 
     #[test]
