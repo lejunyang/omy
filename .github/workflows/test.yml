@@ -144,6 +144,40 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
+      - name: 指定交叉编译用的 C 编译器
+        # 只装 NDK 是不够的：cc-rs 找的是 `aarch64-linux-android-clang` 这个
+        # **不带 API 级别**的名字，而 NDK 从 r19 起只提供带级别的 wrapper
+        # （aarch64-linux-android24-clang 等）。实测 NDK 29 里确实没有不带级别
+        # 的那个，于是 zstd-sys 的 build script 报
+        # 「failed to find tool "aarch64-linux-android-clang"」，整个任务挂掉。
+        #
+        # 24 与 gen/android/app/build.gradle.kts 里的 minSdk 一致：用更高的级别
+        # 会让 .so 在低版本系统上加载失败，而那种错误只有真机能发现。
+        # **改 minSdk 时这里要跟着改。**
+        #
+        # armv7 的目标三元组和 wrapper 前缀不一样：Rust 叫
+        # armv7-linux-androideabi，NDK 的 wrapper 叫 armv7a-（多一个 a）。
+        # 少写那个 a 仍然是「找不到工具」，报错完全看不出差在哪。
+        #
+        # 变量名用**下划线**形式而不是连字符：带连字符的名字不是合法的 shell
+        # 标识符，经 $GITHUB_ENV 传给后续步骤不可靠。cc-rs 两种都认，
+        # 已实测只设下划线形式即可生效
+        env:
+          API_LEVEL: '24'
+        run: |
+          BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$BIN/aarch64-linux-android${API_LEVEL}-clang" || {
+            echo "NDK 里没有 aarch64-linux-android${API_LEVEL}-clang，NDK 目录可能不完整"
+            ls "$BIN" | head -50
+            exit 1
+          }
+          {
+            echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android${API_LEVEL}-clang"
+            echo "CC_armv7_linux_androideabi=$BIN/armv7a-linux-androideabi${API_LEVEL}-clang"
+            echo "AR_aarch64_linux_android=$BIN/llvm-ar"
+            echo "AR_armv7_linux_androideabi=$BIN/llvm-ar"
+          } >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: android

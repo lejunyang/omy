@@ -157,7 +157,10 @@ jobs:
       - name: 安装 Rust 与 Android 目标
         run: |
           rustup toolchain install stable --profile minimal
-          rustup target add aarch64-linux-android armv7-linux-androideabi
+          # APK 默认打四个 ABI（gen/android/buildSrc 里的 targetList），
+          # 只装前两个时 gradle 会在编 x86 那一档才报错，而前面几档已经编了很久
+          rustup target add aarch64-linux-android armv7-linux-androideabi \
+            i686-linux-android x86_64-linux-android
 
       - uses: actions/setup-java@v6.0.0
         with:
@@ -173,6 +176,32 @@ jobs:
         run: |
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: 指定交叉编译用的 C 编译器
+        # cc-rs 找的是不带 API 级别的名字，而 NDK 只提供带级别的 wrapper，
+        # 不指定的话 zstd-sys 会报「failed to find tool」。
+        # 完整理由见 test.yml 里的同名步骤。
+        #
+        # 这里要配齐四个 ABI，与上面 rustup target add 的四个目标对应
+        env:
+          API_LEVEL: '24'
+        run: |
+          BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$BIN/aarch64-linux-android${API_LEVEL}-clang" || {
+            echo "NDK 里没有 aarch64-linux-android${API_LEVEL}-clang，NDK 目录可能不完整"
+            ls "$BIN" | head -50
+            exit 1
+          }
+          {
+            echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android${API_LEVEL}-clang"
+            echo "CC_armv7_linux_androideabi=$BIN/armv7a-linux-androideabi${API_LEVEL}-clang"
+            echo "CC_i686_linux_android=$BIN/i686-linux-android${API_LEVEL}-clang"
+            echo "CC_x86_64_linux_android=$BIN/x86_64-linux-android${API_LEVEL}-clang"
+            echo "AR_aarch64_linux_android=$BIN/llvm-ar"
+            echo "AR_armv7_linux_androideabi=$BIN/llvm-ar"
+            echo "AR_i686_linux_android=$BIN/llvm-ar"
+            echo "AR_x86_64_linux_android=$BIN/llvm-ar"
+          } >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@v2.2.0
         with:
