@@ -398,9 +398,9 @@ fn annotate_unlocked(entries: &mut [DirEntry], state: &Shared) {
         .collect();
 
     for e in entries.iter_mut().filter(|e| e.is_encrypted) {
-        if let Some(f) = known.get(&e.path)
-            && f.unlocked
-        {
+        // filter 而非 `if let .. && ..` 的 let-chain：后者到 1.88 才稳定，
+        // MSRV 是 1.85。
+        if let Some(f) = known.get(&e.path).filter(|f| f.unlocked) {
             e.unlocked = true;
             e.real_name = Some(f.name.clone());
             e.entry_id = Some(f.id.clone());
@@ -515,9 +515,9 @@ pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
             ("pictures", dirs::picture_dir()),
             ("videos", dirs::video_dir()),
         ] {
-            if let Some(p) = dir
-                && p.is_dir()
-            {
+            // filter 而非 `if let .. && ..` 的 let-chain：后者到 1.88
+            // 才稳定，MSRV 是 1.85。
+            if let Some(p) = dir.filter(|p| p.is_dir()) {
                 out.push(DirEntry {
                     path: p.to_string_lossy().into_owned(),
                     // name 用固定标签而不是目录名：前端据此查翻译，

@@ -98,11 +98,12 @@ impl PairTask {
     /// 配对码一旦显示过就该能立刻作废——6 位数字的空间只有一百万，
     /// 挂着不管等于给在线猜测留时间窗。
     pub fn cancel(&self) {
-        if let Ok(mut g) = self.cancel.lock()
-            && let Some(tx) = g.take()
-        {
-            // 接收端可能已经走了，发送失败无所谓
-            let _ = tx.send(());
+        // 嵌套 if 而非 let-chain：let-chain 到 1.88 才稳定，MSRV 是 1.85。
+        if let Ok(mut g) = self.cancel.lock() {
+            if let Some(tx) = g.take() {
+                // 接收端可能已经走了，发送失败无所谓
+                let _ = tx.send(());
+            }
         }
         self.set(PairPhase::Idle);
     }

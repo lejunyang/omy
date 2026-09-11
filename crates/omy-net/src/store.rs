@@ -434,9 +434,10 @@ pub fn default_path() -> Option<PathBuf> {
 fn resolve_store_path(env_value: Option<&str>) -> Option<PathBuf> {
     // 空白值当没设：误设成空串时若照单全收，设备库会写到当前工作目录，
     // 位置随启动方式漂移，用户根本找不到自己的身份文件
-    if let Some(p) = env_value
-        && !p.trim().is_empty()
-    {
+    //
+    // 用 filter 而不是 `if let .. && ..` 的 let-chain：后者到 1.88 才稳定，
+    // MSRV 是 1.85。
+    if let Some(p) = env_value.filter(|p| !p.trim().is_empty()) {
         return Some(PathBuf::from(p));
     }
     dirs::config_dir().map(|d| d.join("omy").join("devices.omy"))

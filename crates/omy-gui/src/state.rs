@@ -246,19 +246,21 @@ impl AppState {
 
     /// 就地更新某个条目（用于补充媒体元信息）。
     pub fn update_file(&self, id: &str, f: impl FnOnce(&mut FileEntry)) {
-        if let Ok(mut g) = self.inner.lock()
-            && let Some(e) = g.files.get_mut(id)
-        {
-            f(e);
+        // 嵌套 if 而非 let-chain：let-chain 到 1.88 才稳定，MSRV 是 1.85。
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(e) = g.files.get_mut(id) {
+                f(e);
+            }
         }
     }
 
     /// 记录一个浏览目录。
     pub fn add_root(&self, p: PathBuf) {
-        if let Ok(mut g) = self.inner.lock()
-            && !g.roots.contains(&p)
-        {
-            g.roots.push(p);
+        // 嵌套 if 而非 let-chain：let-chain 到 1.88 才稳定，MSRV 是 1.85。
+        if let Ok(mut g) = self.inner.lock() {
+            if !g.roots.contains(&p) {
+                g.roots.push(p);
+            }
         }
     }
 
