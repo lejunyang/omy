@@ -153,12 +153,43 @@ registry 上的包对没有 Node 工具链的人是编不过的。GUI 通过 Rel
 
 ### 需要配置的 secret
 
-| 名称 | 用途 |
-|---|---|
-| `CARGO_REGISTRY_TOKEN` | 发布到 crates.io。在 crates.io 的 Account Settings 生成 |
+| 名称 | 配在哪 | 用途 |
+|---|---|---|
+| `CARGO_REGISTRY_TOKEN` | environment `crates-io` | 发布到 crates.io。在 crates.io 的 Account Settings 生成 |
 
 `GITHUB_TOKEN` 由 Actions 自动提供，不用配。Pages 部署用的是工作流里声明
 的 `pages: write` / `id-token: write` 权限，也不需要额外 secret。
+
+### 为什么 publish 走 environment
+
+`publish` 任务绑定了名为 `crates-io` 的 environment。配置位置：
+**Settings → Environments → New environment**，名字必须正好是 `crates-io`，
+然后把 `CARGO_REGISTRY_TOKEN` 加到该环境的 Environment secrets 里。
+
+配在仓库级 Secrets 里工作流一样读得到，但绑 environment 多两个好处：
+可以给它加 **required reviewers**，让上传前停下来等人点确认；也能在
+Actions 页面看到这个环境的部署历史。对一个**发出去就删不掉**的动作，
+这道人工闸门值得。
+
+注意 environment 名字写错不会报错，只会创建一个新的空环境——于是
+`secrets.CARGO_REGISTRY_TOKEN` 变成空字符串。所以 `publish` 的第一步就
+显式检查 token 非空：`--dry-run` 不需要 token 也能过，缺 token 时会一路
+绿灯直到真上传那步才失败，而那时 cargo 可能已经发出去一部分包了。
+
+### 为什么 publish 要挂构建门禁
+
+crates.io 的版本发布后无法删除，所以这个不可撤销的动作不能在构建红着的
+时候发生。`publish` 因此依赖 `build-windows` 与 `build-android` 成功——
+只挂这两个已验证平台，linux/macos 是 `continue-on-error`，挂上去等于把
+未验证平台变成了发布门禁。
+
+这里有个反直觉的连带改动：**被跳过的依赖会让下游任务一起跳过**。两个构建
+任务原先只在推标签时跑，如果不动它们，一个不带标签、只含 `[publish]` 的
+提交会让构建 skip、publish 跟着 skip——表现是「写了 `[publish]` 却什么都
+没发布」，而且没有任何报错。所以它们的条件加上了 `publish == 'true'`。
+
+同理，`publish` 的 `if` 必须判 `result == 'success'` 而不是
+`!= 'failure'`：skipped 不是 failure，用后者写门禁等于没设。
 
 ### 工具链版本与 osdk.toml 保持一致
 
@@ -187,4 +218,9 @@ aarch64 / armv7 / i686 / x86_64），所以 `build-android` 要把这四个 Rust
 --------------------
 
 四个包都还没上架。首次发布只要一次带 `[publish]` 的提交即可，`--workspace`
-会按依赖顺序处理。已在本地用 `--dry-run` 验证过顺序可行。
+会按依赖顺序处理。已在本地用 `--dry-run` 验证过顺序可行，四个名字在
+crates.io 上也都还没被占用（名字归属 `--dry-run` 查不出来，它不联网校验）。
+
+发之前要先建好 `crates-io` environment 并配上 token，见上面那一节。
+注意带 `[publish]` 的提交推上去后，会先跑 Windows 与 Android 的构建，
+两者都绿了才会走到上传。

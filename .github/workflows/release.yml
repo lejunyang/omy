@@ -102,7 +102,11 @@ jobs:
   build-windows:
     name: 构建 Windows（已验证）
     needs: decide
-    if: needs.decide.outputs.release == 'true'
+    # 发 crates.io 时也要跑：publish 任务把这两个已验证平台的构建当作门禁，
+    # 而**被跳过的依赖会让下游任务一起跳过**。这里只写 release 的话，
+    # 不带标签的 [publish] 提交会让构建跳过，publish 也跟着跳过——
+    # 表现是「明明写了 [publish] 却什么都没发」，且没有任何报错
+    if: needs.decide.outputs.release == 'true' || needs.decide.outputs.publish == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -149,7 +153,8 @@ jobs:
   build-android:
     name: 构建 Android（已验证）
     needs: decide
-    if: needs.decide.outputs.release == 'true'
+    # 同 build-windows：发 crates.io 时也要跑，理由见那里
+    if: needs.decide.outputs.release == 'true' || needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -395,9 +400,29 @@ jobs:
 
   publish:
     name: 发布到 crates.io
-    needs: decide
-    if: needs.decide.outputs.publish == 'true'
+    # 已验证平台的构建是门禁：crates.io 的版本发布后**无法删除**（只能 yank，
+    # 且版本号不能复用），所以这个不可撤销的动作不能在构建红着的时候发生。
+    #
+    # 只挂 Windows 与 Android：它们是已验证平台，且 linux/macos 是
+    # continue-on-error，挂上去等于把未验证平台变成了发布门禁。
+    needs: [decide, build-windows, build-android]
+    # always() 是必须的：没有它，只要有任何依赖不是 success 就整个跳过，
+    # 而下面要做的恰恰是「显式检查依赖结果」。
+    # 注意 result 要判 success 而不是 != failure——被跳过的依赖是 skipped，
+    # 那种情况下门禁等于没设
+    if: >-
+      always()
+      && needs.decide.outputs.publish == 'true'
+      && needs.build-windows.result == 'success'
+      && needs.build-android.result == 'success'
     runs-on: ubuntu-latest
+    # 走 environment 是为了给这个不可撤销的动作加一道人工闸门：
+    # CARGO_REGISTRY_TOKEN 配在这个环境里，并可在仓库设置里给它加
+    # required reviewers，这样上传前会停下来等人点确认。
+    # 配置位置：Settings → Environments → crates-io
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/omy-cli
     steps:
       - uses: actions/checkout@v7
 
@@ -415,6 +440,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: publish
+
+      - name: 确认 token 已配置
+        # dry-run **不需要** token 也能过，所以缺 token 时前面一路绿灯，
+        # 直到真上传那步才报 no token found——而那时 cargo 可能已经发出去
+        # 一部分包了（workspace 是逐个发的，发出去的删不掉）。
+        # 所以在动任何东西之前先确认拿得到 secret。
+        #
+        # 只判空、不打印内容：token 等价于账号写权限
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::拿不到 CARGO_REGISTRY_TOKEN。"
+            echo "本任务绑定了 crates-io 这个 environment，secret 要配在"
+            echo "Settings → Environments → crates-io 里；配在仓库级 Secrets"
+            echo "也可以读到，但配在 environment 里才能用 required reviewers。"
+            exit 1
+          fi
+          echo "token 已就位（长度 ${#CARGO_REGISTRY_TOKEN}，内容不打印）"
 
       - name: 先做一次 dry-run
         # 真上传之前必须过一遍：crates.io 的版本发布后**无法删除**，
