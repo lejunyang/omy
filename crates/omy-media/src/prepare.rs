@@ -187,9 +187,18 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
     let info = match probe::probe(Source::Bytes(data)) {
         Ok(i) => i,
         Err(e) => {
+            // 没装 ffprobe 时仍要尽力产出缩略图：图片缩放是纯 Rust 的，
+            // 根本不需要 FFmpeg。此前这里直接 return，导致没装 FFmpeg 的
+            // 用户连图片缩略图都拿不到——而 FFmpeg 是可选依赖，本不该
+            // 影响不依赖它的功能。视频缩略图确实没办法，只能放弃。
+            if opts.thumbnail == ThumbSource::Auto && matches!(e, MediaError::FfmpegUnavailable { .. }) {
+                gen_image_thumb_if_image(data, opts, &mut out);
+            }
             // 非媒体文件是常态（文本、压缩包……），不值得当成警告刷屏；
-            // 真正的探测故障才记录
-            if !matches!(e, MediaError::NotMedia { .. }) {
+            // 缺 FFmpeg 同理：它是可选依赖，装不装由用户决定，每加密一个
+            // 文件就警告一次只会让人麻木（`omy doctor` 才是提示它的地方）。
+            // 真正的探测故障才记录。
+            if !e.is_degradable() {
                 out.warnings.push(format!("媒体探测失败：{e}"));
             }
             return out;
@@ -293,6 +302,24 @@ fn gen_image_thumb(data: &[u8], opts: &PrepareOptions, out: &mut Prepared) {
         Ok(t) => out.thumbnail = Some(t.bytes),
         Err(e) => out.warnings.push(format!("图片缩略图生成失败：{e}")),
     }
+}
+
+/// 没有 ffprobe 可用时，判断这份字节是不是图片并尽力生成缩略图。
+///
+/// 为什么单独一个函数：正常路径靠 ffprobe 报的容器名判断图 / 视频
+/// （见 `is_still_image`），但这里的前提恰恰是 ffprobe 用不了。此时
+/// 只能让 `image` crate 自己认——它按魔数识别，认不出就当作非图片，
+/// 不猜也不报错。
+///
+/// 不复用 `is_still_image` 是因为那条判据依赖 `MediaInfo`，这里根本
+/// 拿不到；硬造一个假的 `MediaInfo` 反而会让判据来源变得含混。
+fn gen_image_thumb_if_image(data: &[u8], opts: &PrepareOptions, out: &mut Prepared) {
+    // 认不出格式就是非图片（文本、压缩包……），静默跳过：
+    // 这条路径上「不是图片」是常态，不该产生警告。
+    if image::guess_format(data).is_err() {
+        return;
+    }
+    gen_image_thumb(data, opts, out);
 }
 
 /// 抽视频帧，失败只记警告。
@@ -472,6 +499,55 @@ mod tests {
         assert!(
             out.warnings.is_empty(),
             "图片走 Auto 不该有警告：{:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn non_image_gets_no_thumbnail_on_the_no_ffprobe_path() {
+        // 无 ffprobe 时的降级路径要能区分图片和非图片。
+        //
+        // 不这样会怎样：如果那条路径不判类型、把任何字节都塞给
+        // `from_image_bytes`，文本和压缩包就会因为"解码失败"而收到
+        // 「图片缩略图生成失败」警告——而它们本来就不是图片。
+        // 用户每加密一个文档就看到一条无意义的警告。
+        //
+        // 这条测试直接调降级路径本身，不依赖本机装没装 FFmpeg：
+        // 否则在装了 FFmpeg 的开发机上它永远走不到这里，等于没测。
+        let opts = PrepareOptions {
+            media_meta: false,
+            moov_cache: false,
+            thumbnail: ThumbSource::Auto,
+            ..PrepareOptions::default()
+        };
+        let mut out = Prepared::default();
+        gen_image_thumb_if_image(b"just plain text, definitely not an image", &opts, &mut out);
+        assert!(out.thumbnail.is_none(), "非图片不该产出缩略图");
+        assert!(
+            out.warnings.is_empty(),
+            "非图片走降级路径不该产生警告：{:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn image_still_gets_thumbnail_on_the_no_ffprobe_path() {
+        // 与上一条相对：图片缩放是纯 Rust 的，不需要 FFmpeg，
+        // 所以没装 FFmpeg 时**仍然必须**产出缩略图。
+        //
+        // 不这样会怎样：修复前 probe 失败就直接 return，没装 FFmpeg 的
+        // 用户连图片缩略图都拿不到——而 FFmpeg 只是可选依赖。
+        let opts = PrepareOptions {
+            media_meta: false,
+            moov_cache: false,
+            thumbnail: ThumbSource::Auto,
+            ..PrepareOptions::default()
+        };
+        let mut out = Prepared::default();
+        gen_image_thumb_if_image(&minimal_png(), &opts, &mut out);
+        assert!(
+            out.thumbnail.is_some(),
+            "图片在无 ffprobe 时也必须有缩略图，warnings={:?}",
             out.warnings
         );
     }
