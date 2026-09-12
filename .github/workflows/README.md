@@ -70,7 +70,7 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 `package.json`，`pnpm/action-setup` 读不到 `packageManager` 字段，
 **必须显式写 `version`**。
 
-### Android 交叉编译要显式指定 CC
+### Android 交叉编译要显式指定 CC 与 LINKER
 
 只装 NDK 是不够的。`cc-rs` 会去找**不带 API 级别**的
 `aarch64-linux-android-clang`，而 NDK 从 r19 起只提供带级别的 wrapper
@@ -78,8 +78,8 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 那个，于是 `zstd-sys` 的 build script 报
 `failed to find tool "aarch64-linux-android-clang"`，整个任务挂掉。
 
-所以两条流水线的 Android 任务都有一步「指定交叉编译用的 C 编译器」，
-把 `CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。两个易错点：
+所以两条流水线的 Android 任务都有一步指定交叉工具链，把
+`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。三个易错点：
 
 - API 级别要和 `gen/android/app/build.gradle.kts` 的 `minSdk`（当前 24）一致。
   用更高的级别会让 `.so` 在低版本系统上加载失败，而那只有真机能发现。
@@ -87,10 +87,28 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 - armv7 的目标三元组与 clang 前缀不一致：Rust 叫 `armv7-linux-androideabi`，
   NDK 的 wrapper 叫 `armv7a-`（多一个 a）。少写那个 a 还是「找不到工具」，
   报错完全看不出差在哪。
+- **`CC_*` 不管链接。** 它只给 `cc-rs` 编 C 用（`zstd-sys` 那种）；链接可执行
+  文件走的是 `CARGO_TARGET_<TARGET>_LINKER`，没设时 cargo 去找默认的 `cc`。
+  test.yml 以前只编 `omy-core`（lib，不链接）所以没暴露，加上 `omy-cli` 这个
+  bin 之后就会挂在 ``error: linker `cc` not found``——报错完全不提 Android。
 
-注意本机（Windows + osdk）**不会**复现这个失败：PATH 上有别的 `clang`，
-`cc-rs` 在找不到带前缀的 wrapper 后会退回它，加上 `--target=` 照样编得过。
-所以「本地能编」不能证明 CI 能编，判断要看有没有显式设 `CC_<target>`。
+注意本机（Windows + osdk）**不会**复现「找不到 CC」这个失败：PATH 上有别的
+`clang`，`cc-rs` 在找不到带前缀的 wrapper 后会退回它，加上 `--target=` 照样
+编得过。所以「本地能编」不能证明 CI 能编，判断要看有没有显式设 `CC_<target>`。
+
+### Android 任务编四个 crate，不是只编 core
+
+test.yml 的 Android 任务原先只 `cargo build -p omy-core`，于是「某个 crate 在
+Android 上编不过」这类问题 CI 完全看不见——实测 `omy-cli` 曾无条件依赖
+`trash`，而 `trash` 5.2 的 cfg 排除了 android，交叉编译在编 trash 自身时就
+失败，但 CI 编不到 cli，一直显示绿。
+
+现在四个 crate（core / media / net / cli）都编，两个架构各一遍，并额外跑一次
+Android 目标的 clippy：平台专属分支只有在对应目标下才会被 lint，宿主 clippy
+检查不到 `#[cfg(target_os = "android")]` 里的代码。
+
+`omy-gui` 不在其中：它的 Android 版要走 gradle + tauri 打包，不是 cargo 单独
+能编的，那件事在 release.yml 里做。
 
 ### 为什么 linux / macos 允许失败
 

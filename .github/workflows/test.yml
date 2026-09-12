@@ -123,8 +123,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 安装 Rust 与 Android 目标
+        # 带上 clippy：minimal profile 不含它，而下面要跑 Android 目标的 clippy
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install stable --profile minimal --component clippy
           rustup target add aarch64-linux-android armv7-linux-androideabi
 
       - uses: actions/setup-java@v6.0.0
@@ -154,7 +155,7 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: 指定交叉编译用的 C 编译器
+      - name: 指定交叉编译用的 C 编译器与链接器
         # 只装 NDK 是不够的：cc-rs 找的是 `aarch64-linux-android-clang` 这个
         # **不带 API 级别**的名字，而 NDK 从 r19 起只提供带级别的 wrapper
         # （aarch64-linux-android24-clang 等）。实测 NDK 29 里确实没有不带级别
@@ -172,6 +173,14 @@ jobs:
         # 变量名用**下划线**形式而不是连字符：带连字符的名字不是合法的 shell
         # 标识符，经 $GITHUB_ENV 传给后续步骤不可靠。cc-rs 两种都认，
         # 已实测只设下划线形式即可生效
+        #
+        # # 为什么还要单独设 LINKER
+        #
+        # CC_* 只给 cc-rs 用来编 C（zstd-sys 那种）。链接可执行文件走的是另一
+        # 条路：cargo 读 CARGO_TARGET_<TARGET>_LINKER，没设就去找默认的 `cc`。
+        # 之前只编 omy-core（一个 lib，不链接）所以没暴露；加上 omy-cli 这个
+        # bin 之后就会挂在 `error: linker `cc` not found`——报错完全不提
+        # Android，很难联想到是交叉链接器没配。已在本机用 NDK 29 实测确认。
         env:
           API_LEVEL: '24'
         run: |
@@ -186,23 +195,44 @@ jobs:
             echo "CC_armv7_linux_androideabi=$BIN/armv7a-linux-androideabi${API_LEVEL}-clang"
             echo "AR_aarch64_linux_android=$BIN/llvm-ar"
             echo "AR_armv7_linux_androideabi=$BIN/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android${API_LEVEL}-clang"
+            echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$BIN/armv7a-linux-androideabi${API_LEVEL}-clang"
           } >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: android
 
-      - name: 交叉编译 omy-core（aarch64）
-        # 只编 core：它是纯 Rust 加上 zstd-sys，最能反映交叉编译工具链是否可用。
-        # 完整的 GUI 打包要 gradle 与签名配置，放在发布流水线里做
-        run: cargo build -p omy-core --target aarch64-linux-android
+      - name: 交叉编译（aarch64）
+        # 四个 crate 全编，不是只编 core。
+        #
+        # 原先只编 core，于是「cli 在 Android 上编不过」这类问题 CI 完全看不见：
+        # 实测 omy-cli 曾无条件依赖 trash，而 trash 5.2 的 cfg 排除了 android，
+        # 交叉编译在编 trash 自身时就失败——但 CI 编不到 cli，一直显示绿。
+        #
+        # omy-gui 不在这里：它的 Android 版要走 gradle + tauri 打包，
+        # 不是 cargo 单独能编的，放在发布流水线里做。
+        run: >
+          cargo build -p omy-core -p omy-media -p omy-net -p omy-cli
+          --target aarch64-linux-android
 
-      - name: 交叉编译 omy-core（armv7）
-        run: cargo build -p omy-core --target armv7-linux-androideabi
+      - name: 交叉编译（armv7）
+        run: >
+          cargo build -p omy-core -p omy-media -p omy-net -p omy-cli
+          --target armv7-linux-androideabi
+
+      - name: clippy（Android 目标）
+        # 平台专属分支只有在对应目标下才会被 lint。宿主 clippy 检查不到
+        # #[cfg(target_os = "android")] 里的代码，所以这一步不可省。
+        #
+        # --all-targets 包含测试代码：平台相关的缺陷常常先出现在测试里
+        run: >
+          cargo clippy -p omy-core -p omy-media -p omy-net -p omy-cli
+          --all-targets --target aarch64-linux-android -- -D warnings
 
       - name: 单元测试（在宿主上跑）
         # 交叉编译产物没法在 runner 上执行，所以逻辑测试仍在 x86_64 上跑。
-        # 这一步保证「代码逻辑没坏」，上面两步保证「能为 Android 编出来」
+        # 这一步保证「代码逻辑没坏」，上面几步保证「能为 Android 编出来」
         run: cargo test -p omy-core
 
   # ---- 前端与文档：与平台无关 ----
