@@ -243,8 +243,18 @@ JDK 不能超过 21：Gradle 8.14 上限是 24，Kotlin 1.9.25 的 JVM target �
 
 APK 默认打四个 ABI（`gen/android/buildSrc` 里的 `targetList` 是
 aarch64 / armv7 / i686 / x86_64），所以 `build-android` 要把这四个 Rust 目标
-都装上，`CC_<target>` 也要配齐四个。只配前两个时，gradle 会在编 x86 那一档
-才报错，而前面几档已经编了十几分钟。
+都装上，`CC_<target>` / `AR_<target>` / `CARGO_TARGET_<TARGET>_LINKER` 也要
+配齐四个。只配前两个时，gradle 会在编 x86 那一档才报错，而前面几档已经编了
+十几分钟。
+
+LINKER 对打 APK 这条路径而言目前是**预防性**的：`cargo tauri android build`
+产出的是 `.so`（cdylib），由 gradle 调 NDK 链接，不读这个变量。设上是为了将来
+在这个任务里直接 cargo 出可执行文件时不会踩坑，而那个坑的表现是
+``error: linker `cc` not found``，报错完全不提 Android。
+
+四个 wrapper 的名字与四个 LINKER 变量名都已在本机核实（NDK 29）：变量名拼错
+不会报错、只会静默退回找 `cc`，所以是把变量指向一个不存在的路径、看报错里出现
+的是那个假路径还是 `cc` 来确认的。
 
 ### APK 未签名
 

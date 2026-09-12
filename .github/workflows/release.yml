@@ -190,12 +190,17 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: 指定交叉编译用的 C 编译器
+      - name: 指定交叉编译用的 C 编译器与链接器
         # cc-rs 找的是不带 API 级别的名字，而 NDK 只提供带级别的 wrapper，
         # 不指定的话 zstd-sys 会报「failed to find tool」。
         # 完整理由见 test.yml 里的同名步骤。
         #
         # 这里要配齐四个 ABI，与上面 rustup target add 的四个目标对应
+        #
+        # LINKER 也一并设上。APK 走 gradle 调 NDK 链接 .so，目前这条路径不依赖
+        # 它，所以这里是**预防性**的：一旦将来在这个任务里直接 cargo build 出
+        # 可执行文件（或 tauri 改了链接方式），缺它就会挂在
+        # `error: linker `cc` not found`，而报错完全不提 Android。设上没有代价。
         env:
           API_LEVEL: '24'
         run: |
@@ -214,6 +219,10 @@ jobs:
             echo "AR_armv7_linux_androideabi=$BIN/llvm-ar"
             echo "AR_i686_linux_android=$BIN/llvm-ar"
             echo "AR_x86_64_linux_android=$BIN/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android${API_LEVEL}-clang"
+            echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$BIN/armv7a-linux-androideabi${API_LEVEL}-clang"
+            echo "CARGO_TARGET_I686_LINUX_ANDROID_LINKER=$BIN/i686-linux-android${API_LEVEL}-clang"
+            echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$BIN/x86_64-linux-android${API_LEVEL}-clang"
           } >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@v2.2.0
