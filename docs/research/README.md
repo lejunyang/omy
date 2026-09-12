@@ -2,8 +2,9 @@
 
 跨平台加密文件管理应用的完整技术设计。Rust + Tauri v2，覆盖桌面（Windows / macOS / Linux）与移动端（Android / iOS）。
 
-> **文档状态**：设计定稿（v1.0），尚未进入实现阶段。
-> **最后更新**：2026-08-29
+> **文档状态**：01–12 为设计定稿（v1.0）。
+> 13 是**实现期新增的待评审方案**，不属于 v1.0 定稿范围。
+> **最后更新**：2026-09-12
 
 ---
 
@@ -35,6 +36,7 @@
 | 10 | [许可证与专利合规](10-licensing-and-patents.md) | GPL/LGPL 分层、HEVC 专利、出口管制 | 所有人、法务 |
 | 11 | [工程实现路线](11-engineering-roadmap.md) | crate 分层、技术验证清单、风险登记册 | 实现者、项目管理 |
 | 12 | [设计决策记录](12-decision-log.md) | 关键决策及其理由，含**被否决的方案** | 所有人 |
+| 13 | [FFmpeg 裁剪内置方案](13-ffmpeg-minimal-build.md) | 裁剪构建的体积实测与估算、专利取舍、configure 配方 | 实现者、法务 |
 
 **附录**
 - [appendix/ui-prototype.html](appendix/ui-prototype.html) — **可交互界面原型**（浏览器直接打开，可切换深/浅主题、网格/列表、锁定/解锁态）
