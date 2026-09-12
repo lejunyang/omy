@@ -1,38 +1,30 @@
 # FFmpeg 裁剪内置方案
 
-> 对应决策 
+> 对应决策 **D-11**（FFmpeg 追求最大兼容）、**D-23**（分层授权）、
+> **D-12**（HEIC 分层策略）。
 >
-> **D-11**
+> 状态：**方案已定方向，实施细节待细化**。已确定走自建构建链、出三档 release
+> 产物（无 FFmpeg / 内置免版税档 / 全部内置档）。本文档不描述已实现的行为。
 >
-> （FFmpeg 追求最大兼容）、
->
-> **D-23**
->
-> （分层授权）、
->
-> **D-12**
->
-> （HEIC 分层策略）。
-> 状态：
->
-> **调研方案，待评审**
->
-> 。本文档不描述已实现的行为。
 > 撰写日期：2026-09-12
 
 ## 0. 一句话结论
 
-\*\* 技术上可行，但 "5–15 MB" 这个数字对 omy 不成立。\*\* 实测与组件分析表明，能覆盖 omy
+**技术上可行，但 "5–15 MB" 这个数字对 omy 不成立。** 实测与组件分析表明，
+能覆盖 omy 全部功能的裁剪构建落在 **20–35 MB**（单平台、静态、strip 后）；
+只留免版税编码约 **12–18 MB**；若连视频抽帧一起砍掉可压到 **8–12 MB**。
 
-全部功能的裁剪构建落在 **20–35 MB**（单平台、静态、strip 后）；若接受功能降级，
+**专利是这里的主要约束**：内置解码器会把 H.264/HEVC/AAC 的专利责任从用户
+转移到我们身上，而 10 号文档已确立的 D-12 策略正是"把专利责任转移给
+OS 厂商"。**三档产物方案化解了这个两难**——默认发免版税档，完整能力由用户
+显式选择（§4.2）。
 
-可压到 **8–12 MB**。
+**构建链方面**：Windows 上 **MSVC 不够**，FFmpeg 官方与生产项目都要 MSYS2；
+实践中直接用 MSYS2 的 mingw-w64 gcc 即可，因为我们产出的是独立子进程
+可执行文件，不与 Rust 链接（§4.1）。
 
-更关键的是：**内置解码器会把 H.264/HEVC/AAC 的专利责任从用户转移到我们身上**，
-
-而这与 10 号文档已确立的 D-12 策略（"把专利责任转移给 OS 厂商"）直接冲突。
-
-这一条比体积更值得先决策。
+**唯一未实测的是分组件体积**——本地缺 make、WSL 无 root、无 Docker，
+真实数字必须在 CI 上产出。
 
 
 
@@ -188,7 +180,16 @@ H.264/HEVC/AAC 走系统解码器或让用户自备完整 FFmpeg。这与 D-12 �
 
 代价要说清楚：H.264 是目前最常见的视频编码，不内置意味着**多数用户的视频仍拿不到**
 
-**缩略图**—— 除非他们自己装 FFmpeg。这个取舍需要你拍板。
+**缩略图**—— 除非他们自己装 FFmpeg。
+
+> **三档方案如何化解这个两难**（后续决定，见 §4.2）
+>
+> 分成"免版税档"与"全量档"两份产物之后，这里不必二选一：
+> 默认分发免版税档（专利干净），需要完整能力的用户显式选择全量档，
+> 专利责任也随之回到作出选择的一方。这与 D-12 的分层思路一致。
+>
+> 仍需定的是 **H.264 落在哪一档**（见 §7）——它的风险等级（🟡）明显低于
+> HEVC（🔴），且 2027–2030 基础专利陆续到期，可能值得单独对待。
 
 
 
@@ -236,28 +237,120 @@ H.264/HEVC/AAC 走系统解码器或让用户自备完整 FFmpeg。这与 D-12 �
 
 ## 4. 构建与分发
 
-### 4.1 平台矩阵
+### 4.1 平台矩阵与构建链
+
+**先回答"MSVC 够不够"：不够。** FFmpeg 官方文档写得很明确——用 MSVC 构建
+**仍然需要 MSYS2 和 NASM**，因为 `configure` 是 shell 脚本、构建系统是 GNU
+make，MSVC 只是被当作编译器调用（`./configure --toolchain=msvc`），
+还得先从 VS 命令提示符里跑 `msys2_shell.cmd -use-full-path`。["https://ffmpeg.org/platform.html"]
+
+而且**实践中一般不这么做**。参考生产级的
+[serversideup/ffmpeg-lgpl-builds](https://github.com/serversideup/ffmpeg-lgpl-builds)：
+它的产物三元组叫 `x86_64-pc-windows-msvc`，但实际是**用 MSYS2 里的
+mingw-w64 gcc 构建**的——README 明说"msvc 只是消费方的命名约定，产出的 PE
+可执行文件与调用方工具链无关"。
+
+这对 omy 尤其成立：我们要的是**独立的 `ffmpeg.exe` / `ffprobe.exe` 子进程**，
+不与 Rust 代码链接，所以根本不存在 CRT 兼容问题，没有任何理由折腾 MSVC 路线。
+
+| 平台 | 构建链 | 谁提供 |
+|---|---|---|
+| win-x64 | MSYS2 + MINGW64 工具链 + nasm | runner 预装 MSYS2，用 `msys2/setup-msys2@v2` 装包 |
+| linux-x64 / arm64 | gcc + make + nasm（x86 才需要） | `apt-get` |
+| mac-arm64 | Xcode CLT（clang + make） | runner 自带 |
+| mac-x64 | 同上 + nasm，从 arm64 交叉编译 | `brew install nasm` |
+| Android | NDK 交叉编译 | **建议不做，见下** |
+
+各平台的具体依赖：
+
+```yaml
+# Windows：MSYS2 预装在 runner 上但不在 PATH 里，用官方 action 更省事
+- uses: msys2/setup-msys2@v2
+  with:
+    msystem: MINGW64
+    update: true
+    install: >-
+      base-devel mingw-w64-x86_64-toolchain
+      mingw-w64-x86_64-pkgconf mingw-w64-x86_64-nasm
+      git diffutils tar
+# 之后所有构建步骤加 shell: msys2 {0}
+
+# Linux
+- run: apt-get install -y --no-install-recommends build-essential nasm pkg-config git
+
+# macOS：Xcode CLT 自带 clang 与 make；官方文档指出 x86 需要 nasm 来编汇编优化
+- run: brew list nasm >/dev/null 2>&1 || brew install nasm
+```
+
+**关于 macOS 的两个坑：**
+
+1. **GitHub 免费 runner 现在只有 Apple Silicon**（`macos-latest`/`macos-14`/
+   `macos-15` 均为 arm64），Intel 版要用 `macos-15-intel` 这类单独标签。["https://docs.github.com/en/actions/reference/runners/github-hosted-runners"]
+   要出 x86_64 产物，要么用 Intel runner，要么在 arm64 上交叉编译
+   （参考项目走的是后者，`--enable-cross-compile --arch=x86_64`）。
+   两个架构也可以用 `lipo` 合成 universal binary，省一份分发。
+2. **签名与公证**。参考项目**没有做**签名——它面向服务端 Docker 场景。
+   但 omy 是分发给终端用户的桌面应用，未签名的可执行文件在 macOS 上会被
+   Gatekeeper 拦下。内置的 `ffmpeg`/`ffprobe` 需要跟 omy 主程序一起
+   codesign + 公证（hardened runtime），这是内置方案在 macOS 上的额外成本，
+   按需下载方案则会把这个问题转嫁给用户（他们得自己解除隔离属性）。
+
+**Android 仍建议不带**：10 号文档 §4.3 已记录 Google Play 自 2025-11 起强制
+16 KB 内存页对齐，社区 fork `ffmpegkit-maintained` 需自行验证；FFmpegKit 已于
+2025 年 4 月退役。与现状及 D-24 保持一致。**iOS 维持不带**（D-24 已定）。
+
+### 4.2 三档产物怎么组织
+
+目标是三种 release 产物：**无 FFmpeg / 内置免版税档 / 全部内置档**。
+
+关键决定：**三档共用同一套 FFmpeg 构建产物，只是打包时放不放、放哪一份。**
+不要为三档各写一套构建脚本——那样"改了 A 档忘了改 B 档"是迟早的事。
+
+```
+构建矩阵（在 omy-ffmpeg-minimal 仓库里）
+  profile ∈ { royalty-free, full }     # 两种 configure 配方
+  target  ∈ { win-x64, linux-x64, linux-arm64, mac-arm64, mac-x64 }
+  → 10 份产物，每份含 ffmpeg + ffprobe + COPYING.LGPLv2.1 + SOURCE.txt
+
+omy 主仓打包时
+  omy-<ver>-<target>.zip              # 无 FFmpeg，靠 candidate_dirs 探测
+  omy-<ver>-<target>-lite.zip         # 放 royalty-free 那份
+  omy-<ver>-<target>-full.zip         # 放 full 那份
+```
+
+**`omy doctor` 必须能区分这三种情况**，否则用户报错时根本说不清他装的是哪档。
+建议输出里明确写出 FFmpeg 的来源（内置 / 用户自备）与档位，以及**缺哪些能力**
+——比如 lite 档要直说"H.264 视频无缩略图，因为不含该解码器"，而不是让用户
+以为功能坏了。
+
+参考项目的做法值得抄：**构建后校验产物**，确认没有启用禁用的 flag
+（`--enable-gpl` / `--enable-nonfree` / `--enable-version3`），并检查动态链接
+只指向系统库。这条对 lite 档尤其重要——免版税档一旦不小心带进 H.264 解码器，
+整个专利论证就失效了，而这种错误肉眼看不出来。
+
+### 4.3 建议的仓库结构
+
+参照 `genesys-ffmpeg-minimal` 与 `ffmpeg-lgpl-builds` 的共同做法，
+**放独立仓库**而非塞进 omy 主仓：
+
+```
+omy-ffmpeg-minimal/
+  VERSION                       # 第 1 行 ffmpeg 版本，第 2 行配方修订号
+  configure-royalty-free.sh     # 免版税档配方
+  configure-full.sh             # 全量档配方
+  scripts/build-{windows,linux,macos}.sh
+  scripts/verify.sh             # 校验 flag 与链接，见上
+  scripts/smoke-test.sh         # 跑 omy 的四条真实路径
+  .github/workflows/build.yml
+```
+
+主仓通过 tag + SHA256 固定版本。理由：构建慢、平台相关，不该拖累主仓 CI；
+而且 FFmpeg 版本的升级节奏与 omy 自身完全不同。
+
+**源码获取要锁 SHA256**。参考项目的做法是在每个平台的构建脚本里都写一份
+上游 tarball 的 SHA256（防御性冗余），并在 release notes 里记录产物的 SHA256。
 
 
-
-| 平台                | 工具链                         | 备注       |
-| ----------------- | --------------------------- | -------- |
-| win-x64           | MSYS2 MinGW64               | 参考项目的主路径 |
-| linux-x64 / arm64 | gcc + 静态 glibc 或 musl       |          |
-| mac-arm64 / x64   | clang + osxcross 或原生 runner | 需两份      |
-| Android           | NDK 交叉编译                    | 见下       |
-
-**Android 尤其麻烦**，10 号文档 §4.3 已经记过：Google Play 自 2025-11 起强制
-
-16 KB 内存页对齐，而社区 fork `ffmpegkit-maintained` 需自行验证对齐。
-
-FFmpegKit 已于 2025 年 4 月退役。**建议 Android 继续不带 FFmpeg**，
-
-与现状及 D-24 保持一致。
-
-**iOS 维持不带**（D-24 已定）。
-
-### 4.2 建议的仓库结构
 
 参照 `genesys-ffmpeg-minimal` 的做法，**放独立仓库**而非塞进 omy 主仓：
 
@@ -281,7 +374,7 @@ omy-ffmpeg-minimal/
 
 不该拖累主仓 CI。
 
-### 4.3 configure 配方草案
+### 4.4 configure 配方草案
 
 下面是**免版税档**（§2 建议的口径）的起点。未经实测，需在 CI 上迭代 ——
 
@@ -369,7 +462,7 @@ omy-ffmpeg-minimal/
 
 * `--enable-small` 以速度换体积，对 omy 这种非实时场景合适。
 
-### 4.4 为什么不用 ffmpeg-next（社区 Rust 绑定）
+### 4.5 为什么不用 ffmpeg-next（社区 Rust 绑定）
 
 **结论：不适用，而且它解决不了任何一个我们关心的问题。**
 
@@ -399,7 +492,7 @@ crate 本身几乎没有体积，真正的体积仍来自你得自己提供的 F
 - **它的 feature 体系无法表达我们要的裁剪**。`build.rs` 里只有
   `--enable-decoder=*_mediacodec`（Android 硬解）这类零星开关，**没有
   `--disable-everything`**，也没有逐个 demuxer/parser/bsf 的开关。想裁到
-  12–18 MB 还是得自己写 configure 配方——那就回到 §4.3 了。
+  12–18 MB 还是得自己写 configure 配方——那就回到 §4.4 了。
 
 此外改成 FFI 会**丢掉进程隔离**。`security.md` 明确要求 FFmpeg 处理不可信输入时
 只在独立子进程里跑、不接触密钥；链接进主进程后，一个解码器漏洞就直接落在
@@ -408,7 +501,7 @@ crate 本身几乎没有体积，真正的体积仍来自你得自己提供的 F
 > 顺带：`ffmpeg-next` 自身是 WTFPL，但它链接的 FFmpeg 仍是 LGPL/GPL，
 > 许可证义务不会因为换了绑定而消失。
 
-### 4.5 按需下载：不是只能下 100 多 MB
+### 4.6 按需下载：不是只能下 100 多 MB
 
 先纠正一个印象：**官方预编译包大，是因为它把所有东西都塞进去了，不是因为
 FFmpeg 本身必须这么大。** 实测 BtbN win64-lgpl：
@@ -437,7 +530,7 @@ static 反而更大，因为每个 exe 都把全部库链进去了一份（三�
 换句话说：**只要决定了要裁剪，内置与按需下载的成本差异很小**，区别只在
 安装包里放不放、以及要不要写下载器（校验 SHA256、断点续传、镜像回退）。
 
-### 4.6 下载源
+### 4.7 下载源
 
 | 平台 | 源 | 体积 | 备注 |
 |---|---|---|---|
@@ -454,7 +547,7 @@ static 反而更大，因为每个 exe 都把全部库链进去了一份（三�
 锁定版本与 SHA256（不能跟 `latest` 漂）、准备镜像或回退源、以及处理源
 消失的情况。这些维护成本本身就是"不如自建"的论据之一。
 
-### 4.7 内置与按需下载可以并存
+### 4.8 内置与按需下载可以并存
 
 裁剪到 12–18 MB 后可以直接内置。但仍建议**保留按需下载作为补充**：
 用户想要 H.264/HEVC 抽帧时，引导其下载完整 LGPL 构建到
@@ -505,41 +598,46 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
 
 ## 6. 建议的推进顺序
 
+已定方向：**自建构建链，出三档 release 产物**（无 FFmpeg / 内置免版税档 /
+全部内置档）。三档并存也顺带化解了 §2 的专利两难——免版税档默认分发、
+全量档由用户显式选择。
 
+1. **修&#x20;**`-quality`**&#x20;→&#x20;**`-q:v`（§5）。独立小改动，与本方案解耦，
+   但必须在固定 FFmpeg 版本进安装包之前完成。
 
-1. **先决策专利口径**（§2）—— 内不内置 H.264/HEVC/AAC。这决定了后面所有数字。
+2. **建&#x20;**`omy-ffmpeg-minimal`**&#x20;仓库，先只做 win-x64 打通全流程**：
+   两档 configure 配方 + 构建 + 校验 + 冒烟测试。本地无法构建
+   （缺 make、WSL 无 root、无 Docker），这一步必须在 CI 上做。
+   拿到真实体积后回头修订 §1.3 的估算——**如果免版税档超出预期，
+   现在就该重新权衡，而不是等五个平台都铺完**。
 
-2. **修&#x20;**`-quality`**&#x20;→&#x20;**`-q:v`（§5）。独立小改动，与本方案解耦。
+3. **冒烟测试覆盖 omy 的四条真实路径**（§1.1），而不只是 `ffmpeg -version`。
+   尤其要覆盖 §4.4 提到的 parser/bsf 缺失场景：那类缺陷不报错，
+   只表现为"产物生成了但播不了"。
 
-3. **建&#x20;**`omy-ffmpeg-minimal`**&#x20;仓库，用 CI 产出真实体积**。本地无法构建
+4. **铺开其余平台**：linux-x64 → mac-arm64 → linux-arm64 → mac-x64。
+   macOS 放后面是因为还要解决签名与公证（§4.1）。
 
-   （缺 make、无 root、无 Docker），这一步必须在 CI 上做。拿到真实数字后
-
-   再回头修订 §1.3 的估算。
-
-4. **冒烟测试覆盖 omy 的四条真实路径**，而不只是 `ffmpeg -version`。
-
-5. 主仓接入：打包脚本 + `omy doctor` 区分 "内置" 与 "用户自备"。
+5. **主仓接入**：打包脚本产出三档 + `omy doctor` 明确报告档位与缺失能力。
 
 6. 同步订正 10 号文档的 "动态链接" 表述，并更新 `site/` 中英两份的 FFmpeg 说明。
 
-
-
 ***
 
-## 7. 待你决策的三个问题
+## 7. 仍待决策
 
+1. **免版税档到底放哪些解码器**。VP8/VP9/AV1/Opus/Vorbis/FLAC/WebP 是安全的；
+   争议在 **H.264**——它覆盖面最广（不含则多数视频没缩略图），
+   但基础专利要到 2027–2030 才陆续到期（10 号文档 §3.1）。
+   三档方案下有两种取法：H.264 归入全量档（更保守），或放进免版税档
+   并在 README 声明（更实用）。**这条建议在拿到真实体积后再定**——
+   如果两档体积差不大，分档的意义就不大。
 
+2. **macOS 签名**。内置 FFmpeg 意味着 omy 的签名流程要覆盖这两个可执行文件，
+   需要 Apple 开发者账号。若暂时没有，macOS 可能只能先出"无 FFmpeg 版"。
 
-1. **专利**：内置 H.264/HEVC/AAC 解码器吗？不内置则多数视频没有缩略图；
-
-   内置则与 D-12 已确立的 "责任转移给 OS 厂商" 策略冲突。
-
-2. **体积上限**：能接受多大？20–35 MB（全功能）/ 12–18 MB（免版税编码）/
-
-   8–12 MB（无视频抽帧）。
-
-3. **平台范围**：先只做 win-x64 验证可行性，还是一次铺开五个平台？
+3. **是否同时保留按需下载**（§4.8）。它零代码改动，可以作为 lite 档用户
+   升级到完整能力的路径，但要维护下载器与源的可用性。
 
 
 
@@ -574,6 +672,22 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
   （同为"完整"构建却比 BtbN 小 6 倍，说明 100+ MB 不是下限）
 
 * BtbN 的 release 资产里**没有 macOS**（仅 win64/winarm64/linux64/linuxarm64）
+
+**引自官方文档 / 生产项目**：
+
+* FFmpeg 官方：用 MSVC 构建仍需 MSYS2 + NASM，且要从 VS 命令提示符里跑
+  `msys2_shell.cmd -use-full-path`；macOS on x86 需要 nasm
+  （[platform.html](https://ffmpeg.org/platform.html)）
+
+* `serversideup/ffmpeg-lgpl-builds`：产物三元组虽叫 `x86_64-pc-windows-msvc`，
+  实际用 MSYS2 MINGW64 的 mingw-w64 gcc 构建；其 CI 的 `pacman` 包清单
+  可直接参考；它做构建后 flag 校验与链接检查，但**不做签名**
+
+* GitHub 免费 macOS runner 现为 Apple Silicon（`macos-latest`/`14`/`15` 均 arm64），
+  Intel 需 `macos-15-intel` 这类标签
+  （[GitHub Docs](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)）
+
+* GitHub Windows runner 预装 MSYS2 于 `C:\msys64` 但不在 PATH 中
 
 **估算未实测**：§1.3 的分组件体积。本地无法构建 FFmpeg
 （缺 `make`；WSL 的 sudo 需密码装不了工具链；无 Docker/Podman）。
