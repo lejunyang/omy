@@ -38,8 +38,6 @@ serde.workspace = true
 serde_json.workspace = true
 # 加解密进度条。大文件是纯 CPU 循环，没有反馈时用户分不清「在算」和「卡死」。
 indicatif.workspace = true
-# --original trash：与 GUI 用同一个 crate，保证两个入口的回收站行为一致
-trash.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -58,3 +56,12 @@ cast_possible_truncation = "warn"
 cast_sign_loss          = "warn"
 expect_used             = "allow"
 missing_panics_doc      = "allow"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# --original trash：与 GUI 用同一个 crate，保证两个入口的回收站行为一致。
+#
+# 按平台声明（与 omy-gui 一致）：trash 5.2 的 cfg 明确排除了 android，
+# 那里这个 crate 不提供任何函数。无条件依赖会在**编译 trash 自身**时就报
+# 「cannot find module or crate `platform`」，而报错指向 registry 里的
+# 第三方源码，看不出是我们的依赖声明写错了。
+trash = { workspace = true }

@@ -124,6 +124,40 @@ pub struct Args {
     pub no_moov_cache: bool,
 }
 
+/// 把原文件移到系统回收站。
+///
+/// 单独抽成一个函数是因为两处处置逻辑（单文件与容器）都要做同一件事，
+/// 而它还带一个平台分支——两处各写一遍的话，将来只会改一处。
+/// **改这里时注意两个调用点都受影响。**
+///
+/// # 为什么 Android 要单独一支
+///
+/// `trash` 5.2 在 Android 上不提供任何实现，所以那里连依赖都不声明
+/// （见 Cargo.toml 的 `[target.'cfg(not(target_os = "android"))'.dependencies]`）。
+/// 此时必须**明确报不支持**，绝不能退回 `remove_file`：用户选「回收站」
+/// 要的就是能后悔，悄悄改成永久删除就是数据丢失。
+///
+/// # Errors
+///
+/// 移动失败，或当前平台没有回收站。
+#[cfg(not(target_os = "android"))]
+fn move_original_to_trash(orig: &Path) -> Result<()> {
+    trash::delete(orig).map_err(|e| anyhow::anyhow!("移到回收站失败 {}: {e}", orig.display()))
+}
+
+/// Android 没有回收站，如实报错而不是降级成永久删除。
+///
+/// # Errors
+///
+/// 恒为错误。
+#[cfg(target_os = "android")]
+fn move_original_to_trash(orig: &Path) -> Result<()> {
+    bail!(
+        "当前平台没有回收站，无法移动 {}；请改用 --original keep 或 --original delete",
+        orig.display()
+    )
+}
+
 /// 解析取帧时间点。
 ///
 /// 接受三种写法，因为用户习惯不一：
@@ -666,8 +700,7 @@ fn verify_tree_then_handle(
 
     match action {
         OriginalAction::Trash => {
-            trash::delete(orig)
-                .map_err(|e| anyhow::anyhow!("移到回收站失败 {}: {e}", orig.display()))?;
+            move_original_to_trash(orig)?;
             ctx.out.info(&format!("已移到回收站 {}", orig.display()));
         }
         OriginalAction::Delete => {
@@ -842,11 +875,9 @@ fn verify_then_handle(
     match action {
         // 回收站对文件和目录是同一个入口，不必像永久删除那样自己分流
         OriginalAction::Trash => {
-            trash::delete(orig)
-                .map_err(|e| anyhow::anyhow!("移到回收站失败 {}: {e}", orig.display()))?;
+            move_original_to_trash(orig)?;
             ctx.out.info(&format!("已移到回收站 {}", orig.display()));
-        }
-        // remove_file 对目录一律失败，而 container 模式加密的正是目录：
+        }        // remove_file 对目录一律失败，而 container 模式加密的正是目录：
         // 不分流会让「加密文件夹后删原件」静默失效
         OriginalAction::Delete => {
             if orig.is_dir() {
