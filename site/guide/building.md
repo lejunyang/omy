@@ -91,6 +91,86 @@ xcode-select --install
 
 Tauri v2 在 macOS 上通常不需要额外的系统包。
 
+## 用 zig 做交叉检查
+
+只有 Windows 机器时，可以用 [zig](https://ziglang.org/) 当 C 交叉编译器，在本地
+`cargo check` 别的平台，不必等 CI。zig 自带各目标的 libc 与 macOS SDK 头文件，
+装一个可执行文件即可，不需要 Xcode 或 Linux sysroot。
+
+`cc-rs` 会把 `CC_<target>` 当成单个可执行文件调用，塞不进 `zig cc` 两个词，
+所以要包一层脚本。而且 **cc-rs 传的架构名和 zig 认的不一样**——针对 Apple 目标
+它传 `--target=arm64-apple-macosx`，zig 只认 `aarch64`，会报
+`unknown architecture: 'arm64'`。包装脚本要把 cc-rs 追加的 `--target` / `-arch`
+滤掉，换成 zig 的写法。
+
+包装脚本用 Python，**不要用 batch 或 `pwsh -File`**：cc-rs 传的
+`-mmacosx-version-min=11.0` 经过这两者会被拆成 `-mmacosx-version-min=11` 和
+`.0` 两个参数，报错是莫名其妙的 `.0: unrecognized file extension`；batch 里
+`echo %~1 | findstr` 也过滤不掉带 `=` 的参数。这两条都实测踩过。
+
+```python
+# zigcc.py
+import os, subprocess, sys
+
+ZIG_TARGET = os.environ.get("OMY_ZIG_TARGET", "aarch64-macos")
+args, skip = [], False
+for a in sys.argv[1:]:
+    if skip:
+        skip = False
+        continue
+    if a.startswith(("--target=", "-target=")):
+        continue
+    if a in ("-target", "--target", "-arch"):
+        skip = True
+        continue
+    args.append(a)
+sys.exit(subprocess.run(["zig", "cc", "-target", ZIG_TARGET] + args,
+                        shell=(os.name == "nt")).returncode)
+```
+
+cc-rs 只认可执行文件，所以再包一个 `.cmd`（`zigcc.cmd`）：
+
+```bat
+@echo off
+python <zigcc.py 的路径> %*
+```
+
+`zigar.cmd` 同理，内容是 `zig ar %*`。然后：
+
+```bat
+set OMY_ZIG_TARGET=aarch64-macos
+set CC_aarch64_apple_darwin=<zigcc.cmd 的路径>
+set AR_aarch64_apple_darwin=<zigar.cmd 的路径>
+cargo check --workspace --all-targets --target aarch64-apple-darwin
+```
+
+换目标时改 `OMY_ZIG_TARGET` 与对应的 `CC_<target>` 变量名即可。注意 zig 与 Rust
+的三元组写法不同：`aarch64-apple-darwin` → `aarch64-macos`，
+`x86_64-unknown-linux-gnu` → `x86_64-linux-gnu`。
+
+实测可用范围（zig 0.16.0）：
+
+| 目标 | 结果 |
+| --- | --- |
+| `aarch64-apple-darwin` | ✅ 整个 workspace（含 omy-gui）都能 check |
+| `x86_64-apple-darwin` | ✅ 同上 |
+| `x86_64-unknown-linux-gnu` | ⚠️ core / media / net / cli 可以，**omy-gui 不行** |
+| `aarch64-linux-android` | ❌ 用不了，仍需 NDK |
+
+Linux 上 omy-gui 卡在 `libdbus-sys`：它用 `pkg-config` 找 `dbus-1`，而这是
+**Linux 系统库**，不是编译器能提供的东西。zig 给的是 libc，给不了第三方 `.so`
+和头文件，所以这条得靠 CI 或真机。
+
+Android 用不了的原因是 zig **不捆绑 Bionic 头文件**：编一个只
+`#include <string.h>` 的文件就会报 `'string.h' file not found`（`aarch64-linux-android`
+和带 API 级别的 `aarch64-linux-android.24` 都一样）。所以 Android 仍必须用
+NDK 的 clang，见下一节。
+
+::: tip 这只是 check，不是真机验证
+交叉 `cargo check` 只能抓编译期问题——比如某个 API 在 macOS 上不存在。运行期
+行为（权限、回收站、路径大小写）仍然只有真机能验证。
+:::
+
 ## Android
 
 已验证。前置条件较多，仓库里有体检脚本：

@@ -91,6 +91,91 @@ xcode-select --install
 
 Tauri v2 generally needs no extra system packages on macOS.
 
+## Cross-checking with zig
+
+If you only have a Windows machine, [zig](https://ziglang.org/) can act as the C
+cross-compiler so you can `cargo check` other platforms locally instead of waiting
+for CI. zig bundles libc for each target plus the macOS SDK headers, so a single
+executable is enough — no Xcode, no Linux sysroot.
+
+`cc-rs` invokes `CC_<target>` as one executable, so `zig cc` (two words) does not
+fit; it needs a wrapper. And **cc-rs and zig disagree on architecture names**: for
+Apple targets cc-rs passes `--target=arm64-apple-macosx`, while zig only accepts
+`aarch64` and fails with `unknown architecture: 'arm64'`. The wrapper has to strip
+the `--target` / `-arch` that cc-rs appends and substitute zig's spelling.
+
+Write the wrapper in Python — **not batch, and not `pwsh -File`**. Both mangle
+`-mmacosx-version-min=11.0` into `-mmacosx-version-min=11` plus `.0`, which
+surfaces as the baffling `.0: unrecognized file extension`; batch also cannot
+filter arguments containing `=` via `echo %~1 | findstr`. Both were hit in
+practice.
+
+```python
+# zigcc.py
+import os, subprocess, sys
+
+ZIG_TARGET = os.environ.get("OMY_ZIG_TARGET", "aarch64-macos")
+args, skip = [], False
+for a in sys.argv[1:]:
+    if skip:
+        skip = False
+        continue
+    if a.startswith(("--target=", "-target=")):
+        continue
+    if a in ("-target", "--target", "-arch"):
+        skip = True
+        continue
+    args.append(a)
+sys.exit(subprocess.run(["zig", "cc", "-target", ZIG_TARGET] + args,
+                        shell=(os.name == "nt")).returncode)
+```
+
+cc-rs only accepts an executable, so wrap that in a `.cmd` (`zigcc.cmd`):
+
+```bat
+@echo off
+python <path to zigcc.py> %*
+```
+
+`zigar.cmd` is the same idea, containing `zig ar %*`. Then:
+
+```bat
+set OMY_ZIG_TARGET=aarch64-macos
+set CC_aarch64_apple_darwin=<path to zigcc.cmd>
+set AR_aarch64_apple_darwin=<path to zigar.cmd>
+cargo check --workspace --all-targets --target aarch64-apple-darwin
+```
+
+To switch targets, change `OMY_ZIG_TARGET` and the matching `CC_<target>` variable.
+Note that zig and Rust spell triples differently: `aarch64-apple-darwin` →
+`aarch64-macos`, `x86_64-unknown-linux-gnu` → `x86_64-linux-gnu`.
+
+Measured coverage (zig 0.16.0):
+
+| Target | Result |
+| --- | --- |
+| `aarch64-apple-darwin` | ✅ the whole workspace (including omy-gui) checks |
+| `x86_64-apple-darwin` | ✅ same |
+| `x86_64-unknown-linux-gnu` | ⚠️ core / media / net / cli work, **omy-gui does not** |
+| `aarch64-linux-android` | ❌ unusable, the NDK is still required |
+
+On Linux, omy-gui stops at `libdbus-sys`: it looks for `dbus-1` through
+`pkg-config`, and that is a **Linux system library**, not something a compiler can
+provide. zig supplies libc, not third-party `.so` files and headers, so this one
+needs CI or a real machine.
+
+Android does not work because zig **does not bundle Bionic headers**: compiling a
+file that only does `#include <string.h>` already fails with
+`'string.h' file not found` (for both `aarch64-linux-android` and the
+API-qualified `aarch64-linux-android.24`). Android therefore still requires the
+NDK's clang — see the next section.
+
+::: tip This is only a check, not real-device verification
+A cross `cargo check` catches compile-time problems only — an API that does not
+exist on macOS, for instance. Runtime behaviour (permissions, the recycle bin,
+path case sensitivity) can still only be verified on a real machine.
+:::
+
 ## Android
 
 Verified. There are several prerequisites, and the repository ships a checker:
