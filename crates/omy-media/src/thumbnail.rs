@@ -260,7 +260,12 @@ fn encode_webp_lossy(img: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> 
         "-c:v", "libwebp",
         // 显式关掉无损：libwebp 默认有损，但写明避免将来默认值变化
         "-lossless", "0",
-        "-quality", q.as_str(),
+        // 用 -q:v 而不是 -quality。两者在 `-h encoder=libwebp` 里都被声明
+        // 支持，但部分构建（实测 BtbN master N-126497）会**静默忽略**
+        // -quality：0/10/40/75/90/100 输出全是同样的 5300 字节，退出码 0、
+        // 无任何警告。那会让「超限就降质量重编」的逻辑整个失灵而不报错。
+        // -q:v 在所有实测构建上都生效。
+        "-q:v", q.as_str(),
         // 输出到 stdout 必须显式指定容器
         "-f", "webp",
         "-",
@@ -407,7 +412,8 @@ fn try_extract(
         // 相邻的两张缩略图清晰度肉眼可辨）
         "-c:v", "libwebp",
         "-lossless", "0",
-        "-quality", q.as_str(),
+        // 同上：必须用 -q:v，-quality 在某些构建上被静默忽略
+        "-q:v", q.as_str(),
         // 输出到 stdout 必须显式指定格式
         "-f", "webp",
         "-",
