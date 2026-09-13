@@ -10,35 +10,41 @@
 
 ## 0. 一句话结论
 
-**技术上可行，但 "5–15 MB" 这个数字对 omy 不成立。** 实测与组件分析表明，
-能覆盖 omy 全部功能的裁剪构建落在 **20–35 MB**（单平台、静态、strip 后）；
-只留免版税编码约 **12–18 MB**；若连视频抽帧一起砍掉可压到 **8–12 MB**。
+**可行，而且比预想的小得多。** 已在本机完成一次真实裁剪构建（win-x64、静态、
+strip）：`ffmpeg.exe` 5.59 MB + `ffprobe.exe` 5.49 MB = **11.08 MB**，
+对照完整构建的三个 exe 各约 212 MB。**这 11 MB 已含 H.264/HEVC/AV1/AAC
+等全部解码器**，即"全部内置档"就是这个量级，免版税档只会更小。
 
-**专利是这里的主要约束**：内置解码器会把 H.264/HEVC/AAC 的专利责任从用户
-转移到我们身上，而 10 号文档已确立的 D-12 策略正是"把专利责任转移给
-OS 厂商"。**三档产物方案化解了这个两难**——默认发免版税档，完整能力由用户
-显式选择（§4.2）。
+（文档早期按模块估算的 20–35 MB 偏大约 3 倍，原因见 §1.3 的订正。
+你最初说的"5–15 MB 可直接内置"——**结论是成立的**。）
 
-**构建链方面**：Windows 上 **MSVC 不够**，FFmpeg 官方与生产项目都要 MSYS2；
-实践中直接用 MSYS2 的 mingw-w64 gcc 即可，因为我们产出的是独立子进程
-可执行文件，不与 Rust 链接（§4.1）。
+**Windows 不需要装 MSYS2**：已实测用 osdk 的 `conda:` backend 拿到全套工具链
+并跑通 configure + make，产物仅依赖系统 DLL，可脱离 osdk 直接运行（§4.2）。
 
-**唯一未实测的是分组件体积**——本地缺 make、WSL 无 root、无 Docker，
-真实数字必须在 CI 上产出。
+**专利仍是主要约束**：内置解码器会把 H.264/HEVC/AAC 的专利责任从用户转移到
+我们身上，而 D-12 策略正是"把专利责任转移给 OS 厂商"。**三档产物方案化解了
+这个两难**——默认发免版税档，完整能力由用户显式选择（§4.3）。
+
+**仍待实测**：加上 libwebp 编码器后的体积，以及 linux / macOS 的对应数字。
 
 
 
 ***
 
-## 1. 为什么 "5–15 MB" 不适用
+## 1. omy 到底需要哪些组件
 
-那个数字来自 `genesys-ffmpeg-minimal`，它的适用范围是
+> **标题已订正。** 本节原题是"为什么 5–15 MB 不适用"，依据是按模块估算得出的
+> 20–35 MB。**实测把这个结论推翻了**：真实构建是 11.08 MB（§1.3），
+> 你最初的判断是对的。本节保留下来的价值在于**逐条说明 omy 需要哪些组件**，
+> 这是写 configure 配方的依据。
+
+作为对照，`genesys-ffmpeg-minimal` 那个 5–15 MB 的适用范围是
 
 **音频转 MP3**（WAV/FLAC/AIFF/OGG/AAC/M4A → MP3），没有视频解码器、没有
 
 视频滤镜、没有 MP4 muxer。\["[https://github.com/directivegames/genesys-ffmpeg-minimal](https://github.com/directivegames/genesys-ffmpeg-minimal)"]
 
-omy 的需求面要宽得多。下面按代码实测逐条列出。
+omy 的需求面比它宽得多——**但仍然落在同一个量级**。下面按代码实测逐条列出。
 
 ### 1.1 omy 实际用到的四条路径
 
@@ -101,16 +107,25 @@ Stream #0:2 -> #0:2 (subrip (srt) -> mov\_text (native))
 | avutil                               | 必需         | 1–1.5 MB     |
 | **合计（单平台，静态，strip）**                 |            | **21–33 MB** |
 
-> 这是
+> **上表已被实测推翻，偏大约 3 倍。** 2026-09-12 用 osdk 的 conda 工具链在本机
+> 完成了一次真实裁剪构建（FFmpeg 7.1.1，win-x64，静态，strip）：
 >
-> **估算不是实测**
+> | 产物 | 体积 |
+> |---|---|
+> | `ffmpeg.exe` | **5.59 MB** |
+> | `ffprobe.exe` | **5.49 MB** |
+> | **合计** | **11.08 MB** |
 >
-> ：本机缺 
+> 对照本机完整 GPL 构建：三个 exe 各约 212 MB。
 >
-> `make`
+> 而且**这 11 MB 已经含 H.264 / HEVC / AV1 / VP8 / VP9 / AAC 等全部解码器**，
+> 即它对应的是"全部内置档"，不是免版税档。免版税档只会更小。
 >
->  且 WSL 无 root（sudo 需密码）、
-> 无 Docker，无法在本地完成 FFmpeg 构建。第一步行动项就是用 CI 产出真实数字。
+> 估算偏大的原因：按模块分别估体积时，重复计入了各解码器共享的框架代码，
+> 而 `--disable-everything` + `--enable-small` 后链接器会把未引用的部分整个丢掉。
+>
+> 实测配方与验证过程见 §4.2。**仍待实测**：加上 libwebp 编码器后的体积，
+> 以及 linux/macOS 三平台的对应数字。
 
 可核对的锚点：完整 LGPL 构建有 **547 个解码器、238 个编码器**，而 omy 需要的
 
@@ -182,7 +197,7 @@ H.264/HEVC/AAC 走系统解码器或让用户自备完整 FFmpeg。这与 D-12 �
 
 **缩略图**—— 除非他们自己装 FFmpeg。
 
-> **三档方案如何化解这个两难**（后续决定，见 §4.2）
+> **三档方案如何化解这个两难**（后续决定，见 §4.3）
 >
 > 分成"免版税档"与"全量档"两份产物之后，这里不必二选一：
 > 默认分发免版税档（专利干净），需要完整能力的用户显式选择全量档，
@@ -253,9 +268,13 @@ mingw-w64 gcc 构建**的——README 明说"msvc 只是消费方的命名约定
 这对 omy 尤其成立：我们要的是**独立的 `ffmpeg.exe` / `ffprobe.exe` 子进程**，
 不与 Rust 代码链接，所以根本不存在 CRT 兼容问题，没有任何理由折腾 MSVC 路线。
 
+**但 Windows 上也不是非装 MSYS2 不可。** 已实测通过 osdk 的 `conda:` backend
+拿到全套工具链，`configure` 正常走完（退出码 0，`License: LGPL version 2.1 or
+later`），全程没有安装 MSYS2。详见 §4.2。
+
 | 平台 | 构建链 | 谁提供 |
 |---|---|---|
-| win-x64 | MSYS2 + MINGW64 工具链 + nasm | runner 预装 MSYS2，用 `msys2/setup-msys2@v2` 装包 |
+| win-x64 | mingw-w64 gcc + make + nasm + coreutils | **osdk `conda:`（已实测）**，或 `msys2/setup-msys2@v2` |
 | linux-x64 / arm64 | gcc + make + nasm（x86 才需要） | `apt-get` |
 | mac-arm64 | Xcode CLT（clang + make） | runner 自带 |
 | mac-x64 | 同上 + nasm，从 arm64 交叉编译 | `brew install nasm` |
@@ -264,7 +283,8 @@ mingw-w64 gcc 构建**的——README 明说"msvc 只是消费方的命名约定
 各平台的具体依赖：
 
 ```yaml
-# Windows：MSYS2 预装在 runner 上但不在 PATH 里，用官方 action 更省事
+# Windows 方案 A：osdk（本地开发推荐，见 §4.2 的实测结论）
+# 方案 B：MSYS2，runner 预装但不在 PATH 里
 - uses: msys2/setup-msys2@v2
   with:
     msystem: MINGW64
@@ -299,7 +319,142 @@ mingw-w64 gcc 构建**的——README 明说"msvc 只是消费方的命名约定
 16 KB 内存页对齐，社区 fork `ffmpegkit-maintained` 需自行验证；FFmpegKit 已于
 2025 年 4 月退役。与现状及 D-24 保持一致。**iOS 维持不带**（D-24 已定）。
 
-### 4.2 三档产物怎么组织
+### 4.2 Windows 不装 MSYS2 也能构建（已实测跑通）
+
+本项目已经在用 osdk 管理工具链（见根目录 `osdk.toml`）。它的 `conda:` backend
+能提供 FFmpeg 构建所需的全部东西，**不需要安装 MSYS2**。
+
+2026-09-12 在本机完整验证过一遍：configure 退出码 0，make 退出码 0，
+产出的 `ffmpeg.exe` / `ffprobe.exe` 能直接运行，并跑通 omy 的三条真实路径。
+
+**所需的包**（写进 `osdk.toml` 后进入该目录即自动激活）：
+
+```toml
+[tools]
+"conda:gcc_win-64" = "16.2.0"       # mingw-w64 交叉编译器 + binutils
+"conda:nasm" = "2.16.3"             # x86 SIMD 汇编
+"conda:cmake" = "4.4.3"             # 编 libwebp / zlib 用
+"conda:ninja" = "1.13.2"
+# POSIX 环境：只 pin m2-base 一个包，其余用 with 装进同一 prefix
+"conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config" }
+```
+
+**为什么 m2 系列必须用 `with` 而不是每个包各 pin 一行**（这是最关键的一条，
+起初按单包写，卡了很久）：
+
+conda 的每个 tool 各占一个独立 prefix，而每个 `m2-*` 包都自带一份
+`msys-2.0.dll`。Windows 按**路径**而非内容实例化 DLL，所以 8 个单包在同一
+进程树里就是 8 套互不相识的 msys 运行时——每个 `sh.exe` 按自己 DLL 的位置推导
+POSIX 根，于是 `m2-bash` 的 sh 眼中 `/usr/bin` 只有它自己的文件，configure 里
+`tr` / `head` / `awk` 全部 `command not found`；同时 6 个包都提供 `bash`，
+shim 因归属不唯一而**拒绝路由** `bash`。
+
+`with` 让主包与附加包一次联合求解、装进同一个 prefix。实测 msys DLL 从 8 份
+收敛到 1 份，`bash` 歧义随之消失，30 个命令全部可裸调。
+`m2-base` 是元包，自带 sh/bash/coreutils/grep/sed/gawk/findutils，但**不含
+make 与 pkg-config**，两者必须由 `with` 补上。
+
+元包默认不生成任何 shim（否则 msys 版 `ls`/`test`/`sort` 会盖住 Windows 同名
+命令），要用 per-tool `expose` 把需要的命令取回来。**不要改用全局
+`shims.include`**：那是全体工具的白名单，一旦设置，未列出的 cargo/rustc/java
+会全部失去 shim。
+
+**必须踩对的坑**（都卡过，且报错信息具有误导性）：
+
+1. **CRT 路径差一层 `usr`**。conda 的 mingw 编译器按 sysroot 布局打包，
+   `crt2.o` 在 `<sysroot>/usr/lib`，而 gcc 默认搜 `<sysroot>/lib`。
+   不处理就会得到 `cannot find crt2.o`，看起来像"包没装全"，其实文件就在那里。
+   **`--sysroot=` 不管用**（实测仍失败），要用 `-B<sysroot>/usr/lib`。
+
+2. **FFmpeg 的 configure 不读环境变量 `CC`**。只 `export CC=...` 的话它照样去
+   调裸 `gcc`，报 `gcc: command not found`。必须用 `--cc=` 显式传，
+   同时给 `--target-os=mingw32 --arch=x86_64`，否则还会有
+   `Unknown C compiler` 导致选不出正确的 CFLAGS。
+
+3. **binutils 只有带前缀的名字**。`gcc_win-64` 发布的是
+   `x86_64-w64-mingw32-nm` 等，没有裸名 `nm`。configure 会调裸 `nm`，
+   缺了**只是静默降级**不报错，所以要用 `--nm=` 等显式指定。
+
+4. **构建脚本内不要调 `osdk`**。嵌套的 osdk 会尝试交互提示并卡在等 stdin 上
+   （实测挂了 18 分钟只烧掉 4.8 CPU 秒，看起来像死锁）。路径应由外层算好传入。
+
+5. **msys 的 `tar` 不能吃 Windows 路径**。`tar -xzf C:\...` 会把 `C:` 当成远程
+   主机，报 `Cannot connect to C: resolve failed`。要用 `/c/...` 形式。
+
+**三个外部库都得自己编，不能用 conda 的现成包**：
+
+| 库 | 为什么不能直接用 conda 包 | 自编产物 |
+|---|---|---|
+| libwebp | win-64 包只给 MSVC 的 `.lib`，虽然 mingw 能链接，但产物会依赖 `libwebp.dll`，而该 DLL 又依赖 `VCRUNTIME140.dll` —— 等于要随产物分发 MSVC 运行时 | `libwebp.a` 1.02 MB |
+| zlib | 同上；且 FFmpeg 的 PNG 解码器依赖它 | `libz.a` 130 KB |
+
+zlib 的 cmake 产出名为 `libzlibstatic.a`，而 FFmpeg 按 `-lz` 查找，
+需要复制一份为 `libz.a`。
+
+实测可用的调用方式（配好 `osdk.toml` 后不再需要 `osdk exec` 包装）：
+
+```bash
+SYSROOT=$(osdk -q where conda:gcc_win-64)/Library/x86_64-w64-mingw32/sysroot
+export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$ZLIB/share/pkgconfig"
+
+"${SRC}/configure" \
+    --cc=x86_64-w64-mingw32-gcc \
+    --nm=x86_64-w64-mingw32-nm \
+    --ar=x86_64-w64-mingw32-ar \
+    --ranlib=x86_64-w64-mingw32-ranlib \
+    --strip=x86_64-w64-mingw32-strip \
+    --windres=x86_64-w64-mingw32-windres \
+    --target-os=mingw32 --arch=x86_64 \
+    --extra-cflags="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -I${WEBP}/include -I${ZLIB}/include -O2" \
+    --extra-ldflags="-B${SYSROOT}/usr/lib -L${WEBP}/lib -L${ZLIB}/lib -static" \
+    --pkg-config-flags=--static \
+    --disable-everything --disable-doc --disable-shared --enable-static \
+    --enable-small --disable-network --disable-autodetect \
+    --enable-libwebp --enable-zlib \
+    ...（组件清单见 §4.5）
+```
+
+**产物验证结果**（这些是接受标准，不只是"编过了"）：
+
+| 检查项 | 结果 |
+|---|---|
+| `ffmpeg.exe` / `ffprobe.exe` 体积 | 6.25 MB / 6.15 MB，合计 **12.40 MB** |
+| 依赖的 DLL | 只有 `KERNEL32` / `SHELL32` / `bcrypt` / `api-ms-win-crt-*`，**无 mingw / libwebp / MSVC 运行时** |
+| `License:` | `LGPL version 2.1 or later` |
+| **`cargo test -p omy-media`** | **123 项全过**（用 `OMY_FFMPEG` 指向裁剪版） |
+| `cargo test --workspace` | 全绿 |
+
+最后两行是真正的接受标准：前几轮"手工验证四条路径都通过"之后，
+真实测试仍抓出三个缺失组件（见下），所以**必须跑项目自己的测试**。
+
+依赖 DLL 那一条也关键：mingw 构建有时会拖上 `libgcc_s_seh-1.dll` 之类的
+运行时 DLL，那样就不能只拷两个 exe 了。实测确认**没有**，UCRT 是系统自带的。
+
+#### 4.2.1 三个只有真实测试才抓得到的缺失组件
+
+手工用文件跑 ffmpeg 命令全部成功，但 omy 的测试仍失败。逐个查出来的原因，
+都是"configure 接受了参数但没启用，且不报错"：
+
+| 缺的组件 | 症状 | 为什么手工验证发现不了 |
+|---|---|---|
+| `rawvideo` demuxer | `Unknown input format: 'rawvideo'` | 手工测试用的是视频文件输入，而 omy 的图片路径是把 RGB 裸数据喂进管道 |
+| `fd` protocol | `Protocol not found`，提示 `Did you mean file:fd:?` | FFmpeg 7.x 把 `-i -` 解析成 `fd:` 协议，**光有 `pipe` 不够**；用文件输出时不经过这条路径 |
+| `image_png_pipe` 等 demuxer | 管道探测 PNG 报 `Invalid data found`；对**文件**探测却正常返回 `image2` | omy 只走管道探测。而且真实名字带 `image_` 前缀（`image_png_pipe`），写成 `png_pipe` configure 不报错也不启用 |
+
+最后一条的后果最隐蔽：`is_still_image` 靠容器名判断（要求 `image2` 或以
+`_pipe` 结尾），管道探测失败 → 拿不到容器名 → 图片走不进图片分支 →
+`thumbnail=None` 且 `warnings=[]`，**没有任何错误信息**。
+
+另外 zlib 起初被我判断为"omy 不需要"，理由是缩略图走 rawvideo 不经过 PNG
+解码器。这个判断是错的：ffprobe 读 PNG 的宽高**需要** PNG 解码器，
+缺了会返回 `width=0 height=0`，omy 因此判定不出静态图片。
+
+**这对方案意味着什么**：Windows 本地开发不再需要 MSYS2，`osdk.toml` 一写、
+进目录即用，新同学不必手工配环境。CI 上两条路都可行——继续用
+`msys2/setup-msys2@v2`，或装 osdk 复用同一份 `osdk.toml`
+（后者的好处是本地与 CI 严格同构，版本由 `osdk.lock` 锁定）。
+
+### 4.3 三档产物怎么组织
 
 目标是三种 release 产物：**无 FFmpeg / 内置免版税档 / 全部内置档**。
 
@@ -328,7 +483,7 @@ omy 主仓打包时
 只指向系统库。这条对 lite 档尤其重要——免版税档一旦不小心带进 H.264 解码器，
 整个专利论证就失效了，而这种错误肉眼看不出来。
 
-### 4.3 建议的仓库结构
+### 4.4 建议的仓库结构
 
 参照 `genesys-ffmpeg-minimal` 与 `ffmpeg-lgpl-builds` 的共同做法，
 **放独立仓库**而非塞进 omy 主仓：
@@ -374,95 +529,84 @@ omy-ffmpeg-minimal/
 
 不该拖累主仓 CI。
 
-### 4.4 configure 配方草案
+### 4.5 configure 配方（已实测，omy 全部测试通过）
 
-下面是**免版税档**（§2 建议的口径）的起点。未经实测，需在 CI 上迭代 ——
+下面这份是本机真实跑通的配方，不是草案。它让 `cargo test -p omy-media`
+的 123 项全部通过。
 
-`--disable-everything` 之后漏掉任何一个组件都表现为运行期失败而非构建失败。
-
-
-
-```
-./configure \\
-
-&#x20; \--disable-everything --disable-gpl --disable-nonfree \\
-
-&#x20; \--disable-doc --disable-debug --disable-network \\
-
-&#x20; \--disable-programs --enable-ffmpeg --enable-ffprobe \\
-
-&#x20; \--enable-small \\
-
-&#x20; \\
-
-&#x20; \`# 容器：用户手上可能是任何格式，这部分不能省\` \\
-
-&#x20; \--enable-demuxer=matroska,mov,avi,flv,mpegts,mpegps,asf,ogg,wav,mp3,flac,aac,rawvideo,image2,png\_pipe,mjpeg\_pipe,webp\_pipe \\
-
-&#x20; \--enable-muxer=mp4,webp,rawvideo \\
-
-&#x20; \\
-
-&#x20; \`# 免版税视频解码（H.264/HEVC 见 §2 的专利讨论，此档不含）\` \\
-
-&#x20; \--enable-decoder=vp8,vp9,av1,theora,png,mjpeg,webp,bmp,gif \\
-
-&#x20; \\
-
-&#x20; \`# 音频解码：探测与字幕时间对齐需要\` \\
-
-&#x20; \--enable-decoder=opus,vorbis,flac,mp3,pcm\_s16le,pcm\_s24le \\
-
-&#x20; \\
-
-&#x20; \`# 字幕：remux 的 -c:s mov\_text 需要\` \\
-
-&#x20; \--enable-decoder=subrip,ass,webvtt,text \\
-
-&#x20; \--enable-encoder=mov\_text \\
-
-&#x20; \\
-
-&#x20; \`# 缩略图\` \\
-
-&#x20; \--enable-libwebp --enable-encoder=libwebp \\
-
-&#x20; \--enable-filter=scale,format,null,anull \\
-
-&#x20; \--enable-protocol=pipe,file \\
-
-&#x20; \\
-
-&#x20; \`# parser/bsf：不加会出现"能 demux 但 copy 出来播不了"\` \\
-
-&#x20; \--enable-parser=h264,hevc,vp8,vp9,av1,aac,opus,flac,mpegaudio \\
-
-&#x20; \--enable-bsf=h264\_mp4toannexb,hevc\_mp4toannexb,aac\_adtstoasc,extract\_extradata
+```bash
+"${SRC}/configure" \
+  --cc=x86_64-w64-mingw32-gcc \
+  --nm=x86_64-w64-mingw32-nm \
+  --ar=x86_64-w64-mingw32-ar \
+  --ranlib=x86_64-w64-mingw32-ranlib \
+  --strip=x86_64-w64-mingw32-strip \
+  --windres=x86_64-w64-mingw32-windres \
+  --target-os=mingw32 --arch=x86_64 \
+  --extra-cflags="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -I${WEBP}/include -I${ZLIB}/include -O2" \
+  --extra-ldflags="-B${SYSROOT}/usr/lib -L${WEBP}/lib -L${ZLIB}/lib -static" \
+  --pkg-config-flags=--static \
+  \
+  --disable-everything --disable-doc --disable-shared --enable-static \
+  --enable-small --disable-network --disable-autodetect \
+  \
+  `# 外部库：libwebp 编缩略图，zlib 供 PNG 解码器` \
+  --enable-libwebp --enable-zlib \
+  \
+  `# 解码器。rawvideo 是图片缩略图路径的输入格式，漏掉会 Unknown input format` \
+  --enable-decoder=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,rawvideo \
+  --enable-decoder=aac,mp3,opus,vorbis,flac,pcm_s16le \
+  --enable-decoder=subrip,ass,webvtt,mov_text \
+  \
+  `# 编码器。remux 的字幕不是纯 copy，mov_text 必需` \
+  --enable-encoder=libwebp,mov_text \
+  \
+  `# demuxer。pipe 类的真实名字带 image_ 前缀，写成 png_pipe 不报错也不生效` \
+  --enable-demuxer=mov,matroska,avi,mpegts,flv,image2,image2pipe \
+  --enable-demuxer=image_png_pipe,image_jpeg_pipe,image_webp_pipe \
+  --enable-demuxer=image_bmp_pipe,image_gif_pipe \
+  --enable-demuxer=mjpeg,webp,wav,mp3,flac,ogg,aac,srt,ass,webvtt,rawvideo \
+  \
+  --enable-muxer=mov,mp4,matroska,webp,image2,rawvideo \
+  \
+  `# parser/bsf：不加会出现"能 demux 但 copy 出来播不了"` \
+  --enable-parser=h264,hevc,vp8,vp9,av1,aac,mpegaudio,flac,opus,vorbis,png,webp \
+  --enable-bsf=extract_extradata,h264_mp4toannexb,hevc_mp4toannexb \
+  \
+  `# 协议：FFmpeg 7.x 把 -i - 解析成 fd:，光有 pipe 不够` \
+  --enable-protocol=file,pipe,fd \
+  \
+  --enable-filter=scale,format,null,anull,copy,thumbnail,select,fps,transpose,crop \
+  --enable-swscale --enable-avfilter
 ```
 
-几个容易踩的点：
+几个容易踩的点，前四条都是实测被抓出来的（详见 §4.2.1）：
 
+* `fd`**&#32;协议不能漏**。FFmpeg 7.x 把 `-i -` 解析成 `fd:` 协议，只开 `pipe`
+  会报 `Protocol not found`。omy 全程走管道，这条是硬要求。
 
+* **pipe 类 demuxer 的真实名字带&#32;**`image_`**&#32;前缀**。写成 `png_pipe`
+  configure 既不报错也不启用，结果 ffprobe 无法从管道识别 PNG。
+  而 `prepare.rs` 的静态图判据依赖容器名（`image2` 或以 `_pipe` 结尾），
+  拿不到容器名时图片会被误判、`thumbnail=None` 且 `warnings=[]`——**无任何报错**。
 
-* `--disable-network`**&#x20;要慎用**：omy 全程走管道，不需要网络协议，关掉能省体积
+* `rawvideo`**&#32;要同时开 decoder 和 demuxer**。图片缩略图是把 RGB 裸数据
+  喂进管道，缺了报 `Unknown input format: 'rawvideo'`。
 
-  也能减小攻击面。但要确认 `pipe:` 协议不受影响（配方里已显式 enable）。
+* `zlib`**&#32;是必需的，不是可选**。虽然缩略图走 rawvideo 不经过 PNG 解码器，
+  但 ffprobe 读 PNG 宽高需要它，缺了返回 `width=0 height=0`。
 
 * **parser 与 bsf 必须显式开**。只开 demuxer/muxer 时，`-c copy` 会因为
+  拿不到 extradata 而产出"能生成但播不了"的 MP4——这类问题不报错，
+  只有真正播放才发现。`remux.rs` 的 `looks_like_mp4` 检查也拦不住。
 
-  拿不到 extradata 而产出 "能生成但播不了" 的 MP4—— 这类问题不报错，
-
-  只有真正播放才发现。`remux.rs:254` 的 `looks_like_mp4` 检查也拦不住。
-
-* `image2`**&#x20;与&#x20;**`*_pipe`**&#x20;别漏**：`prepare.rs` 的静态图判据依赖 ffprobe 报出的
-
-  `png_pipe`/`mjpeg_pipe`/`image2` 容器名（见 `prepare.rs:405` 的测试）。
-
-  漏掉会让静态图片被误判成视频送去抽帧。
+* `--disable-network` 对 omy 安全：全程走管道，不需要网络协议，
+  关掉能省体积也能减小攻击面。
 
 * `--enable-small` 以速度换体积，对 omy 这种非实时场景合适。
 
-### 4.5 为什么不用 ffmpeg-next（社区 Rust 绑定）
+
+### 4.6 为什么不用 ffmpeg-next（社区 Rust 绑定）
 
 **结论：不适用，而且它解决不了任何一个我们关心的问题。**
 
@@ -492,7 +636,7 @@ crate 本身几乎没有体积，真正的体积仍来自你得自己提供的 F
 - **它的 feature 体系无法表达我们要的裁剪**。`build.rs` 里只有
   `--enable-decoder=*_mediacodec`（Android 硬解）这类零星开关，**没有
   `--disable-everything`**，也没有逐个 demuxer/parser/bsf 的开关。想裁到
-  12–18 MB 还是得自己写 configure 配方——那就回到 §4.4 了。
+  12–18 MB 还是得自己写 configure 配方——那就回到 §4.5 了。
 
 此外改成 FFI 会**丢掉进程隔离**。`security.md` 明确要求 FFmpeg 处理不可信输入时
 只在独立子进程里跑、不接触密钥；链接进主进程后，一个解码器漏洞就直接落在
@@ -501,7 +645,7 @@ crate 本身几乎没有体积，真正的体积仍来自你得自己提供的 F
 > 顺带：`ffmpeg-next` 自身是 WTFPL，但它链接的 FFmpeg 仍是 LGPL/GPL，
 > 许可证义务不会因为换了绑定而消失。
 
-### 4.6 按需下载：不是只能下 100 多 MB
+### 4.7 按需下载：不是只能下 100 多 MB
 
 先纠正一个印象：**官方预编译包大，是因为它把所有东西都塞进去了，不是因为
 FFmpeg 本身必须这么大。** 实测 BtbN win64-lgpl：
@@ -530,7 +674,7 @@ static 反而更大，因为每个 exe 都把全部库链进去了一份（三�
 换句话说：**只要决定了要裁剪，内置与按需下载的成本差异很小**，区别只在
 安装包里放不放、以及要不要写下载器（校验 SHA256、断点续传、镜像回退）。
 
-### 4.7 下载源
+### 4.8 下载源
 
 | 平台 | 源 | 体积 | 备注 |
 |---|---|---|---|
@@ -547,7 +691,7 @@ static 反而更大，因为每个 exe 都把全部库链进去了一份（三�
 锁定版本与 SHA256（不能跟 `latest` 漂）、准备镜像或回退源、以及处理源
 消失的情况。这些维护成本本身就是"不如自建"的论据之一。
 
-### 4.8 内置与按需下载可以并存
+### 4.9 内置与按需下载可以并存
 
 裁剪到 12–18 MB 后可以直接内置。但仍建议**保留按需下载作为补充**：
 用户想要 H.264/HEVC 抽帧时，引导其下载完整 LGPL 构建到
@@ -564,37 +708,29 @@ static 反而更大，因为每个 exe 都把全部库链进去了一份（三�
 
 ***
 
-## 5. 一个必须先修的缺陷（已实测，未修）
+## 5. 一个必须先修的缺陷（已实测，本轮已修）
 
-调研中发现 `thumbnail.rs` 的 263 与 410 行用了 `-quality`，
-
-**在较新的 FFmpeg 上该参数被静默忽略**：
-
-
+调研中发现 `thumbnail.rs` 用了 `-quality`，**在较新的 FFmpeg 上该参数被静默
+忽略**：
 
 ```
-BtbN master N-126497   -quality 0/10/40/75/90/100  →  全是 5,300 字节
-
-BtbN master N-126497   -q:v 10 → 23,798     -q:v 90 → 64,822
-
-gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
+BtbN master N-126497   -quality 0/10/40/75/90/100  ->  全是 5,300 字节
+BtbN master N-126497   -q:v 10 -> 23,798     -q:v 90 -> 64,822
+gyan 9.0.1             -quality 40 -> 38,032   -quality 90 -> 64,822
 ```
 
-两个构建的 `-h encoder=libwebp` **都声明支持&#x20;**`-quality`，所以查帮助发现不了。
+两个构建的 `-h encoder=libwebp` **都声明支持** `-quality`，所以查帮助发现不了。
 
-后果：质量参数失效 → 缩略图固定按默认质量编码 → `SIZE_LIMIT` 的 " 超限就降质量
+后果：质量参数失效 -> 缩略图固定按默认质量编码 -> `SIZE_LIMIT` 的"超限就降
+质量重编"逻辑整个失灵，且不报错。仅 `lower_quality_yields_smaller_output`
+一条测试能发现。
 
-重编 " 逻辑整个失灵，且不报错。仅 `lower_quality_yields_smaller_output` 一条测试
+**已改为 `-q:v`**（图片与视频两条路径各一处）。在自建的裁剪版上复测确认分档
+生效：`-q:v 10` -> 21,392 字节，`-q:v 90` -> 61,724 字节。
 
-能发现。
+修它的时机很关键：一旦把某个版本的 FFmpeg 固定进安装包，这类版本差异就从
+"用户环境问题"变成"我们发出去的缺陷"。
 
-**这条必须在内置之前修**（改用 `-q:v`）：一旦把某个版本的 FFmpeg 固定进安装包，
-
-这类版本差异就从 "用户环境问题" 变成 "我们发出去的缺陷"。
-
-
-
-***
 
 ## 6. 建议的推进顺序
 
@@ -612,7 +748,7 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
    现在就该重新权衡，而不是等五个平台都铺完**。
 
 3. **冒烟测试覆盖 omy 的四条真实路径**（§1.1），而不只是 `ffmpeg -version`。
-   尤其要覆盖 §4.4 提到的 parser/bsf 缺失场景：那类缺陷不报错，
+   尤其要覆盖 §4.5 提到的 parser/bsf 缺失场景：那类缺陷不报错，
    只表现为"产物生成了但播不了"。
 
 4. **铺开其余平台**：linux-x64 → mac-arm64 → linux-arm64 → mac-x64。
@@ -636,7 +772,7 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
 2. **macOS 签名**。内置 FFmpeg 意味着 omy 的签名流程要覆盖这两个可执行文件，
    需要 Apple 开发者账号。若暂时没有，macOS 可能只能先出"无 FFmpeg 版"。
 
-3. **是否同时保留按需下载**（§4.8）。它零代码改动，可以作为 lite 档用户
+3. **是否同时保留按需下载**（§4.9）。它零代码改动，可以作为 lite 档用户
    升级到完整能力的路径，但要维护下载器与源的可用性。
 
 
@@ -646,6 +782,15 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
 ## 附：本文档的证据来源
 
 **实测得出**（本机）：
+
+* **用 osdk conda 工具链完成真实裁剪构建**（FFmpeg 7.1.1，win-x64，
+  gcc 16.2.0）：configure 与 make 均退出 0，产物 11.08 MB，
+  只依赖系统 DLL，三条真实路径（探测 / 抽帧缩放 / `-c copy`）全部通过
+
+* conda mingw 编译器的 CRT 在 `<sysroot>/usr/lib` 而 gcc 默认搜
+  `<sysroot>/lib`，须用 `-B` 指定；`--sysroot=` 无效
+
+* FFmpeg configure 不读环境变量 `CC`，必须 `--cc=` 显式传
 
 
 
@@ -689,8 +834,9 @@ gyan 9.0.1             -quality 40 → 38,032   -quality 90 → 64,822
 
 * GitHub Windows runner 预装 MSYS2 于 `C:\msys64` 但不在 PATH 中
 
-**估算未实测**：§1.3 的分组件体积。本地无法构建 FFmpeg
-（缺 `make`；WSL 的 sudo 需密码装不了工具链；无 Docker/Podman）。
+**估算未实测**：§1.3 分模块的逐项体积。但**合计值已被实测取代**
+（11.08 MB，见 §1.3 的订正框与 §4.2）。仍未实测的是加上 libwebp 后的体积，
+以及 linux / macOS 三平台的数字。
 
 **引自既有文档**：专利矩阵与 D-12 策略（`10-licensing-and-patents.md`）、
 
