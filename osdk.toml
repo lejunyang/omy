@@ -7,3 +7,48 @@ android-emulator = "37.1.11"
 android-build-tools = "37.0.0"
 android-cmdline-tools = "latest"
 android-system-images = "android-35;google_apis;x86_64"
+# FFmpeg 裁剪构建的工具链（见 docs/research/13-ffmpeg-minimal-build.md）。
+# Windows 上不需要装 MSYS2：mingw 交叉编译器与 POSIX 构建环境都由 conda 提供。
+"conda:gcc_win-64" = "16.2.0"       # mingw-w64 交叉编译器 + binutils
+"conda:nasm" = "2.16.3"            # x86 SIMD 汇编
+"conda:cmake" = "4.4.3"            # 编 libwebp 用
+"conda:ninja" = "1.13.2"
+#
+# POSIX 环境刻意只 pin m2-base 一个包、其余用 `with` 装进同一 prefix，
+# 而不是每个 m2-* 各 pin 一行。原因不是少写几行：
+#
+# conda 的每个 tool 各占一个独立 prefix，而每个 m2-* 包都自带一份
+# msys-2.0.dll。Windows 按「路径」而非内容实例化 DLL，所以 8 个单包在同一
+# 进程树里就是 8 套互不相识的 msys 运行时 —— 每个 sh.exe 按自己 DLL 的位置
+# 推导 POSIX 根，于是 m2-bash 的 sh 眼中 /usr/bin 只有它自己的文件，
+# FFmpeg 的 configure 里 tr / head / awk 全部 command not found；
+# 同时 6 个包都提供 bash，shim 因归属不唯一而拒绝路由 bash。
+#
+# `with` 让主包与附加包一次联合求解、装进同一个 prefix：msys-2.0.dll 只有
+# 一份，工具彼此可见（实测 8 份 -> 1 份，bash 歧义随之消失）。
+# 参见 one-sdk 的 docs/bugs/005（根因 B）与 docs/conda-with-option-spec.zh-CN.md。
+#
+# m2-base 是元包，自带 sh/bash/coreutils/grep/sed/gawk/findutils，但不含
+# make 与 pkg-config，两者必须由 with 补上。
+#
+# 本段由 `osdk use conda:m2-base@2022.6.1 --opt with=m2-make,m2-diffutils,m2-pkg-config`
+# 生成，改动请用 osdk 命令而非手工编辑（`with` 参与安装 identity，
+# 手改会指向另一个 prefix）。
+"conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config" }
+
+[settings.shims.tools."conda:m2-base"]
+# m2-base 是元包，自身不「拥有」prefix 里那 250 多个命令，所以默认一个 shim
+# 都不生成 —— 这是刻意的，否则 msys 版的 ls / test / sort 会盖住 Windows 同名命令。
+#
+# 这里用 per-tool `expose` 只取回 FFmpeg 的 configure 与 Makefile 真正用到的
+# 命令，于是 bash / make / sed 等可以直接调用，不必套 `osdk exec`。
+#
+# 不要改用全局 `shims.include`：它是**全体工具**的白名单，一旦设置，未列出的
+# cargo / rustc / java 会全部失去 shim。per-tool 的 expose 是增量的，只加不减。
+# 详见 one-sdk 的 docs/bugs/008。
+#
+# 改动请用 `osdk config set shims.conda:m2-base.expose "..."`，改完重新 trust。
+expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee"]
+
+[settings.shims.tools."conda:gcc_win-64"]
+expose = ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++", "x86_64-w64-mingw32-ar", "x86_64-w64-mingw32-as", "x86_64-w64-mingw32-nm", "x86_64-w64-mingw32-ranlib", "x86_64-w64-mingw32-strip", "x86_64-w64-mingw32-objdump", "x86_64-w64-mingw32-windres", "x86_64-w64-mingw32-ld", "x86_64-w64-mingw32-dlltool"]
