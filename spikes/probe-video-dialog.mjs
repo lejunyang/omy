@@ -123,19 +123,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const picked = await c.eval(`(() => {
     const rows=[...document.querySelectorAll('.grid .card, .list .lrow')];
-    const row=rows.find(r=>{
+    const nameOf=r=>{
       const a=r.getAttribute('aria-label');
       const e=r.querySelector('.cname, .nm');
-      return /probe-video\\.mp4$/i.test((a||(e?e.textContent:'')).trim());
-    });
-    if(!row) return 'no-video:'+rows.length+':'+rows.slice(0,6).map(r=>{
-      const e=r.querySelector('.cname, .nm');
-      return e?e.textContent.trim().slice(0,18):'?';
-    }).join(',');
+      return (a||(e?e.textContent:'')).trim();
+    };
+    // 优先挑带 ASS 字幕的那个：字幕取舍是本对话框最容易出错的一块，
+    // 挑到无字幕的文件会让那几条断言全部走进「无字幕」分支，等于没测
+    let row=rows.find(r=>/probe-ass\\.mkv$/i.test(nameOf(r)));
+    if(!row) row=rows.find(r=>/probe-video\\.mp4$/i.test(nameOf(r)));
+    if(!row) return 'no-video:'+rows.length+':'+rows.slice(0,6).map(nameOf).join(',');
     row.dispatchEvent(new MouseEvent('click',{bubbles:true}));
-    return 'ok';
+    return 'ok:'+nameOf(row);
   })()`);
-  check('找到并选中 mp4 文件', picked === 'ok', String(picked));
+  check('找到并选中测试视频', String(picked).startsWith('ok'), String(picked));
 
   console.log('\n--- 2. 打开加密对话框，检查视频处理入口 ---');
   await c.eval(`(() => {
@@ -346,6 +347,86 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // 那个 bug 在原型阶段实测出现过
   const selCount = await c.eval(`document.querySelectorAll('.vdlg .vopt.sel').length`);
   check('选中态只有一张卡高亮', selCount === 1, `高亮 ${selCount} 张`);
+
+  console.log('\n--- 7b. 字幕：按实际情况说话 ---');
+  // 这一段验证的是「界面说的和真实处理一致」。素材可能没有字幕，
+  // 那种情况下字幕区整块不该出现——对无字幕文件解释字幕怎么处理
+  // 只会让人以为自己漏看了什么
+  const subState = await c.eval(`(() => {
+    const v=document.querySelector('.vdlg');
+    const box=v.querySelector('.vsubs');
+    return JSON.stringify({
+      shown: !!box,
+      radios: box?[...box.querySelectorAll('input[type=radio]')].map(r=>r.value):[],
+      text: box?box.textContent.replace(/\\s+/g,' ').trim().slice(0,120):null,
+    });
+  })()`);
+  console.log('  [诊断] 字幕区 ' + subState);
+  const ss = JSON.parse(subState);
+
+  // 素材有没有字幕由界面如实反映：有则必须有字幕区，无则整块不出现。
+  // 不按素材分支而写死「一定有字幕区」的话，换个素材就假失败
+  const hasSubsInUi = ss.shown === true;
+
+  if (hasSubsInUi) {
+    check('有字幕时显示字幕处理说明', ss.shown === true && ss.text.length > 5, ss.text);
+    // 说明必须是具体结论，不能是「可能会丢」这种模棱两可的话
+    check('字幕说明给出了明确结论',
+      /保留|转成|消失|不会带|丢弃|keep|convert|disappear|no subtitles/i.test(ss.text || ''),
+      String(ss.text).slice(0, 60));
+
+    // 选中的若是 ASS 素材，必须给出三选一，且默认落在「转 mov_text」。
+    // 默认值错了的话用户会在不知情的情况下丢掉字幕样式
+    if (ss.radios.length > 0) {
+      check('ASS 字幕给出三选一',
+        ss.radios.includes('auto') && ss.radios.includes('keep_style') && ss.radios.includes('drop'),
+        JSON.stringify(ss.radios));
+      const defaultMode = await c.eval(`(() => {
+        const r=document.querySelector('.vdlg .vsubs input[type=radio]:checked');
+        return r?r.value:null;
+      })()`);
+      check('默认转 mov_text（选 MP4 时不擅自改容器）',
+        defaultMode === 'auto', `默认=${defaultMode}`);
+
+      // 选「保样式」但容器还是 MP4 时，必须当场警告并给出一键切换——
+      // 不警告的话用户以为样式保住了，实际字幕会被整条丢掉
+      await c.eval(`(() => {
+        const r=[...document.querySelectorAll('.vdlg .vsubs input[type=radio]')]
+          .find(x=>x.value==='keep_style');
+        if(r) r.click();
+        return true;
+      })()`);
+      await sleep(700);
+      const warn = await c.eval(`(() => {
+        const box=document.querySelector('.vdlg .vsubs');
+        const w=box?box.querySelector('.warnbox'):null;
+        const btn=box?box.querySelector('.vcaps-acts button'):null;
+        return JSON.stringify({ warned: !!w, hasSwitch: !!btn,
+          text: w?w.textContent.replace(/\\s+/g,' ').trim().slice(0,80):null });
+      })()`);
+      console.log('  [诊断] 选保样式后 ' + warn);
+      const wn = JSON.parse(warn);
+      check('选保样式但仍是 MP4 时给出警告', wn.warned === true, warn);
+      check('并提供一键改用 MKV', wn.hasSwitch === true, warn);
+
+      // 点它应当真的把容器切到 MKV，而不只是个装饰
+      await c.eval(`(() => {
+        const btn=document.querySelector('.vdlg .vsubs .vcaps-acts button');
+        if(btn) btn.click();
+        return true;
+      })()`);
+      await sleep(700);
+      const after2 = await c.eval(`(() => {
+        const sel=document.querySelector('.vdlg [data-container], .vdlg .vsub select');
+        return sel?sel.value:null;
+      })()`);
+      check('点「改用 MKV」真的切换了容器', after2 === 'mkv', `容器=${after2}`);
+    } else {
+      console.log('  [诊断] 该素材没有 ASS 字幕，跳过三选一断言');
+    }
+  } else {
+    check('无字幕时不显示字幕区（避免无谓困惑）', ss.shown === false, subState);
+  }
 
   console.log('\n--- 8. 取消不留下中间文件 ---');
   await c.eval(`(() => {

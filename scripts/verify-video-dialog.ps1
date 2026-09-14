@@ -59,6 +59,34 @@ if (-not (Test-Path $sample)) {
     else { Write-Output "缺少测试视频，且找不到 $src"; exit 1 }
 }
 
+# 再造一个**带 ASS 字幕**的素材。没有它的话字幕那几条断言只会走到
+# 「无字幕」分支，而 ASS 的取舍选项是这次改动的重点，等于没测到。
+# 用系统 ffmpeg 造（需要字幕编码器），造不出来就跳过而不是失败
+$assSample = Join-Path $media 'probe-ass.mkv'
+if (-not (Test-Path $assSample)) {
+    $sysFf = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+    if ($sysFf) {
+        $srt = Join-Path $env:TEMP 'omy-probe-sub.srt'
+        @"
+1
+00:00:00,000 --> 00:00:02,000
+probe subtitle line
+
+2
+00:00:02,000 --> 00:00:04,000
+second line
+"@ | Set-Content -Path $srt -Encoding UTF8
+        & $sysFf -hide_banner -loglevel error -y `
+            -f lavfi -i "testsrc=size=320x240:rate=15:duration=4" `
+            -f lavfi -i "sine=frequency=440:duration=4" -i $srt `
+            -map 0:v -map 1:a -map 2:s -c:v libx264 -c:a aac -c:s ass `
+            -t 4 -f matroska $assSample 2>&1 | Out-Null
+        if (Test-Path $assSample) { Write-Output '已生成带 ASS 字幕的素材' }
+    } else {
+        Write-Output '注意：无系统 ffmpeg，跳过生成带字幕素材，ASS 分支测不到'
+    }
+}
+
 $env:OMY_GUI_CDP_PORT = "$Port"
 # 原生目录选择器是 OS 窗口，CDP 点不到。设了这个变量后 pick_folder
 # 直接返回该路径而不弹窗，让自动化能跑完整链路

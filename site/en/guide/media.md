@@ -76,9 +76,31 @@ The build shipped on Windows is trimmed to probing, frame extraction and remuxin
 
 ::: warning Some audio tracks are lost when remuxing
 MP4 cannot hold PCM or DTS tracks; they have to be converted to AAC, and the bundled FFmpeg has no AAC encoder either. The dialog warns about this **before** you start, so you never end up with a silently soundless video. Choosing MKV, or switching to a full FFmpeg build, keeps the audio.
-
-Conversion always drops subtitle tracks. Choose "leave it alone" to keep them.
 :::
+
+### What happens to subtitles
+
+Subtitles are not simply discarded — the dialog decides based on what the source actually contains:
+
+| Source subtitles | To MKV | To MP4 / MOV |
+|---|---|---|
+| SubRip, WebVTT and other text | Kept as is | Converted to `mov_text`, content unchanged |
+| ASS / SSA (styled) | Kept as is | Converted to `mov_text` by default; **styling is lost** |
+| PGS, VobSub (graphical) | Kept as is | **Cannot go in**; dropped |
+
+::: tip Why MP4 only accepts mov_text
+This is a **container** limit, not a missing encoder. Feeding srt / ass / webvtt into MP4 with a full FFmpeg build — one that has every subtitle encoder — still fails with `codec not currently supported in container`. MKV, by contrast, holds anything, which is why it is the choice for keeping subtitles untouched.
+:::
+
+When ASS / SSA subtitles are detected and the target is MP4, the dialog offers a choice:
+
+- **Convert to `mov_text`** (default): the words survive; fonts, colours, positioning and effects do not
+- **Keep the styling intact**: requires MKV; the dialog offers a one-click switch
+- **No subtitles**
+
+Converting is the default rather than silently switching containers: the target container is your choice, and changing MP4 into MKV on your behalf would be more confusing than losing the styling.
+
+Graphical subtitles — the Blu-ray/DVD kind, which are really images — have no "turn into text" path. Burning them into the picture is theoretically possible but requires re-encoding the whole video, takes tens of minutes and cannot be undone, which contradicts "remuxing is seconds with no loss". So the dialog recommends MKV instead.
 
 ## Media metadata and moov cache
 
