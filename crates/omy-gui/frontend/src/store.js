@@ -1218,7 +1218,16 @@ export async function tryUnlock(password) {
       (e) => (e.is_encrypted || e.is_encrypted_dir) && e.unlocked,
     ).length;
     if (opened > 0) {
-      setNotice(i18n.tn('notice.unlocked', opened));
+      // 重复输入同一个密码要与「真的加了一个」区分开。
+      //
+      // 不区分会怎样：用户忘了这个密码已经装过，再输一次看到「解锁了 N 个
+      // 文件」，但状态栏的密码数纹丝不动——看起来像计数坏了。如实说
+      // 「已经在用了」才对得上他看到的现象
+      if (r.added === false) {
+        setNotice(i18n.t('unlock.already_loaded'));
+      } else {
+        setNotice(i18n.tn('notice.unlocked', opened));
+      }
     } else {
       // 派生成功但一个都没解开 = 密码不对。
       // 这个区分很重要：KEK 派生几乎总是"成功"的，

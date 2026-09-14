@@ -48,7 +48,10 @@
     "recursive": "Include subfolders",
     "try_here": "Unlock this folder",
     "quick_hint": "Enter a password to unlock encrypted files in this folder",
-    "quick_placeholder": "Password to unlock…"
+    "quick_placeholder": "Password to unlock…",
+    "add_more_hint_one": "1 password loaded. Enter another to see more files; the current one stays.",
+    "add_more_hint_other": "{{count}} passwords loaded. Enter another to see more files; the current ones stay.",
+    "already_loaded": "That password is already in use; nothing was added"
   },
   "status": {
     "locked": "Locked",

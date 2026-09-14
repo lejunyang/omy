@@ -48,7 +48,10 @@
     "recursive": "包含子文件夹",
     "try_here": "试解锁此目录",
     "quick_hint": "输入密码可解锁当前目录中的加密文件",
-    "quick_placeholder": "输入密码解锁…"
+    "quick_placeholder": "输入密码解锁…",
+    "add_more_hint_one": "已装入 1 个密码。再输一个可以同时看到更多文件，已有的不会被顶掉。",
+    "add_more_hint_other": "已装入 {{count}} 个密码。再输一个可以同时看到更多文件，已有的不会被顶掉。",
+    "already_loaded": "这个密码已经在用了，没有新增"
   },
   "status": {
     "locked": "已锁定",

@@ -555,6 +555,7 @@ onBeforeUnmount(() => {
     v-if="showUnlock"
     :busy="state.busy"
     :error="unlockError"
+    :loaded="state.credentials"
     @cancel="onUnlockCancel"
     @submit="onUnlockSubmit"
   />
