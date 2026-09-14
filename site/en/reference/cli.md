@@ -144,7 +144,7 @@ omy scan [OPTIONS] [DIRS]...
 | `--no-recursive` | Only the top level |
 | `--max-depth <N>` | Maximum recursion depth |
 | `--show-locked` | Also list files that did not match |
-| `--any-extension` | Also check files not ending in `.omy` (disguised files) |
+| `--any-extension` | Also check files not ending in `.omy` (recognition uses the header magic, so renamed files are found too) |
 | `--max-files <N>` | Cap on files examined per scan |
 
 Listed names are the **decrypted originals**.

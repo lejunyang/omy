@@ -118,7 +118,24 @@ omy scan --any-extension .      # also check files not ending in .omy
 omy scan --max-files 5000 .     # cap how many files one scan touches
 ```
 
-`--any-extension` finds disguised files — recognition uses the header magic (`OMYFILE` plus a version byte), not the extension.
+`--any-extension` also reads the header of files that do not end in `.omy` — recognition uses the header magic (`OMYFILE` plus a version byte), not the extension, so renamed files are still found.
+
+## Desktop: loading several passwords at once
+
+The password box in the app **adds** a password rather than replacing one. Entering another does not evict the ones already loaded:
+
+1. Enter password A → files encrypted with A appear
+2. Enter password B → A's files **stay visible**, and B's files appear alongside them
+
+The status bar shows how many passwords are currently loaded. Entering the same password twice counts once — the check is on the key fingerprint, not on whatever name you gave it — and the app says the password is already in use instead of pretending to add it.
+
+This is what [deniability](./security.md) looks like day to day: a real password and a decoy password can be loaded at the same time, each showing its own files, while the files themselves reveal nothing about how many passwords any vault has.
+
+Locking via the 🔒 in the status bar clears every loaded password at once; there is no half-locked state.
+
+::: tip Not the same as "several passwords on one file"
+The earlier section is about how many passwords can open **one file** (8 key slots). This one is about how many passwords **one session** holds and tries. They are independent: you can browse with three passwords while every individual file carries only one.
+:::
 
 ## Forgetting the password
 

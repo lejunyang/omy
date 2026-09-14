@@ -144,7 +144,7 @@ omy scan [OPTIONS] [DIRS]...
 | `--no-recursive` | 只看目录本层 |
 | `--max-depth <N>` | 最大递归深度 |
 | `--show-locked` | 同时列出未匹配的文件 |
-| `--any-extension` | 也检查后缀不是 `.omy` 的文件（伪装文件） |
+| `--any-extension` | 也检查后缀不是 `.omy` 的文件（识别靠文件头 magic，所以改过后缀的也能找到） |
 | `--max-files <N>` | 单次扫描的文件数上限 |
 
 列出的是**解密后的真实文件名**。
