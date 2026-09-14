@@ -32,6 +32,26 @@ export ZLIB="$WORK/deps/zlib"
 
 mkdir -p "$SRC" "$OUT" "$WEBP" "$ZLIB"
 
+# 下载器：优先用 Windows 自带的 curl，而不是 msys 那个。
+#
+# conda 的 m2-base 里 curl 确实有，但它附带的 /usr/ssl/certs/ca-bundle.crt
+# 是**0 字节**，于是每次下载都死在
+#   curl: (77) error setting certificate file: /usr/ssl/certs/ca-bundle.crt
+# 报错说的是「设置证书文件失败」，看起来像本机装漏了什么，实际是上游包就这样，
+# 重装、换镜像都没用。Windows 自带的 curl 走 Schannel 用系统证书store，没有
+# 这个问题（实测 8.21.0 可用）。
+#
+# 不用 -k 跳过校验：那等于把供应链校验关掉换取一次下载成功。
+pick_curl() {
+  if [ -x /c/Windows/System32/curl.exe ]; then
+    echo /c/Windows/System32/curl.exe
+  else
+    command -v curl
+  fi
+}
+CURL="$(pick_curl)"
+[ -n "$CURL" ] || { echo "找不到可用的 curl" >&2; exit 1; }
+
 # 校验 SHA256 而不是只看文件在不在：上游 tarball 被替换过的事情发生过，
 # 而「体积对得上、内容被动过」是最难查的一类问题。
 fetch() {
@@ -47,7 +67,7 @@ fetch() {
     rm -f "$file"
   fi
   echo "  下载 $(basename "$file") ..."
-  curl -fsSL --retry 3 -o "$file" "$url"
+  "$CURL" -fsSL --retry 3 -o "$file" "$url"
   local got
   got="$(sha256sum "$file" | cut -d' ' -f1)"
   if [ "$got" != "$want" ]; then
