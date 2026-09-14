@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>omy · 视频处理对话框原型</title>
+<!--
+  视频处理对话框的交互原型（静态，不连后端）。
+
+  目的：在写 Vue 组件之前，先把「有哪些设置项、能力不足时界面怎么说话」
+  摆出来。配色与控件尺寸取自 frontend/src/styles/app.css，不自行发挥。
+
+  # 三件值得先读的事
+
+  1. **可选项由能力检测决定，不写死。** 内置 FFmpeg 是按「只做探测、抽帧、
+     转封装」裁剪的，实测 `ffmpeg -encoders` 只有 libwebp 与 mov_text。
+     但用户可以换成自己的完整版（OMY_FFMPEG 排在查找顺序最前），那时压缩
+     就该可用。所以界面读一份 caps 来决定显示什么，而不是硬编码「不可用」。
+     右上角的「模拟」下拉可以在两种环境之间切换，看界面各自长什么样。
+
+  2. **移动端用容器查询，不是媒体查询。** 用 @container 后，同一套样式既
+     响应窗口缩小、也能让「手机」预览框内部变成移动版——媒体查询做不到后者，
+     因为它只看视口。断点 768px 与 app.css 的 @media、viewport.js 的
+     MOBILE_MAX 一致，改这里必须同时改那两处。
+
+  3. **没有「取当前画面」按钮。** 进度条、时间码输入框、预览画面本来就是
+     同一个值的三个视图，任意一个变其余跟着变，再放一个「确认取用」的按钮
+     等于暗示它们可能不同步。
+-->
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0d1117; --bg2: #161b22; --bg3: #1c2128;
+  --border: #30363d; --fg: #e6edf3; --fg2: #8b949e;
+  --accent: #4493f8; --ok: #3fb950; --warn: #d29922; --danger: #f85149;
+  --r-s: 4px; --r-m: 8px; --r-l: 12px; --sp: 4px;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #fff; --bg2: #f7f8fa; --bg3: #eef0f3; --border: #e5e7eb;
+  --fg: #1f2328; --fg2: #656d76; --accent: #2563eb;
+  --ok: #16a34a; --warn: #d97706; --danger: #dc2626;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 'Segoe UI Variable','Microsoft YaHei UI',-apple-system,'PingFang SC','Inter',sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+input, select { font: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- 原型外壳（不是产品的一部分）---------- */
+.harness {
+  position: sticky; inset-block-start: 0; z-index: 20;
+  display: flex; align-items: center; gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 2) calc(var(--sp) * 3);
+  background: var(--bg3); border-block-end: 1px solid var(--border);
+  font-size: 12px; color: var(--fg2); flex-wrap: wrap;
+}
+.harness select, .harness button {
+  height: 26px; font-size: 12px; border: 1px solid var(--border);
+  border-radius: var(--r-s); background: var(--bg); color: var(--fg);
+  padding-inline: calc(var(--sp) * 1.5);
+}
+.harness .sep { width: 1px; height: 18px; background: var(--border); }
+.stagewrap {
+  padding: calc(var(--sp) * 6); display: flex; gap: calc(var(--sp) * 6);
+  align-items: flex-start;
+  /* 不换行、允许横向滚动：并排对照时两栏合计约 1250px，窄窗口下若换行或
+     压缩，桌面那栏会被挤到断点以内、跟着变成移动版，对照就没了意义。
+     宁可出横向滚动条，也不要让「桌面版」其实是移动版。
+
+     用 safe center 而不是普通的 center：溢出时普通 center 会把内容往两侧
+     顶出去，左边那截**滚不回来**（已实测被切掉）。safe 在溢出时自动退回
+     flex-start。 */
+  justify-content: safe center;
+  flex-wrap: nowrap; overflow-x: auto;
+}
+.phone-label { font-size: 12px; color: var(--fg2); text-align: center; margin-block-end: calc(var(--sp) * 2); }
+/* 桌面预览固定 820px 且**不允许收缩**。
+   起初写 760px + max-width:100%，结果两处都踩坑：760 本身就小于 768 断点；
+   而 flex 还会进一步把它压到 682px。表现是「桌面栏和手机栏长得一模一样」，
+   看起来像容器查询没生效，实际是宽度真的在断点以内。 */
+#deskWrap { flex: 0 0 820px; width: 820px; }
+/* 手机预览框：给对话框一个 390px 宽的容器，容器查询据此切到移动版 */
+.phone {
+  width: 390px; height: 760px; border: 8px solid var(--bg3);
+  border-radius: 28px; overflow: hidden; box-shadow: 0 8px 32px rgb(0 0 0 / 40%);
+}
+#phoneWrap { flex: 0 0 auto; }
+
+/* ---------- 对话框骨架 ---------- */
+/* container-type: inline-size 让子元素能按**这个盒子**的宽度响应，
+   而不是按视口。桌面下它由 .stagewrap 撑到 760px，手机预览框里是 390px，
+   于是同一份样式两边都对。 */
+.dlg {
+  container-type: inline-size;
+  container-name: dlg;
+  border: 1px solid var(--border); border-radius: var(--r-l);
+  background: var(--bg2); width: 100%;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 40%);
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - var(--sp) * 24);
+}
+.phone .dlg { width: 100%; height: 100%; max-height: 100%; border: none; border-radius: 0; box-shadow: none; }
+.dlg-head {
+  display: flex; align-items: center; gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 4) calc(var(--sp) * 4.5);
+  border-block-end: 1px solid var(--border); flex: 0 0 auto;
+}
+.dlg-head h3 { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; }
+.dlg-head .sub {
+  font-size: 12px; color: var(--fg2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.spacer { flex: 1; }
+.dlg-body { overflow-y: auto; padding: calc(var(--sp) * 4.5); flex: 1 1 auto; }
+.dlg-foot {
+  display: flex; align-items: center; gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 3.5) calc(var(--sp) * 4.5);
+  border-block-start: 1px solid var(--border); flex: 0 0 auto;
+}
+
+/* ---------- 通用控件 ---------- */
+.btn {
+  height: 32px; padding-inline: calc(var(--sp) * 3.5); border-radius: var(--r-m);
+  background: var(--bg2); border: 1px solid var(--border); font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: calc(var(--sp) * 1.5); transition: .15s; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--bg3); border-color: var(--fg2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.icon { width: 32px; padding: 0; }
+.field { margin-block-end: calc(var(--sp) * 3.25); }
+.flabel { font-size: 12px; color: var(--fg2); margin-block-end: calc(var(--sp) * 1.25); display: block; }
+.field input[type='text'], .field select {
+  width: 100%; height: 32px; padding-inline: calc(var(--sp) * 2.5);
+  border-radius: var(--r-m); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border);
+}
+.radio { display: flex; gap: calc(var(--sp) * 2); align-items: flex-start; margin-block-end: calc(var(--sp) * 2); cursor: pointer; }
+.radio input { margin-block-start: 3px; flex: 0 0 auto; }
+.radio .d { font-size: 12px; color: var(--fg2); margin-block-start: 2px; }
+.hr { height: 1px; background: var(--border); margin-block: calc(var(--sp) * 4); }
+
+/* ---------- 顶部分段切换 ---------- */
+.tabs { display: flex; gap: var(--sp); background: var(--bg3); padding: 3px; border-radius: var(--r-m); flex: 0 0 auto; }
+.tab {
+  padding: calc(var(--sp) * 1.25) calc(var(--sp) * 3); border-radius: var(--r-s);
+  font-size: 13px; color: var(--fg2); transition: .15s; white-space: nowrap;
+}
+.tab[aria-selected='true'] { background: var(--bg); color: var(--fg); font-weight: 500; }
+
+/* ---------- 预览区 ---------- */
+.stage {
+  background: #000; border: 1px solid var(--border); border-radius: var(--r-m);
+  aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center;
+  position: relative; overflow: hidden;
+}
+.fake-frame { position: absolute; inset: 0; transition: background .12s linear; }
+.stage .badge {
+  position: absolute; inset-block-end: 8px; inset-inline-start: 8px;
+  background: rgb(0 0 0 / 60%); color: #fff; font-size: 11px;
+  padding: 2px 6px; border-radius: var(--r-s); font-variant-numeric: tabular-nums;
+}
+.scrub { display: flex; align-items: center; gap: calc(var(--sp) * 2.5); margin-block-start: calc(var(--sp) * 3); }
+.scrub input[type='range'] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.tc {
+  font-variant-numeric: tabular-nums; font-size: 12px; color: var(--fg2);
+  min-width: 96px; text-align: end; white-space: nowrap;
+}
+.frame-row { display: flex; gap: calc(var(--sp) * 2); align-items: flex-end; margin-block-start: calc(var(--sp) * 3); }
+.frame-row .field { flex: 1; margin: 0; min-width: 0; }
+.steps { display: flex; gap: var(--sp); flex: 0 0 auto; }
+
+/* ---------- 信息表 ---------- */
+.info { width: 100%; border-collapse: collapse; font-size: 13px; }
+.info th, .info td { text-align: start; padding: calc(var(--sp) * 1.5) 0; border-block-end: 1px solid var(--border); vertical-align: top; }
+.info th { color: var(--fg2); font-weight: 400; width: 92px; }
+.info td { font-variant-numeric: tabular-nums; word-break: break-word; }
+.info tr:last-child th, .info tr:last-child td { border-block-end: none; }
+.tierbadge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid; }
+.tier-p1 { color: var(--ok); border-color: var(--ok); }
+.tier-p2 { color: var(--warn); border-color: var(--warn); }
+.tier-p3 { color: var(--danger); border-color: var(--danger); }
+
+/* ---------- 提示块 ---------- */
+.note {
+  font-size: 12px; color: var(--fg2); background: var(--bg3);
+  border: 1px solid var(--border); border-radius: var(--r-m);
+  padding: calc(var(--sp) * 2.5) calc(var(--sp) * 3); line-height: 1.55;
+}
+.note.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.note.blocked { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.note strong { color: var(--fg); font-weight: 600; }
+.note code {
+  font-family: 'Cascadia Mono', Consolas, monospace; font-size: 11px;
+  background: var(--bg); padding: 1px 4px; border-radius: 3px;
+}
+.note .acts { margin-block-start: calc(var(--sp) * 2.5); display: flex; gap: calc(var(--sp) * 2); flex-wrap: wrap; }
+.note .acts .btn { height: 28px; font-size: 12px; }
+
+/* ---------- 处理方式卡片 ---------- */
+.opts { display: grid; gap: calc(var(--sp) * 2); }
+.opt {
+  border: 1px solid var(--border); border-radius: var(--r-m);
+  padding: calc(var(--sp) * 3); cursor: pointer; transition: .15s;
+  display: flex; gap: calc(var(--sp) * 2.5); align-items: flex-start;
+}
+.opt:hover:not(.disabled) { border-color: var(--fg2); }
+.opt.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.opt.disabled { opacity: .5; cursor: not-allowed; }
+.opt input { margin-block-start: 3px; flex: 0 0 auto; }
+.opt .t { font-size: 13px; display: flex; align-items: center; gap: calc(var(--sp) * 1.5); flex-wrap: wrap; }
+.opt .d { font-size: 12px; color: var(--fg2); margin-block-start: 3px; line-height: 1.5; }
+.pill { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg2); white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); }
+.pill.no { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
+.sub-opts {
+  margin-block-start: calc(var(--sp) * 3); padding-inline-start: calc(var(--sp) * 6);
+  border-inline-start: 2px solid var(--border);
+}
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--sp) * 3); }
+.est {
+  display: flex; justify-content: space-between; align-items: baseline; gap: calc(var(--sp) * 2);
+  font-size: 12px; color: var(--fg2); margin-block-start: calc(var(--sp) * 2);
+}
+.est b { color: var(--fg); font-size: 15px; font-variant-numeric: tabular-nums; }
+
+.footnote { font-size: 12px; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hidden { display: none !important; }
+
+/* ================= 移动端 =================
+   容器查询，断点 768px 与 app.css 的 @media 及 viewport.js 的 MOBILE_MAX
+   一致——**改这里必须同时改那两处**，不一致会产生最难查的状态：
+   界面已经是移动版，但交互还是桌面版。
+
+   只做 CSS 适配是不够的：桌面靠 dblclick 打开条目，触屏上没有双击这个
+   手势。凡涉及打开、多选、拖拽的交互都要读 isMobile 分别处理。
+   这份原型只演示布局，真实组件仍需走那条判断。 */
+@container dlg (max-width: 768px) {
+  .dlg-head {
+    flex-wrap: wrap; padding: calc(var(--sp) * 3) calc(var(--sp) * 3.5);
+    gap: calc(var(--sp) * 1.5);
+  }
+  /* 分段切换独占一行并撑满：手机上它是主导航，挤在标题右边点不准 */
+  .dlg-head .tabs { order: 3; width: 100%; }
+  .dlg-head .tab { flex: 1; text-align: center; padding-block: calc(var(--sp) * 2); }
+  .dlg-head .sub { max-width: none; }
+
+  .dlg-body { padding: calc(var(--sp) * 3.5); }
+
+  /* 时间码输入与逐帧按钮竖排。并排时输入框会被压到放不下时间码 */
+  .frame-row { flex-direction: column; align-items: stretch; }
+  .frame-row .steps { display: grid; grid-template-columns: 1fr 1fr; }
+  .frame-row .steps .btn { height: 40px; }
+
+  /* 触控目标 ≥40px：32px 在手机上按不准 */
+  .scrub .btn.icon { width: 40px; height: 40px; }
+  .scrub input[type='range'] { height: 40px; }
+  .tc { min-width: 0; font-size: 11px; }
+
+  .grid2 { grid-template-columns: 1fr; }
+  .field input[type='text'], .field select { height: 40px; }
+
+  /* 缩进改成小留白：390px 下 24px 缩进会把正文挤成窄条 */
+  .sub-opts { padding-inline-start: calc(var(--sp) * 3); }
+
+  /* 信息表转成上下结构，横排在窄屏会把值挤成多行锯齿 */
+  .info th, .info td { display: block; width: auto; }
+  .info th { padding-block-end: 0; }
+  .info td { padding-block-start: 2px; }
+
+  /* 底部按钮撑满并加高，状态文字移到上面一行 */
+  .dlg-foot { flex-wrap: wrap; padding: calc(var(--sp) * 3) calc(var(--sp) * 3.5); }
+  .dlg-foot .footnote { order: -1; width: 100%; margin-block-end: calc(var(--sp) * 2); }
+  .dlg-foot .spacer { display: none; }
+  .dlg-foot .btn { flex: 1; height: 44px; }
+}
+</style>
+</head>
+<body>
+
+<!-- 原型外壳：切换模拟环境与主题，产品里没有这一条 -->
+<div class="harness">
+  <span>模拟 FFmpeg：</span>
+  <select id="capsSel">
+    <option value="builtin">内置裁剪版（无视频编码器）</option>
+    <option value="full">用户自备完整版（含 x264 / AAC）</option>
+  </select>
+  <span class="sep"></span>
+  <span>视图：</span>
+  <select id="viewSel">
+    <option value="desktop">桌面</option>
+    <option value="mobile">手机</option>
+    <option value="both">并排对照</option>
+  </select>
+  <span class="sep"></span>
+  <button id="themer" type="button">切到浅色</button>
+  <span class="spacer"></span>
+  <span id="capsHint"></span>
+</div>
+
+<div class="stagewrap" id="stagewrap">
+
+  <!-- 桌面 -->
+  <div id="deskWrap">
+    <div class="phone-label" id="deskLabel">桌面 · 820px</div>
+    <div class="dlg" role="dialog" aria-label="视频处理" data-dlg></div>
+  </div>
+
+  <!-- 手机：同一份 DOM 模板，外面套一个 390px 的容器 -->
+  <div id="phoneWrap" class="hidden">
+    <div class="phone-label">手机 · 390px（同一套样式，容器查询生效）</div>
+    <div class="phone"><div class="dlg" role="dialog" aria-label="视频处理" data-dlg></div></div>
+  </div>
+
+</div>
+
+<!-- 对话框内容模板：桌面与手机共用，保证两边不可能长出差异 -->
+<template id="dlgTpl">
+  <div class="dlg-head">
+    <h3>视频处理</h3>
+    <span class="sub" title="2026-春节-全家福.MOV">2026-春节-全家福.MOV</span>
+    <span class="spacer"></span>
+    <div class="tabs" role="tablist">
+      <button class="tab" data-tab="frame" role="tab" aria-selected="true" type="button">封面帧</button>
+      <button class="tab" data-tab="proc" role="tab" aria-selected="false" type="button">转换与压缩</button>
+    </div>
+  </div>
+
+  <div class="dlg-body">
+
+    <!-- ============ 封面帧 ============ -->
+    <section data-pane="frame">
+      <div class="stage">
+        <div class="fake-frame" data-fake></div>
+        <div class="badge" data-badge>—</div>
+      </div>
+
+      <div class="scrub">
+        <button class="btn icon" data-play type="button" title="播放 / 暂停">▶</button>
+        <input type="range" data-scrub min="0" max="124.8" step="0.04" value="12.4" aria-label="播放进度" />
+        <span class="tc" data-tc>—</span>
+      </div>
+
+      <div class="frame-row">
+        <div class="field">
+          <label class="flabel" data-framelabel>封面帧时间点</label>
+          <input type="text" data-frameinput placeholder="00:00:03 或 12.4 或 1:23" />
+        </div>
+        <div class="steps">
+          <button class="btn" data-prev type="button" title="上一帧">◀ 帧</button>
+          <button class="btn" data-next type="button" title="下一帧">帧 ▶</button>
+        </div>
+      </div>
+
+      <div class="note" style="margin-block-start: 12px">
+        进度条、时间码、画面是同一个值的三个视图，改任意一个其余跟着走。
+        留空则自动取时长 10% 处（避开片头黑帧）。
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="field">
+        <div class="flabel">缩略图</div>
+        <label class="radio">
+          <input type="checkbox" checked />
+          <span>
+            生成缩略图
+            <div class="d">存进加密文件头的 TLV 区，只有拿到密码才能读，不泄露内容</div>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <!-- ============ 转换与压缩 ============ -->
+    <section data-pane="proc" class="hidden">
+      <div class="field">
+        <div class="flabel">源文件信息</div>
+        <table class="info">
+          <tr><th>容器</th><td>QuickTime / MOV</td></tr>
+          <tr><th>视频</th><td>H.264 (High) · 3840×2160 · 59.94 fps · 78.4 Mb/s</td></tr>
+          <tr><th>音频</th><td>PCM s16le · 48 kHz · 立体声 · 1536 kb/s</td></tr>
+          <tr><th>时长</th><td>00:02:04.80</td></tr>
+          <tr><th>体积</th><td>1.21 GB</td></tr>
+          <tr>
+            <th>播放分级</th>
+            <td>
+              <span class="tierbadge tier-p2">P2 · 需转封装</span>
+              <div style="font-size:12px;color:var(--fg2);margin-block-start:4px">
+                PCM 音轨 WebView 播不了，换成 MP4 容器并转码音轨即可直通
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="field">
+        <div class="flabel">处理方式</div>
+        <div class="opts">
+
+          <label class="opt sel">
+            <input type="radio" name="proc" data-proc value="none" checked />
+            <span>
+              <span class="t">不处理，直接加密 <span class="pill ok">可用</span></span>
+              <div class="d">原样加密，画质与体积都不变。最快，也最安全——不经过任何重新编码。</div>
+            </span>
+          </label>
+
+          <label class="opt" data-opt="remux">
+            <input type="radio" name="proc" data-proc value="remux" />
+            <span>
+              <span class="t">转封装 <span class="pill ok">可用</span> <span class="pill">秒级 · 零画质损失</span></span>
+              <div class="d">
+                只换容器，不碰视频流（<code>-c copy</code>）。换成 MP4 后多数能直接播放，
+                省掉每次播放时的实时转封装。
+              </div>
+            </span>
+          </label>
+
+          <label class="opt" data-opt="compress">
+            <input type="radio" name="proc" data-proc value="compress" />
+            <span>
+              <span class="t">压缩（重新编码） <span class="pill" data-cpill>—</span></span>
+              <div class="d" data-cdesc>降分辨率或码率来减小体积。</div>
+            </span>
+          </label>
+
+        </div>
+      </div>
+
+      <!-- 转封装子选项 -->
+      <div class="sub-opts" data-sub="remux" style="display:none">
+        <div class="field">
+          <label class="flabel">目标容器</label>
+          <select data-container>
+            <option value="mp4">MP4（兼容性最好，推荐）</option>
+            <option value="mov">MOV</option>
+            <option value="mkv">MKV（字幕与多音轨支持最好）</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="radio">
+            <input type="checkbox" checked />
+            <span>
+              faststart（把索引移到文件开头）
+              <div class="d">不这样做的话，边下边播要先读到文件末尾才能开始</div>
+            </span>
+          </label>
+          <label class="radio">
+            <input type="checkbox" checked />
+            <span>
+              字幕转 mov_text
+              <div class="d">MP4 只认这一种文本字幕格式；不转则字幕会丢</div>
+            </span>
+          </label>
+        </div>
+
+        <!-- 这条警告由「源文件音轨编码 + 可用编码器」共同决定，
+             不是写死的文案 -->
+        <div class="note warn" data-pcmwarn>
+          <strong>这个文件转封装会丢掉声音。</strong>
+          它的音轨是 PCM，而 MP4 不支持 PCM——需要把音轨转成 AAC，
+          但当前这份 FFmpeg 没有 AAC 编码器。换成完整版后这条会消失。
+        </div>
+
+        <div class="est">
+          <span>预计输出</span>
+          <span><b data-remuxest>1.21 GB</b> · 几秒</span>
+        </div>
+      </div>
+
+      <!-- 压缩子选项 -->
+      <div class="sub-opts" data-sub="compress" style="display:none">
+        <div class="grid2">
+          <div class="field">
+            <label class="flabel">分辨率</label>
+            <select data-res>
+              <option>保持原样（3840×2160）</option>
+              <option selected>1080p（1920×1080）</option>
+              <option>720p（1280×720）</option>
+              <option>480p（854×480）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="flabel">帧率</label>
+            <select data-fps>
+              <option>保持原样（59.94）</option>
+              <option selected>30</option>
+              <option>24</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="flabel">视频编码</label>
+            <!-- 选项由检测到的编码器生成，不是写死的列表 -->
+            <select data-codec></select>
+          </div>
+          <div class="field">
+            <label class="flabel">质量 / CRF</label>
+            <select data-crf>
+              <option>高质量（CRF 18）</option>
+              <option selected>平衡（CRF 23）</option>
+              <option>省空间（CRF 28）</option>
+            </select>
+          </div>
+        </div>
+        <div class="est">
+          <span>预计输出（粗估，实际取决于画面复杂度）</span>
+          <span><b data-compest>—</b></span>
+        </div>
+      </div>
+
+      <!-- 能力不足时的出路：说清为什么、并给可执行的下一步 -->
+      <div class="note blocked" data-capsnote style="margin-block-start:12px">
+        <strong>当前这份 FFmpeg 不能压缩视频。</strong>
+        内置的是按「探测 / 抽帧 / 转封装」裁剪的版本，实测
+        <code>ffmpeg -encoders</code> 只有 <code>libwebp</code> 与 <code>mov_text</code>，
+        没有任何视频编码器，也没有 AAC。
+        换成完整版 FFmpeg 后压缩会自动可用——omy 优先使用
+        <code>OMY_FFMPEG</code> 指定的程序，也可以直接覆盖安装目录下
+        <code>ffmpeg\</code> 里的文件。
+        <div class="acts">
+          <button class="btn" type="button">下载完整版 FFmpeg</button>
+          <button class="btn" type="button">选择本机的 ffmpeg…</button>
+          <button class="btn" type="button">重新检测</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="dlg-foot">
+    <span class="footnote" data-foot>—</span>
+    <span class="spacer"></span>
+    <button class="btn" type="button">取消</button>
+    <button class="btn primary" type="button">继续加密 →</button>
+  </div>
+</template>
+
+<script>
+// 原型脚本：只为让交互「能点」，不代表实现方式。
+
+const DURATION = 124.8;
+const FPS = 59.94;
+const SRC_BYTES = 1.21 * 1024 ** 3;
+
+/** 两种模拟环境。
+ *
+ * 真实实现里这份数据来自后端一次能力探测：解析 `ffmpeg -encoders`，
+ * 取 `V....D name` 那些行（` = Video` 是图例，要排除）。已核对内置裁剪版
+ * 与 gyan 完整版的输出格式一致，同一套解析规则两边都成立。
+ */
+const CAPS = {
+  builtin: { video: [], audio: [], label: '内置裁剪版：0 个视频编码器' },
+  full: {
+    video: [
+      { id: 'libx264', name: 'H.264（最通用）' },
+      { id: 'libx265', name: 'HEVC（更小，兼容性差些）' },
+      { id: 'libvpx-vp9', name: 'VP9（免版税）' },
+      { id: 'libaom-av1', name: 'AV1（最小，但极慢）' },
+    ],
+    audio: ['aac'],
+    label: '完整版：检测到 4 个视频编码器 + AAC',
+  },
+};
+
+let caps = CAPS.builtin;
+
+function fmt(sec) {
+  const s = Math.max(0, sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + r.toFixed(2).padStart(5, '0');
+}
+
+function fmtSize(b) {
+  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + ' GB';
+  return (b / 1024 ** 2).toFixed(0) + ' MB';
+}
+
+/** 与 EncryptDialog.vue 的 parseFrame 同义。
+ *
+ * 不能用 parseFloat 直接吞：parseFloat('1:23') 得 1，会把「1 分 23 秒」
+ * 静默变成第 1 秒——用户拿到的不是他选的那一帧，却没有任何提示。 */
+function parseFrame(v) {
+  const t = (v || '').trim();
+  if (!t) return null;
+  const parts = t.split(':');
+  if (parts.length > 3) return null;
+  let sec = 0;
+  for (const p of parts) {
+    if (!/^\d*\.?\d*$/.test(p) || p === '' || p === '.') return null;
+    sec = sec * 60 + parseFloat(p);
+  }
+  return Number.isFinite(sec) && sec >= 0 ? sec : null;
+}
+
+/** 每次挂载用一个新的 radio group 名。
+ *
+ * 桌面与手机是同一份模板的两个实例，若共用 name="proc"，浏览器会把两边
+ * 的 radio 当成**同一组**——点手机那栏会取消桌面那栏的选中，两个对话框
+ * 的状态互相打架。 */
+let groupSeq = 0;
+
+/** 给一个 .dlg 容器装上内容与行为。
+ *
+ * 桌面和手机各调一次，用的是**同一个模板**——复制成两份 DOM 迟早出现
+ * 「桌面修了的 bug 手机上还在」。 */
+function mount(root) {
+  root.replaceChildren(document.getElementById('dlgTpl').content.cloneNode(true));
+
+  const group = 'proc-' + (++groupSeq);
+  for (const i of root.querySelectorAll('[data-proc]')) i.name = group;
+
+  const q = (s) => root.querySelector(s);
+  const scrub = q('[data-scrub]');
+  const frameInput = q('[data-frameinput]');
+  const tc = q('[data-tc]');
+  const badge = q('[data-badge]');
+  const fake = q('[data-fake]');
+  const foot = q('[data-foot]');
+
+  let at = 12.4;
+  let timer = null;
+
+  function render(sec, syncInput) {
+    at = Math.min(DURATION, Math.max(0, sec));
+    scrub.value = at;
+    tc.textContent = fmt(at) + ' / ' + fmt(DURATION);
+    badge.textContent = fmt(at) + ' · 第 ' + Math.round(at * FPS) + ' 帧';
+    if (syncInput) frameInput.value = fmt(at);
+    const hue = Math.round((at / DURATION) * 320);
+    fake.style.background =
+      'linear-gradient(135deg, hsl(' + hue + ' 45% 28%), hsl(' + ((hue + 60) % 360) + ' 40% 14%))';
+    updateFoot();
+  }
+
+  function picked() { return root.querySelector('[data-proc]:checked'); }
+
+  function updateFoot() {
+    const v = picked().value;
+    let label = '不处理视频';
+    if (v === 'remux') label = '转封装为 ' + q('[data-container]').value.toUpperCase();
+    if (v === 'compress') label = '压缩为 ' + q('[data-res]').value.replace(/（.*/, '');
+    foot.textContent = '封面帧 ' + fmt(at) + ' · ' + label;
+  }
+
+  scrub.addEventListener('input', () => render(Number(scrub.value), true));
+  frameInput.addEventListener('input', () => {
+    const v = parseFrame(frameInput.value);
+    const bad = v === null && frameInput.value.trim() !== '';
+    frameInput.style.borderColor = bad ? 'var(--danger)' : '';
+    if (v !== null) render(v, false);
+  });
+  q('[data-prev]').addEventListener('click', () => render(at - 1 / FPS, true));
+  q('[data-next]').addEventListener('click', () => render(at + 1 / FPS, true));
+
+  q('[data-play]').addEventListener('click', (e) => {
+    if (timer) { clearInterval(timer); timer = null; e.currentTarget.textContent = '▶'; return; }
+    e.currentTarget.textContent = '❚❚';
+    timer = setInterval(() => render(at + 0.1 >= DURATION ? 0 : at + 0.1, true), 100);
+  });
+
+  for (const t of root.querySelectorAll('[data-tab]')) {
+    t.addEventListener('click', () => {
+      const which = t.dataset.tab;
+      for (const b of root.querySelectorAll('[data-tab]')) {
+        b.setAttribute('aria-selected', String(b.dataset.tab === which));
+      }
+      for (const p of root.querySelectorAll('[data-pane]')) {
+        p.classList.toggle('hidden', p.dataset.pane !== which);
+      }
+    });
+  }
+
+  for (const r of root.querySelectorAll('[data-proc]')) {
+    r.addEventListener('change', () => {
+      const sel = picked();
+      // 按「这张卡里的 radio 是不是选中那个」判定。用 o.contains(sel) 不行——
+      // contains 对祖先也返回 true，实测高亮会留在上一张卡上。
+      for (const o of root.querySelectorAll('.opt')) {
+        o.classList.toggle('sel', o.querySelector('[data-proc]') === sel);
+      }
+      for (const s of root.querySelectorAll('[data-sub]')) {
+        s.style.display = s.dataset.sub === sel.value ? '' : 'none';
+      }
+      updateFoot();
+    });
+  }
+
+  q('[data-container]').addEventListener('change', updateFoot);
+  for (const s of ['[data-res]', '[data-fps]', '[data-codec]', '[data-crf]']) {
+    q(s).addEventListener('change', () => { estimate(); updateFoot(); });
+  }
+
+  /** 压缩后的体积粗估。真实实现应按码率算，这里只为演示「数字会动」。 */
+  function estimate() {
+    const res = q('[data-res]').selectedIndex;
+    const fpsIdx = q('[data-fps]').selectedIndex;
+    const crf = q('[data-crf]').selectedIndex;
+    const rf = [1, 0.28, 0.14, 0.07][res] ?? 1;
+    const ff = [1, 0.55, 0.45][fpsIdx] ?? 1;
+    const cf = [1.7, 1, 0.55][crf] ?? 1;
+    q('[data-compest]').textContent = fmtSize(SRC_BYTES * rf * ff * cf);
+  }
+
+  /** 按能力检测结果刷新界面。
+   *
+   * 这是本原型的重点：可选项由 caps 决定，不写死。 */
+  function applyCaps() {
+    const canVideo = caps.video.length > 0;
+    const canAac = caps.audio.includes('aac');
+
+    // 压缩项
+    const opt = q('[data-opt="compress"]');
+    const radio = opt.querySelector('[data-proc]');
+    radio.disabled = !canVideo;
+    opt.classList.toggle('disabled', !canVideo);
+    opt.title = canVideo ? '' : '当前 FFmpeg 没有视频编码器';
+    const pill = q('[data-cpill]');
+    pill.textContent = canVideo ? '可用' : '暂不可用';
+    pill.className = 'pill ' + (canVideo ? 'ok' : 'no');
+    q('[data-cdesc]').textContent = canVideo
+      ? '降分辨率或码率来减小体积。会重新编码，耗时长且有画质损失。'
+      : '降分辨率或码率来减小体积。需要视频编码器，当前这份 FFmpeg 没有。';
+
+    // 编码下拉：按检测到的编码器生成
+    const codec = q('[data-codec]');
+    codec.replaceChildren();
+    for (const c of caps.video) {
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      codec.append(o);
+    }
+    if (!canVideo) {
+      const o = document.createElement('option');
+      o.textContent = '（无可用编码器）';
+      codec.append(o);
+    }
+
+    // 能力不足时的说明块，够用时收起
+    q('[data-capsnote]').classList.toggle('hidden', canVideo);
+    // PCM 警告：只有「没有 AAC 编码器」时才成立
+    q('[data-pcmwarn]').classList.toggle('hidden', canAac);
+    q('[data-remuxest]').textContent = canAac ? '1.19 GB' : '1.19 GB（无音轨）';
+
+    // 能力变化后当前选择可能已失效，退回安全项
+    if (!canVideo && picked().value === 'compress') {
+      root.querySelector('[data-proc][value="none"]').checked = true;
+      for (const o of root.querySelectorAll('.opt')) {
+        o.classList.toggle('sel', o.querySelector('[data-proc]').value === 'none');
+      }
+      for (const s of root.querySelectorAll('[data-sub]')) s.style.display = 'none';
+    }
+    estimate();
+    updateFoot();
+  }
+
+  root._applyCaps = applyCaps;
+  render(12.4, true);
+  applyCaps();
+}
+
+// ---------- 外壳控制 ----------
+const deskWrap = document.getElementById('deskWrap');
+const phoneWrap = document.getElementById('phoneWrap');
+
+function mountAll() {
+  for (const d of document.querySelectorAll('[data-dlg]')) mount(d);
+}
+
+document.getElementById('capsSel').addEventListener('change', (e) => {
+  caps = CAPS[e.target.value];
+  document.getElementById('capsHint').textContent = caps.label;
+  for (const d of document.querySelectorAll('[data-dlg]')) d._applyCaps?.();
+});
+
+document.getElementById('viewSel').addEventListener('change', (e) => {
+  const v = e.target.value;
+  deskWrap.classList.toggle('hidden', v === 'mobile');
+  phoneWrap.classList.toggle('hidden', v === 'desktop');
+  document.getElementById('deskLabel').textContent =
+    v === 'both' ? '桌面 · 820px' : '桌面 · 820px（缩小窗口也会切到移动版）';
+});
+
+document.getElementById('themer').addEventListener('click', (e) => {
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  document.documentElement.setAttribute('data-theme', light ? 'dark' : 'light');
+  e.target.textContent = light ? '切到浅色' : '切到深色';
+});
+
+mountAll();
+document.getElementById('capsHint').textContent = caps.label;
+</script>
+</body>
+</html>
