@@ -86,6 +86,18 @@ pub struct EncryptRequest {
     /// 所以要允许用户自己指定。
     #[serde(default)]
     pub thumbnail_frame: Option<f64>,
+    /// 视频处理产出的中间文件，用它替代 `paths[0]` 的内容。
+    ///
+    /// # 为什么不直接把它写进 paths
+    ///
+    /// 加密时存进头部的原始文件名取自源路径，而中间文件叫
+    /// `.omytmp-xxx.mp4`。直接替换 paths 的话，用户解密出来会得到一个
+    /// 名叫 `.omytmp-1758...mp4` 的文件——他从没见过这个名字，也不知道
+    /// 那是什么。所以内容取中间文件，**文件名仍取原始路径**。
+    ///
+    /// 只在恰好加密一个文件时有意义（视频处理对话框也只在单选时开放）。
+    #[serde(default)]
+    pub converted_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -277,6 +289,34 @@ fn run_encrypt(req: &EncryptRequest, app: Option<&tauri::AppHandle>) -> CmdResul
     Ok(EncryptSummary { items, failed })
 }
 
+/// 决定实际从哪个文件读内容。
+///
+/// 视频处理产出中间文件时读那一份，否则读源文件。
+///
+/// 两道校验都不能省：
+///
+/// - **必须是 `.omytmp-` 前缀**。`converted_path` 来自前端，若不校验，
+///   一段注入的脚本就能让我们把任意文件的内容加密成「用户那个视频」——
+///   用户看到的文件名、大小都对，内容却是别的东西。
+/// - **必须真实存在**。中间文件可能已被清理或被杀毒软件删掉，此时
+///   静默回退到源文件是对的：用户至少拿到未转换但正确的内容，
+///   而不是一个 read_failed。
+fn converted_source(src: &Path, req: &EncryptRequest) -> PathBuf {
+    let Some(raw) = req.converted_path.as_deref() else {
+        return src.to_path_buf();
+    };
+    let p = PathBuf::from(raw);
+    let is_temp = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with(".omytmp-"));
+    if is_temp && p.is_file() {
+        p
+    } else {
+        src.to_path_buf()
+    }
+}
+
 /// 加密单个文件。
 fn encrypt_one(
     src: &Path,
@@ -308,7 +348,13 @@ fn encrypt_one(
             .collect();
         (packed.payload, Some(packed.index.encode()), skipped)
     } else {
-        let d = std::fs::read(src).map_err(|_| String::from("read_failed"))?;
+        // 视频处理产出了中间文件时读它，否则读源文件本身。
+        //
+        // 只换**内容**，不换文件名——下面的 `filename` 仍取自 `src`。
+        // 若连名字一起换，用户解密出来会得到 `.omytmp-1758….mp4`，
+        // 一个他从没见过、也看不出是什么的名字。
+        let read_from = converted_source(src, req);
+        let d = std::fs::read(&read_from).map_err(|_| String::from("read_failed"))?;
         (d, None, Vec::new())
     };
     let original_size = data.len() as u64;
@@ -683,7 +729,72 @@ mod tests {
             folder_mode: String::from("container"),
             thumbnail: String::from("auto"),
             thumbnail_frame: None,
+            converted_path: None,
         }
+    }
+
+    /// 没有中间文件时读源文件本身。
+    #[test]
+    fn without_conversion_reads_the_source() {
+        let req = req_with(vec![String::from("C:/v/a.mov")]);
+        assert_eq!(
+            converted_source(Path::new("C:/v/a.mov"), &req),
+            PathBuf::from("C:/v/a.mov")
+        );
+    }
+
+    /// 不带 `.omytmp-` 前缀的路径一律忽略，回退到源文件。
+    ///
+    /// 这是个安全检查，不是健壮性检查。`converted_path` 来自前端，
+    /// 若原样采信，一段注入的脚本就能让我们把 `id_rsa` 的内容加密成
+    /// 「用户那个视频」——文件名、图标、大小看起来都对，内容却是别的
+    /// 东西，而用户要到解密之后才可能发现。
+    #[test]
+    fn non_temp_converted_path_is_ignored() {
+        let mut req = req_with(vec![String::from("C:/v/a.mov")]);
+        req.converted_path = Some(String::from("C:/Users/x/.ssh/id_rsa"));
+        assert_eq!(
+            converted_source(Path::new("C:/v/a.mov"), &req),
+            PathBuf::from("C:/v/a.mov"),
+            "非中间文件的路径被采信了"
+        );
+    }
+
+    /// 前缀对但文件不存在时，回退到源文件而不是失败。
+    ///
+    /// 中间文件可能被清理或被杀毒软件删掉。此时加密未转换的原内容，
+    /// 好过报一个用户无从处理的 read_failed。
+    #[test]
+    fn missing_temp_file_falls_back_to_source() {
+        let mut req = req_with(vec![String::from("C:/v/a.mov")]);
+        req.converted_path = Some(String::from("C:/v/.omytmp-gone-1.mp4"));
+        assert_eq!(
+            converted_source(Path::new("C:/v/a.mov"), &req),
+            PathBuf::from("C:/v/a.mov")
+        );
+    }
+
+    /// 真实存在的中间文件会被采用。
+    ///
+    /// 前三条都在验证「不采用」，缺了这条的话，把函数写成永远返回 src
+    /// 也能全绿——而那意味着转换结果被静默丢弃，用户等了半天的压缩
+    /// 完全没进到加密里。
+    #[test]
+    fn existing_temp_file_is_used() {
+        let dir = std::env::temp_dir().join("omy-conv-src-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let tmp = dir.join(".omytmp-sample-1.mp4");
+        std::fs::write(&tmp, b"converted").unwrap();
+
+        let src = dir.join("sample.mov");
+        std::fs::write(&src, b"original").unwrap();
+
+        let mut req = req_with(vec![src.to_string_lossy().into_owned()]);
+        req.converted_path = Some(tmp.to_string_lossy().into_owned());
+
+        assert_eq!(converted_source(&src, &req), tmp, "中间文件没被采用");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
