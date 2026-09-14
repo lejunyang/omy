@@ -113,7 +113,7 @@
 
 ```
 omy-core / omy-format / omy-cli    MIT OR Apache-2.0    零 FFmpeg 依赖
-omy-media（FFmpeg 绑定）                  LGPL-2.1（动态链接）
+omy-media（FFmpeg 封装）                  LGPL-2.1（子进程调用）
 omy GUI                              GPL-3.0
 ```
 

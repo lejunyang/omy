@@ -39,7 +39,7 @@ GPL v3 第 11 条甚至专门处理这个：贡献者授予你其**自身持有*
 │  （因为也链接 omy-media）                         │
 ├─────────────────────────────────────────────────────┤
 │  omy-media  (FFmpeg 封装)           LGPL-2.1+    │
-│  └── 动态链接 FFmpeg (LGPL 构建)                     │
+│  └── 子进程调用 ffmpeg/ffprobe (LGPL 构建)           │
 ├─────────────────────────────────────────────────────┤
 │  omy-core   (格式 + 加密)      MIT OR Apache-2.0 │
 │  └── 零 FFmpeg 依赖，纯 Rust                         │
@@ -53,7 +53,7 @@ GPL v3 第 11 条甚至专门处理这个：贡献者授予你其**自身持有*
 | 层 | 许可证 | 理由 |
 |---|---|---|
 | `omy-core` | MIT OR Apache-2.0 | 双许可是 Rust 生态惯例。任何人（含闭源商业软件）都能集成 `.omy` 格式支持。**这是格式能被广泛采用的前提** |
-| `omy-media` | LGPL-2.1+ | 与 FFmpeg 一致。动态链接，用户可替换 FFmpeg 库 |
+| `omy-media` | LGPL-2.1+ | 与 FFmpeg 一致。子进程调用独立可执行文件，用户可直接替换那两个 exe |
 | `omy-cli` / `omy-gui` | GPL-3.0 | 最终产物包含 FFmpeg 且形成整体作品；GPL-3.0 有明确的专利条款与反 Tivoization 条款 |
 | 格式规范 | CC BY 4.0 | 文档不是代码；鼓励第三方独立实现 |
 
@@ -73,33 +73,43 @@ FFmpeg 默认是 **LGPL v2.1+**；只有显式传 `--enable-gpl` 才会引入 GP
 因此：
 
 ```bash
-# 本项目的 FFmpeg 构建配置（LGPL）
+# 本项目的 FFmpeg 构建配置（LGPL）。
+# 这里只列与许可证相关的几项，完整配方见
+# scripts/ffmpeg-build/configure-flags.sh（那份是实测跑通的）
 ./configure \
   --disable-gpl \          # 明确不启用 GPL 组件
   --disable-nonfree \
-  --enable-shared \        # 动态链接，LGPL 合规的关键
-  --disable-static \
-  --disable-encoders \     # 不需要编码器
-  --disable-muxers \       # 除了 remux 需要的少数几个
-  --enable-muxer=mp4,matroska,mov \
-  --disable-programs \     # 不要 ffmpeg/ffplay 可执行文件
+  --disable-version3 \
+  --enable-static \        # 出独立可执行文件，靠子进程隔离而非动态链接
+  --disable-shared \
   --disable-doc
 ```
+
+> **静态链接与 LGPL 可替换性。** 静态链接 libav\* 会触发 LGPL-2.1 §6 的
+> 「用户须能替换该库」义务，但这里静态链接的产物是**独立的 `ffmpeg.exe` /
+> `ffprobe.exe`**，omy 通过管道调用它们、不与 libav\* 链接。用户把这两个
+> 文件换成自己的构建即可，义务通过「可替换的可执行文件 + 随附 LGPL 全文 +
+> 构建脚本 + 源码地址与 SHA256」来履行（见 `SOURCE.txt`）。
+> 详见 13 号文档 §3。
 
 > **例外：D-26 转码功能。** 用户新增的"转码后加密"需要**编码器**。若使用 x264/x265，必须 `--enable-gpl`，FFmpeg 变 GPL v2+。
 > **处理方式**：转码功能编译为**独立的可选组件**，用户可选择安装 GPL 版 FFmpeg 后启用。官方预编译包默认使用 LGPL 版 + 系统硬件编码器（VideoToolbox / NVENC / QSV / MediaCodec），不内置 x264/x265。
 
-### 2.3 LGPL 动态链接的合规要点
+### 2.3 LGPL 可替换性的合规要点
 
-LGPL 要求最终用户能够**替换**该库。这在各平台的落地：
+LGPL 要求最终用户能够**替换**该库。本项目走的是「独立可执行文件 + 子进程
+调用」，所以要替换的是那两个 exe，而不是一组 DLL。各平台的落地：
 
 | 平台 | 做法 | 难点 |
 |---|---|---|
-| Windows | FFmpeg DLL 单独放在安装目录，用户可替换 | 无 |
-| macOS | `.dylib` 放在 `.app/Contents/Frameworks/`，用户可替换 | 代码签名 —— 替换后签名失效，需说明如何处理 |
-| Linux | 优先链接系统 FFmpeg；AppImage 内的可替换 | 无 |
-| Android | `.so` 在 APK 内；用户可解包替换后自签名 | 可接受 |
+| Windows | 内置的 `ffmpeg.exe` / `ffprobe.exe` 放在 `<应用目录>\ffmpeg\`，直接覆盖即可；也可用 `OMY_FFMPEG` / `OMY_FFPROBE` 指向别处 | 无 |
+| macOS | 同理放进 `.app/Contents/`，用户可替换 | 代码签名 —— 替换后签名失效，需说明如何处理 |
+| Linux | 优先用系统 FFmpeg；随包附带的同样可替换 | 无 |
+| Android | 当前不带 FFmpeg（见 §4.3） | — |
 | **iOS** | ⚠️ **经典难题** | App Store 禁止动态加载非系统库，且用户无法替换 |
+
+> 目前只有 Windows 产物内置 FFmpeg，其余平台仍靠用户自备；构建链只在
+> Windows 上实测过。见 13 号文档 §4.1。
 
 **iOS 的处理**（结合 D-06：iOS 优先级最低，降级为导入式保险箱）：
 
@@ -246,7 +256,7 @@ Access Advance 的许可初始期至 2025-12-31，之后自动续为不可终止
 | 依赖 | 许可证 | 备注 |
 |---|---|---|
 | Tauri v2 | Apache-2.0 OR MIT | |
-| FFmpeg (LGPL 构建) | LGPL-2.1+ | 动态链接 |
+| FFmpeg (LGPL 构建) | LGPL-2.1+ | 子进程调用，不与 libav* 链接 |
 | 前端框架 | MIT 系 | |
 
 **CI 强制检查**：用 `cargo-deny` 配置许可证白名单，在 `omy-core` 上禁止任何 copyleft 依赖：
