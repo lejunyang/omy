@@ -120,6 +120,81 @@ pub fn plan_audio(container: Container, audio_codec: Option<&str>, has_aac_encod
     }
 }
 
+/// 字幕轨的处理方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitlePlan {
+    /// 没有字幕轨，什么都不用做。
+    None,
+    /// 直接拷贝，原样保留（含样式）。
+    Copy,
+    /// 转成 `mov_text`。文字保留，ASS 的样式会丢。
+    ToMovText,
+    /// 丢弃。
+    ///
+    /// 只在「位图字幕 + 目标是 MP4/MOV」时才是唯一选择——那种情况装不进去
+    /// 也转不成文本，参见 [`plan_subtitles`] 的说明。
+    Drop,
+}
+
+/// 决定字幕怎么处理。
+///
+/// # 两个限制要分清
+///
+/// 拦住字幕的往往**不是编码器缺失，而是容器标准**。实测用字幕编码器一个
+/// 不缺的完整版 FFmpeg 往 MP4 里塞：
+///
+/// ```text
+/// mov_text  ✅        ttml    ✅
+/// webvtt    ❌ codec not currently supported in container
+/// srt       ❌ 同上          ass  ❌ 同上
+/// dvdsub    ❌ only possible from text to text or bitmap to bitmap
+/// ```
+///
+/// 也就是说给 MP4 加字幕编码器没有用，muxer 本身就不收。`ttml` 虽然能进，
+/// 但播放器支持面远不如 `mov_text`（Safari/QuickTime 基本不认），而我们转
+/// MP4 的目的正是让 WebView 直通，所以仍然选 `mov_text`。
+///
+/// MKV 则什么都装得下（实测 copy / ass / webvtt 全通过），所以想保样式就
+/// 该选它。
+///
+/// # 位图字幕进 MP4 只能丢
+///
+/// PGS/VobSub 是图片序列，转文本做不到（FFmpeg 明说 text to text or
+/// bitmap to bitmap）。理论上可以烧进画面，但那要重新编码整个视频、几十
+/// 分钟且不可逆，与「转封装是秒级零损失」直接矛盾，所以不做——界面应当
+/// 推荐用户改选 MKV。
+#[must_use]
+pub fn plan_subtitles(container: Container, codecs: &[String], ass_to_text: bool) -> SubtitlePlan {
+    if codecs.is_empty() {
+        return SubtitlePlan::None;
+    }
+    // MKV 什么都装得下，一律原样拷贝——这也是「想保 ASS 样式就选 MKV」
+    // 这句建议的依据
+    if container == Container::Mkv {
+        return SubtitlePlan::Copy;
+    }
+
+    let has_bitmap = codecs.iter().any(|c| crate::tier::is_bitmap_subtitle(c));
+    if has_bitmap {
+        // 位图进 MP4 无解。这里不区分「只有位图」和「文本+位图混合」：
+        // 混合时若只保留文本轨，用户会拿到一个「字幕数量莫名变少」的文件，
+        // 比全丢更难理解。界面负责在动手前就推荐改用 MKV。
+        return SubtitlePlan::Drop;
+    }
+
+    let has_styled = codecs.iter().any(|c| crate::tier::is_styled_subtitle(c));
+    if has_styled && !ass_to_text {
+        // 用户选择了「不要为 MP4 牺牲样式」。丢弃而不是硬转，
+        // 由界面引导他改选 MKV
+        return SubtitlePlan::Drop;
+    }
+
+    // 已经是 mov_text 时 FFmpeg 的 -c:s mov_text 等价于拷贝，
+    // 不必特判——多一条分支只会多一处要维护的判断
+    SubtitlePlan::ToMovText
+}
+
 /// 转换请求。
 #[derive(Debug, Clone)]
 pub struct ConvertOptions {
@@ -127,6 +202,8 @@ pub struct ConvertOptions {
     pub container: Container,
     /// 音轨处理方式。
     pub audio: AudioPlan,
+    /// 字幕处理方式。
+    pub subtitles: SubtitlePlan,
     /// 是否把索引移到文件开头（MP4/MOV 才有意义）。
     pub faststart: bool,
     /// 重新编码的参数。`None` 表示只转封装（`-c:v copy`）。
@@ -189,6 +266,13 @@ fn build_args(input: &Path, output: &Path, opts: &ConvertOptions) -> Vec<std::ff
         push!("-map");
         push!("0:a?");
     }
+    // 字幕轨要显式映射。不映射的话 FFmpeg 的默认选流规则只挑「每种类型
+    // 一条」，多语言字幕会静默只剩一条——用户看到的是「我的三条字幕怎么
+    // 少了两条」，而转换过程没有任何警告
+    if !matches!(opts.subtitles, SubtitlePlan::Drop | SubtitlePlan::None) {
+        push!("-map");
+        push!("0:s?");
+    }
 
     // 视频
     match &opts.video_encode {
@@ -229,14 +313,23 @@ fn build_args(input: &Path, output: &Path, opts: &ConvertOptions) -> Vec<std::ff
         AudioPlan::Drop => push!("-an"),
     }
 
-    // 字幕：一律丢弃。
+    // 字幕。
     //
-    // 这条是有意的简化，且必须在界面上说明。原因是字幕的正确处理要分三种
-    // 情况（文本转 mov_text / 位图只能丢 / mkv 可直接拷），而判断依据要靠
-    // 逐轨探测。在「加密前顺手转一下」这个场景里，多数文件没有字幕，
-    // 为它引入三分支的复杂度不划算——真需要保留字幕的用户应该选 MKV 并
-    // 走「不处理」。
-    push!("-sn");
+    // 拦住字幕的通常是**容器**而不是编码器：实测完整版 FFmpeg 往 MP4 里
+    // 塞 srt/ass/webvtt 一律报 "codec not currently supported in container"，
+    // 所以加编码器解决不了，只有 mov_text 这一条路（详见 plan_subtitles）。
+    match opts.subtitles {
+        SubtitlePlan::None => {}
+        SubtitlePlan::Copy => {
+            push!("-c:s");
+            push!("copy");
+        }
+        SubtitlePlan::ToMovText => {
+            push!("-c:s");
+            push!("mov_text");
+        }
+        SubtitlePlan::Drop => push!("-sn"),
+    }
 
     if opts.faststart && matches!(opts.container, Container::Mp4 | Container::Mov) {
         push!("-movflags");
@@ -339,9 +432,156 @@ mod tests {
         ConvertOptions {
             container: Container::Mp4,
             audio: AudioPlan::Copy,
+            subtitles: SubtitlePlan::None,
             faststart: true,
             video_encode: None,
         }
+    }
+
+    fn subs(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// MKV 什么都装得下，一律原样拷贝。
+    ///
+    /// 实测依据：完整版 FFmpeg 往 matroska 里写 copy / ass / webvtt 全部
+    /// 成功。这条是「想保 ASS 样式就选 MKV」那句建议的技术依据，
+    /// 如果它不成立，那句建议就是在骗用户。
+    #[test]
+    fn mkv_keeps_every_subtitle_as_is() {
+        for codecs in [
+            subs(&["subrip"]),
+            subs(&["ass"]),
+            subs(&["hdmv_pgs_subtitle"]),
+            subs(&["ass", "hdmv_pgs_subtitle"]),
+        ] {
+            assert_eq!(
+                plan_subtitles(Container::Mkv, &codecs, true),
+                SubtitlePlan::Copy,
+                "MKV 应当原样保留 {codecs:?}"
+            );
+        }
+    }
+
+    /// 文本字幕进 MP4 转 mov_text。
+    #[test]
+    fn text_subtitles_become_mov_text_in_mp4() {
+        for c in ["subrip", "webvtt", "mov_text"] {
+            assert_eq!(
+                plan_subtitles(Container::Mp4, &subs(&[c]), true),
+                SubtitlePlan::ToMovText,
+                "{c} 应当转 mov_text"
+            );
+        }
+    }
+
+    /// 位图字幕进 MP4 只能丢，且**与用户的 ASS 选择无关**。
+    ///
+    /// 不这样断言会怎样：把位图当文本去转，FFmpeg 会报
+    /// "only possible from text to text or bitmap to bitmap" 而整个转换失败。
+    /// 用户看到的是「转封装失败」，完全不知道是字幕的问题。
+    #[test]
+    fn bitmap_subtitles_are_dropped_in_mp4_regardless_of_ass_choice() {
+        for c in ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"] {
+            for ass_to_text in [true, false] {
+                assert_eq!(
+                    plan_subtitles(Container::Mp4, &subs(&[c]), ass_to_text),
+                    SubtitlePlan::Drop,
+                    "{c} 进 MP4 只能丢（ass_to_text={ass_to_text}）"
+                );
+            }
+        }
+    }
+
+    /// 文本与位图混合时整体丢弃，不做「只留文本」的部分保留。
+    ///
+    /// 部分保留会让用户拿到一个字幕数量莫名变少的文件——三条变一条，
+    /// 而没有任何地方说过为什么。全丢至少是个能解释的结果，
+    /// 且界面会在动手前推荐改用 MKV。
+    #[test]
+    fn mixed_text_and_bitmap_drops_all_in_mp4() {
+        assert_eq!(
+            plan_subtitles(Container::Mp4, &subs(&["subrip", "hdmv_pgs_subtitle"]), true),
+            SubtitlePlan::Drop
+        );
+    }
+
+    /// ASS 进 MP4：用户选转文本就转，选保样式就丢（由界面引导改 MKV）。
+    ///
+    /// 这是本次唯一交给用户决定的取舍，两个分支都要测——只测默认那个的话，
+    /// 「选了保样式却还是被转成 mov_text」这种缺陷完全测不出来，
+    /// 而用户是看不出字幕曾经有样式的。
+    #[test]
+    fn ass_into_mp4_follows_the_user_choice() {
+        assert_eq!(
+            plan_subtitles(Container::Mp4, &subs(&["ass"]), true),
+            SubtitlePlan::ToMovText,
+            "选了转文本却没转"
+        );
+        assert_eq!(
+            plan_subtitles(Container::Mp4, &subs(&["ass"]), false),
+            SubtitlePlan::Drop,
+            "选了保样式却仍然硬转成 mov_text，样式会被悄悄丢掉"
+        );
+        // ssa 是 ass 的旧称，必须同等对待
+        assert_eq!(
+            plan_subtitles(Container::Mp4, &subs(&["ssa"]), false),
+            SubtitlePlan::Drop
+        );
+    }
+
+    /// 没有字幕轨时不产生任何字幕参数。
+    #[test]
+    fn no_subtitles_means_no_subtitle_args() {
+        assert_eq!(plan_subtitles(Container::Mp4, &[], true), SubtitlePlan::None);
+        let mut o = base();
+        o.subtitles = SubtitlePlan::None;
+        let a = args_of(&o);
+        assert!(!a.iter().any(|s| s == "-c:s"), "无字幕却加了 -c:s: {a:?}");
+        assert!(!a.iter().any(|s| s == "-sn"), "无字幕却加了 -sn: {a:?}");
+        assert!(!a.windows(2).any(|w| w == ["-map", "0:s?"]));
+    }
+
+    /// 保留字幕时必须显式映射字幕流。
+    ///
+    /// 不这样断言会怎样：不加 `-map 0:s?` 时 FFmpeg 按默认规则每种类型只挑
+    /// 一条，多语言字幕会静默只剩一条。用户看到「三条字幕少了两条」，
+    /// 而转换过程一个警告都没有。
+    #[test]
+    fn keeping_subtitles_maps_all_of_them() {
+        for plan in [SubtitlePlan::Copy, SubtitlePlan::ToMovText] {
+            let mut o = base();
+            o.subtitles = plan;
+            let a = args_of(&o);
+            assert!(
+                a.windows(2).any(|w| w == ["-map", "0:s?"]),
+                "{plan:?} 没有映射字幕流: {a:?}"
+            );
+        }
+    }
+
+    /// 丢弃字幕时给 -sn，且不再映射字幕流。
+    #[test]
+    fn dropping_subtitles_omits_the_mapping() {
+        let mut o = base();
+        o.subtitles = SubtitlePlan::Drop;
+        let a = args_of(&o);
+        assert!(a.iter().any(|s| s == "-sn"));
+        assert!(!a.windows(2).any(|w| w == ["-map", "0:s?"]), "仍映射了字幕: {a:?}");
+    }
+
+    /// MP4 的字幕编码只能是 mov_text。
+    ///
+    /// 实测完整版 FFmpeg 往 MP4 塞 srt/ass/webvtt 全部报
+    /// "codec not currently supported in container"，所以这里若写成别的，
+    /// 整个转换会失败而不是降级。
+    #[test]
+    fn mp4_subtitle_codec_is_mov_text() {
+        let mut o = base();
+        o.subtitles = SubtitlePlan::ToMovText;
+        let a = args_of(&o);
+        let i = a.iter().position(|s| s == "-c:s").expect("缺少 -c:s");
+        assert_eq!(a.get(i + 1).map(String::as_str), Some("mov_text"));
     }
 
     /// mkv 的 muxer 名是 matroska，不是 mkv。

@@ -125,7 +125,27 @@ const MP4_INCOMPATIBLE_AUDIO: &[&str] = &[
 ///
 /// PGS/VobSub 是位图字幕，MP4 的 `mov_text` 只能装文本，
 /// remux 时字幕会丢失。
-const BITMAP_SUBTITLES: &[&str] = &["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"];
+///
+/// `pub` 是为了让 `convert.rs` 复用同一份判据。**不要在别处复制一份**：
+/// 两处定义迟早分叉，而分叉的后果是分级说「会丢字幕」、转换却当成文本
+/// 去转（或反过来），两条路径给用户的说法自相矛盾。
+pub const BITMAP_SUBTITLES: &[&str] = &["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"];
+
+/// 是否为位图字幕。
+#[must_use]
+pub fn is_bitmap_subtitle(codec: &str) -> bool {
+    contains_ci(BITMAP_SUBTITLES, codec)
+}
+
+/// 是否为带样式的字幕（ASS / SSA）。
+///
+/// 单独识别是因为它有一个**别的文本字幕没有的代价**：转成 mov_text 后
+/// 文字还在，但字体、颜色、定位、卡拉OK 特效全部丢失。用户看到的是
+/// 「字幕还在，只是变成了白底黑字」——不给提示的话会以为是我们弄坏了。
+#[must_use]
+pub fn is_styled_subtitle(codec: &str) -> bool {
+    contains_ci(&["ass", "ssa"], codec)
+}
 
 fn contains_ci(list: &[&str], v: &str) -> bool {
     list.iter().any(|x| x.eq_ignore_ascii_case(v))
