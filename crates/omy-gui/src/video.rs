@@ -69,12 +69,29 @@ pub struct VideoInfo {
     pub tier_reason: Option<String>,
     /// 字幕轨数量。
     pub subtitle_count: usize,
+    /// 每条字幕轨的编码名，如 `subrip`、`ass`、`hdmv_pgs_subtitle`。
+    pub subtitle_codecs: Vec<String>,
+    /// 是否含位图字幕（PGS / VobSub 等）。
+    ///
+    /// 这类字幕**装不进 MP4 也转不成文本**，转封装时只能丢。界面据此在
+    /// 动手之前推荐改用 MKV，而不是等产物出来才发现字幕没了。
+    pub has_bitmap_subtitles: bool,
+    /// 是否含带样式的字幕（ASS / SSA）。
+    ///
+    /// 它比普通文本字幕多一个代价：转成 mov_text 后文字还在，但字体、
+    /// 颜色、定位、卡拉OK 特效全部丢失。界面据此多给一个选项。
+    pub has_styled_subtitles: bool,
     /// 转封装到 MP4 时音轨会怎样：`copy` / `to_aac` / `drop`。
     ///
     /// 这个判断放在后端算，而不是让前端按编码名猜：它依赖「容器能装下
     /// 哪些编码」与「有没有 AAC 编码器」两件事，前端重复实现一遍迟早
     /// 和后端不一致，而不一致的后果是界面说会保留、实际丢了音轨。
     pub mp4_audio_plan: String,
+    /// 转封装到 MP4 时字幕会怎样：`none` / `copy` / `to_mov_text` / `drop`。
+    ///
+    /// 与音轨同理，算在后端。这里按「用户愿意为 MP4 牺牲 ASS 样式」
+    /// （即默认值）算，前端改了选择后自己切换文案即可。
+    pub mp4_subtitle_plan: String,
 }
 
 /// 把 `AudioPlan` 转成前端用的字符串。
@@ -83,6 +100,17 @@ const fn plan_name(p: AudioPlan) -> &'static str {
         AudioPlan::Copy => "copy",
         AudioPlan::ToAac => "to_aac",
         AudioPlan::Drop => "drop",
+    }
+}
+
+/// 把 `SubtitlePlan` 转成前端用的字符串。
+const fn sub_plan_name(p: omy_media::convert::SubtitlePlan) -> &'static str {
+    use omy_media::convert::SubtitlePlan as S;
+    match p {
+        S::None => "none",
+        S::Copy => "copy",
+        S::ToMovText => "to_mov_text",
+        S::Drop => "drop",
     }
 }
 
@@ -150,6 +178,18 @@ pub async fn video_info(state: tauri::State<'_, Shared>, token: String) -> CmdRe
             caps.can_encode_aac(),
         );
 
+        let sub_codecs: Vec<String> = info.subtitles.iter().map(|s| s.codec.clone()).collect();
+        // 字幕计划同样按 MP4 算，并按默认选择（愿意为 MP4 牺牲 ASS 样式）。
+        // 判据复用 tier 里那份，不在这里重写一遍——两处定义分叉的话，
+        // 分级说「会丢字幕」而转换当成文本去转，用户会收到自相矛盾的说法
+        let sub_plan = omy_media::convert::plan_subtitles(Container::Mp4, &sub_codecs, true);
+        let has_bitmap = sub_codecs
+            .iter()
+            .any(|c| omy_media::tier::is_bitmap_subtitle(c));
+        let has_styled = sub_codecs
+            .iter()
+            .any(|c| omy_media::tier::is_styled_subtitle(c));
+
         Ok(VideoInfo {
             container: info.container.clone(),
             container_long: info.container_long.clone(),
@@ -167,7 +207,11 @@ pub async fn video_info(state: tauri::State<'_, Shared>, token: String) -> CmdRe
             tier: format!("{:?}", verdict.tier).to_lowercase(),
             tier_reason: Some(verdict.reason.clone()),
             subtitle_count: info.subtitles.len(),
+            subtitle_codecs: sub_codecs,
+            has_bitmap_subtitles: has_bitmap,
+            has_styled_subtitles: has_styled,
             mp4_audio_plan: plan_name(plan).to_owned(),
+            mp4_subtitle_plan: sub_plan_name(sub_plan).to_owned(),
         })
     })
     .await
@@ -185,6 +229,24 @@ pub struct ConvertRequest {
     pub faststart: bool,
     /// 重新编码参数。`None` 表示只转封装。
     pub encode: Option<EncodeRequest>,
+    /// 是否为了进 MP4 而把 ASS 转成 mov_text（代价是丢失样式）。
+    ///
+    /// 只在源含 ASS/SSA 且目标是 MP4/MOV 时有意义。默认为真：目标容器是
+    /// 用户先选的，为字幕样式擅自改容器会让「我选的 MP4 怎么变成 MKV 了」
+    /// 更费解；代价写在界面的选项文案里。
+    #[serde(default = "default_true")]
+    pub ass_to_text: bool,
+    /// 完全不要字幕。
+    ///
+    /// 与 `ass_to_text` 分开：那个是「样式还是兼容性」的取舍，这个是
+    /// 「要不要字幕」。隐私场景里字幕内容本身可能泄露影片信息，
+    /// 所以要给一个明确的关掉入口。
+    #[serde(default)]
+    pub drop_subtitles: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// 重新编码参数。
@@ -218,6 +280,11 @@ pub struct ConvertResult {
     pub warnings: Vec<String>,
     /// 音轨实际怎么处理的。
     pub audio_plan: String,
+    /// 字幕实际怎么处理的：`none` / `copy` / `to_mov_text` / `drop`。
+    ///
+    /// 回传而不是让前端按请求推断：真实计划由源文件的实际字幕类型决定，
+    /// 用户选了「转文本」但源里是位图时仍然只能丢，界面要如实说出来。
+    pub subtitle_plan: String,
 }
 
 /// 执行转换。
@@ -269,21 +336,35 @@ pub async fn convert_video(
     tauri::async_runtime::spawn_blocking(move || {
         let original_size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
 
-        // 音轨计划要按**实际的**源音轨算，不能信前端传过来的
-        let audio_codec = omy_media::probe::probe(omy_media::probe::Source::Path(&src))
-            .ok()
+        // 音轨与字幕的计划都要按**实际的**源文件算，不能信前端传过来的：
+        // 对话框开着的时候文件可能被替换，而更常见的是前端的判断本来就
+        // 和后端不一致。一次探测同时拿两样，不要探两遍
+        let probed = omy_media::probe::probe(omy_media::probe::Source::Path(&src)).ok();
+        let audio_codec = probed
+            .as_ref()
             .and_then(|i| i.audio.first().map(|a| a.codec.clone()));
+        let sub_codecs: Vec<String> = probed
+            .as_ref()
+            .map(|i| i.subtitles.iter().map(|s| s.codec.clone()).collect())
+            .unwrap_or_default();
+
         let plan = omy_media::convert::plan_audio(
             container,
             audio_codec.as_deref(),
             caps.can_encode_aac(),
         );
+        let sub_plan = if req.drop_subtitles {
+            omy_media::convert::SubtitlePlan::Drop
+        } else {
+            omy_media::convert::plan_subtitles(container, &sub_codecs, req.ass_to_text)
+        };
 
         let out = temp_output(&src, container.extension());
 
         let opts = ConvertOptions {
             container,
             audio: plan,
+            subtitles: sub_plan,
             faststart: req.faststart,
             video_encode: req.encode.as_ref().map(|e| VideoEncode {
                 encoder: e.encoder.clone(),
@@ -307,6 +388,7 @@ pub async fn convert_video(
             original_size,
             warnings: r.warnings,
             audio_plan: plan_name(plan).to_owned(),
+            subtitle_plan: sub_plan_name(sub_plan).to_owned(),
         })
     })
     .await
