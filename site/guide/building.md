@@ -242,6 +242,36 @@ pwsh -NoProfile -File scripts\fetch-ffmpeg.ps1
 
 下载便携版到 `tools/`（该目录不入库）。`omy-media` 会在候选目录里找到它，不必装到系统。
 
+## 构建内置的 FFmpeg
+
+Windows release 产物里带的那份 FFmpeg 是自己编的，不是下载的。配方与脚本在 `scripts/ffmpeg-build/`，日常开发用不到——只有改编解码能力时才需要重编。
+
+```powershell
+# 1. 确认工具链，它会打印下一步要用的 SYSROOT
+pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
+
+# 2. 构建（约 12.44 MB，含 H.264 / HEVC / VP8 / VP9 / AV1）
+$env:SYSROOT='...'
+bash scripts/ffmpeg-build/build-windows.sh
+
+# 3. 校验产物
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
+Windows 上**不需要装 MSYS2**，mingw 交叉编译器与 POSIX 构建环境都由根目录的 `osdk.toml` 提供。
+
+::: warning verify.sh 不是可选步骤
+改过配方之后一定要跑。曾经踩到的四个问题（`rawvideo`、`fd` 协议、`image_png_pipe`、`movtext`）全都是 configure 接受了参数但没启用，**且不报任何错**：configure 退出 0、make 退出 0、手工命令行还跑得通，只有 omy 自己的测试才失败。
+
+所以「编过了」不能作为接受标准，跑完 `verify.sh` 还要再跑一次项目测试：
+
+```powershell
+$env:OMY_FFMPEG='<产物目录>\ffmpeg.exe'
+$env:OMY_FFPROBE='<产物目录>\ffprobe.exe'
+cargo test -p omy-media
+```
+:::
+
 ## 文档站
 
 ```bash

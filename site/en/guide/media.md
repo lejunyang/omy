@@ -82,11 +82,11 @@ Playing this way usually **cannot seek** (pipes are not rewindable). Use the GUI
 
 ## Without FFmpeg
 
-FFmpeg is optional. Without it:
+The Windows build ships with FFmpeg, so this describes the other platforms — or what happens once you delete the bundled copy:
 
 - ✅ Encryption, decryption, sharding, sharing, image thumbnails — all fine
 - ❌ Video thumbnails
 - ❌ Media probing and tiering
 - ❌ P2 / P3 playback (only P1 plays)
 
-Check the current state with `omy doctor`. Installation and lookup order are in [Installation](/en/guide/install#optional-ffmpeg).
+Check the current state with `omy doctor`. What is bundled and the lookup order are in [Installation](/en/guide/install#ffmpeg).

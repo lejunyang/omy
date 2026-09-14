@@ -247,6 +247,36 @@ pwsh -NoProfile -File scripts\fetch-ffmpeg.ps1
 
 Downloads a portable build into `tools/` (not committed). `omy-media` finds it among its candidate directories, so nothing needs installing system-wide.
 
+## Building the bundled FFmpeg
+
+The FFmpeg shipped in the Windows release is built by us, not downloaded. The recipe and scripts live in `scripts/ffmpeg-build/`. Day-to-day development never needs this — only changes to codec coverage do.
+
+```powershell
+# 1. Check the toolchain; it prints the SYSROOT for the next step
+pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
+
+# 2. Build (about 12.44 MB, with H.264 / HEVC / VP8 / VP9 / AV1)
+$env:SYSROOT='...'
+bash scripts/ffmpeg-build/build-windows.sh
+
+# 3. Verify the output
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
+**MSYS2 is not needed on Windows**: both the mingw cross compiler and the POSIX build environment come from the `osdk.toml` at the repository root.
+
+::: warning verify.sh is not optional
+Run it whenever the recipe changes. All four problems hit so far (`rawvideo`, the `fd` protocol, `image_png_pipe`, `movtext`) were cases where configure accepted the argument but did not enable the component, **and reported nothing**: configure exited 0, make exited 0, hand-written command lines still worked, and only omy's own tests failed.
+
+So "it compiled" is not an acceptance criterion. After `verify.sh`, run the project's tests against the build as well:
+
+```powershell
+$env:OMY_FFMPEG='<output dir>\ffmpeg.exe'
+$env:OMY_FFPROBE='<output dir>\ffprobe.exe'
+cargo test -p omy-media
+```
+:::
+
 ## The documentation site
 
 ```bash

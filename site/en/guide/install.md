@@ -70,25 +70,37 @@ The build script installs frontend dependencies and builds them when the output 
 
 For per-platform system dependencies and Android packaging, see [Building from source](/en/guide/building).
 
-## Optional: FFmpeg
+## FFmpeg
 
-FFmpeg is **not required**. Without it, encryption, decryption, sharding and sharing all work normally; only these features are unavailable:
+**The Windows build ships with FFmpeg** — unzip and it works, no separate install. It lives in the `ffmpeg\` directory inside the archive and is our own trimmed build (12.44 MB, with H.264 / HEVC / VP8 / VP9 / AV1 decoders), depending on nothing beyond the system DLLs.
+
+Other platforms currently ship **without** FFmpeg and need their own install — the build chain has only been verified on Windows, and an unverified bundled binary is worse than none.
+
+Without FFmpeg, encryption, decryption, sharding and sharing all work normally; only these features are unavailable:
 
 - Video thumbnails (image thumbnails need no FFmpeg — they go through the pure-Rust image crate)
 - Media metadata probing and playback tiering
 - P2 remux playback (rewrapping containers such as MKV into fMP4 for the player)
 
-omy looks for `ffprobe` and `ffmpeg` in this order:
+### Using your own FFmpeg
+
+Bundled does not mean locked in. omy looks for `ffprobe` and `ffmpeg` in this order:
 
 1. The `OMY_FFPROBE` / `OMY_FFMPEG` environment variables (pointing at the executable itself, not a directory)
-2. A set of candidate directories
+2. A set of candidate directories, including the bundled `ffmpeg\` and `ffmpeg\bin`
 3. `PATH`
+
+The environment variables come first, so pointing them at your own build is enough; overwriting the files in `ffmpeg\` works too.
 
 ::: warning A wrong environment variable does not silently fall back
 If `OMY_FFMPEG` points at a path that does not exist, omy will not quietly ignore it and search `PATH` instead — that would let you believe your setting took effect.
 :::
 
 Confirm with `omy doctor`, which prints the version it actually found.
+
+::: tip On codec patents
+The bundled FFmpeg includes H.264 / HEVC decoders, which are covered by patents. omy distributes this build under LGPL-2.1+, but grants **no codec patent licence**. Personal use is generally unaffected; evaluate for yourself before redistributing commercially or publishing to an app store.
+:::
 
 ## Android
 

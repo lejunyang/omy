@@ -82,11 +82,11 @@ omy decrypt --stdout movie.mp4.omy | mpv -
 
 ## 没有 FFmpeg 会怎样
 
-FFmpeg 是可选的。缺了它：
+Windows 版自带 FFmpeg，所以下面说的是其余平台，或者你把内置那份删掉之后的情况：
 
 - ✅ 加解密、分片、共享、图片缩略图 —— 全部正常
 - ❌ 视频缩略图
 - ❌ 媒体元信息探测与分级
 - ❌ P2 / P3 播放（只有 P1 能播）
 
-用 `omy doctor` 确认当前状态。安装与查找顺序见[安装](/guide/install#可选-ffmpeg)。
+用 `omy doctor` 确认当前状态。内置说明与查找顺序见[安装](/guide/install#ffmpeg)。
