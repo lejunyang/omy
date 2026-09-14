@@ -133,7 +133,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const hasDlg = await c.eval(`document.querySelector('.dlg') ? 'yes' : 'no'`);
   check('加密对话框已打开', hasDlg === 'yes', `入口=${opened}`);
 
-  console.log('\n--- 3. 缩略图选项的默认值与可见性 ---');
+  console.log('\n--- 3. 缩略图选项的默认值 ---');
   // 默认必须开着：默认关掉的话界面上一张缩略图都没有，
   // 而这种回归从代码上很难看出来
   const boxes = await c.eval(`(() => {
@@ -147,95 +147,95 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     Array.isArray(boxes) && boxes.length >= 2 && boxes[1] === true,
     JSON.stringify(boxes));
 
-  // 选中的是视频，所以取帧输入框必须出现
-  const frameShown = await c.eval(`document.querySelector('#e-frame') ? 'yes':'no'`);
-  check('选中视频时显示取帧时间点输入框', frameShown === 'yes', String(frameShown));
-
-  // 先填密码：canSubmit 同时看密码和时间点，密码为空时按钮**因为没密码**
-  // 而禁用，那样下面那条断言就不是在测时间点了（实测这会让「不禁用提交」
-  // 这个缺陷完全测不出来）。
+  // 填密码。取帧时间点现在由视频处理对话框选，不再影响 canSubmit，
+  // 所以这里只要密码填上按钮就该可点
   await c.eval(`(() => {
     const ins=[...document.querySelectorAll('.dlg input[type=password]')];
     for(const i of ins){ i.value=${JSON.stringify(PW)}; i.dispatchEvent(new Event('input',{bubbles:true})); }
     return ins.length;
   })()`);
   await sleep(400);
-  // 自证前提成立：此刻按钮必须是可点的，否则后面测不出时间点的作用
-  const readyBefore = await c.eval(`(() => {
-    const dlg=document.querySelector('.dlg');
-    const b=[...dlg.querySelectorAll('.acts .btn')].find(x=>x.type==='submit');
-    const ps=[...dlg.querySelectorAll('input[type=password]')];
-    return JSON.stringify({
-      enabled: b ? !b.disabled : null,
-      pw: ps.map(p=>p.value.length),
-      err: [...dlg.querySelectorAll('.ferr')].map(e=>e.textContent.trim().slice(0,40)),
-      frame: dlg.querySelector('#e-frame')?.value,
-    });
-  })()`);
-  const rb = JSON.parse(readyBefore);
-  console.log('  [诊断] 填密码后 ' + readyBefore);
-  check('填好密码后按钮可提交（后续断言的前提）', rb.enabled === true,
-    readyBefore);
 
-  console.log('\n--- 4. 非法时间点必须挡住提交 ---');
-  await c.eval(`(() => {
-    const i=document.querySelector('#e-frame');
-    if(!i) return 'no-input';
-    i.value='abc:xy';
-    i.dispatchEvent(new Event('input',{bubbles:true}));
-    return 'set';
-  })()`);
-  await sleep(500);
-  const bad = await c.eval(`(() => {
+  console.log('\n--- 4. 通过视频处理对话框选取帧时间点 ---');
+  // 取帧入口从「加密对话框里的输入框」改成了「视频处理对话框」。
+  // 入口按结构定位：.subfield 里的 button
+  const entryOpened = await c.eval(`(() => {
     const dlg=document.querySelector('.dlg');
-    if(!dlg) return null;
-    const err=dlg.querySelector('.ferr');
-    const btn=[...dlg.querySelectorAll('.acts .btn')].find(b=>b.type==='submit');
-    return { err: err?err.textContent.trim().slice(0,40):null, disabled: !!(btn&&btn.disabled) };
+    const subs=[...dlg.querySelectorAll('.subfield')];
+    const btn=subs.map(s=>s.querySelector('button.btn')).find(Boolean);
+    if(!btn) return 'no-entry';
+    btn.click();
+    return 'ok';
   })()`);
-  console.log('  [诊断] 非法输入 ' + JSON.stringify(bad));
-  check('非法时间点显示错误提示', bad && !!bad.err, String(bad && bad.err));
-  check('非法时间点禁用提交按钮', bad && bad.disabled === true,
-    `disabled=${bad && bad.disabled}`);
+  await sleep(2500);
+  const vdlgOpen = await c.eval(`document.querySelector('.vdlg') ? 'yes':'no'`);
+  check('视频处理对话框已打开', vdlgOpen === 'yes', `入口=${entryOpened}`);
 
-  console.log('\n--- 5. 合法时间点：说明文字与样式 ---');
-  // 填 0:03.6，也顺便验证 mm:ss 写法能被解析——
+  // 等视频元数据就绪，否则设 currentTime 会被忽略——
+  // 那样取到的还是自动帧，而断言会把它报成「取帧没生效」
+  let vready = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    vready = await c.eval(`(() => {
+      const v=document.querySelector('.vdlg video');
+      if(!v) return null;
+      return JSON.stringify({ ready: v.readyState, dur: v.duration, err: v.error?v.error.code:null });
+    })()`);
+    const s = vready ? JSON.parse(vready) : null;
+    if (s && (s.ready >= 1 || s.err)) break;
+  }
+  console.log('  [诊断] 视频状态 ' + vready);
+  const vs = vready ? JSON.parse(vready) : null;
+  check('预览视频可解码（取帧的前提）',
+    vs && vs.err === null && vs.ready >= 1, String(vready));
+
+  // 填 0:03.6 —— 也顺便验证 mm:ss 写法能被解析。
   // parseFloat('0:03.6') 会得 0，那样就取到红色帧了
   await c.eval(`(() => {
-    const i=document.querySelector('#e-frame');
-    i.value='0:03.6';
-    i.dispatchEvent(new Event('input',{bubbles:true}));
+    const box=document.querySelector('.vdlg .vframe-row input[type=text]');
+    if(!box) return 'no-box';
+    box.value='0:03.6';
+    box.dispatchEvent(new Event('input',{bubbles:true}));
     return 'set';
   })()`);
-  await sleep(500);
-  const good = await c.eval(`(() => {
-    const dlg=document.querySelector('.dlg');
-    const err=dlg.querySelector('.ferr');
-    const sub=dlg.querySelector('.subfield');
-    const fh=sub?sub.querySelector('.fhint'):null;
-    const rd=dlg.querySelector('.radio .d');
-    const g=el=>{ const s=getComputedStyle(el); return {
-      size: parseFloat(s.fontSize), color: s.color }; };
-    return {
-      err: err?err.textContent.trim().slice(0,40):null,
-      hint: fh?fh.textContent.trim().slice(0,30):null,
-      fh: fh?g(fh):null, rd: rd?g(rd):null,
-      indent: sub?parseFloat(getComputedStyle(sub).paddingInlineStart):null,
-    };
+  await sleep(1000);
+  const seeked = await c.eval(`(() => {
+    const v=document.querySelector('.vdlg video');
+    return v?v.currentTime:null;
   })()`);
-  console.log('  [诊断] 合法输入 ' + JSON.stringify(good));
-  check('合法时间点无错误提示', good && !good.err, String(good && good.err));
-  check('显示取帧说明文字', good && !!good.hint, String(good && good.hint));
-  // 与上一轮 .d 没命中同类：类名看着对，样式其实没生效
-  check('说明字号与周边说明一致',
-    good && good.fh && good.rd && Math.abs(good.fh.size - good.rd.size) < 0.6,
-    `fhint=${good?.fh?.size}px, .radio .d=${good?.rd?.size}px`);
-  check('说明颜色与周边说明一致',
-    good && good.fh && good.rd && good.fh.color === good.rd.color,
-    `${good?.fh?.color}`);
-  check('次级字段有左缩进（看得出属于上一项）',
-    good && good.indent > 8, `padding-inline-start=${good?.indent}px`);
+  console.log('  [诊断] 敲 0:03.6 后 currentTime=' + seeked);
+  check('mm:ss 写法被正确解析（不是被当成第 0 秒）',
+    typeof seeked === 'number' && seeked > 3.0 && seeked < 4.2,
+    `currentTime=${seeked}`);
 
+  console.log('\n--- 5. 应用选择并回到加密对话框 ---');
+  const applied = await c.eval(`(() => {
+    const v=document.querySelector('.vdlg');
+    const btns=[...v.querySelectorAll('.vdlg-foot .btn')];
+    const primary=btns.find(b=>b.classList.contains('primary'));
+    if(!primary) return 'no-primary';
+    primary.click();
+    return 'ok';
+  })()`);
+  await sleep(1200);
+  const backToEncrypt = await c.eval(`(() => {
+    const v=document.querySelector('.vdlg');
+    const d=document.querySelector('.dlg');
+    return JSON.stringify({ video: !!v, encrypt: !!d });
+  })()`);
+  const bt = JSON.parse(backToEncrypt);
+  check('应用后视频对话框关闭、加密对话框还在',
+    bt.video === false && bt.encrypt === true, `${backToEncrypt} 点击=${applied}`);
+
+  // 加密对话框里应当显示已选的封面帧，否则用户不知道自己选过
+  const shownFrame = await c.eval(`(() => {
+    const dlg=document.querySelector('.dlg');
+    const subs=[...dlg.querySelectorAll('.subfield .fhint')];
+    return subs.map(s=>s.textContent.trim()).join(' | ');
+  })()`);
+  console.log('  [诊断] 入口下方文字 ' + shownFrame);
+  check('加密对话框显示已选的封面帧时间',
+    /00:00:0?3/.test(String(shownFrame)), String(shownFrame));
   console.log('\n--- 6. 提交并等待加密完成 ---');
   // 密码已在第 4 步之前填好
   const submitted = await c.eval(`(() => {

@@ -12,6 +12,13 @@
 *.ts        text eol=lf
 *.tsx       text eol=lf
 *.js        text eol=lf
+*.mjs       text eol=lf
+# .vue 与同目录的 .js/.css 是一套工具链读的，规则必须一致。
+# 漏了它就落到 `text=auto`：git 按平台原生换行检出，于是 Windows 上
+# 工作区是 CRLF、库里是 LF，每次 add 都刷一行 "LF will be replaced by
+# CRLF" 警告；更糟的是同一个组件目录里 .vue 与 .js 行为不同，
+# 排查格式问题时会先怀疑错方向。
+*.vue       text eol=lf
 *.css       text eol=lf
 *.html      text eol=lf
 
