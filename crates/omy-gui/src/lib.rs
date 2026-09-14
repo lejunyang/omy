@@ -53,6 +53,7 @@ mod remote;
 mod remote_cmds;
 mod state;
 mod storage;
+mod video;
 
 use state::AppState;
 use std::sync::Arc;
@@ -131,6 +132,10 @@ pub fn run() {
             storage::request_storage_access,
             plain::open_external,
             plain::reveal_in_folder,
+            video::video_capabilities,
+            video::video_info,
+            video::convert_video,
+            video::discard_converted,
             encrypt::encrypt_paths,
             decrypt::decrypt_paths,
             fileops::delete_paths,
