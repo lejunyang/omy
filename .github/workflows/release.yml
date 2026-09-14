@@ -14,6 +14,12 @@
 # 与测试流水线一致：Windows 与 Android 是已验证平台，构建失败即发布失败；
 # Linux 与 macOS 尚未验证，continue-on-error，缺了产物也照样出 Release
 # （Release 说明里会写明这一点，不让用户以为下载到的是验证过的东西）。
+#
+# # 内置 FFmpeg
+#
+# Windows 产物内置自建的裁剪 FFmpeg（含 H.264/HEVC，约 12.4 MB），
+# 见 scripts/ffmpeg-build/。其余平台暂不内置——构建链只在 Windows 上实测过，
+# 而没实测过的内置二进制比不内置更糟。
 
 name: 发布
 
@@ -135,6 +141,59 @@ jobs:
         with:
           key: release-windows
 
+      # ---- 内置 FFmpeg ----
+      #
+      # 装 osdk 而不是 MSYS2：本地开发用的就是根目录 osdk.toml 那套工具链，
+      # CI 复用同一份配置才能保证「CI 里构建出来的 = 本地验证过的」。
+      # 换成 MSYS2 等于维护第二套版本组合，而两套之间的漂移只会在产物里暴露。
+      - name: 安装 osdk
+        shell: pwsh
+        run: |
+          # -NoModifyShell：CI 不需要改 shell 启动文件，装完把 bin 加进 PATH 即可。
+          # -InstallDir 显式指定：默认值是 LocalAppData 下的路径，写死在这里
+          # 会与安装脚本的默认值形成两个真相，改了那边这里就悄悄失效
+          $bin = Join-Path $env:RUNNER_TEMP 'osdk-bin'
+          Invoke-WebRequest `
+            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.ps1 `
+            -OutFile install-osdk.ps1
+          ./install-osdk.ps1 -NoModifyShell -InstallDir $bin
+          if (-not (Test-Path (Join-Path $bin 'osdk.exe'))) {
+            throw "osdk 未装到 $bin"
+          }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: 信任 osdk.toml 并装工具链
+        shell: pwsh
+        run: |
+          # osdk.toml 含 conda: 工具，属于 trust-required。未信任时该目录下
+          # **所有** osdk 命令都会失败，且报错不提「没信任」这件事
+          osdk --yes trust osdk.toml
+          osdk -y install
+
+      - name: 构建内置 FFmpeg
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'dist-ffmpeg'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          # sysroot 要转成 bash 能懂的 POSIX 路径：E:\x -> /E/x
+          $gcc = (osdk -q where conda:gcc_win-64).Trim() -split "`r?`n" | Select-Object -First 1
+          $posix = ($gcc -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          $env:SYSROOT = $posix + '/Library/x86_64-w64-mingw32/sysroot'
+          # OMY_FF_OUT 直接指向打包目录，省掉一次拷贝
+          $env:OMY_FF_OUT = ($out -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/build-windows.sh
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg 构建失败（退出码 $LASTEXITCODE）" }
+
+      - name: 校验 FFmpeg 产物
+        shell: pwsh
+        # 这是打包前的门禁，不是可选检查。configure 接受了参数却没启用组件时
+        # **不报错**——configure 退出 0、make 退出 0，只有逐项复查才发现。
+        # 发出去之后才暴露的话，用户装上就是「有的视频没缩略图」
+        run: |
+          $out = ((Join-Path $PWD 'dist-ffmpeg') -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/verify.sh $out
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg 产物校验未通过（退出码 $LASTEXITCODE）" }
+
       - name: 构建 CLI
         run: cargo build --release -p omy-cli
 
@@ -150,6 +209,12 @@ jobs:
           Copy-Item target\release\omy.exe dist\
           Copy-Item target\release\omy-gui.exe dist\
           Copy-Item README.md dist\
+          # FFmpeg 放 dist\ffmpeg\：omy-media 的 candidate_dirs() 会找
+          # 「自身目录\ffmpeg」，所以解压即用，不需要用户配环境变量。
+          # 放在子目录而不是与 omy.exe 平铺，是为了让用户一眼看出哪些文件
+          # 是 FFmpeg 的，替换时不会误删
+          New-Item -ItemType Directory -Path dist\ffmpeg -Force | Out-Null
+          Copy-Item dist-ffmpeg\* dist\ffmpeg\ -Recurse
           Compress-Archive -Path dist\* `
             -DestinationPath omy-${{ needs.decide.outputs.version }}-x86_64-pc-windows-msvc.zip
 

@@ -93,6 +93,11 @@ jobs:
       #
       # 「没装 FFmpeg 时如何降级」由单元测试直接调降级函数来覆盖，
       # 不依赖 runner 缺不缺 ffmpeg，所以这里装了不会掩盖那条路径。
+      #
+      # 这里刻意装的是**系统** FFmpeg，而不是我们自建的那份。两者各测一件事：
+      #   这里          —— 用户自备 FFmpeg 的场景（omy 找 PATH 的那条路径）
+      #   ffmpeg-build  —— 我们要内置进 Windows 产物的那份配方
+      # 都要测：发出去的是自建那份，但用户仍可用 OMY_FFMPEG 换成自己的。
       - name: 安装 FFmpeg
         run: choco install ffmpeg --no-progress -y
 
@@ -270,6 +275,86 @@ jobs:
         # 缺键的症状是界面上直接显示 remote.readonly 这种原始键名——
         # 构建不报错，测试也不失败，只有肉眼能发现，所以必须单独检查
         run: python spikes/check-i18n-keys.py
+
+  # ---- 内置 FFmpeg：验证发出去的那份 ----
+
+  ffmpeg-build:
+    name: 内置 FFmpeg（Windows）
+    runs-on: windows-latest
+    # 只在改动构建配方时跑。
+    #
+    # 不挂进日常 PR 是因为它要从源码编 zlib + libwebp + FFmpeg，比其它任务都慢，
+    # 而它验证的东西只有配方变了才会变。发布流水线里同样会跑一遍并作为打包门禁，
+    # 所以「没跑过就发出去」不会发生。
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || contains(github.event.head_commit.message, 'ffmpeg')
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 osdk
+        shell: pwsh
+        # 与 release.yml 里的同名步骤保持一致，理由见那里
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP 'osdk-bin'
+          Invoke-WebRequest `
+            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.ps1 `
+            -OutFile install-osdk.ps1
+          ./install-osdk.ps1 -NoModifyShell -InstallDir $bin
+          if (-not (Test-Path (Join-Path $bin 'osdk.exe'))) {
+            throw "osdk 未装到 $bin"
+          }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: 信任 osdk.toml 并装工具链
+        shell: pwsh
+        run: |
+          osdk --yes trust osdk.toml
+          osdk -y install
+
+      - name: 构建
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'dist-ffmpeg'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $gcc = (osdk -q where conda:gcc_win-64).Trim() -split "`r?`n" | Select-Object -First 1
+          $posix = ($gcc -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          $env:SYSROOT = $posix + '/Library/x86_64-w64-mingw32/sysroot'
+          $env:OMY_FF_OUT = ($out -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/build-windows.sh
+          if ($LASTEXITCODE -ne 0) { throw "构建失败（退出码 $LASTEXITCODE）" }
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $out = ((Join-Path $PWD 'dist-ffmpeg') -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/verify.sh $out
+          if ($LASTEXITCODE -ne 0) { throw "产物校验未通过（退出码 $LASTEXITCODE）" }
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ffmpeg-build
+
+      - name: 用自建产物跑 omy-media 的测试
+        shell: pwsh
+        # verify.sh 只能确认「组件在不在」，确认不了 omy 用起来对不对。
+        # 本轮踩到的四个缺失组件全都是 configure 接受了参数但没启用，
+        # 手工命令行还跑得通，只有项目自己的测试才失败——所以这一步不能省
+        run: |
+          $env:OMY_FFMPEG = Join-Path $PWD 'dist-ffmpeg\ffmpeg.exe'
+          $env:OMY_FFPROBE = Join-Path $PWD 'dist-ffmpeg\ffprobe.exe'
+          cargo test -p omy-media
 
   # ---- 非阻塞核实：MSRV 与未验证平台 ----
 
