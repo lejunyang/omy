@@ -1192,6 +1192,305 @@ input {
   white-space: nowrap;
 }
 
+/* ---------- 视频处理对话框 ----------
+ *
+ * 比其它对话框宽（820px）：它要同时容下 16:9 的预览画面和一张源信息表，
+ * 按 480px 排会让预览小到看不清选的是哪一帧。
+ *
+ * 移动端的适配在文件末尾的 @media 块里，与其它移动端规则放在一起——
+ * 分散在各自组件旁边的话，改断点时必然漏掉几处。
+ */
+
+.dlg.vdlg {
+  width: 820px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - var(--sp) * 12);
+}
+
+.vdlg-head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 4) calc(var(--sp) * 4.5);
+  border-block-end: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.vdlg-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.vdlg-sub {
+  font-size: 12px;
+  color: var(--fg2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.vdlg-body {
+  overflow-y: auto;
+  padding: calc(var(--sp) * 4.5);
+  flex: 1 1 auto;
+}
+
+.vdlg-foot {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 3.5) calc(var(--sp) * 4.5);
+  border-block-start: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.vfoot-note {
+  font-size: 12px;
+  color: var(--fg2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分段切换 */
+.vdlg .tabs {
+  display: flex;
+  gap: var(--sp);
+  background: var(--bg3);
+  padding: 3px;
+  border-radius: var(--r-m);
+  flex: 0 0 auto;
+}
+
+.vdlg .tab {
+  padding: calc(var(--sp) * 1.25) calc(var(--sp) * 3);
+  border-radius: var(--r-s);
+  font-size: 13px;
+  color: var(--fg2);
+  transition: 0.15s;
+  white-space: nowrap;
+}
+
+.vdlg .tab[aria-selected='true'] {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* 预览区 */
+.vstage {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  aspect-ratio: 16 / 9;
+  position: relative;
+  overflow: hidden;
+}
+
+.vstage video {
+  width: 100%;
+  height: 100%;
+  /* contain 而不是 cover：cover 会裁掉画面边缘，而用户正是在挑构图 */
+  object-fit: contain;
+  display: block;
+}
+
+.vbadge {
+  position: absolute;
+  inset-block-end: 8px;
+  inset-inline-start: 8px;
+  background: rgb(0 0 0 / 60%);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--r-s);
+  font-variant-numeric: tabular-nums;
+}
+
+.vscrub {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2.5);
+  margin-block-start: calc(var(--sp) * 3);
+}
+
+.vscrub .slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.vtc {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--fg2);
+  min-width: 96px;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.vframe-row {
+  display: flex;
+  gap: calc(var(--sp) * 2);
+  align-items: flex-end;
+  margin-block-start: calc(var(--sp) * 3);
+}
+
+.vframe-row .field {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+}
+
+.vsteps {
+  display: flex;
+  gap: var(--sp);
+  flex: 0 0 auto;
+}
+
+/* 源信息表 */
+.vinfo {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.vinfo th,
+.vinfo td {
+  text-align: start;
+  padding: calc(var(--sp) * 1.5) 0;
+  border-block-end: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.vinfo th {
+  color: var(--fg2);
+  font-weight: 400;
+  width: 92px;
+}
+
+.vinfo td {
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.vinfo tr:last-child th,
+.vinfo tr:last-child td {
+  border-block-end: none;
+}
+
+.tierbadge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid;
+}
+
+.tier-p1 {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.tier-p2 {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.tier-p3 {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 处理方式卡片 */
+.vopt {
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  padding: calc(var(--sp) * 3);
+  cursor: pointer;
+  transition: 0.15s;
+  display: flex;
+  gap: calc(var(--sp) * 2.5);
+  align-items: flex-start;
+  margin-block-end: calc(var(--sp) * 2);
+}
+
+.vopt:hover:not(.disabled) {
+  border-color: var(--fg2);
+}
+
+.vopt.sel {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.vopt.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vopt input {
+  margin-block-start: 3px;
+  flex: 0 0 auto;
+}
+
+.vopt-t {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  flex-wrap: wrap;
+}
+
+.pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.pill.no {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+}
+
+.vsub {
+  margin-block-start: calc(var(--sp) * 3);
+  padding-inline-start: calc(var(--sp) * 6);
+  border-inline-start: 2px solid var(--border);
+}
+
+.vgrid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(var(--sp) * 3);
+}
+
+.vcaps-acts {
+  margin-block-start: calc(var(--sp) * 2.5);
+  display: flex;
+  gap: calc(var(--sp) * 2);
+  flex-wrap: wrap;
+}
+
+.note.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.vwarns {
+  margin: calc(var(--sp) * 2) 0 0;
+  padding-inline-start: calc(var(--sp) * 4);
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+
 /* ===================== 移动端（≤768px） =====================
  *
  * 断点与 src/viewport.js 的 MOBILE_MAX 必须一致，**改一处要改两处**：
@@ -1606,5 +1905,131 @@ input {
     padding: calc(var(--sp) * 3) calc(var(--sp) * 3);
     font-size: 14px;
     min-height: 44px;
+  }
+}
+
+/* ===================== 视频对话框的移动端（≤768px） =====================
+ *
+ * 断点与本文件上方的 @media 及 src/viewport.js 的 MOBILE_MAX 一致，
+ * **改一处要改三处**。
+ *
+ * 注意只做 CSS 适配是不够的：桌面靠 dblclick 打开条目，触屏上没有双击
+ * 这个手势。这里的规则只管布局，凡涉及打开 / 多选 / 拖拽的交互仍要读
+ * isMobile 分别处理。
+ */
+@media (max-width: 768px) {
+  /* 对话框占满屏：820px 在手机上只会横向溢出 */
+  .dlg.vdlg {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+
+  .vdlg-head {
+    flex-wrap: wrap;
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 3.5);
+    gap: calc(var(--sp) * 1.5);
+    /* 状态栏会盖住顶部，与 .titlebar.mob 同一理由 */
+    padding-block-start: calc(var(--sp) * 3 + env(safe-area-inset-top, 0px));
+  }
+
+  /* 分段切换独占一行并撑满：挤在标题右边时点不准 */
+  .vdlg-head .tabs {
+    order: 3;
+    width: 100%;
+  }
+
+  .vdlg-head .tab {
+    flex: 1;
+    text-align: center;
+    padding-block: calc(var(--sp) * 2);
+  }
+
+  .vdlg-body {
+    padding: calc(var(--sp) * 3.5);
+  }
+
+  /* 时间码输入与逐帧按钮竖排。并排时输入框会被压到显示不下完整时间码 */
+  .vframe-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vframe-row .vsteps {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .vframe-row .vsteps .btn {
+    height: 40px;
+  }
+
+  /* 触控目标 ≥40px：桌面的 32px 在手机上按不准 */
+  .vscrub .btn.icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .vscrub .slider {
+    height: 40px;
+  }
+
+  .vtc {
+    min-width: 0;
+    font-size: 11px;
+  }
+
+  .vgrid2 {
+    grid-template-columns: 1fr;
+  }
+
+  .vdlg .field input[type='text'],
+  .vdlg .field select {
+    height: 40px;
+  }
+
+  /* 缩进改成小留白：窄屏下 24px 缩进会把正文挤成一条 */
+  .vsub {
+    padding-inline-start: calc(var(--sp) * 3);
+  }
+
+  /* 信息表转成上下结构，横排在窄屏会把值挤成多行锯齿 */
+  .vinfo th,
+  .vinfo td {
+    display: block;
+    width: auto;
+  }
+
+  .vinfo th {
+    padding-block-end: 0;
+  }
+
+  .vinfo td {
+    padding-block-start: 2px;
+  }
+
+  /* 底部按钮撑满并加高，状态文字移到上面一行；
+     手势导航条会盖住底部，靠 safe-area 让开 */
+  .vdlg-foot {
+    flex-wrap: wrap;
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 3.5);
+    padding-block-end: calc(var(--sp) * 3 + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vdlg-foot .vfoot-note {
+    order: -1;
+    width: 100%;
+    margin-block-end: calc(var(--sp) * 2);
+  }
+
+  .vdlg-foot .spacer {
+    display: none;
+  }
+
+  .vdlg-foot .btn {
+    flex: 1;
+    height: 44px;
   }
 }

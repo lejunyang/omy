@@ -7,6 +7,7 @@
 
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n.js';
+import VideoDialog from './VideoDialog.vue';
 
 const props = defineProps({
   /** 待加密的条目。 */
@@ -39,16 +40,22 @@ const folderMode = ref('container');
  * 而没有缩略图的网格视图基本没法用。留出开关是因为它确实让文件大几 KB。
  */
 const thumbnail = ref(true);
-/** 视频取帧时间点，形如 `12`、`12.5`、`1:23`、`00:01:23`。
+
+/** 视频取帧时间点（秒）。`null` 表示自动取时长 10% 处。
  *
- * 空串表示自动取时长 10% 处。存成字符串而不是数字：用户习惯写 `1:23`，
- * 而 number 类型的 input 收不下冒号。
+ * 从「用户敲的字符串」改成了「秒数」：时间点现在由视频处理对话框选，
+ * 那里能看着画面挑，解析与校验都在它内部完成，这里只收结果。
  */
-const frameText = ref('');
+const frameSeconds = ref(null);
+
+/** 视频处理产出的中间文件路径。非空时加密它而不是原文件。 */
+const convertedPath = ref(null);
+/** 视频处理对话框是否打开。 */
+const videoOpen = ref(false);
 
 /** 视频扩展名。
  *
- * 只用来决定「要不要显示取帧输入框」，判错了不影响加密结果——真正的
+ * 只用来决定「要不要显示视频处理入口」，判错了不影响加密结果——真正的
  * 图/视频分派在后端按容器探测（扩展名可以是骗人的）。
  */
 const VIDEO_EXT = [
@@ -68,30 +75,36 @@ const hasVideo = computed(() =>
   }),
 );
 
-/** 把 `1:23.5` / `83.5` 解析成秒。非法或空串返回 null。
+/** 可以打开视频处理的那个条目。
  *
- * 不用 parseFloat 直接吞：`parseFloat('1:23')` 得 1，会把「1 分 23 秒」
- * 静默变成第 1 秒——用户拿到的缩略图不是他选的那一帧，却没有任何提示。
+ * 只在**恰好选中一个视频文件**时给出。多选时不给：处理是逐文件的设置
+ * （不同视频的封面帧、目标容器都不一样），一个对话框代表不了一批文件，
+ * 硬套只会让用户以为设置应用到了全部。
  */
-function parseFrame(s) {
-  const v = (s || '').trim();
-  if (!v) return null;
-  const parts = v.split(':');
-  if (parts.length > 3) return null;
-  let sec = 0;
-  for (const p of parts) {
-    // 每段必须是纯数字（末段可带小数），否则视为非法
-    if (!/^\d*\.?\d*$/.test(p) || p === '' || p === '.') return null;
-    sec = sec * 60 + parseFloat(p);
-  }
-  if (!Number.isFinite(sec) || sec < 0) return null;
-  return sec;
+const videoTarget = computed(() => {
+  if (props.targets.length !== 1) return null;
+  const t = props.targets[0];
+  if (!t || t.is_dir || !t.token) return null;
+  const i = (t.name || '').lastIndexOf('.');
+  if (i < 0) return null;
+  return VIDEO_EXT.includes(t.name.slice(i + 1).toLowerCase()) ? t : null;
+});
+
+/** 秒 → `00:00:12.40`，用于按钮旁的状态文字。 */
+function fmtTime(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${r.toFixed(2).padStart(5, '0')}`;
 }
 
-/** 取帧时间点填了但解析不出来。 */
-const frameInvalid = computed(
-  () => frameText.value.trim().length > 0 && parseFrame(frameText.value) === null,
-);
+/** 视频处理对话框的结果。 */
+function onVideoApply(r) {
+  frameSeconds.value = r.frame;
+  convertedPath.value = r.convertedPath;
+  videoOpen.value = false;
+}
 
 /** 可选的分块大小。
  *
@@ -110,7 +123,7 @@ const mismatch = computed(
 );
 
 const canSubmit = computed(
-  () => password.value.length > 0 && !mismatch.value && !frameInvalid.value && !props.busy,
+  () => password.value.length > 0 && !mismatch.value && !props.busy,
 );
 
 const totalSize = computed(() =>
@@ -129,7 +142,9 @@ function submit() {
     original: original.value,
     folder_mode: folderMode.value,
     thumbnail: thumbnail.value ? 'auto' : 'none',
-    thumbnail_frame: thumbnail.value ? parseFrame(frameText.value) : null,
+    thumbnail_frame: thumbnail.value ? frameSeconds.value : null,
+    /** 视频处理后的中间文件。非空时加密它，加密完由调用方清理。 */
+    converted_path: convertedPath.value,
   });
 }
 </script>
@@ -229,20 +244,32 @@ function submit() {
             <div class="d">{{ i18n.t('encrypt.thumbnail_desc') }}</div>
           </span>
         </label>
-        <!-- 取帧时间点只在选中项里可能有视频时出现：对一堆文档显示
-             「视频取帧时间点」只会让人困惑。关掉缩略图后也不显示，
-             那时它没有任何作用。 -->
-        <div v-if="thumbnail && hasVideo" class="subfield">
-          <label class="flabel" for="e-frame">{{ i18n.t('encrypt.thumbnail_frame') }}</label>
-          <input
-            id="e-frame"
-            v-model="frameText"
-            type="text"
-            inputmode="text"
-            placeholder="00:00:03"
-          />
-          <div v-if="frameInvalid" class="ferr">{{ i18n.t('encrypt.thumbnail_frame_bad') }}</div>
-          <div v-else class="fhint">{{ i18n.t('encrypt.thumbnail_frame_hint') }}</div>
+        <!-- 视频处理入口只在恰好选中一个视频文件时出现。
+             多选或文件夹时不给：封面帧与目标容器是逐文件的设置，
+             一个对话框代表不了一批文件，硬套会让用户以为设置应用到了全部。
+             关掉缩略图后仍然显示——转换格式与缩略图无关。 -->
+        <div v-if="videoTarget" class="subfield">
+          <button class="btn" type="button" @click="videoOpen = true">
+            {{ i18n.t('encrypt.video_process') }}
+          </button>
+          <div class="fhint">
+            {{
+              convertedPath
+                ? i18n.t('encrypt.video_converted', { name: i18n.t('video.tab_proc') })
+                : i18n.t('encrypt.video_process_desc')
+            }}
+          </div>
+          <div class="fhint">
+            {{
+              frameSeconds == null
+                ? i18n.t('encrypt.video_frame_auto')
+                : i18n.t('encrypt.video_frame_set', { time: fmtTime(frameSeconds) })
+            }}
+          </div>
+        </div>
+        <!-- 选了多个、或选的是文件夹时，只说明默认行为，不给入口 -->
+        <div v-else-if="thumbnail && hasVideo" class="fhint subfield">
+          {{ i18n.t('encrypt.thumbnail_frame_hint') }}
         </div>
       </div>
 
@@ -307,5 +334,15 @@ function submit() {
         </button>
       </div>
     </form>
+
+    <!-- 视频处理叠在加密对话框之上。放在 form 外面：嵌套在 form 里时，
+         它内部任何 button 没写 type="button" 都会触发表单提交 -->
+    <VideoDialog
+      v-if="videoOpen && videoTarget"
+      :entry="videoTarget"
+      :frame="frameSeconds"
+      @cancel="videoOpen = false"
+      @apply="onVideoApply"
+    />
   </div>
 </template>

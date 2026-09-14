@@ -59,6 +59,41 @@ export const requestStorageAccess = () => invoke('request_storage_access');
 /** 探测单个文件是不是加密文件、当前会话能否打开。 */
 export const probeOne = (path) => invoke('probe_one', { path });
 
+/* ---------------- 视频处理（加密之前） ---------------- */
+
+/** 查这台机器上 FFmpeg 的实际能力。
+ *
+ * 返回 `{ video_encoders, audio_encoders, muxers, has_ffmpeg, has_ffprobe, version }`。
+ *
+ * **不要把结果写死或缓存到下次启动**：内置的那份 FFmpeg 没有任何视频
+ * 编码器，但用户随时可以换成完整版（`OMY_FFMPEG` 优先级最高）。
+ * `refresh` 为真时绕过后端缓存重新探测，供「我换了 FFmpeg」的场景。
+ */
+export const videoCapabilities = (refresh = false) =>
+  invoke('video_capabilities', { refresh });
+
+/** 探测一个未加密的本地视频，取容器 / 编码 / 分辨率 / 时长 / 播放分级。
+ *
+ * 传 token 而不是路径：路径会让任何注入的脚本都能读任意文件。
+ */
+export const videoInfo = (token) => invoke('video_info', { token });
+
+/** 转封装或压缩一个视频，产出磁盘上的中间文件。
+ *
+ * `req` 形如 `{ token, container, faststart, encode }`，`encode` 为 null
+ * 时只转封装（`-c copy`，秒级完成、零画质损失）。
+ *
+ * 产物是 `.omytmp-` 前缀的临时文件，**调用方有责任**在用完或取消后调
+ * `discardConverted` 删掉它——那可能是几个 GB。
+ */
+export const convertVideo = (req) => invoke('convert_video', { req });
+
+/** 删除转换产生的中间文件。
+ *
+ * 后端只删 `.omytmp-` 前缀的文件，所以这个接口不能被用来删任意文件。
+ */
+export const discardConverted = (token) => invoke('discard_converted', { token });
+
 /* ---------------- 加密 ---------------- */
 
 /** 加密一批路径。成功后密码会自动进入会话。 */
