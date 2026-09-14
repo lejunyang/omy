@@ -15,6 +15,11 @@
 *.css       text eol=lf
 *.html      text eol=lf
 
+# shell 脚本必须是 LF：CRLF 会让 shebang 变成 "#!/usr/bin/env bash\r"，
+# Linux 上报 "bad interpreter: No such file or directory"，而在 Windows 的
+# msys bash 下却照常运行——本地测得通、CI 上却起不来，最难查的一类。
+*.sh        text eol=lf
+
 # Windows 脚本保持 CRLF
 *.bat       text eol=crlf
 *.cmd       text eol=crlf
