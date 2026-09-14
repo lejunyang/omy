@@ -526,6 +526,170 @@ fn file_with_multiple_slots_opens_with_any_password() {
     }
 }
 
+// ============================================================
+// 一个会话同时装多个密码（add_password）
+// ============================================================
+
+/// 装入两个不同的密码后，两个文件集必须**同时**可见。
+///
+/// 不这样会怎样：这正是 `unlock_password` 做不到的事——它按
+/// (salt, kind, label) 覆盖，GUI 又把 label 写死成 "main"，于是第二个
+/// 密码会把第一个挤掉。表现是「输了第二个密码，第一批文件反而锁上了」，
+/// 而两次解锁都返回成功。
+#[test]
+fn two_passwords_coexist_and_unlock_their_own_files() {
+    let d = tmpdir("session-add-two");
+    let salt = [0x81u8; 16];
+    make_encrypted(&d, "real.omy", "real.txt", b"real", &["true-pw"], &salt);
+    make_encrypted(&d, "decoy.omy", "decoy.txt", b"decoy", &["decoy-pw"], &salt);
+
+    let mut s = SessionKeys::new();
+    assert!(s.add_password("a", &salt, "true-pw", Argon2Params::TEST_WEAK).expect("a"));
+    // 先确认只装一个时确实只解开一个，否则下面的 2 证明不了是第二个密码起了作用
+    let mid = scan_dir(&d, &s, &ScanOptions::default()).expect("mid");
+    assert_eq!(mid.stats.unlocked, 1, "只装一个密码时应只解开一个");
+
+    assert!(s.add_password("b", &salt, "decoy-pw", Argon2Params::TEST_WEAK).expect("b"));
+
+    assert_eq!(s.len(), 2, "两个不同密码必须并存");
+    let r = scan_dir(&d, &s, &ScanOptions::default()).expect("scan");
+    assert_eq!(r.stats.unlocked, 2, "两个密码应同时生效，各解开自己的文件");
+}
+
+/// 同一个密码装两次只算一条，且不论用什么名字。
+///
+/// 不这样会怎样：状态栏会显示「2 个密码已解锁」而实际只有一个。上一轮
+/// 就是这个缺陷（加密时自动装一条、手动解锁又装一条），当时的对策是把
+/// label 写死，结果换来了上面那条测试描述的覆盖缺陷。所以这里**故意用
+/// 两个不同的名字**——只有按指纹判断才能同时满足两条。
+#[test]
+fn same_password_added_twice_counts_once_even_with_different_labels() {
+    let salt = [0x82u8; 16];
+    let mut s = SessionKeys::new();
+
+    assert!(s.add_password("加密时装入", &salt, "pw", Argon2Params::TEST_WEAK).expect("1st"));
+    assert!(
+        !s.add_password("手动解锁", &salt, "pw", Argon2Params::TEST_WEAK).expect("2nd"),
+        "同一个密码再装一次必须返回 false（不是新凭据）"
+    );
+
+    assert_eq!(s.len(), 1, "同一个密码不论起几个名字都只该有一条凭据");
+    // KDF 仍然跑了两次：判重需要先有 KEK。这条锁住「不要为了省 KDF 去缓存
+    // 快速口令摘要」这个危险的优化
+    assert_eq!(s.kdf_runs(), 2, "判重必须在派生之后做，不能靠密码的快速哈希");
+}
+
+/// 两个**不同**的密码用同一个名字，必须各算一条。
+///
+/// 不这样会怎样：按 label 做键时后者直接覆盖前者，用户以为两个密码都装上了，
+/// 实际第一个已经没了——而界面上没有任何迹象。GUI 恒用 "main" 时这是必然。
+#[test]
+fn different_passwords_with_same_label_both_survive() {
+    let d = tmpdir("session-same-label");
+    let salt = [0x83u8; 16];
+    make_encrypted(&d, "one.omy", "one.txt", b"1", &["pw-one"], &salt);
+    make_encrypted(&d, "two.omy", "two.txt", b"2", &["pw-two"], &salt);
+
+    let mut s = SessionKeys::new();
+    s.add_password("main", &salt, "pw-one", Argon2Params::TEST_WEAK).expect("1");
+    s.add_password("main", &salt, "pw-two", Argon2Params::TEST_WEAK).expect("2");
+
+    assert_eq!(s.len(), 2, "重名的两个不同密码必须都留下");
+    let r = scan_dir(&d, &s, &ScanOptions::default()).expect("scan");
+    assert_eq!(r.stats.unlocked, 2, "重名不得导致任何一个密码失效");
+}
+
+/// 指纹必须绑定 vault：同一密码在不同 salt 下不算重复。
+///
+/// 不这样会怎样：把两个库的同名密码判成「已经装过了」，第二个库一个文件
+/// 也解不开，而表现是「密码明明对却打不开」——与缓存键必须含 vault_salt
+/// 是同一类缺陷。
+#[test]
+fn same_password_in_different_vaults_is_not_a_duplicate() {
+    let salt_a = [0x84u8; 16];
+    let salt_b = [0x85u8; 16];
+    let mut s = SessionKeys::new();
+
+    assert!(s.add_password("main", &salt_a, "pw", Argon2Params::TEST_WEAK).expect("a"));
+    assert!(
+        s.add_password("main", &salt_b, "pw", Argon2Params::TEST_WEAK).expect("b"),
+        "不同 vault 下的同一密码是两条独立凭据"
+    );
+    assert_eq!(s.len(), 2);
+}
+
+/// 指纹本身：同密码同 vault 恒等，换密码或换 vault 就变。
+///
+/// 不这样会怎样：`add_password` 的全部去重逻辑都建立在这上面。若指纹
+/// 实现退化成常量（例如误用了固定 info 却忘了混入 KEK），所有密码都会
+/// 被判成重复，第二个密码永远装不进去——而上面那些测试里，
+/// `different_passwords_with_same_label_both_survive` 会失败并指向这里。
+#[test]
+fn kek_fingerprint_is_stable_and_discriminating() {
+    let salt_a = [0x86u8; 16];
+    let salt_b = [0x87u8; 16];
+    let p = Argon2Params::TEST_WEAK;
+
+    let k1 = Kek::from_password(b"pw", &salt_a, p).expect("k1");
+    let k2 = Kek::from_password(b"pw", &salt_a, p).expect("k2");
+    let other = Kek::from_password(b"other", &salt_a, p).expect("other");
+    let cross = Kek::from_password(b"pw", &salt_b, p).expect("cross");
+
+    assert_eq!(k1.fingerprint(&salt_a), k2.fingerprint(&salt_a), "同密码同库必须同指纹");
+    assert_ne!(k1.fingerprint(&salt_a), other.fingerprint(&salt_a), "不同密码必须不同指纹");
+    assert_ne!(k1.fingerprint(&salt_a), cross.fingerprint(&salt_b), "跨库必须不同指纹");
+
+    // 上面那条「跨库」其实**证明不了 salt 参数起了作用**：k1 与 cross 是用
+    // 不同 vault_salt 跑 Argon2 得到的，KEK 本身就不同，哪怕 fingerprint
+    // 内部把 salt 写死成常量，两个指纹也照样不同。变异测试抓到过这一点
+    // （把 HKDF salt 换成固定串，这条断言全绿）。
+    //
+    // 要真正锁住「指纹绑定 vault」，必须拿**同一个 KEK** 去问两个不同的
+    // vault_salt。不这样会怎样：指纹退化成只认 KEK，而 add_password 的
+    // 去重又只在同 salt 内比对，两者叠加后跨库判重的正确性就没有任何
+    // 测试覆盖，日后有人简化掉那个 salt 参数不会有红灯
+    assert_ne!(
+        k1.fingerprint(&salt_a),
+        k1.fingerprint(&salt_b),
+        "同一个 KEK 在不同 vault_salt 下必须给出不同指纹（salt 参数必须真的参与派生）"
+    );
+
+    // 指纹不得等于任何真实子密钥：它会在内存里被传递比较，落到与解密
+    // 密钥同一个域里就等于多了一条泄露路径
+    assert_ne!(
+        k1.fingerprint(&salt_a),
+        *k1.derive_slot_key(&[0u8; 16], 0).as_bytes(),
+        "指纹与 slot 密钥必须落在不同的 HKDF 域"
+    );
+    assert_ne!(
+        k1.fingerprint(&salt_a),
+        *k1.derive_dirname_key(&salt_a, b"omy/v1/dirname").as_bytes(),
+        "指纹与目录名密钥必须落在不同的 HKDF 域"
+    );
+}
+
+/// 锁定后必须连指纹记录一起清空，不能残留「这个密码装过」的痕迹。
+#[test]
+fn lock_clears_added_passwords_too() {
+    let salt = [0x88u8; 16];
+    let mut s = SessionKeys::new();
+    s.add_password("a", &salt, "pw1", Argon2Params::TEST_WEAK).expect("a");
+    s.add_password("b", &salt, "pw2", Argon2Params::TEST_WEAK).expect("b");
+    assert_eq!(s.len(), 2);
+
+    s.lock();
+    assert!(s.is_empty());
+
+    // 锁定后重新装入同一个密码必须被当成**新**凭据。不这样会怎样：若指纹
+    // 残留在别处，重新解锁会返回 false 且不装入任何东西，用户输了正确密码
+    // 却什么都打不开
+    assert!(
+        s.add_password("a", &salt, "pw1", Argon2Params::TEST_WEAK).expect("re-add"),
+        "锁定后重新装入必须算新凭据"
+    );
+    assert_eq!(s.len(), 1);
+}
+
 #[test]
 fn scan_recurses_into_subdirectories() {
     let d = tmpdir("scan-recurse");

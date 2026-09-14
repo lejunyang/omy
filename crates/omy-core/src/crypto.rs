@@ -39,6 +39,12 @@ const INFO_PAYLOAD: &[u8] = b"omy/v1/payload";
 const INFO_HEADER_MAC: &[u8] = b"omy/v1/header-mac";
 /// HKDF info 前缀：TLV 密钥。
 const INFO_TLV: &[u8] = b"omy/v1/tlv";
+/// HKDF info：会话内区分不同 KEK 的指纹。
+///
+/// 与上面四个的关键区别：**它派生出的不是密钥，而是一个允许比较的标识**。
+/// 单独一个 info 串是为了让它与任何真实子密钥落在不同的域里——万一指纹
+/// 泄露（它本就是用来在内存里传递比较的），也推不出任何解密用的密钥。
+const INFO_FINGERPRINT: &[u8] = b"omy/v1/kek-fingerprint";
 
 /// slot info 缓冲区长度：前缀 + u16 序号。
 const SLOT_INFO_LEN: usize = INFO_SLOT.len() + 2;
@@ -177,6 +183,35 @@ impl Kek {
         prefix.copy_from_slice(INFO_SLOT);
         suffix.copy_from_slice(&slot_index.to_le_bytes());
         hkdf_expand(self.0.as_bytes(), file_uuid, &info)
+    }
+
+    /// 派生该 KEK 的会话内指纹，用于判断两个 KEK 是否相同。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 会话要同时装多个密码，就必须回答「刚输的这个，是不是已经装过的那个」。
+    /// 直接比较 KEK 字节是可以的，但那要求把密钥本身搬来搬去做相等比较；
+    /// 而按名字比较又不成立——同一个密码可以被起两个名字，不同密码也可以
+    /// 重名（上一轮「`label` 让同一个密码被算成两条凭据」正是后者）。
+    ///
+    /// # 为什么不能落盘
+    ///
+    /// 指纹是**密码的稳定标识**：同一密码在同一 vault 下恒为同一值。写进
+    /// 磁盘就等于给攻击者一个离线可比对的口令哈希——他能据此判断两个库是不是
+    /// 同一个密码、能拿字典逐个比对候选密码，而 Argon2 那几百毫秒的代价
+    /// 在这里完全不起作用（KEK 已经是派生结果，指纹只是一次 HKDF）。
+    ///
+    /// 所以它**只允许在内存里存在**，不得写入任何文件、日志或 IPC 响应。
+    ///
+    /// # 为什么 salt 是 vault_salt
+    ///
+    /// 让指纹天然绑定 vault。同一密码在不同 vault 下 KEK 本就不同，指纹也就
+    /// 不同——这与缓存键必须含 `vault_salt` 是同一个道理，避免跨库误判成
+    /// 「已经装过了」。
+    #[must_use]
+    pub fn fingerprint(&self, vault_salt: &[u8; 16]) -> [u8; KEY_LEN] {
+        let k = hkdf_expand(self.0.as_bytes(), vault_salt, INFO_FINGERPRINT);
+        *k.as_bytes()
     }
 }
 

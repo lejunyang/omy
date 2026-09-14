@@ -82,6 +82,13 @@ impl CredentialKind {
 /// 代价是「键命中」只说明这个名字用过，**不说明密码相同**。所以
 /// [`SessionKeys::unlock_password`] 不能拿命中当「已经解锁过」，
 /// 必须重新派生并覆盖。
+///
+/// # 需要「多个密码并存」时不要用它
+///
+/// 用 label 区分密码有两个方向都会错：同一个密码起两个名字会被算成两条
+/// 凭据（状态栏显示的数量虚高），不同密码用同一个名字则会互相覆盖。
+/// 想累加多个密码的调用方应当用 [`SessionKeys::add_password`]，它按
+/// KEK 指纹判断异同，label 只作显示用。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     vault_salt: [u8; 16],
@@ -223,6 +230,106 @@ impl SessionKeys {
         self.touch();
         let key = CacheKey { vault_salt: *vault_salt, kind, label: label.to_owned() };
         self.cache.insert(key, kek);
+    }
+
+    /// 追加一个密码，**不挤掉已装入的其它密码**。
+    ///
+    /// 这是「同时用多个密码浏览」的入口：真实密码与诱饵密码可以并存，
+    /// 扫描时一遍遍历就能各自命中自己的文件。
+    ///
+    /// # 与 [`SessionKeys::unlock_password`] 的分工
+    ///
+    /// 那个是**替换**语义：同一个 `(salt, kind, label)` 再解锁一次就覆盖，
+    /// 适合「这个位置只该有一个密码」的场景（如改完密码后装入新密码）。
+    /// 本方法是**累加**语义，同一个 vault 下可以有任意多个。
+    ///
+    /// # 为什么去重判据是指纹，不是 label
+    ///
+    /// 两个方向都必须挡住，而 label 一个都挡不住：
+    ///
+    /// - 同一个密码输两次（用户忘了已经输过、或加密后又手动解锁一次）
+    ///   必须**只算一条**。按 label 判断做不到：调用方给的名字可能不同，
+    ///   于是同一个密码被算成两条凭据，状态栏显示「2 个密码已解锁」。
+    ///   这正是上一轮踩过的缺陷，当时的对策是把 label 统一写死成 `"main"`，
+    ///   而那又导致第二个**不同**的密码被静默挤掉——两个缺陷是同一个根因
+    ///   的两面：拿名字当身份。
+    /// - 两个不同的密码恰好重名必须**各算一条**。写死 label 时这条必然失败。
+    ///
+    /// KEK 指纹是密码在本 vault 下的稳定标识，两个方向都正确。
+    ///
+    /// # 返回值
+    ///
+    /// `true` 表示这是一个新密码，`false` 表示它与已装入的某个密码相同、
+    /// 本次没有新增条目。调用方**不应**把 `false` 当作失败：用户重复输入
+    /// 同一个密码是正常操作，只是不该让计数虚高。
+    ///
+    /// # 开销
+    ///
+    /// 无论是否重复都会跑一次 Argon2——判断重复需要先有 KEK，而拿到 KEK
+    /// 就得跑 KDF。想省掉这次 KDF 只能在派生前先算一个**快速**的密码哈希
+    /// 并驻留内存，那等于给能读进程内存的攻击者一个可离线秒破的口令摘要
+    /// （同 [`SessionKeys::unlock_password`] 中的论述）。为省几百毫秒削弱
+    /// 密码强度不值得。
+    ///
+    /// # Errors
+    ///
+    /// Argon2 派生失败时返回 [`crate::Error::KeyDerivation`]。
+    pub fn add_password(
+        &mut self,
+        label: &str,
+        vault_salt: &[u8; 16],
+        password: &str,
+        params: Argon2Params,
+    ) -> Result<bool> {
+        self.touch();
+        let kek = Kek::from_password(password.as_bytes(), vault_salt, params)?;
+        self.kdf_runs = self.kdf_runs.saturating_add(1);
+
+        let fp = kek.fingerprint(vault_salt);
+        // 只在同一个 vault 内比对：不同 salt 下同一密码的 KEK 本就不同，
+        // 让它们各占一条是对的（那是两个库，各自要解各自的文件）
+        let dup = self.cache.iter().any(|(k, v)| {
+            &k.vault_salt == vault_salt
+                && k.kind == CredentialKind::Vault
+                && v.fingerprint(vault_salt) == fp
+        });
+        if dup {
+            return Ok(false);
+        }
+
+        // 名字只用于显示，不参与身份判断，所以重名要让开而不是覆盖——
+        // 覆盖会把一个**不同**的密码悄悄挤掉，正是本方法要避免的事
+        let label = self.unique_label(vault_salt, CredentialKind::Vault, label);
+        let key = CacheKey { vault_salt: *vault_salt, kind: CredentialKind::Vault, label };
+        self.cache.insert(key, kek);
+        Ok(true)
+    }
+
+    /// 造一个在该 `(vault_salt, kind)` 下尚未被占用的显示名。
+    ///
+    /// 重名时加 `#2` / `#3` 后缀。这纯粹是为了让缓存键唯一，用户看到的
+    /// 名字略有出入不影响任何解密行为——但若不这样做，两个不同密码会
+    /// 因为重名而互相覆盖。
+    fn unique_label(&self, vault_salt: &[u8; 16], kind: CredentialKind, want: &str) -> String {
+        let taken = |name: &str| {
+            self.cache
+                .keys()
+                .any(|k| &k.vault_salt == vault_salt && k.kind == kind && k.label == name)
+        };
+        if !taken(want) {
+            return want.to_owned();
+        }
+        // 上界取 SLOT_COUNT 之外还留了余量：会话里的凭据数不受 8 槽限制
+        // （不同文件可以有不同的密码集合），但也不该无限尝试
+        for n in 2..=64u32 {
+            let candidate = format!("{want}#{n}");
+            if !taken(&candidate) {
+                return candidate;
+            }
+        }
+        // 极端情况下退回原名（会覆盖）。走到这里说明同名凭据已有 64 个，
+        // 属于误用而非正常路径，不值得为它引入一个错误分支
+        want.to_owned()
     }
 
     /// 移除某个凭据（其 KEK 会被清零）。
