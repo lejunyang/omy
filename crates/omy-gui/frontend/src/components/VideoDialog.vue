@@ -62,6 +62,14 @@ const crf = ref(23);
 const height = ref(0);
 const fps = ref(0);
 
+/** 字幕怎么办：`auto` 按容器能力处理，`keep_style` 保样式（要用 MKV），
+ *  `drop` 完全不要。
+ *
+ * 默认 auto：目标容器是用户先选的，为字幕样式擅自改容器会让
+ * 「我选的 MP4 怎么变成 MKV 了」更费解。代价写在选项文案里。
+ */
+const subMode = ref('auto');
+
 const converting = ref(false);
 const convertError = ref('');
 /** 转换产物。非空时「继续加密」用它替代原文件。 */
@@ -214,6 +222,47 @@ const audioWillDrop = computed(
   () => container.value !== 'mkv' && info.value?.mp4_audio_plan === 'drop',
 );
 
+/* ---------------- 字幕 ---------------- */
+
+const hasSubs = computed(() => (info.value?.subtitle_count ?? 0) > 0);
+const hasBitmapSubs = computed(() => info.value?.has_bitmap_subtitles === true);
+const hasStyledSubs = computed(() => info.value?.has_styled_subtitles === true);
+const targetIsMkv = computed(() => container.value === 'mkv');
+
+/** 字幕最终会怎样。
+ *
+ * 这段逻辑与后端 `plan_subtitles` 对应，两边都要看——这里算的是**说给
+ * 用户听的话**，真正执行以后端为准（它按实际探测到的轨道算）。
+ * 之所以前端也要算一遍，是因为用户改选项时文案要立刻跟着变，
+ * 不能每次都往返一次后端。
+ */
+const subOutcome = computed(() => {
+  if (!hasSubs.value) return 'none';
+  if (subMode.value === 'drop') return 'drop';
+  // MKV 什么都装得下
+  if (targetIsMkv.value) return 'copy';
+  // 位图字幕进 MP4 无解：既装不进去也转不成文本
+  if (hasBitmapSubs.value) return 'bitmap_drop';
+  if (hasStyledSubs.value) {
+    return subMode.value === 'keep_style' ? 'style_drop' : 'to_mov_text_lossy';
+  }
+  return 'to_mov_text';
+});
+
+/** 只在「有 ASS 且目标不是 MKV」时才给这个选项。
+ *
+ * 对只有 srt 的文件显示「要不要保留 ASS 样式」只会让人困惑——
+ * 他根本没有 ASS 字幕。
+ */
+const showAssChoice = computed(
+  () => hasSubs.value && hasStyledSubs.value && !hasBitmapSubs.value && !targetIsMkv.value,
+);
+
+/** 选了「保样式」却仍停在 MP4 上时，引导改选 MKV。 */
+function switchToMkv() {
+  container.value = 'mkv';
+}
+
 /** 可选的目标容器，按后端报告的 muxer 过滤。 */
 const containers = computed(() => {
   const m = caps.value?.muxers ?? [];
@@ -289,6 +338,11 @@ async function runConvert() {
       token: props.entry.token,
       container: container.value,
       faststart: faststart.value,
+      // 两个字幕开关分开传：ass_to_text 是「样式还是兼容性」的取舍，
+      // drop_subtitles 是「要不要字幕」。合成一个枚举的话，后端得重新
+      // 拆解，而拆解规则又要和前端保持一致
+      ass_to_text: subMode.value !== 'keep_style',
+      drop_subtitles: subMode.value === 'drop',
       encode:
         proc.value === 'compress'
           ? {
@@ -511,7 +565,7 @@ const needsConvert = computed(() => proc.value !== 'none' && !converted.value);
           <div v-if="proc === 'remux'" class="vsub">
             <div class="field">
               <label class="flabel" for="v-container">{{ i18n.t('video.target_container') }}</label>
-              <select id="v-container" v-model="container">
+              <select id="v-container" v-model="container" data-container>
                 <option v-for="c in containers" :key="c.id" :value="c.id">
                   {{ i18n.t(`video.container_${c.id}`) }}
                 </option>
@@ -528,9 +582,62 @@ const needsConvert = computed(() => proc.value !== 'none' && !converted.value);
             <div v-if="audioWillDrop" class="warnbox">
               {{ i18n.t('video.audio_drop_warn', { codec: info?.audio_codec || '' }) }}
             </div>
-            <div class="note if">{{ i18n.t('video.subtitle_note') }}</div>
-          </div>
+            <!-- 字幕：按实际情况说话，而不是一句写死的「会丢弃字幕」。
+                 没有字幕时整段不显示——对一个没字幕的文件解释字幕怎么处理
+                 只会让人以为自己漏看了什么 -->
+            <div v-if="hasSubs" class="field vsubs">
+              <div class="flabel">
+                {{ i18n.t('video.subtitles', { count: info.subtitle_count }) }}
+              </div>
 
+              <!-- 位图字幕：没有选项可给，只能说清楚并提供改用 MKV 的出路 -->
+              <div v-if="hasBitmapSubs && !targetIsMkv" class="warnbox">
+                {{ i18n.t('video.sub_bitmap_warn') }}
+                <div class="vcaps-acts">
+                  <button class="btn" type="button" @click="switchToMkv">
+                    {{ i18n.t('video.switch_to_mkv') }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- ASS：唯一交给用户决定的取舍 -->
+              <template v-else-if="showAssChoice">
+                <label class="radio">
+                  <input v-model="subMode" type="radio" value="auto" />
+                  <span>
+                    {{ i18n.t('video.sub_to_text') }}
+                    <div class="d">{{ i18n.t('video.sub_to_text_desc') }}</div>
+                  </span>
+                </label>
+                <label class="radio">
+                  <input v-model="subMode" type="radio" value="keep_style" />
+                  <span>
+                    {{ i18n.t('video.sub_keep_style') }}
+                    <div class="d">{{ i18n.t('video.sub_keep_style_desc') }}</div>
+                  </span>
+                </label>
+                <label class="radio">
+                  <input v-model="subMode" type="radio" value="drop" />
+                  <span>{{ i18n.t('video.sub_drop') }}</span>
+                </label>
+                <!-- 选了保样式却还停在 MP4 上：此时字幕其实会被丢掉，
+                     必须说出来并给出一键切换 -->
+                <div v-if="subOutcome === 'style_drop'" class="warnbox">
+                  {{ i18n.t('video.sub_style_needs_mkv') }}
+                  <div class="vcaps-acts">
+                    <button class="btn" type="button" @click="switchToMkv">
+                      {{ i18n.t('video.switch_to_mkv') }}
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 其余情况没有取舍可做，只说结果 -->
+              <div v-else class="note if">
+                {{ i18n.t(`video.sub_outcome_${subOutcome}`) }}
+              </div>
+            </div>
+          </div>
           <!-- 压缩子选项 -->
           <div v-if="proc === 'compress'" class="vsub">
             <div class="vgrid2">
@@ -590,6 +697,14 @@ const needsConvert = computed(() => proc.value !== 'none' && !converted.value);
             }}
             <div v-if="converted.audio_plan === 'drop'" class="d">
               {{ i18n.t('video.converted_no_audio') }}
+            </div>
+            <!-- 字幕的实际结局以后端返回为准：用户选了「转文本」但源里是
+                 位图时仍然只能丢，这里要说真话而不是复述他的选择 -->
+            <div v-if="converted.subtitle_plan === 'drop'" class="d">
+              {{ i18n.t('video.converted_no_subs') }}
+            </div>
+            <div v-else-if="converted.subtitle_plan === 'to_mov_text'" class="d">
+              {{ i18n.t('video.converted_subs_text') }}
             </div>
             <ul v-if="converted.warnings?.length" class="vwarns">
               <li v-for="(w, i) in converted.warnings" :key="i">{{ w }}</li>
