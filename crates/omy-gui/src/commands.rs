@@ -89,6 +89,13 @@ pub struct UnlockResult {
     pub credentials: usize,
     /// 本次成功派生的 vault 数量。
     pub vaults_unlocked: usize,
+    /// 本次输入的密码是不是一个**新**密码。
+    ///
+    /// `false` 表示它与会话里已有的某个密码相同，本次没有新增凭据。
+    /// 前端据此把提示从「已添加密码」改成「这个密码已经在用了」——
+    /// 不区分的话，用户重复输入同一个密码会看到「已添加」却发现计数
+    /// 没变，像是操作失败了。
+    pub added: bool,
 }
 
 /// 用密码解锁一个或多个 vault。
@@ -99,6 +106,17 @@ pub struct UnlockResult {
 ///
 /// 对每个 vault 都派生一次。一个都没成功才算失败：部分成功是
 /// 正常情况（目录里可能混着别人的、用其他密码加密的文件）。
+///
+/// # 累加，不是替换
+///
+/// 走 [`omy_core::session::SessionKeys::add_password`]，所以再输一个
+/// **不同**的密码不会挤掉已装入的——真实密码与诱饵密码可以同时生效，
+/// 一遍扫描各自命中自己的文件。同一个密码重复输入则只算一条。
+///
+/// 早先这里用的是 `unlock_password`（替换语义）加一个写死的
+/// `label = "main"`，两者叠加的效果是「会话里永远只能有一个密码」。
+/// 那个写死本身是为修另一个缺陷加的，根因见 core 侧 `add_password`
+/// 的文档。
 #[tauri::command]
 pub async fn unlock(
     state: State<'_, Shared>,
@@ -132,19 +150,23 @@ pub async fn unlock(
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         handle.with_session(|s| {
             let mut ok = 0usize;
-            for (i, (salt, params)) in parsed.iter().enumerate() {
-                // 多个 vault 时给每个 KEK 一个不同的 label，
-                // 否则它们在会话缓存里会互相覆盖
-                let l = if parsed.len() == 1 {
-                    label.clone()
-                } else {
-                    format!("{label}#{i}")
-                };
-                if s.unlock_password(&l, salt, &password, *params).is_ok() {
+            let mut added = false;
+            for (salt, params) in &parsed {
+                // 每个 vault 各派生一次：同一个密码在不同 salt 下是不同的
+                // KEK，必须各占一条（这与「多个密码」是两件事，见
+                // `vault_params_of` 的文档）。
+                //
+                // label 不再需要手工加 #i 后缀去避让——add_password 自己
+                // 会在重名时让开，而身份判断走的是指纹
+                // 派生失败（Argon2 参数非法）只影响这一个 vault，
+                // 其它的照常试——目录里混着多个库时不该一个坏头部
+                // 就让整次解锁失败
+                if let Ok(is_new) = s.add_password(&label, salt, &password, *params) {
                     ok = ok.saturating_add(1);
+                    added |= is_new;
                 }
             }
-            (ok, s.len())
+            (ok, s.len(), added)
         })
     })
     .await
@@ -154,9 +176,10 @@ pub async fn unlock(
         // 派生成功不代表密码对——KEK 是否正确要等真去解文件才知道。
         // 这里只要有一个 vault 派生成功就返回，由扫描结果告诉用户
         // 到底解开了几个文件
-        Some((ok, total)) if ok > 0 => Ok(UnlockResult {
+        Some((ok, total, added)) if ok > 0 => Ok(UnlockResult {
             credentials: total,
             vaults_unlocked: ok,
+            added,
         }),
         Some(_) => Err(CmdError::code("wrong_password")),
         None => Err(CmdError::code("internal")),
@@ -863,15 +886,13 @@ pub async fn unlock_directory(
         return Err(CmdError::code("no_vault_found"));
     }
 
-    // label 一律归一化成 "main"。
+    // label 只是显示名，不再承担「这是哪个密码」的判断。
     //
-    // 它是会话缓存键 (vault_salt, kind, label) 的一部分，所以同一个
-    // 密码配上不同的 label 会被算成**两条独立凭据**——状态栏显示
-    // 「2 个密码已解锁」，而实际上只有一个密码。
-    //
-    // core 层保留 label 是对的：将来要做「诱饵密码」「多用户」时，
-    // 区分不同凭据正是靠它。但 GUI 现在没有任何界面消费这个名字，
-    // 让用户填一个看不见、又会让计数出错的字段没有意义。
+    // 它曾经是会话缓存键 (vault_salt, kind, label) 的一部分，于是同一个
+    // 密码配不同 label 会被算成两条凭据；当时的对策是统一写死成 "main"，
+    // 代价是第二个**不同**的密码会被静默挤掉。现在身份判断走 KEK 指纹
+    // （见 core 的 `add_password`），两个方向都对了，这里给个固定名字
+    // 纯粹是因为 GUI 没有界面让用户命名。
     let label = String::from("main");
     unlock(state, label, password, vaults).await
 }
@@ -1134,10 +1155,27 @@ mod tests {
         let r = UnlockResult {
             credentials: 3,
             vaults_unlocked: 2,
+            added: true,
         };
         let j = serde_json::to_string(&r).unwrap_or_default();
         assert!(j.contains("vaults_unlocked"));
         assert!(j.contains('2'));
+    }
+
+    /// `added` 必须出现在序列化结果里，且能表达 false。
+    ///
+    /// 不这样会怎样：前端靠它区分「加了一个新密码」和「这个密码已经在用」。
+    /// 字段若被 skip 掉或恒为 true，用户重复输入同一个密码会看到
+    /// 「已添加」，但凭据数不变——看起来像操作失败了。
+    #[test]
+    fn unlock_result_carries_added_flag() {
+        let dup = UnlockResult {
+            credentials: 1,
+            vaults_unlocked: 1,
+            added: false,
+        };
+        let j = serde_json::to_string(&dup).unwrap_or_default();
+        assert!(j.contains("\"added\":false"), "重复密码必须如实报 false，实得 {j}");
     }
 
     #[test]

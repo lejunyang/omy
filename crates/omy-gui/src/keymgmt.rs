@@ -306,9 +306,14 @@ fn run(
         &req.next
     };
     state.with_session(|s| {
-        // 与 unlock / encrypt 用同一个 label，否则同一个密码会被算成
-        // 两条凭据，状态栏显示的数量就不对了
-        let _ = s.unlock_password("main", &header.vault_salt, adopt, params);
+        // 必须是累加而不是替换。换成替换会修出一个更糟的缺陷：
+        // 一个库里十个文件都用密码 A，用户把其中**一个**改成 B，
+        // 替换语义会把会话里的 A 顶掉，于是另外九个文件当场全部锁上——
+        // 用户只想改一个文件的密码，却发现整个目录都看不见了。
+        //
+        // 旧密码在这里不能主动 forget：它对同库的其它文件依然有效。
+        // 这个操作改的是**这一个文件**能被谁打开，不是整个库
+        let _ = s.add_password("main", &header.vault_salt, adopt, params);
     });
 
     Ok(KeyOutcome {
@@ -428,7 +433,11 @@ fn run_tree(
 
     if changing_password {
         state.with_session(|s| {
-            let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
+            // 同样是累加：这个目录下的树换了密码，不代表同一个 vault 里
+            // 别处的文件也换了。旧密码留在会话里对它们仍然有用。
+            //
+            // 这里**不**主动 forget 旧密码，理由同单文件分支
+            let _ = s.add_password("main", &header.vault_salt, &req.next, params);
         });
     }
 
@@ -561,7 +570,10 @@ fn run_retry(
 
     if changing {
         state.with_session(|s| {
-            let _ = s.unlock_password("main", &header.vault_salt, &req.next, params);
+            // 累加。重试场景下尤其不能替换：这次补的是**上次失败的那些**
+            // 文件，同一棵树里已经改好的那些用的也是新密码，但别处还有
+            // 用旧密码的文件——把旧密码顶掉会让它们凭空锁上
+            let _ = s.add_password("main", &header.vault_salt, &req.next, params);
         });
     }
 

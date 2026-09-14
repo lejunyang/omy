@@ -323,29 +323,49 @@ fn annotate_tree_names(entries: &mut [DirEntry], root: &Path, state: &Shared) {
                 .collect()
         })
         .unwrap_or_default();
-    let Some(kek) = keks.first() else {
+    if keks.is_empty() {
         return;
-    };
-    let dkey = omy_core::dirname::DirnameKey::derive(kek, &header.vault_salt);
+    }
+    // 每个 KEK 派生一个目录名密钥，逐个试。
+    //
+    // 早先这里取 `keks.first()` 就收工。单密码时看不出问题，会话能装
+    // 多个密码之后它就错了，而且错得很难查：`all_for` 底层是 HashMap，
+    // 返回顺序**每次运行都可能不同**——同一个目录，这次进去目录名解开了，
+    // 下次进去就变回一串 base32，用户会以为是随机的界面 bug。
+    //
+    // 目录名密钥由 vault_salt 派生（文档 03：整棵树的可见性绑定 vault，
+    // 无法按 slot 区分），所以正确做法是「哪个密码能解开就用哪个」，
+    // 而不是赌第一个。
+    let dkeys: Vec<omy_core::dirname::DirnameKey> = keks
+        .iter()
+        .map(|k| omy_core::dirname::DirnameKey::derive(k, &header.vault_salt))
+        .collect();
 
     for e in entries.iter_mut() {
         if e.is_encrypted_dir {
             // 超长名截断过，完整密文在目录内部的边车文件里
             let sidecar =
                 std::fs::read(Path::new(&e.path).join(omy_core::dirname::DIRNAME_SIDECAR)).ok();
-            if let Ok(real) = omy_core::dirname::decrypt_dirname(
-                &e.name,
-                sidecar.as_deref(),
-                &dkey,
-                header.cipher_id,
-            ) {
-                e.real_name = Some(real);
-                e.unlocked = true;
+            // 逐个密钥试，第一个成功的就是对的（解不开会因 AEAD 认证
+            // 失败而报错，不会静默产出错误的名字）
+            for dkey in &dkeys {
+                if let Ok(real) = omy_core::dirname::decrypt_dirname(
+                    &e.name,
+                    sidecar.as_deref(),
+                    dkey,
+                    header.cipher_id,
+                ) {
+                    e.real_name = Some(real);
+                    e.unlocked = true;
+                    break;
+                }
             }
         } else if e.is_encrypted && !e.unlocked {
             // 树形模式里的文件磁盘名是随机 uuid，真名在它自己的 TLV 里。
             // annotate_unlocked 只认 scan_directory 登记过的文件，
-            // 而浏览进密文树时没人调过 scan——所以这里要自己解一次
+            // 而浏览进密文树时没人调过 scan——所以这里要自己解一次。
+            //
+            // 这一支本来就是把整组 keks 传下去逐个试的，没有上面那个缺陷
             if let Some(real) = real_name_of(Path::new(&e.path), &keks) {
                 e.unlocked = true;
                 // 真名的后缀才是有意义的那个：磁盘上一律是 .omy

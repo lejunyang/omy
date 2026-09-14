@@ -219,16 +219,17 @@ fn adopt_credential(state: &Shared, sample: &str, req: &EncryptRequest) {
     let Ok(header) = omy_core::file::peek_header(&prefix) else {
         return;
     };
-    // 与 unlock 用同一个 label，否则「加密后自动装入的凭据」和
-    // 「用户手动输同一个密码解锁的凭据」会被算成两条，
-    // 状态栏就显示「2 个密码已解锁」——而其实只有一个密码。
+    // 走累加语义：这个密码若已在会话里（用户刚用它解锁过），
+    // add_password 按 KEK 指纹认出来、只算一条；若是个新密码，
+    // 它会被加进去而**不挤掉**已有的其它密码。
     //
-    // 缓存键是 (vault_salt, kind, label)，label 不一致就是两条记录。
+    // 后者是关键：用户可能正用密码 A 浏览，然后用密码 B 加密一批新文件。
+    // 若这里是替换语义，加密完成的一瞬间 A 的那些文件会集体锁上。
     let label = "main";
     state.with_session(|s| {
         // 失败不影响加密结果本身：文件已经写好了，
         // 装不进会话只是列表里还显示成锁定，用户再输一次密码即可
-        let _ = s.unlock_password(
+        let _ = s.add_password(
             label,
             &header.vault_salt,
             &req.password,
