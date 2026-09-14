@@ -90,13 +90,11 @@ try {
 
     Write-Output ''
     Write-Output '=== 下一步 ==='
-    Write-Output '在项目根目录执行（两个档位各跑一次）：'
+    Write-Output '在项目根目录执行：'
     Write-Output ''
-    foreach ($p in 'royalty-free', 'full') {
-        Write-Output ("  `$env:SYSROOT='" + $sysroot + "'; `$env:OMY_FF_PROFILE='" + $p + "'")
-        Write-Output '  bash scripts/ffmpeg-build/build-windows.sh'
-        Write-Output ''
-    }
+    Write-Output ("  `$env:SYSROOT='" + $sysroot + "'")
+    Write-Output '  bash scripts/ffmpeg-build/build-windows.sh'
+    Write-Output ''
 } finally {
     Pop-Location
 }

@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# FFmpeg 裁剪构建的组件配方。两个档位共用本文件，只由 $OMY_FF_PROFILE 切换差异。
-#
-# 为什么两档共用一份而不是各写一份：分档差异只有「要不要带专利编解码器」这
-# 一件事，其余上百个 flag 完全相同。写成两份配方的必然结果是改了一边忘了另一
-# 边——而这类错误编得过、跑得动，只在特定输入上才暴露。
+# FFmpeg 裁剪构建的组件配方。
 #
 # 用法：source 本文件后读 $FF_FLAGS 数组。需要先设好 SYSROOT / WEBP / ZLIB。
 #
@@ -13,44 +9,30 @@
 
 set -euo pipefail
 
-: "${OMY_FF_PROFILE:?必须设为 royalty-free 或 full}"
 : "${SYSROOT:?}"
 : "${WEBP:?}"
 : "${ZLIB:?}"
 
-case "$OMY_FF_PROFILE" in
-  royalty-free|full) ;;
-  *) echo "未知档位: $OMY_FF_PROFILE（只接受 royalty-free / full）" >&2; exit 2 ;;
-esac
-
-# ---- 各档位的视频解码器 -------------------------------------------------
+# ---- 视频解码器 ---------------------------------------------------------
 #
-# 分档依据是专利风险，不是文件流行度：
-#   免版税档  VP8 / VP9 / AV1 —— 均有明确的免版税授权承诺
-#   全量档    再加 H.264 / HEVC —— 由 MPEG LA / Access Advance 等收取许可费
+# 全部能力一次给齐，不分档。曾经按专利风险分过「免版税档 / 全量档」两份产物，
+# 后来取消：H.264 覆盖了用户手上绝大多数视频，缺了它「探测得出时长、就是抽不
+# 出缩略图」，而这个症状看起来完全就是功能坏了。专利立场改为在 README 与文档
+# 站里声明，而不是靠砍能力来表达。
 #
-# mjpeg / png / webp / rawvideo 两档都要：前三个是图片格式（缩略图源），
-# rawvideo 是 omy 图片路径的管道输入格式，都不涉及视频编码专利。
-VIDEO_DEC_COMMON='vp8,vp9,av1,mjpeg,png,webp,rawvideo'
-VIDEO_DEC_PATENTED='h264,hevc'
+# mjpeg / png / webp 是图片格式（缩略图源），rawvideo 是 omy 图片路径的管道
+# 输入格式。
+VIDEO_DEC='vp8,vp9,av1,h264,hevc,mjpeg,png,webp,rawvideo'
 
-if [ "$OMY_FF_PROFILE" = full ]; then
-  VIDEO_DEC="${VIDEO_DEC_COMMON},${VIDEO_DEC_PATENTED}"
-  # parser/bsf 也要跟着分档：留着 h264 的 parser 却没有 decoder 没有意义，
-  # 而 bsf 是 -c copy 正确产出 MP4 的前提（见下面 parser/bsf 那段注释）
-  VIDEO_PARSER="vp8,vp9,av1,png,webp,h264,hevc"
-  VIDEO_BSF="extract_extradata,h264_mp4toannexb,hevc_mp4toannexb"
-else
-  VIDEO_DEC="${VIDEO_DEC_COMMON}"
-  VIDEO_PARSER="vp8,vp9,av1,png,webp"
-  VIDEO_BSF="extract_extradata"
-fi
+# parser 与 decoder 要对应：留着 h264 的 parser 却没有 decoder 没有意义，
+# 反过来缺了 parser/bsf 则会产出「能生成但播不了」的 MP4（见下面那段注释）。
+VIDEO_PARSER='vp8,vp9,av1,png,webp,h264,hevc'
+VIDEO_BSF='extract_extradata,h264_mp4toannexb,hevc_mp4toannexb'
 
-# ---- 音频解码器（两档相同）--------------------------------------------
+# ---- 音频解码器 ---------------------------------------------------------
 #
-# AAC 与 MP3 严格说也有专利，但 MP3 的专利已于 2017 年全部到期；AAC 保留在
-# 两档里是因为它是 MP4 的事实标准音轨，去掉会让绝大多数视频连时长都探测不出。
-# 这个取舍写进文档 §2，若法务口径变化只需改这一行。
+# AAC 与 MP3 严格说也有专利，但 MP3 的专利已于 2017 年全部到期；AAC 是 MP4 的
+# 事实标准音轨，去掉会让绝大多数视频连时长都探测不出。
 AUDIO_DEC='aac,mp3,opus,vorbis,flac,pcm_s16le'
 
 FF_FLAGS=(

@@ -6,13 +6,11 @@
 # ——configure 退出 0、make 退出 0、手工命令行还能跑通，只有 omy 自己的测试
 # 才失败。所以「编过了」完全不能作为接受标准，必须逐项复查组件是否真的在。
 #
-# 用法: bash verify.sh <产物目录> [档位]
-#   档位省略时从目录名推断（out/royalty-free -> royalty-free）
+# 用法: bash verify.sh <产物目录>
 
 set -uo pipefail
 
-OUT="${1:?用法: verify.sh <产物目录> [royalty-free|full]}"
-PROFILE="${2:-$(basename "$OUT")}"
+OUT="${1:?用法: verify.sh <产物目录>}"
 
 FFMPEG="$OUT/ffmpeg.exe"
 FFPROBE="$OUT/ffprobe.exe"
@@ -25,7 +23,7 @@ for f in "$FFMPEG" "$FFPROBE"; do
   [ -f "$f" ] || { echo "缺少 $f" >&2; exit 1; }
 done
 
-echo "=== 档位: $PROFILE ==="
+echo "=== 校验 $OUT ==="
 echo
 echo "--- 1. 体积 ---"
 total=0
@@ -107,27 +105,17 @@ check filter  thumbnail "视频抽帧选帧"
 check proto   pipe      "全程管道 IO"
 
 echo
-echo "--- 5. 档位专属：专利编解码器 ---"
-# 这段是分档的核心保障。免版税档一旦不小心带进 H.264，整个专利论证就失效，
-# 而这种错误肉眼和体积都看不出来。
-for c in h264 hevc; do
-  if have_decoder "$c"; then
-    if [ "$PROFILE" = full ]; then
-      note "decoder $c 存在" "ok（全量档应有）"
-    else
-      bad "decoder $c 不应存在" "免版税档不得包含专利编解码器"
-    fi
-  else
-    if [ "$PROFILE" = full ]; then
-      bad "decoder $c 存在" "全量档缺失"
-    else
-      note "decoder $c 不存在" "ok（免版税档应无）"
-    fi
-  fi
-done
-# 两档都必须有的免版税视频解码器
-for c in vp8 vp9 av1; do
-  check decoder "$c" "免版税视频格式，两档都要"
+echo "--- 5. 视频解码器齐全 ---"
+# 这段防的是「改配方时专利解码器意外掉出去」。
+#
+# 它必须留着：h264/hevc 掉了之后，configure 退出 0、make 退出 0、体积只小了
+# 两三兆，产物看上去完全正常——直到用户打开一个 H.264 视频，发现探测得出时长
+# 却抽不出缩略图（报 no decoder found for: h264）。这个症状既像功能坏了，
+# 又不会有任何构建期信号，只有在这里逐项查才拦得住。
+#
+# h264/hevc 与 vp8/vp9/av1 现在是同一类要求：全都必须在。
+for c in h264 hevc vp8 vp9 av1; do
+  check decoder "$c" "omy 需要能为它抽缩略图"
 done
 
 echo

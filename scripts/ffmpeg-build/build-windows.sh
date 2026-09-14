@@ -3,8 +3,10 @@
 #
 # 前置条件：项目根目录的 osdk.toml 已 trust，工具链由它提供（不需要 MSYS2）。
 # 用法：
-#   OMY_FF_PROFILE=royalty-free bash scripts/ffmpeg-build/build-windows.sh
-#   OMY_FF_PROFILE=full         bash scripts/ffmpeg-build/build-windows.sh
+#   SYSROOT=... bash scripts/ffmpeg-build/build-windows.sh
+#
+# 产物只有一份，包含 omy 需要的全部解码能力（含 H.264 / HEVC）。曾经按专利
+# 风险分过两档，现已取消，理由见 configure-flags.sh 顶部。
 #
 # 注意：本脚本内**不调用 osdk**。嵌套的 osdk 会尝试交互提示并卡在等 stdin 上
 # （实测挂了 18 分钟只烧掉 4.8 CPU 秒，看起来像死锁）。所以工具路径必须由外层
@@ -12,7 +14,6 @@
 
 set -euo pipefail
 
-: "${OMY_FF_PROFILE:?必须设为 royalty-free 或 full}"
 : "${SYSROOT:?必须由外层传入（见脚本头部注释，本脚本不能自己调 osdk）}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,7 @@ ZLIB_VER="$(sed -n 5p "$HERE/VERSION")"
 ZLIB_SHA256="$(sed -n 6p "$HERE/VERSION")"
 
 SRC="$WORK/src"
-OUT="$WORK/out/$OMY_FF_PROFILE"
+OUT="${OMY_FF_OUT:-$WORK/out}"
 export WEBP="$WORK/deps/webp"
 export ZLIB="$WORK/deps/zlib"
 
@@ -135,11 +136,11 @@ cmake --build "$WORK/bld/webp" --target install >/dev/null
 echo "  libwebp.a $(stat -c %s "$WEBP/lib/libwebp.a") 字节"
 
 echo
-echo "=== 4/5 配置并构建 FFmpeg（档位: $OMY_FF_PROFILE）==="
+echo "=== 4/5 配置并构建 FFmpeg ==="
 # shellcheck source=./configure-flags.sh
 source "$HERE/configure-flags.sh"
 
-BLD="$WORK/bld/ffmpeg-$OMY_FF_PROFILE"
+BLD="$WORK/bld/ffmpeg"
 rm -rf "$BLD"
 mkdir -p "$BLD"
 cd "$BLD"
@@ -168,7 +169,6 @@ cat > "$OUT/SOURCE.txt" <<EOF
 FFmpeg 版本: ${FFMPEG_VER}
 源码地址:    https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz
 源码 SHA256: ${FFMPEG_SHA256}
-构建档位:    ${OMY_FF_PROFILE}
 配方:        scripts/ffmpeg-build/configure-flags.sh（见 omy 仓库）
 许可证:      LGPL v2.1 或更高版本（见 COPYING.LGPLv2.1）
 

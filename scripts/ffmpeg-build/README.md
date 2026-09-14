@@ -3,29 +3,34 @@
 为 omy 构建只含自身所需组件的 FFmpeg。背景、取舍与全部实测数据见
 [`docs/research/13-ffmpeg-minimal-build.md`](../../docs/research/13-ffmpeg-minimal-build.md)。
 
-## 两个档位
+## 产物
 
-| 档位 | 视频解码器 | 实测体积（win-x64） |
-|---|---|---|
-| `royalty-free` | VP8 / VP9 / AV1 | **9.87 MB** |
-| `full` | 再加 H.264 / HEVC | **12.44 MB** |
+单一产物，包含 omy 需要的全部能力。实测体积（win-x64）：
 
-体积均为 `ffmpeg.exe` + `ffprobe.exe` 之和，已 strip，静态链接 libwebp 与
-zlib，除系统 DLL 外无任何外部依赖（可以只拷这两个 exe）。
+| 内容 | 实测体积 |
+|---|---|
+| `ffmpeg.exe` + `ffprobe.exe` | **12.44 MB** |
 
-两档的图片能力完全相同（JPEG / PNG / WebP / BMP / GIF 缩略图），音频、字幕、
-remux 也相同。差异只在视频：
+已 strip，静态链接 libwebp 与 zlib，除系统 DLL 外无任何外部依赖
+（可以只拷这两个 exe）。
 
-```
-             探测时长/分辨率    生成缩略图
-royalty-free      都可以        VP8/VP9/AV1 可以，H.264/HEVC 不行
-full              都可以        全都可以
-```
+能力范围：
 
-注意「探测成功但缩略图失败」这个组合——demuxer 与 decoder 是两件事。
-免版税档遇到 H.264 视频时仍能读出时长和分辨率，只是抽不出帧，报
-`no decoder found for: h264`。**这一点必须在 `omy doctor` 里说清**，
-否则用户会以为功能坏了。
+- 视频抽帧缩略图：H.264 / HEVC / VP8 / VP9 / AV1
+- 图片缩略图：JPEG / PNG / WebP / BMP / GIF
+- 音频、字幕、`-c copy` 转封装
+
+### 为什么不再分档
+
+曾经出过 `royalty-free`（不含 H.264/HEVC）与 `full` 两份产物，按专利风险分。
+现已取消，只发一份全量产物。
+
+原因是免版税档的失败模式太糟：H.264 覆盖了用户手上绝大多数视频，而
+**demuxer 与 decoder 是两件事**——免版税档遇到 H.264 视频时仍能读出时长和
+分辨率，只是抽不出帧，报 `no decoder found for: h264`。用户看到的是「有的
+视频有缩略图、有的没有」，既不像配置问题也不像能力边界，就是功能坏了。
+
+专利立场改为在文档里声明，而不是靠砍能力来表达。
 
 ## 用法
 
@@ -33,13 +38,17 @@ full              都可以        全都可以
 # 1. 确认工具链（会打印下一步要用的 SYSROOT）
 pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
 
-# 2. 按它打印的命令构建，两个档位各跑一次
-$env:SYSROOT='...'; $env:OMY_FF_PROFILE='royalty-free'
+# 2. 按它打印的命令构建
+$env:SYSROOT='...'
 bash scripts/ffmpeg-build/build-windows.sh
 
 # 3. 校验产物
-bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-build/out/royalty-free
+bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-build/out
 ```
+
+产物目录默认是 `$OMY_FF_WORK/out`（`OMY_FF_WORK` 默认
+`/tmp/omy-ffmpeg-build`），可用 `OMY_FF_OUT` 指定别处——CI 就是这么把产物
+直接放进打包目录的。
 
 Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml` 提供。
 
@@ -48,7 +57,7 @@ Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml
 | 文件 | 作用 |
 |---|---|
 | `VERSION` | 三个上游库的版本与 SHA256，每两行一组 |
-| `configure-flags.sh` | 组件配方，两档共用，由 `$OMY_FF_PROFILE` 切换差异 |
+| `configure-flags.sh` | 组件配方 |
 | `build-windows.sh` | 下载校验、编 zlib 与 libwebp、编 FFmpeg |
 | `verify.sh` | 校验许可证边界、外部依赖、逐项复查组件 |
 | `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT` |
@@ -71,8 +80,9 @@ $env:OMY_FFPROBE='<产物目录>\ffprobe.exe'
 cargo test -p omy-media
 ```
 
-`verify.sh` 里那条「免版税档不得包含 h264/hevc」的检查同样重要：
-一旦误带进专利编解码器，整个分档的意义就没了，而这从体积和外观都看不出来。
+`verify.sh` 里那条「必须含 h264/hevc」的检查是分档取消后保留下来的：
+方向反转了，作用没变。配方改动让专利解码器意外掉出去时，编得过、跑得动、
+体积只小两三兆，只有用户打开 H.264 视频才暴露——必须在构建期就拦住。
 
 ## 组件名有两套，别混
 
