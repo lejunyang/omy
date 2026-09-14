@@ -46,6 +46,8 @@
     )
 )]
 
+pub mod caps;
+pub mod convert;
 pub mod error;
 pub mod ffprobe;
 pub mod meta;
@@ -57,6 +59,7 @@ pub mod remux;
 pub mod thumbnail;
 pub mod tier;
 
+pub use caps::{Capabilities, capabilities};
 pub use error::{MediaError, Result};
 pub use meta::MediaMeta;
 pub use prepare::{PrepareOptions, Prepared, ThumbSource, prepare};
