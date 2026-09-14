@@ -37,18 +37,7 @@ android-system-images = "android-35;google_apis;x86_64"
 "conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config" }
 
 [settings.shims.tools."conda:m2-base"]
-# m2-base 是元包，自身不「拥有」prefix 里那 250 多个命令，所以默认一个 shim
-# 都不生成 —— 这是刻意的，否则 msys 版的 ls / test / sort 会盖住 Windows 同名命令。
-#
-# 这里用 per-tool `expose` 只取回 FFmpeg 的 configure 与 Makefile 真正用到的
-# 命令，于是 bash / make / sed 等可以直接调用，不必套 `osdk exec`。
-#
-# 不要改用全局 `shims.include`：它是**全体工具**的白名单，一旦设置，未列出的
-# cargo / rustc / java 会全部失去 shim。per-tool 的 expose 是增量的，只加不减。
-# 详见 one-sdk 的 docs/bugs/008。
-#
-# 改动请用 `osdk config set shims.conda:m2-base.expose "..."`，改完重新 trust。
-expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee"]
+expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee", "tar", "bsdtar", "gzip", "gunzip", "sha256sum", "curl", "nproc", "stat"]
 
 [settings.shims.tools."conda:gcc_win-64"]
 expose = ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++", "x86_64-w64-mingw32-ar", "x86_64-w64-mingw32-as", "x86_64-w64-mingw32-nm", "x86_64-w64-mingw32-ranlib", "x86_64-w64-mingw32-strip", "x86_64-w64-mingw32-objdump", "x86_64-w64-mingw32-windres", "x86_64-w64-mingw32-ld", "x86_64-w64-mingw32-dlltool"]
