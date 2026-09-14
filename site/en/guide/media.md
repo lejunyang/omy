@@ -48,11 +48,37 @@ omy encrypt --thumbnail-frame 83 movie.mp4       # seconds
 omy encrypt --thumbnail-frame 83.5 movie.mp4
 ```
 
+::: tip The GUI lets you pick while watching
+With a single video selected, the encryption dialog offers "Video processing…". There you can play and scrub to choose the cover frame — the scrubber, the timecode and the picture stay in sync, so you never have to guess a timestamp.
+:::
+
 To confirm the frame you got, export it (WebP format, password required):
 
 ```bash
 omy info --extract-thumbnail thumb.webp --with-password movie.mp4.omy
 ```
+
+## Converting before encryption (GUI only)
+
+The same "Video processing…" dialog can also convert the video **before** it is encrypted. It shows the source container, codecs, resolution, size and playback tier, then offers three choices:
+
+| What to do | Time | Notes |
+|---|---|---|
+| Leave it alone | — | Encrypt as is; quality and size untouched |
+| Remux | Seconds | Changes only the container (`-c copy`), never the video stream — no quality loss |
+| Compress | Slow | Reduce resolution or bitrate; re-encodes |
+
+Remuxing is mainly useful to turn MKV/MOV into MP4: most MP4s play directly (P1), which saves the on-the-fly remux at every playback.
+
+::: warning Compression needs a full FFmpeg build
+The build shipped on Windows is trimmed to probing, frame extraction and remuxing, and carries **no video encoder at all**, so the compress option is greyed out and the dialog says why. It becomes available automatically once you switch to a full FFmpeg build — see "Using your own FFmpeg" on the [installation page](/en/guide/install#ffmpeg).
+:::
+
+::: warning Some audio tracks are lost when remuxing
+MP4 cannot hold PCM or DTS tracks; they have to be converted to AAC, and the bundled FFmpeg has no AAC encoder either. The dialog warns about this **before** you start, so you never end up with a silently soundless video. Choosing MKV, or switching to a full FFmpeg build, keeps the audio.
+
+Conversion always drops subtitle tracks. Choose "leave it alone" to keep them.
+:::
 
 ## Media metadata and moov cache
 
