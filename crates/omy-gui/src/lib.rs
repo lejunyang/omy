@@ -143,6 +143,8 @@ pub fn run() {
             fileops::create_folder,
             keymgmt::manage_key,
             keymgmt::retry_key_files,
+            keymgmt::generate_recovery,
+            keymgmt::restore_with_recovery,
             device_cmds::device_status,
             device_cmds::open_device_store,
             device_cmds::close_device_store,

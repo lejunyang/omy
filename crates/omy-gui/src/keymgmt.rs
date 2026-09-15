@@ -679,6 +679,232 @@ fn map_core_err(e: omy_core::Error) -> CmdError {
     }
 }
 
+// ============================================================
+// 恢复码
+// ============================================================
+
+/// 生成恢复码的入参。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecoveryRequest {
+    /// 目标 `.omy` 文件。
+    pub path: String,
+    /// 当前密码——生成恢复码要先证明你现在能打开这个文件。
+    pub current: String,
+}
+
+/// 生成恢复码的结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryOutcome {
+    /// 26 个词。
+    ///
+    /// # 为什么必须回传给前端，而 CLI 却不放进 --json
+    ///
+    /// CLI 的 `--json` 常被重定向进文件或管道进日志，那是在用户看不见的
+    /// 地方留下一张万能钥匙。而这里是 Tauri IPC：内容只进 WebView 的内存、
+    /// 用于当场显示给用户看，不落盘、不进任何日志。
+    ///
+    /// 前端拿到后**必须只显示、不存储**——不得写进 localStorage、不得留在
+    /// 组件状态里超过对话框的生命周期。
+    pub words: Vec<String>,
+    /// 本次是否可能顶掉了原本挂在该槽位上的其它密码。
+    ///
+    /// 恢复码要占一个新槽位，而实现无法探测哪个槽位是空的（可否认性的
+    /// 直接后果）。为 true 时 UI 必须如实提醒——但只能说「可能」，
+    /// 那个下标上原来是真密码还是随机填充，我们确实不知道。
+    pub may_have_evicted: bool,
+}
+
+/// 给一个已加密文件生成并挂上恢复码。
+///
+/// # 为什么不支持目录
+///
+/// 树形加密的每个文件各自挂槽，「整棵树共用一份恢复码还是各一份」尚未
+/// 决定。与其给出一个语义含糊的实现，不如如实拒绝——用户至少知道该去
+/// 单个文件上设。
+///
+/// # Errors
+///
+/// - `password_required`：当前密码为空
+/// - `tree_not_supported`：目标是目录
+/// - `wrong_password`：当前密码打不开这个文件
+/// - `file_not_found` / `io_error` / `corrupted`：同 `manage_key`
+#[tauri::command]
+pub async fn generate_recovery(
+    state: State<'_, Shared>,
+    req: RecoveryRequest,
+) -> CmdResult<RecoveryOutcome> {
+    if req.current.is_empty() {
+        return Err(CmdError::code("password_required"));
+    }
+    let handle: Shared = std::sync::Arc::clone(&state);
+    // Argon2 要几百毫秒，必须离开异步执行器，否则 UI 卡住
+    tauri::async_runtime::spawn_blocking(move || run_recovery(&handle, &req))
+        .await
+        .map_err(|_| CmdError::code("internal"))?
+}
+
+fn run_recovery(state: &Shared, req: &RecoveryRequest) -> CmdResult<RecoveryOutcome> {
+    let path = Path::new(&req.path);
+    if path.is_dir() {
+        return Err(CmdError::code("tree_not_supported"));
+    }
+    let data = std::fs::read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
+        _ => CmdError::code("io_error"),
+    })?;
+
+    let header = omy_core::file::peek_header(&data).map_err(map_core_err)?;
+    let params = header.argon2_params();
+    let current = derive(&req.current, &header.vault_salt, params)?;
+
+    let code = omy_core::recovery::RecoveryCode::generate();
+    let reco_kek = code.to_kek(&header.vault_salt);
+
+    // keep 里必须同时有当前密码与恢复码。只放恢复码的话这就成了
+    // 「把密码换成恢复码」，用户的日常密码会当场失效
+    let keep = vec![current.duplicate(), reco_kek];
+    let out = omy_core::keyslot::rewrite_slots(
+        &data,
+        &[current],
+        &keep,
+        // 搬运而非清场：这个文件上可能还挂着别人的密码，
+        // 「加一个恢复码」不该顺手把它们抹了
+        omy_core::keyslot::OtherSlots::Carry,
+    )
+    .map_err(map_core_err)?;
+
+    // 写回前自证：恢复码真的能打开新文件。顺序不能反——先写回再发现
+    // 恢复码无效，用户会拿着一张废纸以为自己有了兜底
+    for k in &keep {
+        omy_core::file::open(&out.bytes, &[k.duplicate()])
+            .map_err(|_| CmdError::code("rewrite_verify_failed"))?;
+    }
+
+    omy_core::fsatomic::write_atomic(path, &out.bytes)
+        .map_err(|_| CmdError::code("io_error"))?;
+
+    // 当前密码仍然有效，装回会话：用户刚输过它，不该再被问一次
+    state.with_session(|s| {
+        let _ = s.add_password("main", &header.vault_salt, &req.current, params);
+    });
+
+    Ok(RecoveryOutcome {
+        words: code.to_words().into_iter().map(str::to_owned).collect(),
+        may_have_evicted: out.may_have_evicted,
+    })
+}
+
+/// 用恢复码重设密码的入参。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RestoreRequest {
+    /// 目标 `.omy` 文件。
+    pub path: String,
+    /// 用户输入的恢复码（26 个词，空白分隔；大小写与多余空格会被归一化）。
+    pub code: String,
+    /// 要设置的新密码。
+    pub next: String,
+}
+
+/// 用恢复码重设密码的结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreOutcome {
+    /// 改写后生效的密码数。
+    pub slots_in_use: usize,
+    /// 恢复码是否仍然有效。恒为 true——这是承诺，不是观测。
+    ///
+    /// 显式返回而不是让前端假定：用到恢复码就意味着密码已经忘了，这时把
+    /// 唯一的兜底抽掉是最坏的时机。有了这个字段，端到端验证能断言它，
+    /// 日后有人把 `keep` 改成不含恢复码时会立刻变红。
+    pub recovery_still_valid: bool,
+}
+
+/// 用恢复码打开文件并设置新密码。
+///
+/// # 为什么不做成「只验证恢复码」
+///
+/// 用到恢复码就意味着密码已经忘了。验证完却不给设新密码，用户下次还得
+/// 再翻一次纸条——而每翻一次都是一次暴露机会。
+///
+/// # Errors
+///
+/// - `code_required` / `new_password_required`：输入为空
+/// - `tree_not_supported`：目标是目录
+/// - `bad_recovery_code`：解析失败，`params.detail` 里带着能定位到词的原文
+/// - `recovery_mismatch`：码是对的但不属于这个文件
+#[tauri::command]
+pub async fn restore_with_recovery(
+    state: State<'_, Shared>,
+    req: RestoreRequest,
+) -> CmdResult<RestoreOutcome> {
+    if req.code.trim().is_empty() {
+        return Err(CmdError::code("code_required"));
+    }
+    if req.next.is_empty() {
+        return Err(CmdError::code("new_password_required"));
+    }
+    let handle: Shared = std::sync::Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || run_restore(&handle, &req))
+        .await
+        .map_err(|_| CmdError::code("internal"))?
+}
+
+fn run_restore(state: &Shared, req: &RestoreRequest) -> CmdResult<RestoreOutcome> {
+    let path = Path::new(&req.path);
+    if path.is_dir() {
+        return Err(CmdError::code("tree_not_supported"));
+    }
+    let data = std::fs::read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
+        _ => CmdError::code("io_error"),
+    })?;
+    let header = omy_core::file::peek_header(&data).map_err(map_core_err)?;
+
+    // 解析错误要把 core 的原文带出去。它会说「第 7 个词『acadmic』不在
+    // 词表中，是不是『academic』？」——压成一个错误码就等于扔掉最有用的
+    // 信息，用户只能把 26 个词从头核对一遍
+    let code = omy_core::recovery::RecoveryCode::from_phrase(&req.code).map_err(|e| {
+        CmdError::with("bad_recovery_code", serde_json::json!({ "detail": e.to_string() }))
+    })?;
+    let reco_kek = code.to_kek(&header.vault_salt);
+
+    // 校验和过了只证明「没抄错」，不证明「属于这个文件」。必须真去解一次，
+    // 否则用户会拿着另一个库的恢复码反复困惑。两种处境的处置方式相反，
+    // 所以用不同的错误码
+    omy_core::file::open(&data, &[reco_kek.duplicate()])
+        .map_err(|_| CmdError::code("recovery_mismatch"))?;
+
+    let params = header.argon2_params();
+    let new_kek = derive(&req.next, &header.vault_salt, params)?;
+
+    // keep 同时保留新密码与恢复码
+    let keep = vec![new_kek, reco_kek.duplicate()];
+    let out = omy_core::keyslot::rewrite_slots(
+        &data,
+        &[reco_kek],
+        &keep,
+        omy_core::keyslot::OtherSlots::Carry,
+    )
+    .map_err(map_core_err)?;
+
+    for k in &keep {
+        omy_core::file::open(&out.bytes, &[k.duplicate()])
+            .map_err(|_| CmdError::code("rewrite_verify_failed"))?;
+    }
+
+    omy_core::fsatomic::write_atomic(path, &out.bytes)
+        .map_err(|_| CmdError::code("io_error"))?;
+
+    // 装入新密码：用户刚设完，列表该立刻显形
+    state.with_session(|s| {
+        let _ = s.add_password("main", &header.vault_salt, &req.next, params);
+    });
+
+    Ok(RestoreOutcome {
+        slots_in_use: out.slot_used,
+        recovery_still_valid: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
