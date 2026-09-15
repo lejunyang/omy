@@ -1,0 +1,40 @@
+[package]
+name = "omy-remote"
+description = "omy 远程位置：统一的 RemoteStore 抽象与 WebDAV 驱动。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+# 与 gui/cli 同为 GPL：它依赖 HTTP 栈且直接服务于应用，
+# 不像 omy-core 那样定位为可被任意集成的格式库。
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+omy-core = { path = "../omy-core" }
+omy-config = { path = "../omy-config" }
+
+# rustls 而非 native-tls：后者会拖进 OpenSSL，交叉编译到 Android 会失败。
+# 注意 0.13 把这个 feature 从 `rustls-tls` 改名为 `rustls`（旧名在 0.12 及以前），
+# 且需要 webpki-roots 提供根证书——不带的话所有 HTTPS 握手都失败。
+# 版本与 feature 名经 rsproxy sparse 索引核实，非凭记忆填写。
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "webpki-roots",
+    "stream",
+    "charset",
+    "http2",
+] }
+# WebDAV 动词（PROPFIND / MKCOL / MOVE）。与 reqwest 同源，不额外拖一套 HTTP 栈。
+reqwest_dav = "0.3"
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+# 缓存键用 blake2，与 core 同源
+blake2 = { workspace = true }
+# 百分号编码：WebDAV 路径里的中文与空格必须编码，否则部分服务端 400
+percent-encoding = "2.3"
+
+[dev-dependencies]
+serde_json = { workspace = true }
