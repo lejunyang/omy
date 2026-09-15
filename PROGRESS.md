@@ -3,19 +3,40 @@
 > 本文件是**跨会话的权威状态来源**。每完成一个可验证的阶段就更新，
 > 并随代码一起提交，以便任何时候都能接续。
 >
-> 最后更新：2026-09-15
+> 最后更新：2026-09-16
 
 ## 状态速览
 
 | crate | 状态 | 测试 | 说明 |
 |---|---|---|---|
-| `omy-core` | 🟢 格式核心可用 | 134 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV、符号链接 |
-| `omy-cli` | 🟢 13 个命令可用 | 59 项 + 88 项端到端 + 19 项局域网实测 | 新增 `share` 命令组（serve / discover / pair / connect / devices）|
-| `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 111 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
-| `omy-net` | 🟢 全链路可用 | 114 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
-| `omy-gui` | 🟢 桌面端可用，Android 已在模拟器实测 | 143 项 + 43 项端到端 + 25 项响应式实测 | Tauri v2；Vue 3 + Vite；**文件管理器式交互**，无密码也能进门；**设备发现/配对/共享已接入**；Android 全盘文件访问已跑通 |
+| `omy-core` | 🟢 格式核心可用 | 154 项 | 格式读写、密钥、分块、分片、原子写、扫描、容器、BlockSource、媒体 TLV、符号链接 |
+| `omy-config` | 🟢 可用 | 13 项 | **CLI 与 GUI 共用**的配置读写；便携优先、写回保留未知键、原子写盘 |
+| `omy-remote` | 🟢 WebDAV 可用 | 28 项 | `RemoteStore` 抽象、能力位图、WebDAV 驱动、密文块缓存、`BlockSource` 桥接 |
+| `omy-cli` | 🟢 13 个命令可用 | 65 项 + 88 项端到端 + 19 项局域网实测 | 配置层已切到 `omy-config` |
+| `omy-media` | 🟢 探测/分级/moov/缩略图/**P2 转封装**可用 | 117 项 + 105 项真实文件验证 | LGPL，FFmpeg 封装 |
+| `omy-net` | 🟢 全链路可用 | 151 项 + 55 项端到端 | 编解码、配对、mDNS、Noise IK、零密钥服务端、加密持久化、授权会话、服务端主循环 |
+| `omy-gui` | 🟢 桌面端可用，Android 已在模拟器实测 | 162 项 + 43 项端到端 + 23 项设置与远程实测 | Tauri v2；Vue 3 + Vite；**设置页**、**远程位置（WebDAV）**、**自动锁定**已接入 |
 
-合计 **690 项自动化测试**（core 134 + 集成 106、cli 69、gui 143、media 121、net 117）**+ 88 项 CLI 端到端断言 + 43 项 GUI 端到端断言 + 46 项媒体 TLV 端到端断言 + 63 项 omy-media 真实文件断言 + 42 项 P2 转封装断言 + 16 项 Spike 断言 + 74 项局域网 Spike/验证断言 + 26 项 GUI 文件管理器实测断言 + 35 项 GUI 设备与共享实测断言 + 33 项双机远端浏览实测断言 + 21 项 KDF 档位实测断言 + 26 项预览与提示实测断言 + 28 项文件夹加密实测断言**，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+`cargo test --workspace` 全绿，`cargo clippy --workspace --all-targets -- -D warnings` 零告警。
+
+### 本轮新增（远程位置与设置，2026-09-16）
+
+设计文档见 [14-remote-locations-cloud.md](docs/research/14-remote-locations-cloud.md)，
+界面原型见 [appendix/remote-locations-prototype.html](docs/research/appendix/remote-locations-prototype.html)。
+
+| 能力 | 状态 | 验证方式 |
+|---|---|---|
+| 共享配置模块（`omy-config`） | ✅ | 13 项单测 + 变异测试（取消未知键保留 → 被抓到）|
+| 配置便携优先（exe 旁 `omy-data/`） | ✅ | 端到端实测确认路径，只读位置回退靠真实写入判定 |
+| WebDAV 驱动（列目录/Range 读/写/删/改名） | ✅ | 28 项单测；只读配置在**发请求前**拒绝写 |
+| 密文块缓存（LRU + 上限） | ✅ | 含「扫描缓存目录确认无明文」与「LRU 不自噬」两条硬断言 |
+| 远程位置 GUI（侧栏、添加、浏览、识别） | ✅ | 23 项端到端断言 |
+| 设置页（PC 弹窗 / 移动端列表 + 二级页） | ✅ | 端到端：改值 → 关闭 → 由后端重新读回确认落盘 |
+| 自动锁定（闲置 + 切后台） | ✅ | 播放中不算闲置；切后台立即锁 |
+
+**尚未实现**（见下方「还没做」）：远程文件的预览与播放、加密上传到远程、
+远程缓存的清理入口、私有云盘驱动。
+
 
 ### Spike 结论
 
