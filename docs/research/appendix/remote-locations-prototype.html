@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>omy 远程位置 · 界面原型</title>
+<style>
+/* 色值取自 crates/omy-gui/frontend/src/styles/app.css，不自行发挥 */
+:root{
+  color-scheme:dark;
+  --bg:#0d1117; --bg2:#161b22; --bg3:#1c2128; --border:#30363d;
+  --fg:#e6edf3; --fg2:#8b949e; --accent:#4493f8;
+  --ok:#3fb950; --warn:#d29922; --danger:#f85149;
+  --r-s:4px; --r-m:8px; --r-l:12px; --sp:4px;
+}
+:root[data-theme='light']{
+  color-scheme:light;
+  --bg:#ffffff; --bg2:#f7f8fa; --bg3:#eef0f3; --border:#e5e7eb;
+  --fg:#1f2328; --fg2:#656d76; --accent:#2563eb;
+  --ok:#16a34a; --warn:#d97706; --danger:#dc2626;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:14px/1.45 'Segoe UI Variable','Microsoft YaHei UI',-apple-system,'PingFang SC','Inter','Noto Sans CJK SC',sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0}
+code{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:.92em}
+
+/* ---------- 原型外壳（非产品 UI，仅用于承载展示） ---------- */
+.page{max-width:1280px;margin:0 auto;padding:24px 20px 80px}
+.phead{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;
+  padding-bottom:16px;border-bottom:2px solid var(--accent);margin-bottom:8px}
+.ptitle{font-size:20px;font-weight:700}
+.psub{color:var(--fg2);font-size:12px;margin-top:4px}
+.ctrls{display:flex;gap:8px;flex-wrap:wrap}
+.tbtn{background:var(--bg2);color:var(--fg);border:1px solid var(--border);
+  border-radius:var(--r-s);padding:7px 13px;cursor:pointer;font-size:13px;min-height:36px}
+.tbtn:hover{border-color:var(--accent)}
+.tbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.sec{margin-top:36px}
+.sech{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.secn{font-size:16px;font-weight:700}
+.secd{color:var(--fg2);font-size:12.5px}
+.note{border-inline-start:3px solid var(--warn);background:var(--bg2);
+  border-radius:0 var(--r-s) var(--r-s) 0;padding:9px 13px;margin:12px 0;font-size:12.5px;color:var(--fg2)}
+.note b{color:var(--fg)}
+.frame{border:1px solid var(--border);border-radius:var(--r-m);overflow:hidden;background:var(--bg);margin-top:12px}
+.flabel{background:var(--bg3);border-bottom:1px solid var(--border);padding:5px 12px;
+  font-size:11.5px;color:var(--fg2);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+
+/* ---------- 产品 UI：桌面骨架 ---------- */
+.app{display:grid;grid-template-columns:200px 1fr;height:520px;background:var(--bg)}
+.side{background:var(--bg2);border-inline-end:1px solid var(--border);padding:8px 6px;overflow:auto}
+.sgrp{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;padding:10px 8px 4px;font-weight:600}
+.sitem{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;color:var(--fg);
+  padding:7px 8px;border-radius:var(--r-s);cursor:pointer;text-align:start;font-size:13px;min-height:34px}
+.sitem:hover{background:var(--bg3)}
+.sitem.sel{background:var(--accent);color:#fff}
+.stext{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 只读徽标：必须在侧栏就可见——「加密到哪」这个决定发生在点击之前 */
+.ro{font-size:9.5px;border:1px solid var(--warn);color:var(--warn);border-radius:3px;
+  padding:1px 4px;flex:none;letter-spacing:.3px}
+.sitem.sel .ro{border-color:#fff;color:#fff}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.dot.on{background:var(--ok)}
+.dot.off{background:var(--fg2)}
+.dot.err{background:var(--danger)}
+.badge{background:var(--bg3);color:var(--fg2);border-radius:9px;padding:1px 6px;font-size:10.5px}
+
+.main{display:flex;flex-direction:column;min-width:0}
+.crumb{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);
+  background:var(--bg2);flex-wrap:wrap}
+.cbtn{background:none;border:1px solid transparent;color:var(--fg2);cursor:pointer;
+  border-radius:var(--r-s);width:28px;height:28px;font-size:14px}
+.cbtn:hover{background:var(--bg3);color:var(--fg)}
+.cpath{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden;font-size:13px}
+.cseg{background:none;border:0;color:var(--fg2);cursor:pointer;padding:3px 5px;border-radius:var(--r-s);white-space:nowrap}
+.cseg:hover{background:var(--bg3);color:var(--fg)}
+.cseg.cur{color:var(--fg);font-weight:600}
+.sep{color:var(--fg2);font-size:11px}
+.ctag{font-size:11px;padding:2px 7px;border-radius:10px;background:var(--bg3);color:var(--fg2);
+  display:inline-flex;align-items:center;gap:4px;flex:none}
+.ctag.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.ctag.net{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
+/* display:inline-flex/flex 会覆盖 [hidden] 的默认 display:none，
+   于是 el.hidden=true 完全不起作用——元素照常显示。
+   这个坑在产品代码里同样存在（Vue 的 v-show 也是改 display），
+   所以统一用一条高优先级规则兜住。 */
+[hidden]{display:none !important}
+
+.content{flex:1;overflow:auto;padding:12px;background:var(--bg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:10px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
+  padding:9px;cursor:pointer;position:relative;overflow:hidden}
+.card:hover{border-color:var(--accent)}
+.thumb{height:72px;border-radius:var(--r-s);background:var(--bg3);display:flex;
+  align-items:center;justify-content:center;font-size:26px;margin-bottom:7px;position:relative}
+.cname{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmeta{font-size:10.5px;color:var(--fg2);margin-top:2px}
+/* 三种状态必须视觉可分：已解锁 / 密码打不开 / 没探测成功。
+   第三种混进第二种，用户会反复试密码，而真正的问题是网络 */
+.card.locked .thumb{color:var(--fg2)}
+.card.failed{border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.card.failed .thumb{color:var(--danger)}
+.card.probing .thumb{color:var(--fg2)}
+.card.probing .cname{color:var(--fg2)}
+/* 边扫边出：未探测项用脉动条表示「正在识别」，而不是整页转圈 */
+.skel{height:9px;border-radius:3px;background:linear-gradient(90deg,var(--bg3) 25%,var(--border) 50%,var(--bg3) 75%);
+  background-size:200% 100%;animation:sk 1.4s linear infinite}
+@keyframes sk{to{background-position:-200% 0}}
+.retry{position:absolute;inset-block-end:4px;inset-inline-end:4px;font-size:9.5px;
+  background:var(--danger);color:#fff;border:0;border-radius:3px;padding:2px 6px;cursor:pointer}
+.cachebadge{position:absolute;inset-block-start:4px;inset-inline-end:4px;font-size:9px;
+  background:color-mix(in srgb,var(--ok) 22%,transparent);color:var(--ok);border-radius:3px;padding:1px 4px}
+
+.statusbar{display:flex;gap:14px;align-items:center;padding:6px 12px;border-top:1px solid var(--border);
+  background:var(--bg2);font-size:11.5px;color:var(--fg2);flex-wrap:wrap}
+.spacer{flex:1}
+.rotag{color:var(--warn)}
+
+/* ---------- 右键菜单 ---------- */
+.menu{width:262px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
+  padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.mi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-s);
+  font-size:13px;cursor:pointer;position:relative;min-height:34px}
+.mi:hover:not(.dis){background:var(--bg3)}
+.mi.dis{opacity:.4;cursor:not-allowed}
+.mi .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2);max-width:126px;text-align:end;line-height:1.25}
+.msep{height:1px;background:var(--border);margin:4px 2px}
+.gone{text-decoration:line-through;opacity:.32}
+
+/* ---------- 设置面板 ---------- */
+.panel{padding:16px;background:var(--bg)}
+.prow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.prow:last-child{border-bottom:0}
+.plabel{width:150px;flex:none;font-size:13px}
+.pval{flex:1;min-width:190px;color:var(--fg2);font-size:12.5px;word-break:break-all}
+.bar{height:8px;border-radius:4px;background:var(--bg3);overflow:hidden;margin-top:7px;max-width:400px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.bar.high>i{background:var(--warn)}
+select,input[type=text]{background:var(--bg3);color:var(--fg);border:1px solid var(--border);
+  border-radius:var(--r-s);padding:6px 9px;font-size:13px;min-height:34px}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;min-height:34px}
+.btn{background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:var(--r-s);
+  padding:6px 13px;cursor:pointer;font-size:13px;min-height:34px}
+.btn:hover{border-color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.dgr{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.hint{display:flex;gap:8px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-s);
+  padding:10px 12px;font-size:12px;color:var(--fg2);margin-top:14px;line-height:1.5}
+.hint b{color:var(--fg)}
+
+/* ---------- 加密目标对话框 ---------- */
+.dlg{width:100%;max-width:440px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r-l);padding:18px}
+.dh{font-size:15px;font-weight:600;margin-bottom:14px}
+.opt{display:flex;gap:10px;padding:11px;border:1px solid var(--border);border-radius:var(--r-m);
+  margin-bottom:9px;cursor:pointer;align-items:flex-start}
+.opt.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.opt.dis{opacity:.45;cursor:not-allowed}
+.ot{font-size:13px}
+.od{font-size:11.5px;color:var(--fg2);margin-top:3px;line-height:1.45}
+.sub{margin-inline-start:26px;margin-top:8px;padding:9px;background:var(--bg3);
+  border-radius:var(--r-s);font-size:12px}
+.warnline{color:var(--warn);font-size:11.5px;margin-top:6px;display:flex;gap:6px}
+.dact{display:flex;justify-content:flex-end;gap:9px;margin-top:16px}
+
+/* ---------- 移动端画框 ---------- */
+.phones{display:flex;gap:22px;flex-wrap:wrap}
+.phone{width:310px;flex:none}
+.pcap{font-size:11.5px;color:var(--fg2);margin-bottom:6px;text-align:center}
+.screen{width:310px;height:590px;border:1px solid var(--border);border-radius:22px;
+  overflow:hidden;background:var(--bg);display:flex;flex-direction:column;position:relative}
+.mtop{display:flex;align-items:center;gap:8px;padding:12px 12px 9px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.mtitle{flex:1;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mico{width:34px;height:34px;border-radius:var(--r-s);border:0;background:none;color:var(--fg);
+  font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.mpath{display:flex;align-items:center;gap:5px;padding:7px 12px;background:var(--bg2);
+  border-bottom:1px solid var(--border);font-size:11.5px;color:var(--fg2);overflow:auto;white-space:nowrap}
+.mbody{flex:1;overflow:auto;padding:10px}
+.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+/* 移动端底栏：必须给安全区，否则手势导航条盖住按钮 */
+.mbar{display:flex;border-top:1px solid var(--border);background:var(--bg2);
+  padding-bottom:env(safe-area-inset-bottom,0px)}
+.mtab{flex:1;background:none;border:0;color:var(--fg2);padding:8px 2px 9px;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;min-height:48px}
+.mtab.on{color:var(--accent)}
+.mtab i{font-style:normal;font-size:17px}
+/* 移动端不用右键菜单，用底部动作面板 */
+.sheet{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end}
+.sheetc{width:100%;background:var(--bg2);border-radius:var(--r-l) var(--r-l) 0 0;
+  padding:8px 8px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--border)}
+.grab{width:34px;height:4px;border-radius:2px;background:var(--border);margin:5px auto 10px}
+.sheeth{font-size:12px;color:var(--fg2);padding:0 10px 8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+/* 触控目标不小于 44px */
+.si{display:flex;align-items:center;gap:11px;padding:12px 11px;border-radius:var(--r-s);
+  font-size:14px;min-height:46px;cursor:pointer}
+.si.dis{opacity:.4}
+.si .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2)}
+.drawer{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex}
+.drawerc{width:230px;background:var(--bg2);border-inline-end:1px solid var(--border);padding:8px 6px;overflow:auto}
+.mlist{display:flex;flex-direction:column;gap:2px}
+.lrow{display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:var(--r-s);min-height:46px}
+.lrow:active{background:var(--bg3)}
+.lic{width:30px;text-align:center;font-size:17px;flex:none}
+.lmid{flex:1;min-width:0}
+.lnm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lsz{font-size:10.5px;color:var(--fg2);margin-top:1px}
+
+/* 进度条（传输中） */
+.tprog{padding:8px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11.5px}
+.tline{display:flex;justify-content:space-between;color:var(--fg2);margin-bottom:5px;gap:8px}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--fg2)}
+.lg{display:flex;align-items:center;gap:6px}
+.sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--border);flex:none}
+
+table.mx{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:12px}
+table.mx th,table.mx td{border:1px solid var(--border);padding:7px 9px;text-align:start}
+table.mx th{background:var(--bg2);font-weight:600}
+.yes{color:var(--ok)}.no{color:var(--danger)}.mid{color:var(--warn)}
+
+@media (max-width:860px){
+  .app{grid-template-columns:1fr}
+  .side{display:none}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="phead">
+    <div>
+      <div class="ptitle">omy 远程位置 · 界面原型</div>
+      <div class="psub">配套 <code>docs/research/14-remote-locations-cloud.md</code> · 桌面端与移动端 · 色值取自 app.css</div>
+    </div>
+    <div class="ctrls">
+      <button class="tbtn on" id="thm">🌙 深色</button>
+      <button class="tbtn on" id="cap">当前：可写位置</button>
+    </div>
+  </div>
+  <div class="note">
+    <b>怎么看这份原型：</b>点右上角「当前：可写位置」可在<b>可写 / 只读</b>之间切换，
+    页面里所有受能力位图影响的地方会同步变化——这正是设计要点：
+    <b>能力由后端一处声明，界面各处只是它的投影</b>，而不是十几处各自判断。
+  </div>
+
+  <!-- ============ 1. 桌面主界面 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">1 · 桌面：主界面</div>
+      <div class="secd">侧栏新增「远程位置」分组；主区复用 MainScreen，不新建组件</div>
+    </div>
+
+    <div class="frame">
+      <div class="flabel"><span>桌面 · 1280×520</span><span id="lab1">远程位置 / 可写</span></div>
+      <div class="app">
+        <aside class="side">
+          <div class="sgrp">位置</div>
+          <button class="sitem"><span>🏠</span><span class="stext">主目录</span></button>
+          <button class="sitem"><span>⬇️</span><span class="stext">下载</span></button>
+          <button class="sitem"><span>💾</span><span class="stext">C:\</span></button>
+          <button class="sitem"><span>➕</span><span class="stext">添加文件夹</span></button>
+
+          <div class="sgrp">远程位置</div>
+          <button class="sitem sel" id="sv1">
+            <span class="dot on"></span><span class="stext" id="sv1t">家里 NAS</span>
+            <span class="ro" id="sv1r" hidden>只读</span>
+          </button>
+          <button class="sitem">
+            <span class="dot on"></span><span class="stext">Nextcloud</span><span class="ro">只读</span>
+          </button>
+          <button class="sitem" title="令牌已过期，需要重新登录">
+            <span class="dot err"></span><span class="stext">坚果云</span><span>⚠️</span>
+          </button>
+          <button class="sitem"><span>➕</span><span class="stext">连接远程位置</span></button>
+
+          <div class="sgrp">设备</div>
+          <button class="sitem"><span>📡</span><span class="stext">管理设备</span><span class="badge">2</span></button>
+        </aside>
+
+        <div class="main">
+          <div class="crumb">
+            <button class="cbtn">←</button><button class="cbtn">→</button><button class="cbtn">⟳</button>
+            <nav class="cpath">
+              <span class="ctag net">☁️ <span id="cpn">家里 NAS</span></span>
+              <button class="cseg">/</button><span class="sep">›</span>
+              <button class="cseg">影视</button><span class="sep">›</span>
+              <button class="cseg cur">2026</button>
+            </nav>
+            <span class="ctag warn" id="rotag" hidden>只读</span>
+            <span class="ctag">🗄️ 缓存 1.2 / 2 GB</span>
+            <button class="btn" id="encbtn">🔒 加密</button>
+          </div>
+
+          <div class="content">
+            <div class="grid">
+              <div class="card">
+                <div class="thumb">🎬<span class="cachebadge">已缓存</span></div>
+                <div class="cname">沙丘 2.mkv</div><div class="cmeta">14.2 GB</div>
+              </div>
+              <div class="card">
+                <div class="thumb">🖼️</div>
+                <div class="cname">旅行照片.zip</div><div class="cmeta">820 MB</div>
+              </div>
+              <div class="card locked">
+                <div class="thumb">🔒</div>
+                <div class="cname">加密文件</div><div class="cmeta">不属于当前密码</div>
+              </div>
+              <div class="card probing">
+                <div class="thumb">⏳</div>
+                <div class="cname"><span class="skel" style="display:block;width:82%"></span></div>
+                <div class="cmeta">识别中…</div>
+              </div>
+              <div class="card failed">
+                <div class="thumb">⚠️<button class="retry">重试</button></div>
+                <div class="cname">未能读取</div><div class="cmeta">网络错误</div>
+              </div>
+              <div class="card">
+                <div class="thumb">📁</div>
+                <div class="cname">纪录片</div><div class="cmeta">目录</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="statusbar">
+            <span>☁️ 已连接 · <span id="sbn">家里 NAS</span></span>
+            <span>6 个项目</span><span>🔓 2</span><span>🔒 1</span>
+            <span class="spacer"></span>
+            <span class="rotag" id="sbro" hidden>只读位置</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="lg"><span class="sw" style="background:var(--bg2)"></span>已解锁 — 显示真名与缩略图</span>
+      <span class="lg"><span class="sw" style="background:var(--bg2);color:var(--fg2)">🔒</span>不属于当前密码</span>
+      <span class="lg"><span class="sw" style="border-color:var(--danger)"></span>未能读取（网络）— 可重试</span>
+      <span class="lg"><span class="sw" style="background:var(--bg3)"></span>识别中 — 边扫边出</span>
+    </div>
+    <div class="note">
+      <b>为什么「识别中」要单独成一态：</b>扫 100 个文件要几秒，但第一个 200 ms 就出来了。
+      整页转圈会让用户盯着空列表白等。<br>
+      <b>为什么「未能读取」不能混进「锁定」：</b>混在一起，用户会以为自己记错密码而反复尝试，
+      真正的问题却是网络——这是最糟的误导。
+    </div>
+  </div>
+
+  <!-- ============ 2. 右键菜单 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">2 · 桌面：右键菜单随能力变化</div>
+      <div class="secd">写类操作在只读位置<b>整项消失</b>，不是置灰</div>
+    </div>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;margin-top:12px">
+      <div>
+        <div class="pcap">可写位置</div>
+        <div class="menu">
+          <div class="mi"><span>👁️</span><span>预览</span></div>
+          <div class="msep"></div>
+          <div class="mi"><span>🔒</span><span>加密</span></div>
+          <div class="mi"><span>📤</span><span>还原到…</span></div>
+          <div class="mi"><span>🔑</span><span>密码管理</span></div>
+          <div class="mi"><span>🔐</span><span>生成恢复码</span></div>
+          <div class="msep"></div>
+          <div class="mi"><span>✏️</span><span>重命名</span></div>
+          <div class="mi"><span>🗑️</span><span>删除</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="pcap">只读位置（实际渲染结果）</div>
+        <div class="menu">
+          <div class="mi"><span>👁️</span><span>预览</span></div>
+          <div class="msep"></div>
+          <div class="mi"><span>📥</span><span>解密到本地…</span></div>
+          <div class="mi"><span>🗄️</span><span>从缓存中移除</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="pcap">只读位置（被过滤掉的项，仅原型示意）</div>
+        <div class="menu">
+          <div class="mi gone"><span>🔒</span><span>加密</span></div>
+          <div class="mi gone"><span>🔑</span><span>密码管理</span></div>
+          <div class="mi gone"><span>✏️</span><span>重命名</span></div>
+          <div class="mi gone"><span>🗑️</span><span>删除</span></div>
+          <div class="msep"></div>
+          <div class="mi dis"><span>🔑</span><span>密码管理</span>
+            <span class="mh">云端不支持原地改写，请先解密到本地</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>「消失」与「置灰」的分界（沿用 RemoteScreen.vue 已定的规矩）：</b><br>
+      · <b>整个位置永远做不到</b> → 整项不出现。放个灰按钮反而让人反复去点。<br>
+      · <b>当前状态做不到、换个状态就行</b> → 置灰 + hint 告诉用户下一步。<br>
+      上面最后一项是可写云盘上的「密码管理」：位置能写，但<code>random_write=false</code>，
+      所以置灰并说明原因，而不是消失。
+    </div>
+  </div>
+
+  <!-- ============ 3. 加密目标 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">3 · 桌面：加密到哪里</div>
+      <div class="secd">可写远程位置存在时，「加密」多一个目标选择</div>
+    </div>
+    <div class="frame"><div class="flabel"><span>对话框</span><span>加密 3 个文件</span></div>
+      <div class="panel" style="display:flex;justify-content:center">
+        <div class="dlg">
+          <div class="dh">加密 3 个文件</div>
+          <div class="opt"><span>○</span><div><div class="ot">加密后留在本地</div>
+            <div class="od">生成 <code>.omy</code> 放在原文件旁边</div></div></div>
+          <div class="opt sel"><span>●</span><div style="flex:1"><div class="ot">加密后上传到 ☁️ 家里 NAS › 影视</div>
+            <div class="od">先在本地加密，再上传密文。明文不会离开本机。</div>
+            <div class="sub">
+              <label class="chk"><input type="checkbox" /> 上传成功后删除本地原文件</label>
+              <div class="warnline"><span>⚠️</span><span>会先校验远端文件完整（比对大小 + 复读文件头）再删除。校验不通过则保留本地文件。</span></div>
+            </div>
+          </div></div>
+          <div class="opt dis"><span>○</span><div><div class="ot">加密后上传到 ☁️ Nextcloud</div>
+            <div class="od">该位置为只读，无法写入</div></div></div>
+          <div class="dact"><button class="btn">取消</button><button class="btn pri">加密</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      「上传后删除本地原文件」<b>默认不勾</b>，且必须先校验远端完整再删。
+      这是数据丢失的高危路径——没确认成功就不要删。
+    </div>
+  </div>
+
+  <!-- ============ 4. 缓存设置 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">4 · 设置 › 远程位置 › 缓存</div>
+      <div class="secd">只缓存密文；上限可设，默认 2 GiB，LRU 淘汰</div>
+    </div>
+    <div class="frame"><div class="flabel"><span>设置面板</span><span>桌面与移动端共用同一组件</span></div>
+      <div class="panel">
+        <div class="prow"><div class="plabel">缓存位置</div>
+          <div class="pval"><code>C:\Users\you\AppData\Local\omy\cache</code></div>
+          <button class="btn">更改…</button><button class="btn">打开</button></div>
+        <div class="prow"><div class="plabel">已用空间</div>
+          <div class="pval">1.2 GB / 2.0 GB（头部缓存 8 MB，不计入上限）
+            <div class="bar"><i style="width:60%"></i></div></div></div>
+        <div class="prow"><div class="plabel">最大缓存</div>
+          <div class="pval"><select>
+            <option>512 MB</option><option>1 GB</option><option selected>2 GB（默认）</option>
+            <option>5 GB</option><option>10 GB</option><option>自定义…</option><option>不限制</option>
+          </select></div></div>
+        <div class="prow"><div class="plabel">退出时清空</div>
+          <div class="pval"><label class="chk"><input type="checkbox" /> 关闭应用时清空缓存</label></div></div>
+        <div class="prow"><div class="plabel">立即清理</div>
+          <div class="pval">当前可释放 1.2 GB</div>
+          <button class="btn dgr">清空缓存</button></div>
+        <div class="hint"><span>ⓘ</span><div>
+          缓存中<b>只存放加密后的密文</b>，内容与云端文件完全相同；
+          <b>解密后的内容不会写入磁盘</b>。即使缓存目录被他人取得，也无法从中读出你的文件内容。
+        </div></div>
+      </div>
+    </div>
+    <div class="note">
+      <b>那行说明文字不能省。</b>用户看到「缓存」的第一反应是「我的文件被明文存下来了？」——
+      这恰恰是本项目最需要当场澄清的疑虑。<br>
+      <b>头部缓存单独计量且不淘汰：</b>每个文件几 KB，却决定列表能否显示真名和缩略图；
+      淘汰它会让用户每次回到目录都重扫一遍。
+    </div>
+  </div>
+
+  <!-- ============ 5. 移动端 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">5 · 移动端</div>
+      <div class="secd">与桌面共用组件，只换外壳；触控目标 ≥44px，底栏留安全区</div>
+    </div>
+    <div class="phones">
+
+      <div class="phone">
+        <div class="pcap">① 远程位置浏览（可写）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">☰</button>
+            <span class="mtitle">☁️ 家里 NAS</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="mpath">/ › 影视 › <b style="color:var(--fg)">2026</b></div>
+          <div class="mbody">
+            <div class="mgrid">
+              <div class="card"><div class="thumb">🎬<span class="cachebadge">缓</span></div>
+                <div class="cname">沙丘 2</div><div class="cmeta">14.2 GB</div></div>
+              <div class="card locked"><div class="thumb">🔒</div>
+                <div class="cname">加密文件</div><div class="cmeta">非当前密码</div></div>
+              <div class="card probing"><div class="thumb">⏳</div>
+                <div class="cname"><span class="skel" style="display:block;width:80%"></span></div>
+                <div class="cmeta">识别中…</div></div>
+              <div class="card failed"><div class="thumb">⚠️</div>
+                <div class="cname">未能读取</div><div class="cmeta">点击重试</div></div>
+              <div class="card"><div class="thumb">📁</div>
+                <div class="cname">纪录片</div><div class="cmeta">目录</div></div>
+              <div class="card"><div class="thumb">🖼️</div>
+                <div class="cname">照片.zip</div><div class="cmeta">820 MB</div></div>
+            </div>
+          </div>
+          <div class="tprog">
+            <div class="tline"><span>⬆️ 上传 家庭录像.omy</span><span>62% · 2.1 MB/s</span></div>
+            <div class="bar" style="max-width:none"><i style="width:62%"></i></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab on"><i>📁</i>文件</button>
+            <button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button>
+            <button class="mtab"><i>⚙️</i>设置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="phone">
+        <div class="pcap">② 长按 → 动作面板（只读位置）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">☰</button>
+            <span class="mtitle">☁️ Nextcloud</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="mpath">/ › Documents <span class="ro" style="margin-inline-start:6px">只读</span></div>
+          <div class="mbody">
+            <div class="mlist">
+              <div class="lrow"><span class="lic">🎬</span><div class="lmid">
+                <div class="lnm">会议录像.mp4</div><div class="lsz">1.4 GB · 已解锁</div></div></div>
+              <div class="lrow"><span class="lic">📝</span><div class="lmid">
+                <div class="lnm">笔记.md</div><div class="lsz">12 KB · 已解锁</div></div></div>
+              <div class="lrow"><span class="lic">🔒</span><div class="lmid">
+                <div class="lnm" style="color:var(--fg2)">加密文件</div>
+                <div class="lsz">不属于当前密码</div></div></div>
+            </div>
+          </div>
+          <div class="sheet">
+            <div class="sheetc">
+              <div class="grab"></div>
+              <div class="sheeth">🎬 会议录像.mp4 <span class="ro">位置只读</span></div>
+              <div class="si"><span>👁️</span><span>预览</span></div>
+              <div class="si"><span>📥</span><span>解密到本地…</span></div>
+              <div class="si"><span>🗄️</span><span>从缓存中移除</span></div>
+              <div class="si dis"><span>🗑️</span><span>删除</span><span class="mh">位置只读</span></div>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button>
+            <button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button>
+            <button class="mtab"><i>⚙️</i>设置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="phone">
+        <div class="pcap">③ 抽屉：位置切换</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">☰</button><span class="mtitle">☁️ 家里 NAS</span></div>
+          <div class="mbody"></div>
+          <div class="drawer">
+            <div class="drawerc">
+              <div class="sgrp">位置</div>
+              <button class="sitem"><span>📱</span><span class="stext">内部存储</span></button>
+              <button class="sitem"><span>📷</span><span class="stext">相机</span></button>
+              <div class="sgrp">远程位置</div>
+              <button class="sitem sel"><span class="dot on"></span><span class="stext">家里 NAS</span></button>
+              <button class="sitem"><span class="dot on"></span><span class="stext">Nextcloud</span><span class="ro">只读</span></button>
+              <button class="sitem"><span class="dot err"></span><span class="stext">坚果云</span><span>⚠️</span></button>
+              <button class="sitem"><span>➕</span><span class="stext">连接远程位置</span></button>
+              <div class="sgrp">设备</div>
+              <button class="sitem"><span>📡</span><span class="stext">管理设备</span><span class="badge">2</span></button>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab on"><i>📁</i>文件</button><button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="phone">
+        <div class="pcap">④ 移动端缓存设置</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">缓存</span></div>
+          <div class="mbody">
+            <div style="font-size:12px;color:var(--fg2);margin-bottom:5px">已用 1.2 GB / 2.0 GB</div>
+            <div class="bar" style="max-width:none"><i style="width:60%"></i></div>
+            <div style="margin-top:16px">
+              <div style="font-size:13px;margin-bottom:6px">最大缓存</div>
+              <select style="width:100%"><option>512 MB</option><option selected>2 GB（默认）</option>
+                <option>5 GB</option><option>不限制</option></select>
+            </div>
+            <div style="margin-top:14px">
+              <div style="font-size:13px;margin-bottom:6px">缓存位置</div>
+              <div style="font-size:11.5px;color:var(--fg2);word-break:break-all">
+                /storage/emulated/0/Android/data/org.omy.app/cache</div>
+              <button class="btn" style="margin-top:8px;width:100%">更改位置…</button>
+            </div>
+            <label class="chk" style="margin-top:14px"><input type="checkbox" /> 仅在 Wi-Fi 下缓存</label>
+            <label class="chk"><input type="checkbox" /> 退出时清空缓存</label>
+            <button class="btn dgr" style="margin-top:14px;width:100%">清空缓存（释放 1.2 GB）</button>
+            <div class="hint"><span>ⓘ</span><div>缓存只存<b>密文</b>，与云端文件相同；解密内容不写入磁盘。</div></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab on"><i>⚙️</i>设置</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="note">
+      <b>移动端三条硬性要求（来自 AGENTS.md 的既有教训）：</b><br>
+      · 打开条目必须读 <code>isMobile</code> 走<b>单击</b>分支——触屏没有 dblclick，
+        只改 CSS 会得到「界面正常但点什么都打不开」，截图和 CSS 审查都发现不了。<br>
+      · 底栏加 <code>env(safe-area-inset-bottom)</code>，否则手势导航条盖住按钮。<br>
+      · 长按要 <code>user-select:none</code> 抑制系统文字选择与放大镜。<br>
+      <b>多一个移动端专属开关：「仅在 Wi-Fi 下缓存」</b>——蜂窝网络下悄悄缓存几 GB 是真实的钱。
+    </div>
+  </div>
+
+  <!-- ============ 6. 能力矩阵 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">6 · 能力位图 → 界面的映射</div>
+      <div class="secd">后端一处声明，前端按位图投影；后端命令层再独立校验一次</div>
+    </div>
+    <table class="mx">
+      <thead><tr><th>操作</th><th>本地</th><th>WebDAV 可写</th><th>WebDAV 只读</th><th>只读时界面表现</th></tr></thead>
+      <tbody>
+        <tr><td>浏览 / 识别 omy</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><td>预览 / 流式播放</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><td>解密到本地</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td><b>保留</b>，这是只读位置的主要用途</td></tr>
+        <tr><td>加密（就地）</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td>菜单项<b>不出现</b></td></tr>
+        <tr><td>上传密文</td><td>—</td><td class="yes">✓</td><td class="no">✗</td><td>工具栏按钮不出现</td></tr>
+        <tr><td>删除 / 改名 / 新建目录</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td>菜单项<b>不出现</b></td></tr>
+        <tr><td>改密码 / 加恢复码</td><td class="yes">✓</td><td class="mid">△ 需整文件重传</td><td class="no">✗</td><td>置灰 + hint（<code>random_write=false</code>）</td></tr>
+        <tr><td>还原（覆盖原处）</td><td class="yes">✓</td><td class="mid">△ 删+写</td><td class="no">✗</td><td>降级为「还原到本地」</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <b>前端过滤只是体验，不是安全边界。</b>后端命令层必须在入口独立校验，
+      否则通过 devtools 直接 invoke 就绕过去了。两处要在各自注释里互相标明
+      「新增写类操作时两边都要改」（AGENTS.md 的要求）。
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  // 主题切换：与产品一致用 data-theme，不另造一套
+  var thm = document.getElementById('thm');
+  thm && thm.addEventListener('click', function () {
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', d ? 'light' : 'dark');
+    thm.textContent = d ? '☀️ 浅色' : '🌙 深色';
+  });
+
+  // 能力切换：一处 state 驱动所有投影点，对应设计里
+  // 「Capabilities 是唯一真相」——界面各处只是它的投影
+  var writable = true;
+  var btn = document.getElementById('cap');
+  var ids = ['sv1r', 'rotag', 'sbro'];
+  function apply() {
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.hidden = writable;
+    });
+    var name = writable ? '家里 NAS' : 'Nextcloud（只读）';
+    ['sv1t', 'cpn', 'sbn'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = name;
+    });
+    var enc = document.getElementById('encbtn');
+    if (enc) enc.hidden = !writable;           // 不出现，而非置灰
+    var l = document.getElementById('lab1');
+    if (l) l.textContent = '远程位置 / ' + (writable ? '可写' : '只读');
+    if (btn) btn.textContent = '当前：' + (writable ? '可写位置' : '只读位置');
+  }
+  btn && btn.addEventListener('click', function () { writable = !writable; apply(); });
+  apply();
+})();
+</script>
+</body>
+</html>
