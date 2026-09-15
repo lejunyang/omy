@@ -1285,6 +1285,78 @@ mod tests {
     }
 
     #[test]
+    fn tree_remove_really_voids_the_other_passwords() {
+        // remove 承诺「只保留当前密码」。这条守着它真的兑现了。
+        //
+        // 不这样会怎样：实测过一个版本，rekey_tree 内部对文件槽位和
+        // 边车都写死 Carry，于是第二个密码照样能解开整棵树——用户以为
+        // 撤销了某人的访问权，实际没有。这是安全事故级的缺陷，而当时
+        // 没有任何测试守着它，是靠临时探针偶然发现的。
+        let (root, enc_root, salt, cipher) = tree_fixture("rmvoid");
+        let keep_me = kek_of(b"old", &salt);
+        let to_void = kek_of(b"second", &salt);
+
+        // 先把第二个密码加上，并自证它真的能用——否则下面的断言
+        // 可能只是因为它从来没生效过
+        let added = rekey_tree(
+            &enc_root,
+            &[keep_me.duplicate()],
+            &[keep_me.duplicate(), to_void.duplicate()],
+            &salt,
+            cipher,
+            crate::keyslot::OtherSlots::Carry,
+        )
+        .unwrap();
+        assert!(added.is_complete(), "{:?}", added.failed);
+        let probe = root.join("probe-before");
+        std::fs::create_dir_all(&probe).unwrap();
+        assert!(
+            decrypt_tree(&added.root, &probe, &[to_void.duplicate()], &salt, cipher, None)
+                .is_ok(),
+            "第二个密码一开始就该能解开整棵树，否则这条测试证明不了什么"
+        );
+
+        // remove：只保留第一个密码
+        let removed = rekey_tree(
+            &added.root,
+            &[keep_me.duplicate()],
+            &[keep_me.duplicate()],
+            &salt,
+            cipher,
+            crate::keyslot::OtherSlots::Discard,
+        )
+        .unwrap();
+        assert!(removed.is_complete(), "{:?}", removed.failed);
+
+        // 保留的那个还能用
+        let after_keep = root.join("after-keep");
+        std::fs::create_dir_all(&after_keep).unwrap();
+        assert!(
+            decrypt_tree(&removed.root, &after_keep, &[keep_me], &salt, cipher, None).is_ok(),
+            "remove 把该保留的密码也弄丢了"
+        );
+
+        // 被移除的那个必须两层都失效：文件打不开，整棵树也解不开。
+        // 只查其中一层是不够的——缺陷正是「文件层清了、目录名层没清」
+        // 这种半残状态
+        for f in all_files(&removed.root) {
+            let data = std::fs::read(&f).unwrap();
+            assert!(
+                crate::file::open(&data, &[to_void.duplicate()]).is_err(),
+                "被移除的密码仍能打开文件 {f:?}"
+            );
+        }
+        let after_void = root.join("after-void");
+        std::fs::create_dir_all(&after_void).unwrap();
+        assert!(
+            decrypt_tree(&removed.root, &after_void, &[to_void], &salt, cipher, None).is_err(),
+            "被移除的密码仍能解开整棵树——用户以为撤销了访问权，实际没有"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn rekey_tree_can_add_a_second_password_keeping_the_first() {
         // add 的语义：两个密码都能开。最容易犯的错是新密码把原密码挤掉
         let (root, enc_root, salt, cipher) = tree_fixture("add");

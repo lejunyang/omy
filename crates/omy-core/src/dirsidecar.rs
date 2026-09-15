@@ -437,6 +437,72 @@ mod tests {
     }
 
     #[test]
+    fn carrying_keeps_unknown_wraps_but_discarding_drops_them() {
+        // 重建边车时，Carry 要保住认不出来的旧包裹（典型是恢复码），
+        // 而调用方选择丢弃时必须真的丢掉。
+        //
+        // 不这样会怎样：Carry 那半边若失效，改一次密码就把恢复码从
+        // 边车里抹了——恢复码还能打开每个文件，却解不开目录名，
+        // 用户拿它解密整棵树得到「文件损坏」。
+        //
+        // 而丢弃那半边若失效（等于永远 Carry），一个本该被作废的钥匙
+        // 仍能从边车解出 DK。今天文件槽位挡着所以没后果，但两层一旦
+        // 不同步它就是真实的泄露。这条正是为了不让那半边成为死代码。
+        let salt = [11u8; 16];
+        let main_key = kek("main", &salt);
+        let reco = kek("recovery-code", &salt);
+        let dk = DirKey::generate();
+        let cipher = CipherId::ChaCha20Poly1305;
+
+        let original = build_sidecar(
+            &[main_key.duplicate(), reco.duplicate()],
+            &dk,
+            &salt,
+            &nonce_of(20),
+            cipher,
+        )
+        .expect("构建");
+
+        // 只拿 main 重建：reco 对 rebuild 来说是「认不出来的槽」
+        let carried = rebuild_sidecar_carrying(
+            Some(&original),
+            &[main_key.duplicate()],
+            &dk,
+            &salt,
+            &nonce_of(21),
+            cipher,
+        )
+        .expect("Carry 重建");
+        assert!(
+            open_sidecar(&carried, &[reco.duplicate()], &salt, cipher).is_ok(),
+            "Carry 应当保住恢复码的包裹"
+        );
+        assert!(
+            open_sidecar(&carried, &[main_key.duplicate()], &salt, cipher).is_ok(),
+            "Carry 之后 main 自己也得还能用"
+        );
+
+        // 不传旧边车 = 丢弃：恢复码必须再也解不开
+        let dropped = rebuild_sidecar_carrying(
+            None,
+            &[main_key.duplicate()],
+            &dk,
+            &salt,
+            &nonce_of(22),
+            cipher,
+        )
+        .expect("Discard 重建");
+        assert!(
+            open_sidecar(&dropped, &[reco], &salt, cipher).is_err(),
+            "丢弃时旧包裹必须真的没了——留着等于那把钥匙没被作废"
+        );
+        assert!(
+            open_sidecar(&dropped, &[main_key], &salt, cipher).is_ok(),
+            "丢弃不该连保留的钥匙一起丢"
+        );
+    }
+
+    #[test]
     fn wrong_key_is_rejected() {
         let salt = [5u8; 16];
         let dk = DirKey::generate();
