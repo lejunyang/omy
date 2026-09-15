@@ -444,15 +444,18 @@ impl Drop for SessionKeys {
 
 /// 从恢复码助记词还原 KEK。
 ///
-/// 恢复码含 256 bit 随机熵，**无需 Argon2**——暴力破解 256 bit 不可行，
-/// 慢速 KDF 只会白费时间（规范 §8.2）。
+/// # 已废弃：请改用 [`crate::recovery::RecoveryCode`]
 ///
-/// 这里做的是把词序列归一化后哈希成 32 字节。真正的 BIP-39 校验和验证
-/// 由上层实现（需要词表）。
+/// 本函数把词序列拼起来做一次 SHA-256，**丢掉了熵的结构**——它接受任意词、
+/// 任意个数，因而无从校验。后果是「抄错一个词」与「这不是本库的恢复码」
+/// 表现完全一样（都是解不开），而这两种处境的处置方式相反。
 ///
-/// # Errors
-///
-/// 当前实现不会失败，返回 `Result` 是为了未来加入校验和验证时保持签名稳定。
+/// 正确做法是先把词解码回 256 bit 原始熵、校验通过后再派生，见
+/// [`crate::recovery`]。保留本函数只为不破坏既有调用方；新代码不要用。
+#[deprecated(
+    since = "0.0.1",
+    note = "改用 recovery::RecoveryCode::from_phrase()：它会校验词表与校验和，并能指出第几个词可疑"
+)]
 pub fn kek_from_recovery_words(words: &[&str]) -> Result<Kek> {
     use sha2::{Digest as _, Sha256};
     let mut h = Sha256::new();

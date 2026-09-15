@@ -16,7 +16,7 @@ use omy_core::fsatomic::{
     AtomicWriter, TempPlaintext, cleanup_stale, write_atomic,
 };
 use omy_core::scan::{ScanOptions, UnlockOutcome, probe_file, scan_dir};
-use omy_core::session::{CredentialKind, SessionKeys, kek_from_recovery_words};
+use omy_core::session::{CredentialKind, SessionKeys};
 use omy_core::{EncryptOptions, RandomMaterial, encrypt};
 
 /// 每个测试用独立的临时目录，避免相互干扰。
@@ -405,18 +405,59 @@ fn empty_session_never_auto_locks() {
     assert!(!s.should_auto_lock(), "空会话没有东西可锁，不应报告需要锁定");
 }
 
+/// 恢复码走真实的编解码路径：生成 → 抄写（含大小写/空白噪声）→ 解析 → 开文件。
+///
+/// 这条替换了原来测 `kek_from_recovery_words` 的版本。那个函数把词拼起来
+/// 哈希，接受任意词任意个数，因而无从校验——「抄错一个词」与「拿错了恢复码」
+/// 表现完全一样。现在走 `RecoveryCode`，校验和能区分这两种处境。
+///
+/// 不这样会怎样：只测 core 的编解码单测，就覆盖不到「恢复码派生的 KEK
+/// 真能解开一个实际文件」这条链——而这正是恢复码存在的全部意义。
 #[test]
-fn recovery_words_are_normalized() {
-    let a = kek_from_recovery_words(&["Abandon", "ABILITY", " able "]).expect("a");
-    let b = kek_from_recovery_words(&["abandon", "ability", "able"]).expect("b");
-    assert_eq!(
-        a.as_key().as_bytes(),
-        b.as_key().as_bytes(),
-        "大小写与空白差异必须被归一化——用户手抄恢复码时难免不一致"
-    );
+fn recovery_code_opens_a_real_file_after_messy_transcription() {
+    use omy_core::recovery::RecoveryCode;
 
-    let c = kek_from_recovery_words(&["abandon", "ability", "absent"]).expect("c");
-    assert_ne!(a.as_key().as_bytes(), c.as_key().as_bytes(), "不同词序列必须得到不同 KEK");
+    let salt = [0x91u8; 16];
+    let code = RecoveryCode::generate();
+    let reco_kek = code.to_kek(&salt);
+    let pw_kek =
+        Kek::from_password(b"daily-password", &salt, Argon2Params::TEST_WEAK).expect("pw");
+
+    // 文件同时挂主密码与恢复码，模拟 `key recovery` 之后的状态
+    let plain = b"recovery end-to-end payload".to_vec();
+    let opts = omy_core::EncryptOptions {
+        argon2: Argon2Params::TEST_WEAK,
+        ..Default::default()
+    };
+    let enc = omy_core::encrypt(
+        &plain,
+        &[pw_kek.duplicate(), reco_kek],
+        &salt,
+        &opts,
+        &omy_core::RandomMaterial::generate(),
+    )
+    .expect("encrypt");
+
+    // 模拟用户从纸上抄回来：大小写混乱、空格多余
+    let messy = code
+        .to_words()
+        .iter()
+        .enumerate()
+        .map(|(i, w)| if i % 3 == 0 { w.to_uppercase() } else { (*w).to_owned() })
+        .collect::<Vec<_>>()
+        .join("  ");
+
+    let parsed = RecoveryCode::from_phrase(&messy).expect("抄写噪声必须被容忍");
+    let opened = omy_core::open(&enc.bytes, &[parsed.to_kek(&salt)]).expect("恢复码应能打开");
+    assert_eq!(opened.decrypt_all(&enc.bytes).expect("decrypt"), plain, "明文必须正确");
+
+    // 反证：另一份恢复码打不开。少了它，即使 to_kek 退化成常量，
+    // 上面的断言照样通过
+    let other = RecoveryCode::generate();
+    assert!(
+        omy_core::open(&enc.bytes, &[other.to_kek(&salt)]).is_err(),
+        "别人的恢复码不该能打开这个文件"
+    );
 }
 
 // ============================================================

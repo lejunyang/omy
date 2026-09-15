@@ -64,6 +64,7 @@ pub mod header;
 pub mod keyslot;
 pub mod pack;
 pub mod payload;
+pub mod recovery;
 pub mod reencrypt;
 pub mod restore;
 pub mod scan;
@@ -76,6 +77,7 @@ pub mod dirname;
 pub mod tlv;
 pub mod tree;
 pub mod util;
+pub mod wordlist;
 
 pub use container::{ContainerBuilder, ContainerEntry, ContainerIndex, EntryKind, EntryMeta};
 pub use crypto::{Argon2Params, CipherId, Fek, Kek, SecretKey};
@@ -86,6 +88,7 @@ pub use file::{
 };
 pub use fsatomic::{AtomicWriter, TempPlaintext, write_atomic};
 pub use header::{FixedHeader, MAGIC_FILE, MAGIC_SHARD, flags};
+pub use recovery::{RecoveryCode, ParseError as RecoveryParseError};
 pub use scan::{ScanHit, ScanOptions, ScanResult, UnlockOutcome, probe_file, scan_dir};
 pub use session::{CredentialKind, SessionKeys};
 pub use shard::{ShardHeader, merge, split};
