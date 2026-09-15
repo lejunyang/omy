@@ -51,6 +51,10 @@ pub enum Cmd {
     Change(SlotArgs),
     /// 重新加密：换掉文件密钥并重写载荷（可同时改密码）
     Reencrypt(SlotArgs),
+    /// 生成恢复码并挂到文件上（忘记密码时的唯一退路）
+    Recovery(RecoveryArgs),
+    /// 用恢复码打开文件并设置新密码
+    Restore(RestoreArgs),
 }
 
 /// slot 操作的公共参数。
@@ -80,6 +84,56 @@ pub struct SlotArgs {
     pub new_password_env: Option<String>,
 }
 
+/// `key recovery` 的参数。
+#[derive(Debug, ClapArgs)]
+pub struct RecoveryArgs {
+    /// 目标文件
+    pub file: PathBuf,
+
+    /// 从文件读取现有密码
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+
+    /// 从环境变量读取现有密码（传变量名）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+
+    /// 从标准输入读取现有密码
+    #[arg(long)]
+    pub password_stdin: bool,
+
+    /// 把生成的恢复码写到文件而不是打印到终端
+    ///
+    /// 终端会留在历史记录、滚动缓冲区里，有时还会被终端复用器持久化。
+    /// 需要程序化保存时用这个，但**文件本身就是一张明文纸条**，
+    /// 请立刻转移到安全的地方。
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+}
+
+/// `key restore` 的参数。
+#[derive(Debug, ClapArgs)]
+pub struct RestoreArgs {
+    /// 目标文件
+    pub file: PathBuf,
+
+    /// 恢复码来自文件（一行 26 个词，空白分隔）
+    #[arg(long, value_name = "PATH")]
+    pub code_file: Option<PathBuf>,
+
+    /// 恢复码来自环境变量（传变量名）
+    #[arg(long, value_name = "VAR")]
+    pub code_env: Option<String>,
+
+    /// 新密码来自文件
+    #[arg(long, value_name = "PATH")]
+    pub new_password_file: Option<PathBuf>,
+
+    /// 新密码来自环境变量（传变量名）
+    #[arg(long, value_name = "VAR")]
+    pub new_password_env: Option<String>,
+}
+
 /// `key list` 的参数。
 #[derive(Debug, ClapArgs)]
 pub struct ListArgs {
@@ -99,7 +153,204 @@ pub fn run(ctx: &Ctx<'_>, c: &Cmd) -> Result<()> {
         Cmd::Remove(a) => modify(ctx, a, Op::Remove),
         Cmd::Change(a) => modify(ctx, a, Op::Change),
         Cmd::Reencrypt(a) => modify(ctx, a, Op::Reencrypt),
+        Cmd::Recovery(a) => recovery(ctx, a),
+        Cmd::Restore(a) => restore(ctx, a),
     }
+}
+
+/// 生成恢复码并挂到文件上。
+///
+/// # 为什么恢复码必须当场显示、且只显示这一次
+///
+/// 它是从随机熵新生成的，我们**不保存明文**——保存了就等于在磁盘上留了
+/// 一张万能钥匙。所以用户错过这一次就只能重新生成一份（旧的随之作废）。
+///
+/// # Errors
+///
+/// 读写失败、现有密码不正确、槽位已满时返回错误。
+fn recovery(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
+    if a.file.is_dir() {
+        bail!(
+            "key recovery 暂不支持目录：树形加密的每个文件各自挂槽，\n\
+             逐个挂恢复码需要先定下「整棵树共用一份还是各一份」，尚未决定。"
+        );
+    }
+    let data = std::fs::read(&a.file)
+        .with_context(|| format!("读取 {} 失败", a.file.display()))?;
+    let h = omy_core::file::peek_header(&data)?;
+
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let old = read_password(&src, t("prompt.password"), false)?;
+    let old_kek = Kek::from_password(&old, &h.vault_salt, h.argon2_params())?;
+    // 尽早验密码：让用户看完一长串恢复码再被告知「密码不对」很糟
+    omy_core::file::open(&data, &[old_kek.duplicate()])?;
+
+    let code = omy_core::recovery::RecoveryCode::generate();
+    let reco_kek = code.to_kek(&h.vault_salt);
+
+    // keep 里必须同时有当前密码与恢复码：只放恢复码的话，这条命令就成了
+    // 「把密码换成恢复码」，用户的日常密码会当场失效
+    let keep = vec![old_kek.duplicate(), reco_kek];
+    let out = omy_core::keyslot::rewrite_slots(
+        &data,
+        &[old_kek],
+        &keep,
+        // 搬运而非清场：这个文件上可能还挂着别人的密码，
+        // 「加一个恢复码」不该顺手把它们抹了
+        omy_core::keyslot::OtherSlots::Carry,
+    )?;
+
+    // 写回前自证：恢复码真的能打开新文件。顺序不能反——先写回再发现
+    // 恢复码无效，用户会拿着一张废纸以为自己有了兜底
+    verify_reopenable(&out.bytes, &keep)?;
+
+    if out.may_have_evicted {
+        ctx.out.warn(
+            "恢复码占用的槽位上原本可能挂着别的密码，若有则已失效。\
+             这是格式限制：无法探测哪个槽位是空的。",
+        );
+    }
+
+    omy_core::fsatomic::write_atomic(&a.file, &out.bytes)
+        .with_context(|| format!("写回 {} 失败", a.file.display()))?;
+
+    let phrase = code.to_phrase();
+    if let Some(p) = &a.out {
+        std::fs::write(p, format!("{phrase}\n"))
+            .with_context(|| format!("写入 {} 失败", p.display()))?;
+        ctx.out.warn(&format!(
+            "恢复码已写入 {}。该文件是明文，请立即转移到安全的地方并删除原件。",
+            p.display()
+        ));
+    }
+
+    // 三条警告都要给，且必须在显示恢复码之后——放前面会被一长串词冲到
+    // 屏幕外面
+    let human = format!(
+        "已为 {} 生成恢复码。\n\n\
+         {}\n\n\
+         ⚠️  这串词只显示这一次，我们不保存它的明文。\n\
+         ⚠️  它是整个 vault 的强度下限——谁拿到这张纸，谁就能打开这个文件。\n\
+         ⚠️  用它打开文件后，文件列表不会自动显形（恢复码不参与目录扫描），\n\
+             请用 `omy key restore` 设置一个新密码。",
+        a.file.display(),
+        wrap_words(&phrase),
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "file": a.file.display().to_string(),
+            "operation": "recovery",
+            // 恢复码本身**不**进 JSON：--json 的输出常被重定向到文件或
+            // 管道进日志，那等于把万能钥匙写进了一个谁也没在保护的地方。
+            // 需要程序化保存的用 --out，它至少是用户显式指定的路径
+            "words": omy_core::recovery::WORD_COUNT,
+            "written_to": a.out.as_ref().map(|p| p.display().to_string()),
+        }),
+    );
+    Ok(())
+}
+
+/// 用恢复码打开文件并设置新密码。
+///
+/// # 为什么不做成「只验证恢复码」
+///
+/// 用到恢复码就意味着密码已经忘了。验证完却不给设新密码，用户下次还得
+/// 再翻一次纸条——而每翻一次都是一次暴露机会。
+///
+/// # Errors
+///
+/// 恢复码解析失败（会指出第几个词可疑）、打不开文件、写回失败时返回错误。
+fn restore(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
+    if a.file.is_dir() {
+        bail!("key restore 暂不支持目录，同 key recovery");
+    }
+    let data = std::fs::read(&a.file)
+        .with_context(|| format!("读取 {} 失败", a.file.display()))?;
+    let h = omy_core::file::peek_header(&data)?;
+
+    let csrc = PasswordSource {
+        env: a.code_env.clone(),
+        file: a.code_file.clone(),
+        stdin: false,
+    };
+    let raw = read_password(&csrc, "恢复码（26 个词，空格分隔）", false)?;
+    let phrase = String::from_utf8_lossy(&raw).into_owned();
+
+    // 解析错误要原样透出：core 的 ParseError 会指出「第 7 个词不在词表，
+    // 是不是 academic」，把它压成「恢复码无效」等于扔掉最有用的信息
+    let code = omy_core::recovery::RecoveryCode::from_phrase(&phrase)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let reco_kek = code.to_kek(&h.vault_salt);
+
+    // 校验和过了不代表这份恢复码属于这个文件——它只证明「没抄错」。
+    // 必须真去解一次，否则用户会拿着另一个库的恢复码反复困惑
+    omy_core::file::open(&data, &[reco_kek.duplicate()]).context(
+        "这份恢复码打不开该文件。校验和是对的，说明没抄错，\
+         但它可能属于另一个库",
+    )?;
+    ctx.out.detail("恢复码有效，已解开文件");
+
+    let nsrc = PasswordSource {
+        env: a.new_password_env.clone(),
+        file: a.new_password_file.clone(),
+        stdin: false,
+    };
+    let pw = read_password(&nsrc, t("prompt.new_password"), nsrc.is_interactive())?;
+    let new_kek = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+
+    // keep 同时保留新密码与恢复码：用户刚经历过一次「忘了密码」，
+    // 这时把他唯一的兜底抽掉是最坏的时机
+    let keep = vec![new_kek, reco_kek.duplicate()];
+    let out = omy_core::keyslot::rewrite_slots(
+        &data,
+        &[reco_kek],
+        &keep,
+        omy_core::keyslot::OtherSlots::Carry,
+    )?;
+    verify_reopenable(&out.bytes, &keep)?;
+    omy_core::fsatomic::write_atomic(&a.file, &out.bytes)
+        .with_context(|| format!("写回 {} 失败", a.file.display()))?;
+
+    let human = format!(
+        "已用恢复码重设 {} 的密码。\n\n\
+         恢复码        仍然有效，请继续保管好\n\
+         生效密码数    {}\n\
+         载荷          未改动（仅重写 slot 区与头部 MAC）",
+        a.file.display(),
+        out.slot_used,
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "file": a.file.display().to_string(),
+            "operation": "restore",
+            "slots_in_use": out.slot_used,
+            "recovery_still_valid": true,
+        }),
+    );
+    Ok(())
+}
+
+/// 把恢复码按每行 4 词排版，并加上行号。
+///
+/// 26 个词排成一行没法抄——用户会数不清抄到哪个了。加行号让他能对照着
+/// 逐行核对，这正是「第 7 个词有问题」这类提示能被用上的前提。
+fn wrap_words(phrase: &str) -> String {
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    words
+        .chunks(4)
+        .enumerate()
+        .map(|(row, chunk)| {
+            let start = row.saturating_mul(4).saturating_add(1);
+            format!("  {start:>2}. {}", chunk.join("  "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// slot 操作类型。
