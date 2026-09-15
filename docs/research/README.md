@@ -37,9 +37,11 @@
 | 11 | [工程实现路线](11-engineering-roadmap.md) | crate 分层、技术验证清单、风险登记册 | 实现者、项目管理 |
 | 12 | [设计决策记录](12-decision-log.md) | 关键决策及其理由，含**被否决的方案** | 所有人 |
 | 13 | [FFmpeg 裁剪内置方案](13-ffmpeg-minimal-build.md) | 裁剪构建的体积实测与估算、专利取舍、configure 配方 | 实现者、法务 |
+| 14 | [远程位置：云盘接入](14-remote-locations-cloud.md) | `RemoteStore` 抽象、云端 omy 文件识别、只读位置的能力矩阵与 UI | 实现者、设计 |
 
 **附录**
 - [appendix/ui-prototype.html](appendix/ui-prototype.html) — **可交互界面原型**（浏览器直接打开，可切换深/浅主题、网格/列表、锁定/解锁态）
+- [appendix/remote-locations-prototype.html](appendix/remote-locations-prototype.html) — **远程位置界面原型**（PC + 移动端，可切换可写/只读位置，看能力位图如何投影到界面）
 - [appendix/test-vectors.json](appendix/test-vectors.json) — 5 组确定性测试向量
 - [appendix/verification-report.md](appendix/verification-report.md) — 验证报告（格式 68 + 交叉验证 98 + UI 原型 23 项断言）
 - [reference/](reference/) — Python 参考实现（可运行，用于验证格式设计）

@@ -43,6 +43,7 @@ Rust + Tauri v2，覆盖 Windows / macOS / Linux / Android / iOS。
 | 许可证与专利 | [10](docs/research/10-licensing-and-patents.md) |
 | 工程实现路线 | [11](docs/research/11-engineering-roadmap.md) |
 | 设计决策记录 | [12](docs/research/12-decision-log.md) |
+| 远程位置：云盘接入 | [14](docs/research/14-remote-locations-cloud.md) |
 
 **可交互界面原型**：[docs/research/appendix/ui-prototype.html](docs/research/appendix/ui-prototype.html)（浏览器直接打开）
 
