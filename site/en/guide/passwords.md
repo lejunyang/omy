@@ -152,6 +152,15 @@ It prints 26 words. If you forget the password, use them to set a new one:
 omy key restore secret.omy
 ```
 
+On the desktop, right-click a file: "Generate recovery code…" and "Open with
+recovery code…". Generating shows the 26 words once and requires you to tick
+"I have written it down" before the dialog will close — we keep no plaintext
+copy, so once it closes the words cannot be recovered.
+
+The two entries have different preconditions: **generating** needs the file
+unlocked (you have to prove you can open it today), while **using** one does
+not — you are reaching for it precisely because the password is gone.
+
 ### How a recovery code differs from a password
 
 They differ only in how they become a key; after that they take exactly the
