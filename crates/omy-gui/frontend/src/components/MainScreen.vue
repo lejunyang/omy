@@ -27,7 +27,6 @@ import {
   clearSelection,
   clearNotice,
 } from '../store.js';
-import { toggleTheme } from '../theme.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
 
@@ -80,6 +79,8 @@ const emit = defineEmits([
   'pick',
   'lang',
   'devices',
+  'settings',
+  'places',
 ]);
 
 // 总大小按**当前看到的**条目算。在容器里时 `state.entries` 是外层
@@ -197,19 +198,12 @@ function onRowMenu(e, ev) {
       </button>
       <button
         class="iconbtn"
-        :title="i18n.t('lang.toggle')"
-        :aria-label="i18n.t('lang.toggle')"
-        @click="$emit('lang')"
+        :title="i18n.t('settings.title')"
+        :aria-label="i18n.t('settings.title')"
+        data-tb="settings"
+        @click="$emit('settings')"
       >
-        🌐
-      </button>
-      <button
-        class="iconbtn"
-        :title="i18n.t('theme.toggle')"
-        :aria-label="i18n.t('theme.toggle')"
-        @click="toggleTheme"
-      >
-        ◐
+        ⚙️
       </button>
     </template>
     <button
@@ -423,9 +417,10 @@ function onRowMenu(e, ev) {
     </div>
   </div>
 
-  <!-- 移动端底部导航（原型：📂 文件 / 🌐 设备 / 🕐 最近 / ⚙️ 设置）。
-       「最近」「设置」两页尚未实现，点了给明确提示而不是静默无反应——
-       画一个点了没反应的按钮比不画更糟 -->
+  <!-- 移动端底部导航：文件 / 远程 / 设备 / 设置。
+       语言与主题原先各占一格，现在收进设置页的「通用」第一组——
+       它们原本一点就切换，若收进去还要点两层才够到就是退步，
+       所以在设置里放在最上面。 -->
   <nav v-if="isMobile" class="pnav">
     <button
       class="pnavi"
@@ -436,17 +431,21 @@ function onRowMenu(e, ev) {
     </button>
     <button
       class="pnavi"
+      :class="{ on: tab === 'remote' }"
+      @click="tab = 'remote'; $emit('places')"
+    >
+      <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+    </button>
+    <button
+      class="pnavi"
       :class="{ on: tab === 'devices' }"
       @click="tab = 'devices'; $emit('devices')"
     >
-      <span aria-hidden="true">🌐</span>{{ i18n.t('nav.tab_devices') }}
+      <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
       <span v-if="state.pairedCount" class="ndot"></span>
     </button>
-    <button class="pnavi" @click="$emit('lang')">
-      <span aria-hidden="true">🌐</span>{{ i18n.t('lang.toggle') }}
-    </button>
-    <button class="pnavi" @click="toggleTheme">
-      <span aria-hidden="true">◐</span>{{ i18n.t('theme.toggle') }}
+    <button class="pnavi" @click="$emit('settings')">
+      <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
     </button>
   </nav>
 

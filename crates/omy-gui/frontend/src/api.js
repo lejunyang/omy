@@ -334,3 +334,56 @@ export const openExternal = (token) => invoke('open_external', { token });
 
 /** 在系统文件管理器里定位一个文件。加密文件也适用。 */
 export const revealInFolder = (token) => invoke('reveal_in_folder', { token });
+
+/* ---------------- 设置 ---------------- */
+
+/** 读取整份配置。
+ *
+ * 一次取全部而不是逐项：设置页要显示十几项，逐项调用就是十几次 IPC。
+ */
+export const configGet = () => invoke('config_get');
+
+/** 写回整份配置。
+ *
+ * 同样整份写：分项写回会出现「改了两项、第一项成功第二项失败」的
+ * 半截状态，而配置文件本身是原子写的，整份回写反而更安全。
+ */
+export const configSet = (config) => invoke('config_set', { config });
+
+/** 查询配置文件与缓存/数据目录的位置。
+ *
+ * 便携模式下用户需要知道拷走哪个目录能带走全部状态。
+ */
+export const configPaths = () => invoke('config_paths');
+
+/* ---------------- 远程位置（WebDAV） ---------------- */
+
+/** 添加一个 WebDAV 位置，返回其 id。
+ *
+ * 凭据只进后端，不留在前端——它们在 WebView 里没有任何用途，
+ * 留着只是多一处泄露面。
+ */
+export const remotePlaceAdd = (p) =>
+  invoke('remote_place_add', {
+    name: p.name,
+    url: p.url,
+    username: p.username || '',
+    password: p.password || '',
+    vendor: p.vendor || 'generic',
+    writable: !!p.writable,
+  });
+
+/** 列出已注册的远程位置。返回项含 `caps` 能力位图。 */
+export const remotePlaceList = () => invoke('remote_place_list');
+
+/** 移除一个远程位置。 */
+export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
+
+/** 浏览远程目录，返回已识别加密状态的条目。
+ *
+ * 条目上的 `probe_failed` 与 `unlocked === false` 是**两回事**：
+ * 前者是没读到（网络），后者是密码不对。界面必须分开显示，
+ * 否则用户会对着网络故障反复试密码。
+ */
+export const remoteBrowse = (placeId, dir) =>
+  invoke('remote_browse', { placeId, dir });

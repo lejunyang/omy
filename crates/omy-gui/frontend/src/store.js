@@ -1418,6 +1418,30 @@ export async function switchLanguage() {
   localStorage.setItem('omy.lang', next);
 }
 
+/** 切到指定语言。设置页用这个，顶栏的循环切换用 switchLanguage。
+ *
+ * `auto` 表示跟随系统：此处解析成具体语言再加载，因为 i18n.load 要一个
+ * 确定的语言包。配置文件里仍然存 'auto'——存解析结果的话，用户换了系统
+ * 语言之后应用不会跟着变，而他明明选的是「跟随系统」。
+ */
+export async function applyLanguage(pref) {
+  const target = pref === 'auto' ? detectSystemLang() : pref;
+  if (!i18n.LANGS.includes(target)) return;
+  await i18n.load(target);
+  await api.setLanguage(target);
+  localStorage.setItem('omy.lang', pref);
+}
+
+/** 从浏览器环境猜系统语言，猜不出时回落到英文。
+ *
+ * 与后端 `state::detect_language` 是同一套意图——**改一处要想到另一处**。
+ * 两边不一致的表现是「启动瞬间是一种语言，加载完配置后跳成另一种」。
+ */
+function detectSystemLang() {
+  const raw = (navigator.language || 'en').toLowerCase();
+  return raw.startsWith('zh') ? 'zh-CN' : 'en';
+}
+
 // 凭据归零就退出容器视图，不依赖某处记得清状态。
 //
 // 容器视图里列的是**解密出来的文件名**——锁定的语义是「这些都不该再

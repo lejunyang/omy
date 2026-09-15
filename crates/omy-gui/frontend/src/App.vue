@@ -40,6 +40,7 @@ import {
   tryUnlock,
   lock,
   switchLanguage,
+  applyLanguage,
   selectAll,
   enrich,
   encryptable,
@@ -81,6 +82,19 @@ import NameDialog from './components/NameDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
+
+/** 设置对话框是否打开。 */
+const showSettings = ref(false);
+
+/** 设置页里改了语言：立刻加载对应语言包。
+ *
+ * 不等关闭后再统一应用——用户选完语言却看不到界面变化，
+ * 无法确认自己选对了。
+ */
+async function onSettingsLang(pref) {
+  await applyLanguage(pref);
+}
 
 const showEncrypt = ref(false);
 const showRestore = ref(false);
@@ -575,6 +589,7 @@ onBeforeUnmount(() => {
     @pick="onPick"
     @lang="switchLanguage"
     @devices="showDevices = true"
+    @settings="showSettings = true"
   />
 
   <DevicePanel
@@ -686,5 +701,14 @@ onBeforeUnmount(() => {
     :file="citemPreview"
     in-container
     @close="citemPreview = null"
+  />
+
+  <!-- 设置。语言改动要立刻生效，所以它自己 emit 一个 lang 事件，
+       而不是等关闭后统一应用——用户选完语言却看不到变化，
+       无法确认自己选对了 -->
+  <SettingsDialog
+    v-if="showSettings"
+    @close="showSettings = false"
+    @lang="onSettingsLang"
   />
 </template>
