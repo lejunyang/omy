@@ -57,7 +57,10 @@ function Invoke-Mutation {
     }
     if ($e2e -match '失败 (\d+) 项' -and [int]$Matches[1] -gt 0) {
         foreach ($line in ($e2e -split "`r?`n")) {
-            if ($line -match 'FAIL\s+(.+)') { $caught += "端到端:$($Matches[1].Trim())" }
+            # 锚定 Check 的固定格式（两空格 + FAIL + 两空格）。写成
+            # 'FAIL\s+(.+)' 会把 cargo 的 "test result: FAILED. ..." 也匹配
+            # 进来，导致归因张冠李戴
+            if ($line -match '^\s+FAIL\s\s(.+)') { $caught += "端到端:$($Matches[1].Trim())" }
         }
     }
     if ($caught.Count -gt 0) {
