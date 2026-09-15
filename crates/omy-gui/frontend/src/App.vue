@@ -31,6 +31,7 @@ import {
   state,
   navigate,
   reload,
+  setNotice,
   loadPlaces,
   loadStorageAccess,
   grantStorageAccess,
@@ -51,8 +52,12 @@ import {
   enterContainerDir,
   clearRetry,
   manageKey,
+  generateRecovery,
+  restoreWithRecovery,
   retryKeyFiles,
   ctxMenu,
+  recoveryGeneratable,
+  recoveryUsable,
   ctxItems,
   openContextMenu,
   closeContextMenu,
@@ -71,6 +76,7 @@ import RestoreDialog from './components/RestoreDialog.vue';
 import UnlockDialog from './components/UnlockDialog.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import KeyDialog from './components/KeyDialog.vue';
+import RecoveryDialog from './components/RecoveryDialog.vue';
 import NameDialog from './components/NameDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
@@ -280,6 +286,62 @@ async function onKeyRetry() {
   state.error = '';
 }
 
+/* ---------------- 恢复码 ---------------- */
+
+/**
+ * 恢复码对话框状态。null 表示没开。
+ *
+ * 结构 { entry, mode, words, mayHaveEvicted }。words 放在这里而不是
+ * 组件内部，是为了让「关闭对话框」这一个动作就能确保词从内存消失——
+ * 组件卸载时状态跟着没，不依赖组件自己记得清理。
+ */
+const recoveryDlg = ref(null);
+const recoveryError = ref('');
+
+/** 生成恢复码。 */
+async function onRecoveryGenerate(req) {
+  recoveryError.value = '';
+  const r = await generateRecovery(req);
+  if (!r) {
+    recoveryError.value = state.error;
+    state.error = '';
+    return;
+  }
+  // 切到「抄写」态，同一个对话框继续用：换一个框会让用户以为操作
+  // 已经结束、词只是附带信息，而这恰恰是最需要他停下来的一步
+  recoveryDlg.value = {
+    ...recoveryDlg.value,
+    words: r.words,
+    mayHaveEvicted: r.may_have_evicted,
+  };
+}
+
+/** 用恢复码重设密码。 */
+async function onRecoveryRestore(req) {
+  recoveryError.value = '';
+  const r = await restoreWithRecovery(req);
+  if (!r) {
+    recoveryError.value = state.error;
+    state.error = '';
+    return;
+  }
+  recoveryDlg.value = null;
+  setNotice(i18n.t('recovery.restored_toast'));
+  await reload();
+}
+
+/** 关闭恢复码对话框。
+ *
+ * 生成态下关闭要额外提示一句：词到此为止，不会再出现。这是唯一
+ * 一处「关掉窗口就丢东西」的地方，沉默关闭太容易让人以为还能找回。
+ */
+function onRecoveryClose() {
+  const hadWords = recoveryDlg.value?.words?.length > 0;
+  recoveryDlg.value = null;
+  recoveryError.value = '';
+  if (hadWords) setNotice(i18n.t('recovery.generated_toast'));
+}
+
 /* ---------------- 右键菜单 ---------------- */
 
 /** 命名对话框：null 表示没开，否则 { mode, initial, path }。 */
@@ -312,6 +374,24 @@ async function onCtxPick(key) {
     case 'manage-key':
       keyError.value = '';
       keyTarget.value = keyManageable.value;
+      break;
+    case 'recovery-generate':
+      recoveryError.value = '';
+      recoveryDlg.value = {
+        entry: recoveryGeneratable.value,
+        mode: 'generate',
+        words: [],
+        mayHaveEvicted: false,
+      };
+      break;
+    case 'recovery-restore':
+      recoveryError.value = '';
+      recoveryDlg.value = {
+        entry: recoveryUsable.value,
+        mode: 'restore',
+        words: [],
+        mayHaveEvicted: false,
+      };
       break;
     case 'rename':
       // 用真名做初始值：加密文件在磁盘上叫一串十六进制，
@@ -533,6 +613,19 @@ onBeforeUnmount(() => {
     @submit="onKeySubmit"
   />
 
+  <RecoveryDialog
+    v-if="recoveryDlg && recoveryDlg.entry"
+    :entry="recoveryDlg.entry"
+    :mode="recoveryDlg.mode"
+    :words="recoveryDlg.words"
+    :may-have-evicted="recoveryDlg.mayHaveEvicted"
+    :busy="state.busy"
+    :error="recoveryError"
+    @cancel="onRecoveryClose"
+    @done="onRecoveryClose"
+    @generate="onRecoveryGenerate"
+    @restore="onRecoveryRestore"
+  />
   <ContextMenu
     v-if="ctxMenu.entry"
     :items="ctxItems"

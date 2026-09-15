@@ -1,5 +1,11 @@
 {
   "wrong_password": "密码不正确，或此文件夹中没有用这个密码加密的文件",
+  "tree_not_supported": "加密目录暂不支持恢复码。目录里的每个文件各自挂密码槽，「整棵树共用一份还是各一份」还没定——请到单个文件上设置。",
+  "code_required": "请输入恢复码",
+  "new_password_required": "请设置新密码",
+  "bad_recovery_code": "恢复码有问题：{{detail}}",
+  "recovery_mismatch": "这串词本身没有抄错，但它打不开这个文件——可能属于另一个文件，或属于更早生成的一份。",
+  "rewrite_verify_failed": "改写后的文件没能通过自检，已放弃写入。原文件没有被改动。",
   "empty_password": "请输入密码",
   "password_required": "请输入密码",
   "bad_salt": "文件头中的盐格式不正确，文件可能已损坏",

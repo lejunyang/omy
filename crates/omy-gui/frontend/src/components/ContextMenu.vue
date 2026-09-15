@@ -107,6 +107,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           :key="it.key"
           class="mi"
           :class="{ danger: it.danger }"
+          :data-mi="it.key"
           role="menuitem"
           type="button"
           :disabled="it.disabled"

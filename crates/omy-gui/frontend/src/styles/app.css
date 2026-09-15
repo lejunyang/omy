@@ -869,6 +869,86 @@ input {
   margin-block-end: calc(var(--sp) * 3);
 }
 
+/* ---------- 恢复码 ---------- */
+
+/* 词要用等宽字体：比例字体下 rn 和 m、l 和 I 在小字号里很难分辨，
+   而用户是照着屏幕往纸上抄，一个字母错了整串就废了 */
+.recovery .words {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 3);
+  margin-block-end: calc(var(--sp) * 3);
+  border-radius: var(--r-m);
+  background: var(--bg1);
+  border: 1px solid var(--line);
+}
+
+/* 用 grid 而不是 flex：flex 会让同一行的词平分宽度，于是末行
+   只有 2 个词时它们各占半行，列对不齐。用户照着列往纸上抄，
+   错位会让人以为自己漏抄了 */
+.recovery .wrow {
+  display: grid;
+  grid-template-columns: 2ch repeat(4, 1fr);
+  align-items: baseline;
+  gap: calc(var(--sp) * 2);
+}
+
+/* 行号让用户抄到一半能对上位置，也让「第 7 个词有问题」这类提示
+   真的能被用上 */
+.recovery .wnum {
+  text-align: end;
+  font-size: 11px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.recovery .word {
+  font-family: var(--mono, ui-monospace, 'SF Mono', 'Cascadia Code', monospace);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: var(--fg1);
+  user-select: text;
+}
+
+/* 勾选框要够大、够显眼：它是「这串词就此消失」之前唯一的闸门 */
+.recovery .ack {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 2) 0;
+  font-size: 13px;
+  color: var(--fg1);
+  cursor: pointer;
+}
+
+.recovery .ack input {
+  inline-size: 16px;
+  block-size: 16px;
+  margin-block-start: 1px;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.recovery textarea {
+  inline-size: 100%;
+  box-sizing: border-box;
+  padding: calc(var(--sp) * 2);
+  border-radius: var(--r-m);
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  color: var(--fg1);
+  font-family: var(--mono, ui-monospace, 'SF Mono', 'Cascadia Code', monospace);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.recovery textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ---------- 提示条 ---------- */
 
 .toast {

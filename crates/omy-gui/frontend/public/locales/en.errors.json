@@ -1,5 +1,11 @@
 {
   "wrong_password": "Wrong password, or no file in this folder uses it",
+  "tree_not_supported": "Encrypted folders do not support recovery codes yet. Every file in a tree carries its own key slots, and whether a tree should share one code or hold one each is still undecided — set one on an individual file instead.",
+  "code_required": "Enter the recovery code",
+  "new_password_required": "Choose a new password",
+  "bad_recovery_code": "Problem with the recovery code: {{detail}}",
+  "recovery_mismatch": "The words themselves are fine, but they do not open this file — they may belong to a different file, or to an earlier code.",
+  "rewrite_verify_failed": "The rewritten file failed its self-check, so nothing was written. Your original file is untouched.",
   "empty_password": "Enter a password",
   "password_required": "Enter a password",
   "bad_salt": "The salt in the file header is malformed; the file may be damaged",

@@ -427,6 +427,32 @@ export const keyManageable = computed(() => {
  */
 export const keyTargetIsTree = computed(() => !!keyManageable.value?.is_encrypted_dir);
 
+/** 能不能给它生成恢复码：已解锁的单个加密**文件**。
+ *
+ * 比 keyManageable 多一条「不是目录」：树里每个文件各自挂槽，
+ * 「整棵树共用一份还是各一份」还没定，后端会如实拒绝。既然做不到，
+ * 菜单项就该是灰的——让用户点进去再看到报错，不如一开始就说清楚。
+ */
+export const recoveryGeneratable = computed(() => {
+  const e = keyManageable.value;
+  return e && !e.is_encrypted_dir ? e : null;
+});
+
+/** 能不能对它使用恢复码：单个加密**文件**，锁着或开着都行。
+ *
+ * 这里刻意**不要求** unlocked，而 keyManageable 要求。原因是这两个
+ * 功能面对的处境正好相反：管理密码的前提是你还记得密码，而用恢复码
+ * 的前提是你已经忘了。若照抄 keyManageable 的判据，菜单项只在文件
+ * 已解锁时才亮——那时用户根本不需要它，真正需要的时候反而是灰的。
+ */
+export const recoveryUsable = computed(() => {
+  if (state.container) return null;
+  if (state.selected.length !== 1) return null;
+  const e = state.entries.find((x) => x.path === state.selected[0]);
+  if (!e || !e.is_encrypted || e.is_encrypted_dir) return null;
+  return e;
+});
+
 /* ---------------- 右键菜单 ---------------- */
 
 /** 右键菜单的状态。`entry` 为 null 表示菜单没开。 */
@@ -513,6 +539,26 @@ export const ctxItems = computed(() => {
     label: t('keymgmt.title'),
     disabled: !canKey,
     hint: canKey ? '' : t('ctx.key_needs_unlocked_file'),
+  });
+
+  // 恢复码：生成要已解锁（得先证明你现在能打开），使用则不要求——
+  // 会用到它正是因为密码已经忘了
+  const canGenReco = !!recoveryGeneratable.value;
+  items.push({
+    key: 'recovery-generate',
+    icon: '🔐',
+    label: t('recovery.menu_generate'),
+    disabled: !canGenReco,
+    hint: canGenReco ? '' : t('ctx.recovery_needs_unlocked_file'),
+  });
+
+  const canUseReco = !!recoveryUsable.value;
+  items.push({
+    key: 'recovery-restore',
+    icon: '🔓',
+    label: t('recovery.menu_restore'),
+    disabled: !canUseReco,
+    hint: canUseReco ? '' : t('ctx.recovery_needs_file'),
   });
 
   items.push({ key: 'sep' });
@@ -1119,6 +1165,68 @@ export async function retryKeyFiles() {
     state.busy = false;
     state.busyKey = '';
     state.progress = null;
+  }
+}
+
+/** 把后端错误翻成给人看的话。
+ *
+ * 单独抽出来是因为恢复码有一条特殊的错误：bad_recovery_code 带着
+ * core 给的定位信息（「第 7 个词『acadmic』不在词表中，是不是
+ * 『academic』？」）。i18n.te 只按码取文案、不做插值，直接用会让
+ * 界面上出现一个原样的「{{detail}}」，而这恰恰是最该说清的一条。
+ */
+function recoveryError(e) {
+  const code = api.errCode(e);
+  const params = e && typeof e === 'object' ? e.params : null;
+  const msg = i18n.te(code);
+  const detail = params && typeof params.detail === 'string' ? params.detail : '';
+  return detail ? msg.replace('{{detail}}', detail) : msg;
+}
+
+/** 生成恢复码。
+ *
+ * 成功时**不** reload：文件内容没变，只是多了一个槽位，列表上看不出
+ * 任何差别。刷一次只会让界面闪一下，还会清掉用户的选中项。
+ *
+ * 也不在这里发提示条——词还要留在对话框里给用户抄，弹一句「已生成」
+ * 会让人以为事情已经办完。提示留到关闭对话框时再发。
+ */
+export async function generateRecovery(req) {
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const r = await api.generateRecovery(req);
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
+    return r;
+  } catch (e) {
+    state.error = recoveryError(e);
+    return null;
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 用恢复码重设密码。
+ *
+ * 这个要 reload：新密码装进了会话，原本锁着的文件可能因此显形。
+ */
+export async function restoreWithRecovery(req) {
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const r = await api.restoreWithRecovery(req);
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
+    await reload();
+    return r;
+  } catch (e) {
+    state.error = recoveryError(e);
+    return null;
+  } finally {
+    state.busy = false;
   }
 }
 

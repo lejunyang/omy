@@ -160,6 +160,25 @@ export const manageKey = (req) => invoke('manage_key', { req });
  */
 export const retryKeyFiles = (req) => invoke('retry_key_files', { req });
 
+/**
+ * 生成恢复码并挂到文件上。
+ *
+ * 返回的 26 个词**只用于当场显示**：不得写进 localStorage、不得留在任何
+ * 超出对话框生命周期的状态里。我们后端不保存它的明文，用户错过就得重新
+ * 生成一份（旧的随之作废）。
+ */
+export const generateRecovery = (req) => invoke('generate_recovery', { req });
+
+/**
+ * 用恢复码打开文件并设置新密码。
+ *
+ * 失败时错误码区分得很细：`bad_recovery_code` 的 params.detail 里带着
+ * 「第 7 个词『acadmic』不在词表中，是不是『academic』？」这样的原文，
+ * 而 `recovery_mismatch` 表示码本身没抄错、只是不属于这个文件。
+ * 这两种处境的处置方式相反，界面不能压成同一句话。
+ */
+export const restoreWithRecovery = (req) => invoke('restore_with_recovery', { req });
+
 /* ---------------- 会话 ---------------- */
 
 /** 探测目录里有哪些 vault（每个有独立的 salt）。 */
