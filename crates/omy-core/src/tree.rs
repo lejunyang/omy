@@ -43,10 +43,7 @@
 //! 所以 [`walk_dir`] 由本模块与 [`crate::pack`] 共用，判定规则只有一处。
 
 use crate::crypto::{CipherId, Kek, NONCE_LEN};
-use crate::dirname::{
-    DIRNAME_SIDECAR, DirnameKey, EncryptedDirname, decrypt_dirname, encrypt_dirname,
-    looks_encrypted,
-};
+use crate::dirname::{DIRNAME_SIDECAR, EncryptedDirname, looks_encrypted};
 use crate::error::{Error, Result};
 use crate::file::{EncryptOptions, RandomMaterial};
 use crate::pack::{ProgressFn, SkipReason, SkippedEntry, walk_dir};
@@ -153,8 +150,13 @@ pub fn encrypt_tree_with_media(
         return Err(Error::TooManySlots { got: 0, max: 8 });
     }
 
-    let kek = keks.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
-    let dkey = DirnameKey::derive(kek, vault_salt);
+    // 整棵树共用一个随机目录密钥，它被每把 KEK 各包一份写进边车。
+    //
+    // 不再用 DirnameKey::derive(keks[0])：那样目录名只有第一把钥匙能解开，
+    // 后面的密码能打开每个文件却看不见目录结构，decrypt 报的是
+    // 「content hash mismatch」——用户看到的是「文件损坏」。多密码与恢复码
+    // 在树上用不了，根因都在这里
+    let dk = crate::dirsidecar::DirKey::generate();
 
     let root_name = root
         .file_name()
@@ -164,9 +166,11 @@ pub fn encrypt_tree_with_media(
     let mut rep = TreeReport::default();
 
     // 根目录名也要加密，否则最外层直接暴露「工作资料」
-    let enc_root = encrypt_dirname(&root_name, &dkey, &random_nonce(), opts.cipher)?;
+    let enc_root =
+        crate::dirname::encrypt_dirname_with(&root_name, &dk, &random_nonce(), opts.cipher)?;
     let out_root = out_parent.join(&enc_root.disk_name);
     create_encrypted_dir(&out_root, &enc_root, &mut rep)?;
+    write_keys_sidecar(&out_root, keks, &dk, vault_salt, opts.cipher)?;
     rep.root = out_root.clone();
 
     // 明文相对路径 → 密文磁盘路径。目录必须先建好，子项才知道该往哪写；
@@ -208,9 +212,16 @@ pub fn encrypt_tree_with_media(
         }
 
         if item.is_dir {
-            let enc = encrypt_dirname(name, &dkey, &random_nonce(), opts.cipher)?;
+            // 子目录共用同一个 DK，但**每个目录都要写一份边车**。
+            //
+            // 只在根上放一份会更省，但那样任何一个子目录被单独拷出来就
+            // 再也解不开名字了——而「把某个子目录单独发给别人」是完全
+            // 正常的用法。边车与目录同进退，是它放在目录内部的全部意义
+            let enc =
+                crate::dirname::encrypt_dirname_with(name, &dk, &random_nonce(), opts.cipher)?;
             let dir_out = parent_out.join(&enc.disk_name);
             create_encrypted_dir(&dir_out, &enc, &mut rep)?;
+            write_keys_sidecar(&dir_out, keks, &dk, vault_salt, opts.cipher)?;
             mapping.insert(item.comps.clone(), dir_out);
         } else {
             let Ok(data) = std::fs::read(&item.path) else {
@@ -258,6 +269,70 @@ pub fn encrypt_tree_with_media(
     Ok(rep)
 }
 
+/// 往一个密文目录里写钥匙包裹边车。
+///
+/// 每个密文目录都有一份，内容相同（同一棵树共用一个 DK）。冗余是刻意的，
+/// 换来的是「任何一个子目录被单独拷走仍能解开名字」。
+fn write_keys_sidecar(
+    dir: &Path,
+    keks: &[Kek],
+    dk: &crate::dirsidecar::DirKey,
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<()> {
+    let blob = crate::dirsidecar::build_sidecar(keks, dk, vault_salt, &random_nonce(), cipher)?;
+    crate::fsatomic::write_atomic(&dir.join(crate::dirsidecar::KEYS_SIDECAR), &blob)?;
+    Ok(())
+}
+
+/// 重写边车，保留认不出来的旧包裹。
+///
+/// 与文件槽位的 `OtherSlots::Carry` 对齐：改密码不该让挂在这棵树上的
+/// 恢复码失效。两处语义不一致的话，会出现「恢复码开得了每个文件、
+/// 却打不开目录名」这种半残状态。
+fn rewrite_keys_sidecar(
+    dir: &Path,
+    keep: &[Kek],
+    dk: &crate::dirsidecar::DirKey,
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+    others: crate::keyslot::OtherSlots,
+) -> Result<()> {
+    let path = dir.join(crate::dirsidecar::KEYS_SIDECAR);
+    // Discard 时连读都不用读：remove 的语义就是不要旧的那些
+    let old = match others {
+        crate::keyslot::OtherSlots::Carry => std::fs::read(&path).ok(),
+        crate::keyslot::OtherSlots::Discard => None,
+    };
+    let blob = crate::dirsidecar::rebuild_sidecar_carrying(
+        old.as_deref(),
+        keep,
+        dk,
+        vault_salt,
+        &random_nonce(),
+        cipher,
+    )?;
+    crate::fsatomic::write_atomic(&path, &blob)?;
+    Ok(())
+}
+
+/// 从一个密文目录读出 DK。
+///
+/// # Errors
+///
+/// - 边车文件不存在或读不出来
+/// - [`Error::NoMatchingSlot`]：手头的钥匙都打不开它
+fn read_keys_sidecar(
+    dir: &Path,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<crate::dirsidecar::DirKey> {
+    let blob = std::fs::read(dir.join(crate::dirsidecar::KEYS_SIDECAR))?;
+    let (dk, _nonce) = crate::dirsidecar::open_sidecar(&blob, keks, vault_salt, cipher)?;
+    Ok(dk)
+}
+
 /// 建目录并在需要时写入边车文件。
 fn create_encrypted_dir(path: &Path, enc: &EncryptedDirname, rep: &mut TreeReport) -> Result<()> {
     std::fs::create_dir_all(path)?;
@@ -294,20 +369,21 @@ pub fn decrypt_tree(
             "decrypt_tree expects a directory",
         )));
     }
-    let kek = keks.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
-    let dkey = DirnameKey::derive(kek, vault_salt);
+    // DK 从边车里取。任一把钥匙都能解开它——这正是改造的目的：
+    // 不再只认 keks[0]
+    let dk = read_keys_sidecar(enc_root, keks, vault_salt, cipher)?;
 
     let enc_name = enc_root
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let plain_root = decrypt_dir_name_at(enc_root, &enc_name, &dkey, cipher)?;
+    let plain_root = decrypt_dir_name_at(enc_root, &enc_name, &dk, cipher)?;
 
     let out_root = out_parent.join(&plain_root);
     std::fs::create_dir_all(&out_root)?;
 
     let mut rep = TreeReport { root: out_root.clone(), dirs: 1, ..TreeReport::default() };
-    decrypt_into(enc_root, &out_root, keks, &dkey, cipher, &mut rep, &mut progress)?;
+    decrypt_into(enc_root, &out_root, keks, &dk, cipher, &mut rep, &mut progress)?;
     Ok(rep)
 }
 
@@ -320,7 +396,7 @@ fn decrypt_into(
     enc_dir: &Path,
     out_dir: &Path,
     keks: &[Kek],
-    dkey: &DirnameKey,
+    dk: &crate::dirsidecar::DirKey,
     cipher: CipherId,
     rep: &mut TreeReport,
     progress: &mut Option<ProgressFn<'_>>,
@@ -331,8 +407,9 @@ fn decrypt_into(
 
     for item in items {
         let name = item.file_name().to_string_lossy().into_owned();
-        // 边车文件是我们自己的记账，不属于用户数据
-        if name == DIRNAME_SIDECAR {
+        // 两个边车都是我们自己的记账，不属于用户数据。
+        // 漏掉任何一个，还原出来的目录里会多出一个乱码文件
+        if name == DIRNAME_SIDECAR || name == crate::dirsidecar::KEYS_SIDECAR {
             continue;
         }
         let path = item.path();
@@ -345,11 +422,11 @@ fn decrypt_into(
         };
 
         if md.is_dir() {
-            let plain = decrypt_dir_name_at(&path, &name, dkey, cipher)?;
+            let plain = decrypt_dir_name_at(&path, &name, dk, cipher)?;
             let sub_out = out_dir.join(&plain);
             std::fs::create_dir_all(&sub_out)?;
             rep.dirs = rep.dirs.saturating_add(1);
-            decrypt_into(&path, &sub_out, keks, dkey, cipher, rep, progress)?;
+            decrypt_into(&path, &sub_out, keks, dk, cipher, rep, progress)?;
         } else if md.is_file() {
             let Ok(bytes) = std::fs::read(&path) else {
                 rep.skipped.push(SkippedEntry {
@@ -385,11 +462,11 @@ fn decrypt_into(
     Ok(())
 }
 
-/// 解密一个目录的名字，必要时读它内部的边车文件。
+/// 解密一个目录的名字，必要时读它内部的长名边车文件。
 fn decrypt_dir_name_at(
     dir: &Path,
     disk_name: &str,
-    dkey: &DirnameKey,
+    dk: &crate::dirsidecar::DirKey,
     cipher: CipherId,
 ) -> Result<String> {
     if !looks_encrypted(disk_name) {
@@ -398,14 +475,17 @@ fn decrypt_dir_name_at(
             reason: "directory name is not an encrypted name",
         });
     }
-    // 只有截断过的名字才需要边车文件。无条件去读会让每个目录多一次
-    // 失败的 open 系统调用，大树上是可观的开销
-    let sidecar = if disk_name.contains('~') {
+    // 只有截断过的名字才需要长名边车。无条件去读会让每个目录多一次
+    // 失败的 open 系统调用，大树上是可观的开销。
+    //
+    // 注意这个 .omy-name 与钥匙边车 .omy-keys 是两回事：前者存目录名密文，
+    // 后者存打开目录名的钥匙
+    let long_name = if disk_name.contains('~') {
         Some(std::fs::read(dir.join(DIRNAME_SIDECAR))?)
     } else {
         None
     };
-    decrypt_dirname(disk_name, sidecar.as_deref(), dkey, cipher)
+    crate::dirname::decrypt_dirname_with(disk_name, long_name.as_deref(), dk, cipher)
 }
 
 /// 生成随机 nonce。
@@ -590,8 +670,10 @@ pub fn rekey_tree(
     keep: &[Kek],
     vault_salt: &[u8; 16],
     cipher: CipherId,
+    others: crate::keyslot::OtherSlots,
 ) -> Result<RekeyReport> {
-    rekey_tree_with_progress(root, unlock, keep, vault_salt, cipher, false, None)
+    let params = RekeyParams { vault_salt, cipher, rotate: false, others };
+    rekey_tree_with_progress(root, unlock, keep, params, None)
 }
 
 /// 进度回调：`(当前文件名, 第几个, 共几个, 该文件已处理字节, 该文件总字节)`。
@@ -600,6 +682,23 @@ pub fn rekey_tree(
 /// 秒，只报文件序号的话进度条会长时间停在同一格，用户无从判断是在跑还是
 /// 卡死了。改密码时字节进度恒为 (0, 0)，调用方据此只显示文件序号即可。
 pub type RekeyProgressFn<'a> = &'a mut dyn FnMut(&str, usize, usize, u64, u64);
+
+/// 改写整棵树的钥匙时要一起传的那几项。
+///
+/// 打成结构体而不是继续加形参：到第 8 个参数时，调用点已经是一串
+/// &salt, cipher, false, Carry, None —— 读的人根本分不出谁是谁，
+/// 而把 rotate 和 others 的位置写反不会编译报错，只会静默改变语义。
+#[derive(Debug, Clone, Copy)]
+pub struct RekeyParams<'a> {
+    /// vault 级 salt。
+    pub vault_salt: &'a [u8; 16],
+    /// AEAD 算法。
+    pub cipher: CipherId,
+    /// 是否连载荷一起重写（轮换文件密钥）。
+    pub rotate: bool,
+    /// 认不出来的槽位怎么处理：只有 remove 该用 Discard。
+    pub others: crate::keyslot::OtherSlots,
+}
 
 /// 同 [`rekey_tree`]，另外支持轮换文件密钥与进度上报。
 ///
@@ -626,11 +725,10 @@ pub fn rekey_tree_with_progress(
     root: &Path,
     unlock: &[Kek],
     keep: &[Kek],
-    vault_salt: &[u8; 16],
-    cipher: CipherId,
-    rotate: bool,
+    params: RekeyParams<'_>,
     mut progress: Option<RekeyProgressFn<'_>>,
 ) -> Result<RekeyReport> {
+    let RekeyParams { vault_salt, cipher, rotate, others } = params;
     if keep.is_empty() {
         return Err(Error::MalformedHeader {
             reason: "refusing to leave files with zero key slots; they could never be opened again",
@@ -644,16 +742,13 @@ pub fn rekey_tree_with_progress(
         });
     }
 
-    // 目录名密钥由**第一个** KEK 派生（与 encrypt_tree / decrypt_tree 一致）。
-    // 旧的用来解出原名，新的用来重新加密
-    let old_kek = unlock.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
-    let new_kek = keep.first().ok_or(Error::TooManySlots { got: 0, max: 8 })?;
-    let old_dkey = DirnameKey::derive(old_kek, vault_salt);
-    let new_dkey = DirnameKey::derive(new_kek, vault_salt);
-    // 密钥没变就完全不碰目录名。`add` 保留原密码作第一个 KEK 时正是这种
-    // 情形：改名既没必要，又会让调用方以为整棵结构变了，增量备份还要重传
-    // 全部目录项
-    let dirname_changed = !same_dirname_key(&old_dkey, &new_dkey, cipher);
+    // DK 从边车里取。它是随机的、与密码无关——这带来一个很大的简化：
+    // **换密码不再需要给目录改名**，只要用新的钥匙集合重写边车即可。
+    //
+    // 改造之前目录名密钥由 keks[0] 派生，换密码就得把整棵树的目录名全部
+    // 重新加密、逐个改名；增量备份要重传全部目录项，用户回到文件管理器
+    // 还会发现文件夹「不见了」。现在这些都不再发生
+    let dk = read_keys_sidecar(root, unlock, vault_salt, cipher)?;
 
     let mut rep = RekeyReport { payload_rewritten: rotate, ..RekeyReport::default() };
     // 只有轮换才值得先数一遍：改密码是秒级的，为了显示「第 i / n 个」
@@ -662,54 +757,24 @@ pub fn rekey_tree_with_progress(
     let mut ctx = RekeyCtx {
         unlock,
         keep,
-        old_dkey: &old_dkey,
-        new_dkey: &new_dkey,
+        dk: &dk,
+        vault_salt,
         cipher,
-        dirname_changed,
+        others,
         rotate,
         total,
         done: 0,
     };
     rekey_into(root, &mut ctx, &mut progress, &mut rep);
 
-    // 根目录自己的名字最后改：它一改，调用方手里的 root 路径就失效了。
-    // 新路径通过 RekeyReport::root 返回
-    if !dirname_changed {
-        rep.root = root.to_path_buf();
-        return Ok(rep);
+    // 根目录的边车也要重写——rekey_into 只处理子目录
+    if let Err(e) = rewrite_keys_sidecar(root, keep, &dk, vault_salt, cipher, others) {
+        rep.failed.push((root.to_path_buf(), e.to_string()));
     }
-    rep.root = match rename_dir(root, &old_dkey, &new_dkey, cipher) {
-        Ok(renamed) => {
-            if renamed {
-                rep.dirs_renamed = rep.dirs_renamed.saturating_add(1);
-            }
-            let now = find_renamed(root, &new_dkey, cipher).unwrap_or_else(|| root.to_path_buf());
-            // 根目录名一变，报告里所有失败路径的前缀都得跟着变
-            retarget(&mut rep.failed, root, &now);
-            now
-        }
-        Err(err) => {
-            rep.failed.push((root.to_path_buf(), err));
-            root.to_path_buf()
-        }
-    };
-    Ok(rep)
-}
 
-/// 把已记录的失败路径从 `from` 前缀换成 `to` 前缀。
-///
-/// 为什么需要：失败是在改名**之前**记下的，改完名那些路径就指向不存在的
-/// 位置。调用方拿它去重试或展示，得到的是「文件不存在」——实测确认过部分
-/// 失败时每一条路径的 `exists()` 都是 false。
-fn retarget(failed: &mut [(PathBuf, String)], from: &Path, to: &Path) {
-    if from == to {
-        return;
-    }
-    for (p, _) in failed.iter_mut() {
-        if let Ok(rel) = p.strip_prefix(from) {
-            *p = to.join(rel);
-        }
-    }
+    // 目录名不变，所以 root 原样返回。调用方手里的路径依然有效
+    rep.root = root.to_path_buf();
+    Ok(rep)
 }
 
 /// 只对给定的这些文件改密码，不碰目录名，也不遍历整棵树。
@@ -735,6 +800,7 @@ pub fn retry_files(
     unlock: &[Kek],
     keep: &[Kek],
     rotate: bool,
+    others: crate::keyslot::OtherSlots,
     mut progress: Option<RekeyProgressFn<'_>>,
 ) -> Result<RekeyReport> {
     if keep.is_empty() {
@@ -753,7 +819,7 @@ pub fn retry_files(
                 cb(&shown, idx, total, done, bytes);
             }
         };
-        match rekey_one(path, unlock, keep, rotate, &mut on_bytes) {
+        match rekey_one(path, unlock, keep, rotate, others, &mut on_bytes) {
             Ok(written) => {
                 rep.changed = rep.changed.saturating_add(1);
                 rep.bytes_rewritten = rep.bytes_rewritten.saturating_add(written);
@@ -764,46 +830,6 @@ pub fn retry_files(
     // 没改目录名，所以根路径无从得知也无需变化。留空表示「路径没变」，
     // 调用方不该拿它去刷新界面
     Ok(rep)
-}
-
-/// 两个目录名密钥是否等价。
-///
-/// `DirnameKey` 不暴露比较（密钥不该随便比），所以用同一个固定 nonce 加密
-/// 同一个探针名字，看密文是否一致——AEAD 在密钥、nonce、明文都相同时输出
-/// 确定，所以密文相同即密钥相同。
-///
-/// 探针名字用不可能与真实目录冲突的常量；nonce 固定是刻意的，这里要的正是
-/// 确定性，与「加密真实目录名必须用随机 nonce」是两回事。
-fn same_dirname_key(a: &DirnameKey, b: &DirnameKey, cipher: CipherId) -> bool {
-    const PROBE: &str = "omy-dirname-key-probe";
-    let nonce = [0u8; NONCE_LEN];
-    let ea = crate::dirname::encrypt_dirname(PROBE, a, &nonce, cipher);
-    let eb = crate::dirname::encrypt_dirname(PROBE, b, &nonce, cipher);
-    match (ea, eb) {
-        (Ok(x), Ok(y)) => x == y,
-        // 算不出来就当作「变了」：宁可多改一次名，也不要该改却没改——
-        // 后者会留下两个密码都用不了的树
-        _ => false,
-    }
-}
-
-/// 改名后在父目录里找回这棵树的新路径。
-///
-/// 不靠 `rename_dir` 直接返回新路径：它可能因为「名字本来就解不开」而没改，
-/// 那时原路径仍然有效。统一在这里按「能用新密钥解开的那个目录」来找。
-fn find_renamed(orig: &Path, new_dkey: &DirnameKey, cipher: CipherId) -> Option<PathBuf> {
-    if orig.is_dir() {
-        return Some(orig.to_path_buf());
-    }
-    let parent = orig.parent()?;
-    std::fs::read_dir(parent).ok()?.flatten().map(|e| e.path()).find(|p| {
-        if !p.is_dir() {
-            return false;
-        }
-        let n = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let sc = std::fs::read(p.join(crate::dirname::DIRNAME_SIDECAR)).ok();
-        crate::dirname::decrypt_dirname(&n, sc.as_deref(), new_dkey, cipher).is_ok()
-    })
 }
 
 /// 递归改写一层：先文件，再子目录名。
@@ -826,10 +852,17 @@ fn find_renamed(orig: &Path, new_dkey: &DirnameKey, cipher: CipherId) -> Option<
 struct RekeyCtx<'a> {
     unlock: &'a [Kek],
     keep: &'a [Kek],
-    old_dkey: &'a DirnameKey,
-    new_dkey: &'a DirnameKey,
+    /// 整棵树共用的目录密钥。改写钥匙集合时它保持不变——
+    /// 这正是「换密码不用改目录名」的原因
+    dk: &'a crate::dirsidecar::DirKey,
+    vault_salt: &'a [u8; 16],
     cipher: CipherId,
-    dirname_changed: bool,
+    /// 认不出来的槽位怎么处理。
+    ///
+    /// 文件槽位与边车必须跟随**同一个**策略。写死 Carry 的后果实测过：
+    /// remove 承诺作废其它密码，实际第二个密码照样能解开整棵树——
+    /// 用户以为撤销了访问权，实际没有。
+    others: crate::keyslot::OtherSlots,
     rotate: bool,
     /// 待处理的密文文件总数，用于「第 i / n 个」。
     total: usize,
@@ -870,7 +903,7 @@ fn rekey_into(
                 cb(&shown, idx, total, done, bytes_total);
             }
         };
-        match rekey_one(&p, ctx.unlock, ctx.keep, ctx.rotate, &mut on_bytes) {
+        match rekey_one(&p, ctx.unlock, ctx.keep, ctx.rotate, ctx.others, &mut on_bytes) {
             Ok(written) => {
                 rep.changed = rep.changed.saturating_add(1);
                 rep.bytes_rewritten = rep.bytes_rewritten.saturating_add(written);
@@ -878,25 +911,20 @@ fn rekey_into(
             Err(err) => rep.failed.push((p, err)),
         }
     }
-    // 自底向上：先把子目录内部处理完，再改它自己的名字
+    // 自底向上：先把子目录内部处理完，再重写它自己的边车。
+    //
+    // 不再需要改名——DK 不变，目录名密文照旧有效。只有「谁能解开 DK」
+    // 这件事变了，而那全部写在边车里
     for sub in subdirs {
         rekey_into(&sub, ctx, progress, rep);
-        if !ctx.dirname_changed {
+        // 不是我们加密的目录就跳过：没有边车可写，也不该凭空造一个
+        if !crate::dirname::looks_encrypted(
+            &sub.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        ) {
             continue;
         }
-        match rename_dir(&sub, ctx.old_dkey, ctx.new_dkey, ctx.cipher) {
-            Ok(true) => {
-                rep.dirs_renamed = rep.dirs_renamed.saturating_add(1);
-                // 改完名，之前记下的失败路径就指向不存在的位置了。
-                // 必须立刻跟着改：调用方拿这些路径去重试或展示，得到的是
-                // 「文件不存在」——实测确认过每一条 exists() 都是 false
-                if let Some(now) = find_renamed(&sub, ctx.new_dkey, ctx.cipher) {
-                    retarget(&mut rep.failed, &sub, &now);
-                }
-            }
-            // false = 名字本来就解不开（不是我们加密的目录），跳过不算失败
-            Ok(false) => {}
-            Err(err) => rep.failed.push((sub, err)),
+        if let Err(e) = rewrite_keys_sidecar(&sub, ctx.keep, ctx.dk, ctx.vault_salt, ctx.cipher, ctx.others) {
+            rep.failed.push((sub, e.to_string()));
         }
     }
 }
@@ -922,59 +950,13 @@ fn count_files(dir: &Path) -> usize {
     n
 }
 
-/// 用新密钥重新加密一个目录的名字。
-///
-/// 返回 `false` 表示这个目录名用旧密钥解不开——它多半不是本 vault 的产物，
-/// 跳过而不是报错。返回 `true` 表示确实改名了。
-fn rename_dir(
-    dir: &Path,
-    old_dkey: &DirnameKey,
-    new_dkey: &DirnameKey,
-    cipher: CipherId,
-) -> core::result::Result<bool, String> {
-    let disk = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    if !crate::dirname::looks_encrypted(&disk) {
-        return Ok(false);
-    }
-    let sidecar_path = dir.join(crate::dirname::DIRNAME_SIDECAR);
-    let sidecar = std::fs::read(&sidecar_path).ok();
-    let Ok(plain) = crate::dirname::decrypt_dirname(&disk, sidecar.as_deref(), old_dkey, cipher)
-    else {
-        return Ok(false);
-    };
-
-    // nonce 每次重新随机：同一个名字用同一个密钥加密两次应当得到不同密文，
-    // 否则「改密码前后磁盘名没变」会泄露「这两个目录同名」
-    let enc = crate::dirname::encrypt_dirname(&plain, new_dkey, &random_nonce(), cipher)
-        .map_err(|e| e.to_string())?;
-
-    let parent = dir.parent().ok_or_else(|| String::from("no parent"))?;
-    let dst = parent.join(&enc.disk_name);
-
-    // 边车要在改名**之前**写好：改完名再写的话，中途失败会留下一个
-    // 名字截断、却没有边车的目录——那个名字就永远解不开了
-    if let Some(blob) = enc.sidecar.as_ref() {
-        std::fs::write(dir.join(crate::dirname::DIRNAME_SIDECAR), blob)
-            .map_err(|e| format!("write sidecar: {e}"))?;
-    } else if sidecar.is_some() {
-        // 新名字不需要边车，旧的必须删掉：留着的话解名时会优先读它，
-        // 拿到的是用旧密钥加密的内容
-        std::fs::remove_file(&sidecar_path).map_err(|e| format!("remove sidecar: {e}"))?;
-    }
-
-    if dst == dir {
-        return Ok(true);
-    }
-    std::fs::rename(dir, &dst).map_err(|e| format!("rename: {e}"))?;
-    Ok(true)
-}
-
 /// 改写单个文件。错误转成字符串，好让调用方逐个展示。
 fn rekey_one(
     path: &Path,
     unlock: &[Kek],
     keep: &[Kek],
     rotate: bool,
+    others: crate::keyslot::OtherSlots,
     on_bytes: &mut dyn FnMut(u64, u64),
 ) -> core::result::Result<u64, String> {
     let data = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
@@ -1011,16 +993,14 @@ fn rekey_one(
         .map_err(|e| e.to_string())?;
         (out.bytes, out.plaintext_size)
     } else {
-        // 用 Carry：树形只支持 change（目录名由 keks[0] 派生，一棵树同时
-        // 只能有一个能浏览的密码），但**单个文件上仍可能挂着恢复码**——
+        // 策略由调用方决定：add / change 用 Carry 保住认不出来的槽位
+        // （典型是恢复码），只有 remove 用 Discard 清场。
+        //
+        // 「树只能有一个密码」的旧约束已经不存在了——目录名改用两层结构
+        // 之后，任一把钥匙都能解开它。这段注释以前写的是那个旧前提，
         // 那是用 key add 或恢复码流程加上去的，与「树只能有一个浏览密码」
         // 并不矛盾。填随机会把它们静默抹掉
-        let out = crate::keyslot::rewrite_slots(
-            &data,
-            unlock,
-            keep,
-            crate::keyslot::OtherSlots::Carry,
-        )
+        let out = crate::keyslot::rewrite_slots(&data, unlock, keep, others)
         .map_err(|e| e.to_string())?;
         (out.bytes, 0)
     };
@@ -1180,13 +1160,14 @@ mod tests {
         let new = kek_of(b"new", &salt);
 
         let rep =
-            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher, crate::keyslot::OtherSlots::Carry).unwrap();
         assert_eq!(rep.changed, 2, "两个文件都该改到；漏掉深层文件是最可能的缺陷");
         assert!(rep.is_complete(), "失败项: {:?}", rep.failed);
-        // 根目录名由 KEK 派生，换密码后必须跟着变，否则新密码进不去
-        assert_ne!(rep.root, enc_root, "根目录名没变——新密码将解不开它");
-        assert!(rep.root.is_dir(), "返回的新根路径不存在");
-        assert!(!enc_root.exists(), "旧根路径还在，说明是复制而不是改名");
+        // 目录名现在由随机 DK 加密，与密码无关——换密码不再改名。
+        // 这比旧行为好：用户回到文件管理器不会发现文件夹「不见了」，
+        // 增量备份也不用重传全部目录项
+        assert_eq!(rep.root, enc_root, "换密码不该改目录名");
+        assert!(rep.root.is_dir(), "根路径应当仍然有效");
         let enc_root = rep.root.clone();
 
         // 正面：新密码能打开每一个文件
@@ -1225,7 +1206,7 @@ mod tests {
 
         let old = kek_of(b"old", &salt);
         let new = kek_of(b"new", &salt);
-        let rep = rekey_tree(&enc_root, &[old], &[new], &salt, cipher).unwrap();
+        let rep = rekey_tree(&enc_root, &[old], &[new], &salt, cipher, crate::keyslot::OtherSlots::Carry).unwrap();
 
         for p in all_files(&rep.root) {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
@@ -1254,7 +1235,7 @@ mod tests {
         // keep 为空会留下永远打不开的文件，等同于销毁数据
         let (root, enc_root, salt, cipher) = tree_fixture("empty");
         let old = kek_of(b"old", &salt);
-        assert!(rekey_tree(&enc_root, &[old], &[], &salt, cipher).is_err());
+        assert!(rekey_tree(&enc_root, &[old], &[], &salt, cipher, crate::keyslot::OtherSlots::Carry).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1269,33 +1250,37 @@ mod tests {
         let salt = [7u8; 16];
         let k = kek_of(b"pw", &salt);
         assert!(
-            rekey_tree(&root, &[k.duplicate()], &[k], &salt, CipherId::ChaCha20Poly1305).is_err(),
+            rekey_tree(&root, &[k.duplicate()], &[k], &salt, CipherId::ChaCha20Poly1305, crate::keyslot::OtherSlots::Carry)
+                .is_err(),
             "对普通目录应当报错，而不是静默返回 0 个已改写"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn rekey_tree_reports_wrong_password_per_file_without_touching_them() {
-        // 密码不对时：一个都不该改，且要逐个报出来
+    fn rekey_tree_rejects_a_wrong_password_without_touching_anything() {
+        // 密码不对时整体拒绝，且磁盘一字节不动。
+        //
+        // 行为在改用两层目录名结构后变了：以前是逐个文件试、报 N 条
+        // 失败；现在开头读边车就失败，直接返回 Err。后者更好——用户
+        // 拿到的是一句明确的「打不开这棵树」，而不是一串让他分不清
+        // 「密码不对」还是「文件坏了」的逐文件失败。
+        //
+        // 不变的是那条核心断言：磁盘上一字节都不能动。写坏了才报错的
+        // 实现会让用户既没改成密码、又丢了文件
         let (root, enc_root, salt, cipher) = tree_fixture("wrongpw");
         let before: Vec<Vec<u8>> =
             all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
 
         let bad = kek_of(b"bad", &salt);
         let new = kek_of(b"new", &salt);
-        let rep = rekey_tree(&enc_root, &[bad], &[new], &salt, cipher).unwrap();
-        assert_eq!(rep.changed, 0);
-        assert_eq!(rep.failed.len(), 2, "两个文件都该报失败");
-        assert!(!rep.is_complete());
+        let r = rekey_tree(&enc_root, &[bad], &[new], &salt, cipher, crate::keyslot::OtherSlots::Carry);
+        assert!(r.is_err(), "密码不对必须整体拒绝，而不是部分成功");
 
-        // 磁盘上必须一字节没动。写坏了才报错的实现会让用户既没改成密码、
-        // 又丢了文件
         let after: Vec<Vec<u8>> =
             all_files(&enc_root).iter().map(|p| std::fs::read(p).unwrap()).collect();
         assert_eq!(before, after, "密码不对却动了文件");
-        // 目录名也不该动：密码都不对，改名只会让树更难恢复
-        assert!(enc_root.is_dir(), "密码不对却把根目录改名了");
+        assert!(enc_root.is_dir(), "密码不对却动了根目录");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1311,12 +1296,13 @@ mod tests {
             &[old.duplicate(), extra.duplicate()],
             &salt,
             cipher,
+            crate::keyslot::OtherSlots::Carry,
         )
         .unwrap();
         assert!(rep.is_complete(), "{:?}", rep.failed);
         // add 保留了原密码作为第一个 KEK，所以目录名密钥不变、根路径不变。
         // 这是 add 与 change 的一个可观察差别
-        assert_eq!(rep.root, enc_root, "add 保留原密码时根目录名不该变");
+        assert_eq!(rep.root, enc_root, "根目录名任何时候都不该变");
 
         for f in all_files(&enc_root) {
             let data = std::fs::read(&f).unwrap();
@@ -1347,7 +1333,7 @@ mod tests {
         std::fs::set_permissions(&victim, perm).unwrap();
 
         let rep =
-            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher, crate::keyslot::OtherSlots::Carry).unwrap();
 
         // 解除只读，让调用方可以接着测重试。
         // clippy 提醒 set_readonly(false) 在 Unix 上等于全局可写——这里整个
@@ -1380,7 +1366,10 @@ mod tests {
 
         assert!(!rep.is_complete(), "只读文件应当导致部分失败");
         assert_eq!(rep.failed.len(), 1, "只有一个文件被设为只读：{:?}", rep.failed);
-        assert!(rep.dirs_renamed > 0, "目录名应当已经改过（这正是路径失效的原因）");
+        // 两层结构下不再改名，所以失败路径天然不会失效。
+        // 这条断言保留是为了记录：路径有效性现在是结构保证的，
+        // 不再依赖「改完名记得回填路径」那段容易漏的逻辑
+        assert_eq!(rep.dirs_renamed, 0, "不该再有改名发生");
 
         for (p, _) in &rep.failed {
             assert!(p.exists(), "报告里的失败路径不存在：{p:?}");
@@ -1406,7 +1395,7 @@ mod tests {
         // 目录名不该再变一次：改名在第一次就完成了
         let names_before: Vec<String> = walk_dirs(&rep.root);
 
-        let r2 = retry_files(&list, &[old.duplicate()], &[new.duplicate()], false, None).unwrap();
+        let r2 = retry_files(&list, &[old.duplicate()], &[new.duplicate()], false, crate::keyslot::OtherSlots::Carry, None).unwrap();
         assert!(r2.is_complete(), "重试应当成功：{:?}", r2.failed);
         assert_eq!(r2.changed, list.len(), "改写数应当等于清单长度");
 
@@ -1449,7 +1438,7 @@ mod tests {
             .collect();
         assert!(!others.is_empty(), "应当有清单外的文件");
 
-        let r2 = retry_files(&list, &[old], &[new], false, None).unwrap();
+        let r2 = retry_files(&list, &[old], &[new], false, crate::keyslot::OtherSlots::Carry, None).unwrap();
         assert!(r2.is_complete(), "{:?}", r2.failed);
         assert_eq!(r2.changed, list.len(), "改写数不该超过清单长度");
 
@@ -1467,8 +1456,8 @@ mod tests {
         let empty: Vec<PathBuf> = Vec::new();
         let salt = [7u8; 16];
         let k = kek_of(b"x", &salt);
-        assert!(retry_files(&empty, &[k.duplicate()], &[], false, None).is_err());
-        let rep = retry_files(&empty, &[k.duplicate()], &[k], false, None).unwrap();
+        assert!(retry_files(&empty, &[k.duplicate()], &[], false, crate::keyslot::OtherSlots::Carry, None).is_err());
+        let rep = retry_files(&empty, &[k.duplicate()], &[k], false, crate::keyslot::OtherSlots::Carry, None).unwrap();
         assert_eq!(rep.changed, 0);
         assert!(rep.is_complete());
     }
@@ -1553,9 +1542,7 @@ mod tests {
             &enc_root,
             &[old.duplicate()],
             &[new.duplicate()],
-            &salt,
-            cipher,
-            true,
+            RekeyParams { vault_salt: &salt, cipher, rotate: true, others: crate::keyslot::OtherSlots::Carry },
             None,
         )
         .unwrap();
@@ -1621,7 +1608,7 @@ mod tests {
         assert_eq!(before.len(), 1);
 
         let rep =
-            rekey_tree_with_progress(&enc_root, &[old], &[new], &salt, cipher, false, None)
+            rekey_tree_with_progress(&enc_root, &[old], &[new], RekeyParams { vault_salt: &salt, cipher, rotate: false, others: crate::keyslot::OtherSlots::Carry }, None)
                 .unwrap();
         assert!(!rep.payload_rewritten);
         assert_eq!(rep.bytes_rewritten, 0, "没轮换就不该报重写字节数");
@@ -1667,9 +1654,7 @@ mod tests {
             &enc_root,
             &[old.duplicate()],
             &[old],
-            &salt,
-            cipher,
-            true,
+            RekeyParams { vault_salt: &salt, cipher, rotate: true, others: crate::keyslot::OtherSlots::Carry },
             Some(&mut cb),
         )
         .unwrap();
@@ -1700,15 +1685,13 @@ mod tests {
             &enc_root,
             &[old.duplicate()],
             &[old.duplicate()],
-            &salt,
-            cipher,
-            true,
+            RekeyParams { vault_salt: &salt, cipher, rotate: true, others: crate::keyslot::OtherSlots::Carry },
             None,
         )
         .unwrap();
         assert!(rep.is_complete(), "{:?}", rep.failed);
         // 密码没变 → 目录名密钥没变 → 根路径不该变
-        assert_eq!(rep.root, enc_root, "密码没变时不该改目录名");
+        assert_eq!(rep.root, enc_root, "目录名与密码无关，任何时候都不该变");
 
         // 但密文必须变了：这正是「让旧副本作废」的实质
         let after: Vec<Vec<u8>> =
@@ -1732,9 +1715,12 @@ mod tests {
         let old = kek_of(b"old", &salt);
         let new = kek_of(b"new", &salt);
         let rk =
-            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher).unwrap();
+            rekey_tree(&enc_root, &[old.duplicate()], &[new.duplicate()], &salt, cipher, crate::keyslot::OtherSlots::Carry).unwrap();
         assert!(rk.is_complete(), "{:?}", rk.failed);
-        assert_eq!(rk.dirs_renamed, 2, "根 + 子目录都该改名");
+        // 不再改名，所以 dirs_renamed 恒为 0。真正要守的是下面那条：
+        // 换完密码整棵树仍能用新密码完整解开
+        assert_eq!(rk.dirs_renamed, 0, "两层结构下换密码不该改名");
+        assert_eq!(rk.root, enc_root, "根路径不该变");
 
         // 用新密码解整棵树。这一条是整个改动的核心：只改文件不改目录名的话，
         // 新密码开得了文件却解不开目录名，旧密码反之——两个密码都用不了
@@ -1991,6 +1977,17 @@ mod tests {
         count(&rep.root, &mut files, &mut dirs);
         assert_eq!(files, 3, "文件数对外可见——这正是 N6 声明的泄露");
         assert_eq!(dirs, 4, "目录数同样可见");
+
+        // 改用两层目录名结构后，每个密文目录都恒定带一份 .omy-keys。
+        // 这条把新增的泄露面钉成事实：**边车个数等于目录个数**。
+        // 边车长度固定 408 字节，所以不泄露钥匙数量；但它确实又多了
+        // 一个「这是 omy 加密目录」的指纹。
+        //
+        // 反过来这条也守着「每个目录都必须有边车」：少一个，那个目录
+        // 被单独拷走之后名字就永远解不开了
+        let mut sidecars = 0;
+        count_sidecars(&rep.root, &mut sidecars);
+        assert_eq!(sidecars, dirs, "每个密文目录都该有一份边车");
 
         // 文案必须具体到「能数出多少文件」，而不是抽象的「泄露元数据」
         let notice = TreeReport::leak_notice();
@@ -2272,20 +2269,47 @@ mod tests {
         for e in rd.flatten() {
             if e.path().is_dir() {
                 collect_file_names(&e.path(), out);
-            } else {
-                out.push(e.file_name().to_string_lossy().into_owned());
+                continue;
             }
+            // 边车不是用户文件。算进来会让「两个同内容文件磁盘名不同」
+            // 这类断言拿到一堆同名的 .omy-keys，看着像磁盘名撞了
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name == crate::dirsidecar::KEYS_SIDECAR || name == DIRNAME_SIDECAR {
+                continue;
+            }
+            out.push(name);
         }
     }
 
+    /// 数用户文件与目录。
+    ///
+    /// 边车不计入：它是我们自己的记账，不是用户数据。把它算进来的话
+    /// 「外界能数出几个文件」会虚增一倍——那不是真实的泄露面，
+    /// 会让 N6 那条断言失去意义。
     fn count(dir: &Path, files: &mut usize, dirs: &mut usize) {
         *dirs = dirs.saturating_add(1);
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             if e.path().is_dir() {
                 count(&e.path(), files, dirs);
-            } else {
-                *files = files.saturating_add(1);
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name == crate::dirsidecar::KEYS_SIDECAR || name == DIRNAME_SIDECAR {
+                continue;
+            }
+            *files = files.saturating_add(1);
+        }
+    }
+
+    /// 数边车个数，用于断言「每个密文目录都有一份」。
+    fn count_sidecars(dir: &Path, n: &mut usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            if e.path().is_dir() {
+                count_sidecars(&e.path(), n);
+            } else if e.file_name().to_string_lossy() == crate::dirsidecar::KEYS_SIDECAR {
+                *n = n.saturating_add(1);
             }
         }
     }

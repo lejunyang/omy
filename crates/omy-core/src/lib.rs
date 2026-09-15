@@ -74,6 +74,7 @@ pub mod slot;
 pub mod source;
 pub mod unpack;
 pub mod dirname;
+pub mod dirsidecar;
 pub mod tlv;
 pub mod tree;
 pub mod util;
