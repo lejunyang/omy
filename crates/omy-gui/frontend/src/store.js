@@ -427,18 +427,19 @@ export const keyManageable = computed(() => {
  */
 export const keyTargetIsTree = computed(() => !!keyManageable.value?.is_encrypted_dir);
 
-/** 能不能给它生成恢复码：已解锁的单个加密**文件**。
+/** 能不能给它生成恢复码：已解锁的单个加密文件或加密文件夹。
  *
- * 比 keyManageable 多一条「不是目录」：树里每个文件各自挂槽，
+ * 目录曾经被排除，理由是「树里每个文件各自挂槽，共用一份还是各一份
+ * 未定」。现在定了：整棵树共用一份，由 rekey_tree 统一改写。
  * 「整棵树共用一份还是各一份」还没定，后端会如实拒绝。既然做不到，
  * 菜单项就该是灰的——让用户点进去再看到报错，不如一开始就说清楚。
  */
 export const recoveryGeneratable = computed(() => {
   const e = keyManageable.value;
-  return e && !e.is_encrypted_dir ? e : null;
+  return e;
 });
 
-/** 能不能对它使用恢复码：单个加密**文件**，锁着或开着都行。
+/** 能不能对它使用恢复码：单个加密文件或加密文件夹，锁着或开着都行。
  *
  * 这里刻意**不要求** unlocked，而 keyManageable 要求。原因是这两个
  * 功能面对的处境正好相反：管理密码的前提是你还记得密码，而用恢复码
@@ -449,7 +450,7 @@ export const recoveryUsable = computed(() => {
   if (state.container) return null;
   if (state.selected.length !== 1) return null;
   const e = state.entries.find((x) => x.path === state.selected[0]);
-  if (!e || !e.is_encrypted || e.is_encrypted_dir) return null;
+  if (!e || (!e.is_encrypted && !e.is_encrypted_dir)) return null;
   return e;
 });
 

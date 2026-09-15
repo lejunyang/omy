@@ -326,39 +326,43 @@ fn annotate_tree_names(entries: &mut [DirEntry], root: &Path, state: &Shared) {
     if keks.is_empty() {
         return;
     }
-    // 每个 KEK 派生一个目录名密钥，逐个试。
+    // 目录名由每个目录自己的 .omy-keys 边车提供密钥。
     //
-    // 早先这里取 `keks.first()` 就收工。单密码时看不出问题，会话能装
-    // 多个密码之后它就错了，而且错得很难查：`all_for` 底层是 HashMap，
-    // 返回顺序**每次运行都可能不同**——同一个目录，这次进去目录名解开了，
-    // 下次进去就变回一串 base32，用户会以为是随机的界面 bug。
+    // 不再用 DirnameKey::derive(kek)：目录名改成两层结构之后，加密它的
+    // 是一个随机的目录密钥 DK，而 DK 被每把 KEK 各包一份放在边车里。
+    // 沿用旧路径的后果实测过——GUI 里加密文件夹永远解不开，而错误提示
+    // 说「密码不正确」，把人引向完全错误的方向（CLI 明明能开）。
     //
-    // 目录名密钥由 vault_salt 派生（文档 03：整棵树的可见性绑定 vault，
-    // 无法按 slot 区分），所以正确做法是「哪个密码能解开就用哪个」，
-    // 而不是赌第一个。
-    let dkeys: Vec<omy_core::dirname::DirnameKey> = keks
-        .iter()
-        .map(|k| omy_core::dirname::DirnameKey::derive(k, &header.vault_salt))
-        .collect();
-
+    // 顺带解决了一个旧隐患：以前逐个 KEK 派生再逐个试，而 all_for 底层
+    // 是 HashMap、返回顺序每次运行都可能不同，表现为「同一个目录这次
+    // 名字解开了下次变回 base32」。现在任一把钥匙都能从边车解出同一个
+    // DK，顺序不再有影响。
     for e in entries.iter_mut() {
         if e.is_encrypted_dir {
-            // 超长名截断过，完整密文在目录内部的边车文件里
-            let sidecar =
-                std::fs::read(Path::new(&e.path).join(omy_core::dirname::DIRNAME_SIDECAR)).ok();
-            // 逐个密钥试，第一个成功的就是对的（解不开会因 AEAD 认证
-            // 失败而报错，不会静默产出错误的名字）
-            for dkey in &dkeys {
-                if let Ok(real) = omy_core::dirname::decrypt_dirname(
-                    &e.name,
-                    sidecar.as_deref(),
-                    dkey,
-                    header.cipher_id,
-                ) {
-                    e.real_name = Some(real);
-                    e.unlocked = true;
-                    break;
-                }
+            let dir = Path::new(&e.path);
+            let Ok(blob) = std::fs::read(dir.join(omy_core::dirsidecar::KEYS_SIDECAR))
+            else {
+                continue;
+            };
+            let Ok((dk, _)) = omy_core::dirsidecar::open_sidecar(
+                &blob,
+                &keks,
+                &header.vault_salt,
+                header.cipher_id,
+            ) else {
+                continue;
+            };
+            // 超长名截断过时，完整密文在 .omy-name 里。它与 .omy-keys
+            // 是两回事：前者存目录名密文，后者存打开它的钥匙
+            let long_name = std::fs::read(dir.join(omy_core::dirname::DIRNAME_SIDECAR)).ok();
+            if let Ok(real) = omy_core::dirname::decrypt_dirname_with(
+                &e.name,
+                long_name.as_deref(),
+                &dk,
+                header.cipher_id,
+            ) {
+                e.real_name = Some(real);
+                e.unlocked = true;
             }
         } else if e.is_encrypted && !e.unlocked {
             // 树形模式里的文件磁盘名是随机 uuid，真名在它自己的 TLV 里。
