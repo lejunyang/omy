@@ -86,6 +86,7 @@ import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
+import { initAutoLock, configureAutoLock } from './autolock.js';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
@@ -109,6 +110,15 @@ async function onPlaceAdded(id) {
  */
 async function onSettingsLang(pref) {
   await applyLanguage(pref);
+}
+
+/** 设置页关闭：重新应用配置。
+ *
+ * 不这样的话，改了自动锁定超时要等重启才生效——用户会以为没保存住。
+ */
+async function onSettingsClose() {
+  showSettings.value = false;
+  await applySettings();
 }
 
 const showEncrypt = ref(false);
@@ -579,7 +589,29 @@ onMounted(async () => {
   await loadPlaces();
   await reloadRemotePlaces();
   await refreshDeviceOverview();
+
+  // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
+  // 都是界面首屏需要的，不该为它推迟
+  initAutoLock();
+  await applySettings();
 });
+
+/** 读配置并应用到运行时。
+ *
+ * 设置页保存后也要调一次，否则改了超时要等到重启才生效——
+ * 用户会以为设置没保存住。
+ */
+async function applySettings() {
+  try {
+    const c = await api.configGet();
+    configureAutoLock(c.security);
+    // 默认视图也在这里应用：它存在配置里，但界面启动时用的是
+    // store 的初值，不读一次就永远是网格
+    if (c.ui?.view === 'grid' || c.ui?.view === 'list') state.view = c.ui.view;
+  } catch {
+    // 配置读不出来就用内置默认值：这不该阻止应用启动
+  }
+}
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
@@ -726,7 +758,7 @@ onBeforeUnmount(() => {
        无法确认自己选对了 -->
   <SettingsDialog
     v-if="showSettings"
-    @close="showSettings = false"
+    @close="onSettingsClose"
     @lang="onSettingsLang"
   />
 

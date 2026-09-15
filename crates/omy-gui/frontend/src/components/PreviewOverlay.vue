@@ -20,6 +20,7 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
+import { playing } from '../autolock.js';
 import * as i18n from '../i18n.js';
 import { fileUrl, remoteFileUrl, plainUrl, containerItemUrl } from '../store.js';
 
@@ -88,6 +89,9 @@ onMounted(() => {
     text.value = i18n.t('playback.loading');
     loadText();
   }
+  // 播放期间不算闲置：用户看两小时的片子全程不碰鼠标，
+  // 不标记的话自动锁定会把正在看的画面锁掉
+  if (kind.value === 'video' || kind.value === 'audio') playing.value = true;
 });
 
 onBeforeUnmount(() => {
@@ -99,6 +103,9 @@ onBeforeUnmount(() => {
     el.removeAttribute('src');
     el.load?.();
   }
+  // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
+  // 自动锁定就永远不会触发——那等于这个功能默默失效了
+  playing.value = false;
 });
 </script>
 

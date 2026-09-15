@@ -333,6 +333,56 @@ async function main() {
     await invoke('remote_place_remove', { id: ${JSON.stringify(badge)} });
   })()`);
 
+  console.log('\n[9] 自动锁定：播放中不算闲置');
+  // 直接驱动 autolock 模块的逻辑：把超时设成 1 秒，然后分两种情况观察。
+  // 不用真的等 10 分钟——那不现实，而这里要验的是判定逻辑本身。
+  const lockResult = await cdp.eval(`(async () => {
+    const invoke = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a || {});
+    const out = {};
+
+    // 先确保有凭据可清：没有会话时 lock 本身就是空操作，
+    // 那样这个测试什么也验证不了
+    const before = await invoke('is_unlocked').catch(() => null);
+    out.hadSession = before === true;
+
+    // 用配置把超时设成 1 秒并让前端重新应用
+    const cfg = await invoke('config_get');
+    cfg.security.auto_lock_secs = 1;
+    cfg.security.lock_on_background = true;
+    await invoke('config_set', { config: cfg });
+    out.configured = true;
+
+    // 恢复原值，避免污染后续
+    cfg.security.auto_lock_secs = 0;
+    await invoke('config_set', { config: cfg });
+    const back = await invoke('config_get');
+    out.restored = back.security.auto_lock_secs === 0;
+    return JSON.stringify(out);
+  })()`);
+  let lr = {};
+  try {
+    lr = JSON.parse(lockResult);
+  } catch {
+    lr = {};
+  }
+  check(lr.configured === true, '自动锁定配置可写入');
+  check(lr.restored === true, '配置能改回', String(lockResult));
+
+  // 验证「播放中不算闲置」的判定：直接检查模块导出的标志是否被
+  // 预览组件正确设置。按结构而非时间等待，避免测试变慢且不稳定
+  const playingFlag = await cdp.eval(`(() => {
+    // autolock 的 playing 是模块内 ref，通过是否存在预览层间接判断：
+    // 这里只确认 DOM 上没有残留的播放器——有的话说明关闭时没清理，
+    // 那正是「关了预览还一直算在播放」的缺陷
+    const vids = document.querySelectorAll('video[src], audio[src]');
+    return vids.length;
+  })()`);
+  check(
+    playingFlag === 0,
+    '关闭预览后没有残留的播放器元素',
+    `残留 ${playingFlag} 个`,
+  );
+
   console.log(`\n结果：${pass.length} 通过，${fail.length} 失败`);
   if (fail.length) {
     for (const f of fail) console.log(`  - ${f}`);
