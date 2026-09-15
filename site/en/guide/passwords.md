@@ -137,8 +137,80 @@ Locking via the 🔒 in the status bar clears every loaded password at once; the
 The earlier section is about how many passwords can open **one file** (8 key slots). This one is about how many passwords **one session** holds and tries. They are independent: you can browse with three passwords while every individual file carries only one.
 :::
 
-## Forgetting the password
+## Recovery codes: the only way back in
 
-There is no recovery path. By design there is no backdoor, master key or recovery phrase.
+By design there is **no backdoor and no master key** — we cannot open your files
+for you. What you can do is attach a recovery code ahead of time:
 
-This is not an oversight: any recovery mechanism is another route around the password, which is to say another attack surface. Back your passwords up yourself.
+```bash
+omy key recovery secret.omy
+```
+
+It prints 26 words. If you forget the password, use them to set a new one:
+
+```bash
+omy key restore secret.omy
+```
+
+### How a recovery code differs from a password
+
+They differ only in how they become a key; after that they take exactly the
+same path:
+
+| | Password | Recovery code |
+|---|---|---|
+| Source | What you remember | 256 bits of machine-generated entropy |
+| Derivation | Argon2id (deliberately slow — entropy is low) | HKDF (microseconds — entropy is already enough) |
+| Everyday use | Yes | No; keep it in a drawer |
+| Used during folder scans | ✅ | ❌ **No** |
+| If lost | The recovery code still covers you | **Anyone who sees the paper owns that file** |
+
+::: warning Three things you must know
+1. **It is shown once.** We do not store it in the clear; miss it and you have to
+   generate a new one (which retires the old).
+2. **It is the file's weakest link.** Whoever holds that paper can open the file —
+   there is no Argon2 in front of it, because none is needed.
+3. **Opening with it does not reveal the file list.** Recovery codes are excluded
+   from folder scans (that would keep them resident in memory), so "nothing
+   happened" is expected — continue with `omy key restore` to set a new password.
+:::
+
+### If you mistype a word
+
+Recovery codes carry a checksum and can point at **which word** looks wrong:
+
+```
+error: word 7 "acadmic" is not in the wordlist — did you mean "academic"?
+```
+
+The wordlist is the SLIP-39 English list: every word is 4–8 letters and **no two
+words share their first four letters**, so copying just the first four is
+unambiguous.
+
+Swapping two words is invisible to a per-word check and is caught by the overall
+checksum instead:
+
+```
+error: checksum mismatch: every word is valid, but the combination is not.
+       Usually two words are in the wrong order, or one was copied as another word
+```
+
+A passing checksum does **not** mean the code belongs to this file — it only means
+nothing was mistyped. A code from another vault is reported separately as "this
+recovery code does not open that file". The two situations call for opposite
+responses, so they are reported separately.
+
+### Changing the password does not destroy the recovery code
+
+`key change` and `key add` carry the file's other slots over untouched, so you can
+keep changing passwords after setting a recovery code.
+
+The one exception is `key remove`, whose whole meaning is "keep only the one I am
+using now" — it retires every other password **including the recovery code**.
+
+### If you do not want one
+
+Simply never run `key recovery`. Then forgetting the password really does mean
+permanent loss — which is not an oversight: any recovery mechanism is another
+route around the password, which is to say another attack surface. Back your
+passwords up yourself.

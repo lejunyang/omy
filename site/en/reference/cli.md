@@ -170,14 +170,40 @@ omy key <COMMAND> <FILE>
 | Subcommand | Purpose |
 |---|---|
 | `add` | Add a key slot (requires one existing password) |
-| `remove` | Keep only the current password, voiding all others |
+| `remove` | Keep only the current password, voiding all others **including the recovery code** |
 | `list` | Show slot occupancy |
-| `change` | Change the password (the old one stops working) |
+| `change` | Change the password (the old one stops working; other slots are kept) |
 | `reencrypt` | Re-encrypt: replace the file key and rewrite the payload (may change the password too) |
+| `recovery` | Generate a recovery code and attach it to the file |
+| `restore` | Open the file with a recovery code and set a new password |
 
 `add` and `change` take the new password via `--new-password-file` / `--new-password-env`.
 
 `key list` **accepts no password flag** — occupancy is unprobeable anyway, so a password adds nothing.
+
+### How change differs from remove
+
+`change` and `add` carry the file's other slots over **untouched**, so you can keep
+changing passwords after setting a recovery code. Only `remove` wipes: it voids every
+other password, recovery code included.
+
+`add` claims a new slot, and the implementation cannot probe which slots are free
+(exactly what deniability requires), so it may overwrite whatever sat at that index.
+The command warns honestly, but it cannot tell you whether a real password was there.
+
+### recovery / restore
+
+```bash
+omy key recovery secret.omy                  # prints 26 words
+omy key recovery secret.omy --out code.txt   # write to a file instead of the terminal
+omy key restore secret.omy --code-file code.txt
+```
+
+Whatever `--out` writes is plaintext; move it somewhere safe immediately. The recovery
+code never appears in `--json` output — that output is routinely redirected into files
+or piped into logs.
+
+See [recovery codes](../guide/passwords.md#recovery-codes-the-only-way-back-in).
 
 ## shard
 

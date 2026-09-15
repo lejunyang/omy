@@ -170,14 +170,38 @@ omy key <COMMAND> <FILE>
 | 子命令 | 作用 |
 |---|---|
 | `add` | 添加密码 slot（需已知一个现有密码） |
-| `remove` | 只保留当前密码，作废该文件上的其它密码 |
+| `remove` | 只保留当前密码，作废该文件上的其它密码**（包括恢复码）** |
 | `list` | 显示 slot 占用情况 |
-| `change` | 修改密码（旧密码作废） |
+| `change` | 修改密码（旧密码作废，其它槽位原样保留） |
 | `reencrypt` | 重新加密：换掉文件密钥并重写载荷（可同时改密码） |
+| `recovery` | 生成恢复码并挂到文件上 |
+| `restore` | 用恢复码打开文件并设置新密码 |
 
 `add` 与 `change` 用 `--new-password-file` / `--new-password-env` 提供新密码。
 
 `key list` **不接受密码参数**——槽位占用本就不可探测，给密码也没有额外信息。
+
+### change 与 remove 的关键区别
+
+`change` / `add` 会**原样保留**文件上的其它槽位，所以设过恢复码之后照常改
+密码即可。只有 `remove` 是清场，它会作废包括恢复码在内的其它全部密码。
+
+`add` 会占用一个新槽位，而实现无法探测哪个槽位是空的（这正是可否认性所
+要求的），所以它可能盖掉原本挂在那个下标上的密码——命令会如实警告，
+但无法告诉你那里原来是否真有密码。
+
+### recovery / restore
+
+```bash
+omy key recovery secret.omy              # 打印 26 个词
+omy key recovery secret.omy --out code.txt   # 写入文件而不是打印到终端
+omy key restore secret.omy --code-file code.txt
+```
+
+`--out` 写出的是明文，请立即转移到安全的地方。恢复码**不会**出现在
+`--json` 输出里——那种输出常被重定向进文件或管道进日志。
+
+详见[恢复码](../guide/passwords.md#恢复码：忘记密码时的唯一退路)。
 
 ## shard
 
