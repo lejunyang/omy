@@ -47,10 +47,13 @@ mod fileops;
 mod keymgmt;
 mod lan;
 mod mime;
+mod place_cmds;
+mod places;
 mod plain;
 mod protocol;
 mod remote;
 mod remote_cmds;
+mod settings;
 mod state;
 mod storage;
 mod video;
@@ -78,6 +81,10 @@ pub fn run() {
     let remote_session: Arc<remote::RemoteSession> = Arc::new(remote::RemoteSession::new());
     let for_protocol_remote = Arc::clone(&remote_session);
 
+    // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
+    // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
+    let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
     // WebView，而它里面是解密后的内容。
@@ -97,6 +104,7 @@ pub fn run() {
         .manage(Arc::clone(&pair_task))
         .manage(Arc::clone(&share_task))
         .manage(Arc::clone(&remote_session))
+        .manage(Arc::clone(&place_registry))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
@@ -165,6 +173,13 @@ pub fn run() {
             remote_cmds::remote_status,
             remote_cmds::remote_relock,
             remote_cmds::remote_vaults,
+            settings::config_get,
+            settings::config_set,
+            settings::config_paths,
+            place_cmds::remote_place_add,
+            place_cmds::remote_place_list,
+            place_cmds::remote_place_remove,
+            place_cmds::remote_browse,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]

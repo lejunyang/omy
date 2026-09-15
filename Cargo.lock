@@ -2691,9 +2691,11 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "dirs",
+ "omy-config",
  "omy-core",
  "omy-media",
  "omy-net",
+ "omy-remote",
  "serde",
  "serde_json",
  "sys-locale",

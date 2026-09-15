@@ -34,6 +34,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 omy-core = { path = "../omy-core" }
+# 配置读写：与 CLI 共用同一份定义与默认值，避免两边默认值漂移
+omy-config = { path = "../omy-config" }
+# 远程位置：RemoteStore 抽象与 WebDAV 驱动
+omy-remote = { path = "../omy-remote" }
 omy-media = { path = "../omy-media" }
 # 局域网共享：设备发现、配对、零密钥服务端
 omy-net = { path = "../omy-net" }
