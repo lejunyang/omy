@@ -1011,7 +1011,17 @@ fn rekey_one(
         .map_err(|e| e.to_string())?;
         (out.bytes, out.plaintext_size)
     } else {
-        let out = crate::keyslot::rewrite_slots(&data, unlock, keep).map_err(|e| e.to_string())?;
+        // 用 Carry：树形只支持 change（目录名由 keks[0] 派生，一棵树同时
+        // 只能有一个能浏览的密码），但**单个文件上仍可能挂着恢复码**——
+        // 那是用 key add 或恢复码流程加上去的，与「树只能有一个浏览密码」
+        // 并不矛盾。填随机会把它们静默抹掉
+        let out = crate::keyslot::rewrite_slots(
+            &data,
+            unlock,
+            keep,
+            crate::keyslot::OtherSlots::Carry,
+        )
+        .map_err(|e| e.to_string())?;
         (out.bytes, 0)
     };
 
