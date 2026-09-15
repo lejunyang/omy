@@ -124,14 +124,14 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let cfg = match config::Config::load(cli.config.as_deref()) {
+    let cfg = match config::load(cli.config.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("错误: 读取配置失败: {e}");
             return std::process::ExitCode::from(2);
         }
     };
-    i18n::init(cfg.ui.language.as_deref());
+    i18n::init(Some(cfg.ui.language.as_str()));
 
     let format = if cli.json { Format::Json } else { Format::Human };
     let out = Out::new(format, cli.quiet, cli.verbose, cli.no_color);
