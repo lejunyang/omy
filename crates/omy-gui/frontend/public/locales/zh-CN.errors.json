@@ -1,5 +1,7 @@
 {
   "wrong_password": "密码不正确，或此文件夹中没有用这个密码加密的文件",
+  "not_encrypted_tree": "这个文件夹里找不到任何加密文件，它可能不是用 omy 加密的文件夹。",
+  "tree_partial_failure": "有 {{failed}} 个文件没能改写（已成功 {{changed}} 个）。已改好的那些是有效的，修掉原因后重跑即可补齐。",
   "tree_not_supported": "加密目录暂不支持恢复码。目录里的每个文件各自挂密码槽，「整棵树共用一份还是各一份」还没定——请到单个文件上设置。",
   "code_required": "请输入恢复码",
   "new_password_required": "请设置新密码",

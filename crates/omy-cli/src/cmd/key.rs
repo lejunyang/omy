@@ -170,10 +170,7 @@ pub fn run(ctx: &Ctx<'_>, c: &Cmd) -> Result<()> {
 /// 读写失败、现有密码不正确、槽位已满时返回错误。
 fn recovery(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
     if a.file.is_dir() {
-        bail!(
-            "key recovery 暂不支持目录：树形加密的每个文件各自挂槽，\n\
-             逐个挂恢复码需要先定下「整棵树共用一份还是各一份」，尚未决定。"
-        );
+        return recovery_tree(ctx, a);
     }
     let data = std::fs::read(&a.file)
         .with_context(|| format!("读取 {} 失败", a.file.display()))?;
@@ -267,7 +264,7 @@ fn recovery(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
 /// 恢复码解析失败（会指出第几个词可疑）、打不开文件、写回失败时返回错误。
 fn restore(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
     if a.file.is_dir() {
-        bail!("key restore 暂不支持目录，同 key recovery");
+        return restore_tree(ctx, a);
     }
     let data = std::fs::read(&a.file)
         .with_context(|| format!("读取 {} 失败", a.file.display()))?;
@@ -330,6 +327,199 @@ fn restore(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
             "file": a.file.display().to_string(),
             "operation": "restore",
             "slots_in_use": out.slot_used,
+            "recovery_still_valid": true,
+        }),
+    );
+    Ok(())
+}
+
+/// 给整棵树挂一份恢复码。
+///
+/// # 为什么整棵树共用一份，而不是每个文件各一份
+///
+/// 恢复码的用途是「密码忘了，把东西拿回来」。每个文件各一份意味着
+/// 用户要抄 N 张纸，而且丢一张就少一个文件——这与它的用途相悖。
+///
+/// 共用一份之所以可行，是因为目录名改用了两层结构：随机目录密钥加密
+/// 目录名，每把钥匙各包一份放在边车里。恢复码只是「又一把钥匙」。
+///
+/// # Errors
+///
+/// 不是密文树、密码不对、部分文件改写失败时返回错误。
+fn recovery_tree(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
+    // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数
+    let Some(sample) = omy_core::tree::find_any_file(&a.file) else {
+        bail!(
+            "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
+            a.file.display()
+        );
+    };
+    let head = read_prefix(&sample, omy_core::scan::MIN_PROBE_SIZE)?;
+    let h = omy_core::file::peek_header(&head)?;
+
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let old = read_password(&src, t("prompt.password"), false)?;
+    let old_kek = Kek::from_password(&old, &h.vault_salt, h.argon2_params())?;
+
+    // 尽早验密码：让用户看完一长串恢复码再被告知「密码不对」很糟。
+    // 拿样本文件试，成本是一次小文件读取
+    let sample_data = std::fs::read(&sample)
+        .with_context(|| format!("读取 {} 失败", sample.display()))?;
+    omy_core::file::open(&sample_data, &[old_kek.duplicate()])
+        .context("现有密码不正确（用树里的一个文件验证过）")?;
+
+    let code = omy_core::recovery::RecoveryCode::generate();
+    let reco_kek = code.to_kek(&h.vault_salt);
+
+    // keep 必须同时含当前密码与恢复码，理由同单文件：只放恢复码的话
+    // 这条命令就成了「把密码换成恢复码」
+    let keep = vec![old_kek.duplicate(), reco_kek];
+    let rep = omy_core::tree::rekey_tree(
+        &a.file,
+        &[old_kek],
+        &keep,
+        &h.vault_salt,
+        h.cipher_id,
+        // Carry：这棵树上可能还挂着别人的密码，「加一个恢复码」
+        // 不该顺手把它们抹了
+        omy_core::keyslot::OtherSlots::Carry,
+    )?;
+
+    // 部分失败要如实报告：那些文件上没挂上恢复码，而用户以为整棵树都有了
+    if !rep.is_complete() {
+        for (path, why) in &rep.failed {
+            ctx.out.warn(&format!("  {} — {why}", path.display()));
+        }
+        bail!(
+            "{} 个文件没能挂上恢复码（共 {} 个）。已挂上的那些是有效的，\n\
+             修掉上面的原因后重跑即可给剩下的补上。",
+            rep.failed.len(),
+            rep.changed.saturating_add(rep.failed.len()),
+        );
+    }
+
+    let phrase = code.to_phrase();
+    if let Some(p) = &a.out {
+        std::fs::write(p, format!("{phrase}\n"))
+            .with_context(|| format!("写入 {} 失败", p.display()))?;
+        ctx.out.warn(&format!(
+            "恢复码已写入 {}。该文件是明文，请立即转移到安全的地方并删除原件。",
+            p.display()
+        ));
+    }
+
+    let human = format!(
+        "已为 {} 整棵树生成恢复码（{} 个文件）。\n\n\
+         {}\n\n\
+         ⚠️  这串词只显示这一次，我们不保存它的明文。\n\
+         ⚠️  它是整棵树的强度下限——谁拿到这张纸，谁就能打开全部内容。\n\
+         ⚠️  每个密文目录里的 .omy-keys 是解开目录名的钥匙，删掉它\n\
+             那个目录的名字就再也解不开了。",
+        a.file.display(),
+        rep.changed,
+        wrap_words(&phrase),
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "path": a.file.display().to_string(),
+            "mode": "tree",
+            "operation": "recovery",
+            "files_changed": rep.changed,
+            // 恢复码本身不进 JSON，理由同单文件
+            "words": omy_core::recovery::WORD_COUNT,
+            "written_to": a.out.as_ref().map(|p| p.display().to_string()),
+        }),
+    );
+    Ok(())
+}
+
+/// 用恢复码打开整棵树并设置新密码。
+///
+/// # Errors
+///
+/// 恢复码解析失败、打不开这棵树、部分文件改写失败时返回错误。
+fn restore_tree(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
+    let Some(sample) = omy_core::tree::find_any_file(&a.file) else {
+        bail!(
+            "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
+            a.file.display()
+        );
+    };
+    let head = read_prefix(&sample, omy_core::scan::MIN_PROBE_SIZE)?;
+    let h = omy_core::file::peek_header(&head)?;
+
+    let csrc = PasswordSource {
+        env: a.code_env.clone(),
+        file: a.code_file.clone(),
+        stdin: false,
+    };
+    let raw = read_password(&csrc, "恢复码（26 个词，空格分隔）", false)?;
+    let phrase = String::from_utf8_lossy(&raw).into_owned();
+    // 解析错误原样透出：core 会指出「第 7 个词不在词表，是不是 academic」，
+    // 压成一句「恢复码无效」等于把最有用的信息扔掉
+    let code = omy_core::recovery::RecoveryCode::from_phrase(&phrase)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let reco_kek = code.to_kek(&h.vault_salt);
+
+    // 校验和过了只说明「没抄错」，不说明「属于这棵树」。真去解一次
+    let sample_data = std::fs::read(&sample)
+        .with_context(|| format!("读取 {} 失败", sample.display()))?;
+    omy_core::file::open(&sample_data, &[reco_kek.duplicate()]).context(
+        "这串词本身没有抄错，但它打不开这棵树——可能属于另一个库，或属于更早生成的一份",
+    )?;
+
+    let nsrc = PasswordSource {
+        env: a.new_password_env.clone(),
+        file: a.new_password_file.clone(),
+        stdin: false,
+    };
+    let pw = read_password(&nsrc, t("prompt.new_password"), nsrc.is_interactive())?;
+    let new_kek = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+
+    // keep 保留恢复码：用到它就意味着密码已经忘过一次，这时抽掉唯一的
+    // 兜底是最坏的时机
+    let keep = vec![new_kek, reco_kek.duplicate()];
+    let rep = omy_core::tree::rekey_tree(
+        &a.file,
+        &[reco_kek],
+        &keep,
+        &h.vault_salt,
+        h.cipher_id,
+        omy_core::keyslot::OtherSlots::Carry,
+    )?;
+
+    if !rep.is_complete() {
+        for (path, why) in &rep.failed {
+            ctx.out.warn(&format!("  {} — {why}", path.display()));
+        }
+        bail!(
+            "{} 个文件没能设上新密码（共 {} 个）。恢复码对它们仍然有效，\n\
+             修掉上面的原因后重跑即可。",
+            rep.failed.len(),
+            rep.changed.saturating_add(rep.failed.len()),
+        );
+    }
+
+    let human = format!(
+        "已用恢复码重设 {} 的密码（{} 个文件）。\n\n\
+         恢复码      仍然有效\n\
+         目录名      未改变（由随机目录密钥加密，与密码无关）\n\
+         载荷        未改动（仅重写 slot 区与边车）",
+        a.file.display(),
+        rep.changed,
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "path": a.file.display().to_string(),
+            "mode": "tree",
+            "operation": "restore",
+            "files_changed": rep.changed,
             "recovery_still_valid": true,
         }),
     );
@@ -683,21 +873,15 @@ fn read_prefix(p: &std::path::Path, n: usize) -> Result<Vec<u8>> {
 /// 成正比，所以带进度输出。中途失败不会毁数据：每个文件各自原子写回，
 /// 任一时刻每个文件要么是完整的旧密文、要么是完整的新密文。
 fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
-    // 树只能有一个密码，所以 add / remove 在这里没有意义。
+    // add / remove 现在对目录也成立。
     //
-    // 目录名由**第一个** KEK 派生（encrypt_tree / decrypt_tree 都只认
-    // keks[0]），多出来的密码只能打开文件、解不开目录名。实测的表现是
-    // decrypt 报 content hash mismatch——用户会以为文件损坏了。与其给出
-    // 一个半残的密码，不如直说不支持
-    if matches!(op, Op::Add | Op::Remove) {
-        bail!(
-            "key {} 不支持目录：树形加密的目录名由密码派生，\n\
-             一棵树同时只能有一个密码。多加的密码能打开文件却解不开目录名，\n\
-             解密时会报「文件损坏」。\n\
-             要换密码请用 key change。",
-            op.name()
-        );
-    }
+    // 以前禁掉它们，是因为目录名由 keks[0] 派生，多出来的密码能打开
+    // 每个文件却解不开目录名——解密时报「文件损坏」。改用两层结构
+    // （随机目录密钥 + 每把钥匙包一份放边车）之后，任一把钥匙都能
+    // 解开目录名，这个限制不存在了。
+    //
+    // remove 仍然危险，但危险之处与单文件相同（清掉其它全部密码），
+    // 不需要在这里特殊拦截
 
     // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数
     let Some(sample) = omy_core::tree::find_any_file(&a.file) else {
@@ -762,11 +946,16 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
             Some(k) => vec![k],
             None => vec![old_kek.duplicate()],
         },
-        // 上面已经逐一拒绝。不用 unreachable!：omy-cli 虽然没有 omy-gui
-        // 那么严的禁用规则，但一个能被将来的改动触发的 panic 不值得留
-        Op::Add | Op::Remove => {
-            bail!("key {} 不支持目录", op.name())
-        }
+        // add：原密码 + 新密码都留着。
+        //
+        // 目录名改用两层结构之后这才有意义——以前多出来的密码能打开
+        // 每个文件却解不开目录名，解密时报「文件损坏」
+        Op::Add => match new_kek {
+            Some(k) => vec![old_kek.duplicate(), k],
+            None => bail!("add 需要一个新密码"),
+        },
+        // remove：只留当前密码，其它全部作废（含恢复码）
+        Op::Remove => vec![old_kek.duplicate()],
     };
 
     let rotate = op.rewrites_payload();
@@ -804,13 +993,19 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         last = idx;
         ctx.out.detail(&format!("[{idx}/{total}] {name}"));
     };
+    // 与单文件同一个判据：只有 remove 清场，其余保住认不出来的槽位。
+    // 两处若分开写，迟早出现「单文件保住了恢复码、目录里没保住」
+    let params = omy_core::tree::RekeyParams {
+        vault_salt: &h.vault_salt,
+        cipher: h.cipher_id,
+        rotate,
+        others: op.other_slots(),
+    };
     let rep = omy_core::tree::rekey_tree_with_progress(
         &a.file,
         &[old_kek],
         &keep,
-        &h.vault_salt,
-        h.cipher_id,
-        rotate,
+        params,
         if rotate { Some(&mut tick) } else { None },
     )?;
 

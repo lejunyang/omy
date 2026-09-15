@@ -54,15 +54,14 @@ const action = ref(props.isTree ? 'change' : 'add');
 
 /** 这个目标允许哪些操作。
  *
- * 树不给 add / remove：目录名由第一个 KEK 派生，一棵树同时只能有一个能
- * 浏览的密码。add 出来的第二个密码可以打开每一个文件，却解不开目录名——
- * 解密时报「文件损坏」。列出一个做不到的选项比不列糟得多。
+ * 树和单个文件现在一样，四个操作都支持。
  *
- * reencrypt 可以：每个文件各自原子写回，中途失败也不会留下写坏的文件。
+ * 以前树不给 add / remove，是因为目录名由第一个 KEK 派生，一棵树同时
+ * 只能有一个能浏览的密码——add 出来的第二个密码能打开每一个文件却解不开
+ * 目录名，解密时报「文件损坏」。目录名改用两层结构（随机目录密钥 +
+ * 每把钥匙包一份放在 .omy-keys 里）之后，任一把钥匙都能解开它。
  */
-const availableActions = computed(() =>
-  props.isTree ? ['change', 'reencrypt'] : ['add', 'change', 'remove', 'reencrypt'],
-);
+const availableActions = computed(() => ['add', 'change', 'remove', 'reencrypt']);
 const current = ref('');
 const next = ref('');
 const next2 = ref('');
@@ -83,12 +82,6 @@ const requiresNext = computed(() => action.value === 'add' || action.value === '
 /** 这个操作会重写载荷吗——决定底部说明与耗时警示。 */
 const rewrites = computed(() => action.value === 'reencrypt');
 
-/** 这次会不会改掉目录名。
- *
- * 目录名密钥由密码派生，所以只有密码真的变了才会改名。轮换时新密码是
- * 选填的，填了才改。
- */
-const renamesTree = computed(() => requiresNext.value || next.value.length > 0);
 
 const mismatch = computed(
   () => showsNext.value && next2.value.length > 0 && next.value !== next2.value,
@@ -151,6 +144,13 @@ function submit() {
       <div v-if="!isTree" class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
       <div v-else class="hint">{{ i18n.t('keymgmt.tree_single_password') }}</div>
 
+      <!-- 边车告知只对树显示：单个文件没有它。
+           常驻而不是折叠起来——删掉 .omy-keys 是不可逆的，而它看起来
+           就像个可以清理的隐藏文件，用户没有理由知道它要紧 -->
+      <div v-if="isTree" class="warnbox" role="alert">
+        {{ i18n.t('keymgmt.tree_sidecar_notice') }}
+      </div>
+
       <div v-if="error" class="errbox" role="alert">
         {{ error }}
         <!-- 逐条列出没改成的文件。只说「部分文件失败」用户无从下手：
@@ -185,11 +185,10 @@ function submit() {
         </label>
       </div>
 
-<!-- 目录名由密码派生，换完密码文件夹会改名。不提前说的话，用户
-           回到文件管理器发现「文件夹不见了」会以为数据没了。
-           只在真会改名时显示：轮换若不换密码，目录名密钥没变、名字不动，
-           照旧警告会让用户白担心一场 -->
-      <div v-if="isTree && renamesTree" class="warnbox" role="alert">
+<!-- 目录名现在由独立的目录密钥加密，与密码无关，所以换密码不会
+           改名。这句从警告变成了安心提示——用户对「改密码会不会让文件夹
+           不见」是有顾虑的，明确说不会比什么都不说好 -->
+      <div v-if="isTree" class="note if">
         {{ i18n.t('keymgmt.tree_warning') }}
       </div>
 

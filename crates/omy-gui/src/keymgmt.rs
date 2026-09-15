@@ -406,13 +406,20 @@ fn run_tree(
 
     // 只有轮换才发进度：change 是秒级的，发事件纯属噪音
     let mut tick = progress_tree(app);
+    // 与单文件同一个判据，避免「单文件保住了恢复码、目录里没保住」
+    // 叫 rekey_params 而不是 params：这个作用域里已经有一个 Argon2Params
+    // 也叫 params，重名会把它遮蔽掉
+    let rekey_params = omy_core::tree::RekeyParams {
+        vault_salt: &header.vault_salt,
+        cipher: header.cipher_id,
+        rotate,
+        others: action.other_slots(),
+    };
     let rep = omy_core::tree::rekey_tree_with_progress(
         path,
         &[current],
         &[next],
-        &header.vault_salt,
-        header.cipher_id,
-        rotate,
+        rekey_params,
         if rotate { Some(&mut tick) } else { None },
     )
     .map_err(map_core_err)?;
@@ -561,6 +568,15 @@ fn run_retry(
         &[current],
         &[next],
         req.rotate,
+        // Carry：重试上下文里没有 action，但能走到这里的只有 change 与
+        // reencrypt——remove 不改写载荷、不会产生需要重试的部分失败。
+        // 这两个本来就该 Carry，所以固定值是对的而不是凑合。
+        //
+        // 真正的风险是将来有人给 remove 也加上重试路径却忘了改这里，
+        // 那会让「只保留当前密码」在重试的那些文件上失效。RetryRequest
+        // 里带上 action 才是长久之计，但那要改前后端接口，等有第三个
+        // 调用方时再做
+        omy_core::keyslot::OtherSlots::Carry,
         if req.rotate { Some(&mut tick) } else { None },
     )
     .map_err(map_core_err)?;
@@ -746,7 +762,7 @@ pub async fn generate_recovery(
 fn run_recovery(state: &Shared, req: &RecoveryRequest) -> CmdResult<RecoveryOutcome> {
     let path = Path::new(&req.path);
     if path.is_dir() {
-        return Err(CmdError::code("tree_not_supported"));
+        return run_recovery_tree(state, req, path);
     }
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
@@ -851,7 +867,7 @@ pub async fn restore_with_recovery(
 fn run_restore(state: &Shared, req: &RestoreRequest) -> CmdResult<RestoreOutcome> {
     let path = Path::new(&req.path);
     if path.is_dir() {
-        return Err(CmdError::code("tree_not_supported"));
+        return run_restore_tree(state, req, path);
     }
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
@@ -905,6 +921,109 @@ fn run_restore(state: &Shared, req: &RestoreRequest) -> CmdResult<RestoreOutcome
     })
 }
 
+
+/// 给整棵树挂一份恢复码。
+///
+/// 共用一份而不是每个文件各一份：恢复码的用途是「密码忘了，把东西拿
+/// 回来」，每个文件各一份意味着要抄 N 张纸、丢一张少一个文件，与用途相悖。
+fn run_recovery_tree(
+    state: &Shared,
+    req: &RecoveryRequest,
+    path: &Path,
+) -> CmdResult<RecoveryOutcome> {
+    let sample =
+        omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_encrypted_tree"))?;
+    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
+    let params = header.argon2_params();
+    let current = derive(&req.current, &header.vault_salt, params)?;
+
+    // 尽早验密码：让用户看完 26 个词再被告知「密码不对」很糟
+    omy_core::file::open(&head, &[current.duplicate()])
+        .map_err(|_| CmdError::code("wrong_password"))?;
+
+    let code = omy_core::recovery::RecoveryCode::generate();
+    let reco_kek = code.to_kek(&header.vault_salt);
+    let keep = vec![current.duplicate(), reco_kek];
+
+    let rep = omy_core::tree::rekey_tree(
+        path,
+        &[current],
+        &keep,
+        &header.vault_salt,
+        header.cipher_id,
+        // Carry：这棵树上可能还挂着别人的密码，加一个恢复码不该抹掉它们
+        omy_core::keyslot::OtherSlots::Carry,
+    )
+    .map_err(map_core_err)?;
+
+    if !rep.is_complete() {
+        // 部分失败要如实报告：那些文件没挂上恢复码，而用户以为整棵树都有了
+        return Err(CmdError::with(
+            "tree_partial_failure",
+            serde_json::json!({ "failed": rep.failed.len(), "changed": rep.changed }),
+        ));
+    }
+
+    state.with_session(|s| {
+        let _ = s.add_password("main", &header.vault_salt, &req.current, params);
+    });
+
+    Ok(RecoveryOutcome {
+        words: code.to_words().into_iter().map(str::to_owned).collect(),
+        // 树形走 rekey_tree，它不返回 may_have_evicted——整棵树统一改写，
+        // 不存在单文件那种「槽位下标撞车」的情形
+        may_have_evicted: false,
+    })
+}
+
+/// 用恢复码重设整棵树的密码。
+fn run_restore_tree(
+    state: &Shared,
+    req: &RestoreRequest,
+    path: &Path,
+) -> CmdResult<RestoreOutcome> {
+    let sample =
+        omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_encrypted_tree"))?;
+    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
+
+    let code = omy_core::recovery::RecoveryCode::from_phrase(&req.code).map_err(|e| {
+        CmdError::with("bad_recovery_code", serde_json::json!({ "detail": e.to_string() }))
+    })?;
+    let reco_kek = code.to_kek(&header.vault_salt);
+
+    // 校验和过了只说明没抄错，不说明属于这棵树
+    omy_core::file::open(&head, &[reco_kek.duplicate()])
+        .map_err(|_| CmdError::code("recovery_mismatch"))?;
+
+    let params = header.argon2_params();
+    let new_kek = derive(&req.next, &header.vault_salt, params)?;
+    let keep = vec![new_kek, reco_kek.duplicate()];
+
+    let rep = omy_core::tree::rekey_tree(
+        path,
+        &[reco_kek],
+        &keep,
+        &header.vault_salt,
+        header.cipher_id,
+        omy_core::keyslot::OtherSlots::Carry,
+    )
+    .map_err(map_core_err)?;
+
+    if !rep.is_complete() {
+        return Err(CmdError::with(
+            "tree_partial_failure",
+            serde_json::json!({ "failed": rep.failed.len(), "changed": rep.changed }),
+        ));
+    }
+
+    state.with_session(|s| {
+        let _ = s.add_password("main", &header.vault_salt, &req.next, params);
+    });
+
+    Ok(RestoreOutcome { slots_in_use: rep.changed, recovery_still_valid: true })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
