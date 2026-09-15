@@ -123,11 +123,21 @@ code{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:.92em
 /* ---------- 右键菜单 ---------- */
 .menu{width:262px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
   padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+/* 菜单项：带下方说明时改为两行布局，说明与标签文字左对齐。
+   为什么不放右侧：右侧空间只剩百来像素，一句完整的解释必然换行，
+   而右对齐的换行文本读起来是断的（「……请先 / 解密到本地」）。
+   短标注（如「仅单个」「位置只读」）不会换行，仍放右侧更紧凑。 */
 .mi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-s);
   font-size:13px;cursor:pointer;position:relative;min-height:34px}
+.mi.two{display:grid;grid-template-columns:auto 1fr;gap:2px 9px;align-items:start;padding-block:8px}
+.mi.two>.mico2{grid-row:1;align-self:center}
+.mi.two>.mtxt{grid-row:1;align-self:center}
+/* 说明落在第 2 列第 2 行，于是左边缘与标签文字严格对齐 */
+.mi.two>.mnote{grid-column:2;grid-row:2;font-size:11px;color:var(--fg2);line-height:1.4;text-align:start}
 .mi:hover:not(.dis){background:var(--bg3)}
 .mi.dis{opacity:.4;cursor:not-allowed}
-.mi .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2);max-width:126px;text-align:end;line-height:1.25}
+/* 短标注才留在右侧 */
+.mi .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2);white-space:nowrap}
 .msep{height:1px;background:var(--border);margin:4px 2px}
 .gone{text-decoration:line-through;opacity:.32}
 
@@ -162,10 +172,54 @@ select,input[type=text]{background:var(--bg3);color:var(--fg);border:1px solid v
 .opt.dis{opacity:.45;cursor:not-allowed}
 .ot{font-size:13px}
 .od{font-size:11.5px;color:var(--fg2);margin-top:3px;line-height:1.45}
-.sub{margin-inline-start:26px;margin-top:8px;padding:9px;background:var(--bg3);
+/* 子区域与上方标题、说明左边缘对齐。
+   两层缩进都要处理：一是原先多加的 margin-inline-start，二是自身 padding——
+   背景块左缘对齐时，块内文字反而比上方说明右缩一个 padding。
+   用负外边距把背景外扩，使**文字**而非背景与上方对齐，看起来才是一条线。 */
+.sub{margin-top:9px;margin-inline:-10px;padding:10px;background:var(--bg3);
   border-radius:var(--r-s);font-size:12px}
-.warnline{color:var(--warn);font-size:11.5px;margin-top:6px;display:flex;gap:6px}
+/* 警告行用 grid：图标一列、文字一列，换行后第二行仍与第一行文字对齐，
+   而不是缩回到图标下面 */
+.warnline{color:var(--warn);font-size:11.5px;margin-top:7px;
+  display:grid;grid-template-columns:auto 1fr;gap:6px;align-items:start;line-height:1.45}
+/* 子区域里的复选框：清掉默认的左外边距，让方框左缘与区域内边距对齐 */
+.sub .chk{margin:0;min-height:0;align-items:center}
+.sub .chk input{margin:0;flex:none}
 .dact{display:flex;justify-content:flex-end;gap:9px;margin-top:16px}
+
+/* ---------- 设置弹窗（PC） ---------- */
+.setwrap{padding:16px;background:var(--bg3);display:flex;justify-content:center}
+.setdlg{width:100%;max-width:840px;height:520px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--r-l);overflow:hidden;display:flex;flex-direction:column}
+.seth{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.sethn{font-size:15px;font-weight:600}
+.setbody{flex:1;display:grid;grid-template-columns:168px 1fr;min-height:0}
+.setnav{background:var(--bg2);border-inline-end:1px solid var(--border);padding:8px 6px;overflow:auto}
+.snav{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;color:var(--fg);
+  padding:8px;border-radius:var(--r-s);cursor:pointer;text-align:start;font-size:13px;min-height:36px}
+.snav:hover{background:var(--bg3)}
+.snav.on{background:var(--accent);color:#fff}
+.setpane{padding:16px 18px;overflow:auto}
+.pgh{font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+/* 分组小标题：把一页里的若干块分开，避免长表单糊成一片 */
+.sgh{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;margin-bottom:7px}
+/* 控件下方的解释文字，与控件左缘对齐 */
+.sdesc{font-size:11.5px;color:var(--fg2);margin-top:5px;line-height:1.45}
+.plist{display:flex;flex-direction:column;gap:6px}
+.pitem{display:flex;align-items:center;gap:9px;padding:9px 11px;background:var(--bg2);
+  border:1px solid var(--border);border-radius:var(--r-s);font-size:13px;flex-wrap:wrap}
+.pnm{font-weight:500}
+.pty{color:var(--fg2);font-size:11.5px;margin-inline-start:auto;display:flex;align-items:center;gap:5px}
+/* 二级页入口：整行可点，右侧箭头提示还有下一层 */
+.subentry{display:flex;align-items:center;gap:10px;width:100%;background:var(--bg2);
+  border:1px solid var(--border);border-radius:var(--r-s);padding:11px;cursor:pointer;
+  color:var(--fg);text-align:start;min-height:52px}
+.subentry:hover{border-color:var(--accent)}
+.sub2{display:flex;flex-direction:column;gap:2px;flex:1}
+.s2t{font-size:13px}
+.s2d{font-size:11.5px;color:var(--fg2)}
+.s2a{color:var(--fg2);font-size:16px}
 
 /* ---------- 移动端画框 ---------- */
 .phones{display:flex;gap:22px;flex-wrap:wrap}
@@ -208,6 +262,19 @@ select,input[type=text]{background:var(--bg3);color:var(--fg);border:1px solid v
 .lmid{flex:1;min-width:0}
 .lnm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lsz{font-size:10.5px;color:var(--fg2);margin-top:1px}
+
+/* ---------- 移动端设置列表 ---------- */
+.mgh{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;padding:14px 12px 6px}
+/* 整行可点，高度 ≥48px；右侧箭头表示还有下一层 */
+.mrow{display:flex;align-items:center;gap:11px;padding:12px;min-height:48px;
+  border-bottom:1px solid var(--border);cursor:pointer}
+.mrow:active{background:var(--bg3)}
+.mri{width:22px;text-align:center;flex:none;font-size:15px}
+.mrt{flex:1;font-size:13.5px}
+.mrv{font-size:12px;color:var(--fg2);max-width:110px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.mra{color:var(--fg2);font-size:15px;flex:none}
 
 /* 进度条（传输中） */
 .tprog{padding:8px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11.5px}
@@ -387,8 +454,14 @@ table.mx th{background:var(--bg2);font-weight:600}
           <div class="mi gone"><span>✏️</span><span>重命名</span></div>
           <div class="mi gone"><span>🗑️</span><span>删除</span></div>
           <div class="msep"></div>
-          <div class="mi dis"><span>🔑</span><span>密码管理</span>
-            <span class="mh">云端不支持原地改写，请先解密到本地</span></div>
+          <!-- 长说明放下方并与标签左对齐；右侧只剩百来像素，
+               右对齐换行会把一句话读断 -->
+          <div class="mi two dis">
+            <span class="mico2">🔑</span><span class="mtxt">密码管理</span>
+            <span class="mnote">云端不支持原地改写，请先解密到本地</span>
+          </div>
+          <!-- 短标注不会换行，仍放右侧 -->
+          <div class="mi dis"><span>👁️</span><span>预览</span><span class="mh">仅单个</span></div>
         </div>
       </div>
     </div>
@@ -432,41 +505,205 @@ table.mx th{background:var(--bg2);font-weight:600}
     </div>
   </div>
 
-  <!-- ============ 4. 缓存设置 ============ -->
+  <!-- ============ 4. 设置：PC 弹窗 ============ -->
   <div class="sec">
     <div class="sech">
-      <div class="secn">4 · 设置 › 远程位置 › 缓存</div>
-      <div class="secd">只缓存密文；上限可设，默认 2 GiB，LRU 淘汰</div>
-    </div>
-    <div class="frame"><div class="flabel"><span>设置面板</span><span>桌面与移动端共用同一组件</span></div>
-      <div class="panel">
-        <div class="prow"><div class="plabel">缓存位置</div>
-          <div class="pval"><code>C:\Users\you\AppData\Local\omy\cache</code></div>
-          <button class="btn">更改…</button><button class="btn">打开</button></div>
-        <div class="prow"><div class="plabel">已用空间</div>
-          <div class="pval">1.2 GB / 2.0 GB（头部缓存 8 MB，不计入上限）
-            <div class="bar"><i style="width:60%"></i></div></div></div>
-        <div class="prow"><div class="plabel">最大缓存</div>
-          <div class="pval"><select>
-            <option>512 MB</option><option>1 GB</option><option selected>2 GB（默认）</option>
-            <option>5 GB</option><option>10 GB</option><option>自定义…</option><option>不限制</option>
-          </select></div></div>
-        <div class="prow"><div class="plabel">退出时清空</div>
-          <div class="pval"><label class="chk"><input type="checkbox" /> 关闭应用时清空缓存</label></div></div>
-        <div class="prow"><div class="plabel">立即清理</div>
-          <div class="pval">当前可释放 1.2 GB</div>
-          <button class="btn dgr">清空缓存</button></div>
-        <div class="hint"><span>ⓘ</span><div>
-          缓存中<b>只存放加密后的密文</b>，内容与云端文件完全相同；
-          <b>解密后的内容不会写入磁盘</b>。即使缓存目录被他人取得，也无法从中读出你的文件内容。
-        </div></div>
-      </div>
+      <div class="secn">4 · 设置（PC：弹窗，左侧分类）</div>
+      <div class="secd">语言与主题从顶栏图标收进来；缓存是其中一项，点进去是二级页</div>
     </div>
     <div class="note">
-      <b>那行说明文字不能省。</b>用户看到「缓存」的第一反应是「我的文件被明文存下来了？」——
-      这恰恰是本项目最需要当场澄清的疑虑。<br>
-      <b>头部缓存单独计量且不淘汰：</b>每个文件几 KB，却决定列表能否显示真名和缩略图；
-      淘汰它会让用户每次回到目录都重扫一遍。
+      <b>为什么要有这个页面：</b>现在语言（🌐）和主题（◐）是顶栏的两个图标，
+      移动端底栏也各占一格。底栏换成「文件 / 远程 / 设备 / 设置」后这两格没了，
+      必须有地方安置；而远程位置又带来缓存、连接、传输等一批新配置——
+      <b>散在各处迟早找不到，收进一个设置入口是必然的。</b>
+    </div>
+
+    <div class="frame"><div class="flabel"><span>桌面 · 设置弹窗 840×520</span><span>左列分类 · 右侧内容</span></div>
+      <div class="setwrap">
+        <div class="setdlg">
+          <div class="seth">
+            <span class="sethn">设置</span>
+            <button class="cbtn" style="margin-inline-start:auto">✕</button>
+          </div>
+          <div class="setbody">
+            <nav class="setnav">
+              <button class="snav" data-p="general"><span>⚙️</span>通用</button>
+              <button class="snav on" data-p="remote"><span>☁️</span>远程位置</button>
+              <button class="snav" data-p="security"><span>🔐</span>安全与密码</button>
+              <button class="snav" data-p="encrypt"><span>🔒</span>加密默认值</button>
+              <button class="snav" data-p="playback"><span>🎬</span>播放与预览</button>
+              <button class="snav" data-p="devices"><span>📡</span>设备与共享</button>
+              <button class="snav" data-p="about"><span>ℹ️</span>关于</button>
+            </nav>
+
+            <!-- 通用 -->
+            <section class="setpane" data-p="general" hidden>
+              <div class="pgh">通用</div>
+              <div class="prow"><div class="plabel">语言</div>
+                <div class="pval"><select><option selected>简体中文</option><option>English</option>
+                  <option>跟随系统</option></select></div></div>
+              <div class="prow"><div class="plabel">主题</div>
+                <div class="pval"><select><option selected>深色</option><option>浅色</option>
+                  <option>跟随系统</option></select></div></div>
+              <div class="prow"><div class="plabel">启动时打开</div>
+                <div class="pval"><select><option selected>上次的位置</option><option>主目录</option>
+                  <option>指定文件夹…</option></select></div></div>
+              <div class="prow"><div class="plabel">默认视图</div>
+                <div class="pval"><select><option selected>网格</option><option>列表</option></select></div></div>
+              <div class="prow"><div class="plabel">删除行为</div>
+                <div class="pval"><label class="chk"><input type="checkbox" checked /> 优先移到回收站</label>
+                  <div class="sdesc">平台不支持回收站时会<b>明确报错</b>，不会静默改为永久删除。</div></div></div>
+            </section>
+
+            <!-- 远程位置（默认显示） -->
+            <section class="setpane on" data-p="remote">
+              <div class="pgh">远程位置</div>
+
+              <div class="sgh">已连接的位置</div>
+              <div class="plist">
+                <div class="pitem"><span class="dot on"></span><span class="pnm">家里 NAS</span>
+                  <span class="pty">WebDAV · 可写</span><button class="btn">编辑</button></div>
+                <div class="pitem"><span class="dot on"></span><span class="pnm">Nextcloud</span>
+                  <span class="pty">WebDAV · <span class="ro">只读</span></span><button class="btn">编辑</button></div>
+                <div class="pitem"><span class="dot err"></span><span class="pnm">坚果云</span>
+                  <span class="pty" style="color:var(--danger)">登录已失效</span><button class="btn">重新登录</button></div>
+              </div>
+              <button class="btn" style="margin-top:9px">➕ 添加远程位置…</button>
+
+              <div class="sgh" style="margin-top:20px">扫描</div>
+              <div class="prow"><div class="plabel">识别范围</div>
+                <div class="pval"><select><option selected>仅 .omy 文件（快）</option>
+                  <option>所有文件（可识别伪装文件，慢）</option></select>
+                  <div class="sdesc">远程每个文件都要一次请求。选「所有文件」前会提示预计请求数。</div></div></div>
+              <div class="prow"><div class="plabel">并发请求数</div>
+                <div class="pval"><select><option>4</option><option selected>8（默认）</option><option>16</option></select>
+                  <div class="sdesc">这不是性能调参，是<b>风控边界</b>——调高容易被服务端限流。</div></div></div>
+
+              <div class="sgh" style="margin-top:20px">缓存</div>
+              <!-- 二级页入口：缓存内容较多，独立成页；这里只给摘要 -->
+              <button class="subentry" id="gocache">
+                <span>🗄️</span>
+                <span class="sub2"><span class="s2t">密文缓存</span>
+                  <span class="s2d">已用 1.2 GB / 2.0 GB · LRU 淘汰</span></span>
+                <span class="s2a">›</span>
+              </button>
+            </section>
+
+            <!-- 缓存二级页 -->
+            <section class="setpane" data-p="cache" hidden>
+              <div class="pgh"><button class="cbtn" id="backcache">←</button> 密文缓存</div>
+              <div class="prow"><div class="plabel">缓存位置</div>
+                <div class="pval"><code>C:\Users\you\AppData\Local\omy\cache</code></div>
+                <button class="btn">更改…</button><button class="btn">打开</button></div>
+              <div class="prow"><div class="plabel">已用空间</div>
+                <div class="pval">1.2 GB / 2.0 GB
+                  <div class="bar"><i style="width:60%"></i></div>
+                  <div class="sdesc">另有头部缓存 8 MB，单独计量、不参与淘汰。</div></div></div>
+              <div class="prow"><div class="plabel">最大缓存</div>
+                <div class="pval"><select>
+                  <option>512 MB</option><option>1 GB</option><option selected>2 GB（默认）</option>
+                  <option>5 GB</option><option>10 GB</option><option>自定义…</option><option>不限制</option>
+                </select></div></div>
+              <div class="prow"><div class="plabel">退出时清空</div>
+                <div class="pval"><label class="chk"><input type="checkbox" /> 关闭应用时清空缓存</label></div></div>
+              <div class="prow"><div class="plabel">立即清理</div>
+                <div class="pval">当前可释放 1.2 GB</div>
+                <button class="btn dgr">清空缓存</button></div>
+              <div class="hint"><span>ⓘ</span><div>
+                缓存中<b>只存放加密后的密文</b>，内容与云端文件完全相同；
+                <b>解密后的内容不会写入磁盘</b>。即使缓存目录被他人取得，也无法从中读出你的文件内容。
+              </div></div>
+            </section>
+
+            <!-- 安全与密码 -->
+            <section class="setpane" data-p="security" hidden>
+              <div class="pgh">安全与密码</div>
+              <div class="prow"><div class="plabel">自动锁定</div>
+                <div class="pval"><select><option>从不</option><option selected>闲置 10 分钟后</option>
+                  <option>闲置 30 分钟后</option><option>窗口失去焦点时</option></select>
+                  <div class="sdesc">锁定会清空会话密钥，再看加密文件需重新输入密码。</div></div></div>
+              <div class="prow"><div class="plabel">当前会话</div>
+                <div class="pval">已加载 3 个密码</div>
+                <button class="btn">立即锁定</button></div>
+              <div class="prow"><div class="plabel">远程凭据</div>
+                <div class="pval">2 个位置的登录信息已<b>加密保存</b>在本机</div>
+                <button class="btn dgr">全部清除</button></div>
+              <div class="hint"><span>ⓘ</span><div>
+                密码遗忘将导致数据永久丢失——<b>设计上不存在后门或找回机制</b>。
+                建议为重要文件生成恢复码（在文件右键菜单里）。
+              </div></div>
+            </section>
+
+            <!-- 加密默认值 -->
+            <section class="setpane" data-p="encrypt" hidden>
+              <div class="pgh">加密默认值</div>
+              <div class="sdesc" style="margin-bottom:10px">
+                这些只是<b>加密对话框的初始值</b>，每次加密时仍可单独调整。</div>
+              <div class="prow"><div class="plabel">密钥强度</div>
+                <div class="pval"><select><option>快速</option><option selected>均衡（默认）</option>
+                  <option>高强度</option></select>
+                  <div class="sdesc">越高越慢；移动端用高强度解锁可能要等数秒。</div></div></div>
+              <div class="prow"><div class="plabel">分块大小</div>
+                <div class="pval"><select><option>64 KB</option><option selected>256 KB（默认）</option>
+                  <option>1 MB</option><option>4 MB</option></select>
+                  <div class="sdesc">块越小拖动越跟手，但头部索引更大。</div></div></div>
+              <div class="prow"><div class="plabel">压缩</div>
+                <div class="pval"><label class="chk"><input type="checkbox" checked /> 默认启用</label></div></div>
+              <div class="prow"><div class="plabel">加密文件名</div>
+                <div class="pval"><label class="chk"><input type="checkbox" checked /> 默认启用</label></div></div>
+              <div class="prow"><div class="plabel">加密后</div>
+                <div class="pval"><select><option selected>保留原文件</option>
+                  <option>移到回收站</option></select>
+                  <div class="sdesc">默认保留。删除原文件是不可逆操作，不应是默认值。</div></div></div>
+            </section>
+
+            <!-- 播放与预览 -->
+            <section class="setpane" data-p="playback" hidden>
+              <div class="pgh">播放与预览</div>
+              <div class="prow"><div class="plabel">远程预读</div>
+                <div class="pval"><select><option>保守（省流量）</option><option selected>自动</option>
+                  <option>激进（抢流畅）</option></select></div></div>
+              <div class="prow"><div class="plabel">缩略图</div>
+                <div class="pval"><label class="chk"><input type="checkbox" checked /> 在列表中显示</label>
+                  <div class="sdesc">缩略图存在文件头里，显示它不需要读取载荷。</div></div></div>
+              <div class="prow"><div class="plabel">外部程序打开</div>
+                <div class="pval"><label class="chk"><input type="checkbox" checked /> 关闭后立即删除临时明文</label>
+                  <div class="sdesc">用外部程序打开必须先落一份明文临时文件，这是已知的旁路。</div></div></div>
+            </section>
+
+            <!-- 设备与共享 -->
+            <section class="setpane" data-p="devices" hidden>
+              <div class="pgh">设备与共享</div>
+              <div class="prow"><div class="plabel">本机名称</div>
+                <div class="pval"><input type="text" value="书房台式机" style="width:200px" /></div></div>
+              <div class="prow"><div class="plabel">局域网共享</div>
+                <div class="pval"><label class="chk"><input type="checkbox" /> 启动时自动开启</label>
+                  <div class="sdesc">共享只传密文、且是只读的，密钥不出本机。</div></div></div>
+              <div class="prow"><div class="plabel">已配对设备</div>
+                <div class="pval">2 台</div><button class="btn">管理…</button></div>
+            </section>
+
+            <!-- 关于 -->
+            <section class="setpane" data-p="about" hidden>
+              <div class="pgh">关于</div>
+              <div class="prow"><div class="plabel">版本</div><div class="pval">omy 0.0.1</div></div>
+              <div class="prow"><div class="plabel">格式版本</div>
+                <div class="pval"><code>OMYFILE</code> v1</div></div>
+              <div class="prow"><div class="plabel">开源许可</div>
+                <div class="pval">omy-core 采用 MIT OR Apache-2.0；本应用为 GPL-3.0</div>
+                <button class="btn">查看</button></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>分类顺序按使用频率，不按模块划分。</b>「通用」放第一是因为语言和主题是最常被找的两项；
+      「关于」放最后。<br>
+      <b>缓存做成二级页而不是直接铺在「远程位置」里：</b>它有位置、上限、清理等六七项，
+      铺开会把「已连接的位置」挤到看不见——而后者才是用户进这一页最常见的目的。<br>
+      <b>「加密默认值」要写明只是初始值。</b>不写的话用户会以为改了它会影响已加密的文件。
     </div>
   </div>
 
@@ -474,7 +711,12 @@ table.mx th{background:var(--bg2);font-weight:600}
   <div class="sec">
     <div class="sech">
       <div class="secn">5 · 移动端</div>
-      <div class="secd">与桌面共用组件，只换外壳；触控目标 ≥44px，底栏留安全区</div>
+      <div class="secd">与桌面共用组件，只换外壳；底栏四格＋设置页承接原来的语言与主题</div>
+    </div>
+    <div class="note">
+      <b>底栏换成「文件 / 远程 / 设备 / 设置」后，原来占两格的语言与主题去哪了：</b>
+      收进设置页的「通用」第一组，而且<b>放在最上面</b>。
+      它们原本一点就切换，若收进去还要点两层才够到，就是退步。
     </div>
     <div class="phones">
 
@@ -579,12 +821,57 @@ table.mx th{background:var(--bg2);font-weight:600}
       </div>
 
       <div class="phone">
-        <div class="pcap">④ 移动端缓存设置</div>
+        <div class="pcap">④ 设置主页（底栏「设置」）</div>
         <div class="screen">
-          <div class="mtop"><button class="mico">←</button><span class="mtitle">缓存</span></div>
+          <div class="mtop"><span class="mtitle">设置</span></div>
+          <div class="mbody" style="padding:0">
+            <!-- 移动端把最常改的两项直接放第一组，不再藏进二级页：
+                 它们原本是底栏上一点就切换的，收进设置后若还要点两层就是退步 -->
+            <div class="mgh">通用</div>
+            <div class="mrow"><span class="mri">🌐</span><span class="mrt">语言</span>
+              <span class="mrv">简体中文</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">◐</span><span class="mrt">主题</span>
+              <span class="mrv">深色</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🗂️</span><span class="mrt">默认视图</span>
+              <span class="mrv">网格</span><span class="mra">›</span></div>
+
+            <div class="mgh">远程位置</div>
+            <div class="mrow"><span class="mri">☁️</span><span class="mrt">已连接的位置</span>
+              <span class="mrv">3</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🗄️</span><span class="mrt">密文缓存</span>
+              <span class="mrv">1.2 / 2 GB</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">📶</span><span class="mrt">流量与传输</span>
+              <span class="mrv">仅 Wi-Fi</span><span class="mra">›</span></div>
+
+            <div class="mgh">安全</div>
+            <div class="mrow"><span class="mri">🔐</span><span class="mrt">自动锁定</span>
+              <span class="mrv">10 分钟</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🔒</span><span class="mrt">加密默认值</span>
+              <span class="mrv"></span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">📡</span><span class="mrt">设备与共享</span>
+              <span class="mrv">2 台</span><span class="mra">›</span></div>
+
+            <div class="mgh">其他</div>
+            <div class="mrow"><span class="mri">📱</span><span class="mrt">存储权限</span>
+              <span class="mrv" style="color:var(--ok)">已授权</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">ℹ️</span><span class="mrt">关于</span>
+              <span class="mrv">0.0.1</span><span class="mra">›</span></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab on"><i>⚙️</i>设置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="phone">
+        <div class="pcap">⑤ 设置 › 密文缓存（二级页）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">密文缓存</span></div>
           <div class="mbody">
             <div style="font-size:12px;color:var(--fg2);margin-bottom:5px">已用 1.2 GB / 2.0 GB</div>
             <div class="bar" style="max-width:none"><i style="width:60%"></i></div>
+            <div class="sdesc">另有头部缓存 8 MB，单独计量、不参与淘汰。</div>
             <div style="margin-top:16px">
               <div style="font-size:13px;margin-bottom:6px">最大缓存</div>
               <select style="width:100%"><option>512 MB</option><option selected>2 GB（默认）</option>
@@ -596,7 +883,7 @@ table.mx th{background:var(--bg2);font-weight:600}
                 /storage/emulated/0/Android/data/org.omy.app/cache</div>
               <button class="btn" style="margin-top:8px;width:100%">更改位置…</button>
             </div>
-            <label class="chk" style="margin-top:14px"><input type="checkbox" /> 仅在 Wi-Fi 下缓存</label>
+            <label class="chk" style="margin-top:14px"><input type="checkbox" checked /> 仅在 Wi-Fi 下缓存</label>
             <label class="chk"><input type="checkbox" /> 退出时清空缓存</label>
             <button class="btn dgr" style="margin-top:14px;width:100%">清空缓存（释放 1.2 GB）</button>
             <div class="hint"><span>ⓘ</span><div>缓存只存<b>密文</b>，与云端文件相同；解密内容不写入磁盘。</div></div>
@@ -680,6 +967,23 @@ table.mx th{background:var(--bg2);font-weight:600}
   }
   btn && btn.addEventListener('click', function () { writable = !writable; apply(); });
   apply();
+
+  // 设置弹窗：左列分类切换 + 缓存二级页进出
+  var navs = document.querySelectorAll('.snav');
+  var panes = document.querySelectorAll('.setpane');
+  function show(key) {
+    panes.forEach(function (p) { p.hidden = p.getAttribute('data-p') !== key; });
+    // 缓存是「远程位置」的二级页，进去时左列仍高亮「远程位置」
+    var navKey = key === 'cache' ? 'remote' : key;
+    navs.forEach(function (n) { n.classList.toggle('on', n.getAttribute('data-p') === navKey); });
+  }
+  navs.forEach(function (n) {
+    n.addEventListener('click', function () { show(n.getAttribute('data-p')); });
+  });
+  var go = document.getElementById('gocache');
+  go && go.addEventListener('click', function () { show('cache'); });
+  var back = document.getElementById('backcache');
+  back && back.addEventListener('click', function (e) { e.stopPropagation(); show('remote'); });
 })();
 </script>
 </body>
