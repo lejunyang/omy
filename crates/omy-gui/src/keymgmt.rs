@@ -10,17 +10,25 @@
 //!
 //! 格式上无法探测哪个 slot 是空的——未使用的槽填的是随机字节，与真实槽
 //! 在字节层面不可区分（可否认性）。所以不能"找个空位填进去"，猜错会静默
-//! 覆盖掉另一个密码。于是三个操作实际都是**重新声明这个文件的密码集合**：
+//! 覆盖掉另一个密码。
+//!
+//! 但**保住一个槽不需要先认出它**：slot 密文只依赖
+//! `(KEK, file_uuid, slot_index)`，原样搬运即可（core 的
+//! `OtherSlots::Carry`）。所以三个操作的语义是：
 //!
 //! | 操作 | 保留 | 作废 |
 //! |---|---|---|
-//! | `add` | 当前密码 + 新密码 | — |
-//! | `change` | 只有新密码 | 当前密码 |
+//! | `add` | 当前密码 + 新密码 + 其它槽原样 | — |
+//! | `change` | 新密码 + 其它槽原样 | 当前密码 |
 //! | `remove` | 只有当前密码 | 该文件上其它所有密码 |
 //!
 //! `remove` 这层语义必须由 UI 文案讲清：它不是"删掉某一个密码"，而是
-//! "只留下我现在用的这个"。文件上原本挂着几个密码是查不出来的，所以
-//! 界面不能显示"将删除 1 个密码"这种它并不知道的数字。
+//! "只留下我现在用的这个"，**包括用户可能设过的恢复码**。文件上原本挂着
+//! 几个密码是查不出来的，所以界面不能显示"将删除 1 个密码"这种它并不知道
+//! 的数字。
+//!
+//! 反过来，`add` / `change` 也**不该**再说"其它密码会失效"——那是改用
+//! 搬运之前的行为，现在它们不再殃及恢复码。
 //!
 //! # 第四个操作：`reencrypt`
 //!
@@ -205,6 +213,20 @@ impl Action {
         matches!(self, Self::Reencrypt)
     }
 
+    /// 未被 `keep` 覆盖的那些槽怎么处理。
+    ///
+    /// 只有 `remove` 是清场。`add` / `change` 用户想动的只是自己这一个密码，
+    /// 不该殃及这个文件上的恢复码——实测确认过，填随机会让它静默失效，
+    /// 而用户只在真忘密码那天才发现。
+    ///
+    /// 与 CLI 的 `Op::other_slots` 是同一套判据，**改一处就要改两处**。
+    const fn other_slots(self) -> omy_core::keyslot::OtherSlots {
+        match self {
+            Self::Remove => omy_core::keyslot::OtherSlots::Discard,
+            Self::Add | Self::Change | Self::Reencrypt => omy_core::keyslot::OtherSlots::Carry,
+        }
+    }
+
     const fn name(self) -> &'static str {
         match self {
             Self::Add => "add",
@@ -278,8 +300,8 @@ fn run(
         .map_err(map_core_err)?;
         (out.bytes, out.slot_used)
     } else {
-        let out =
-            omy_core::keyslot::rewrite_slots(&data, &[current], &keep).map_err(map_core_err)?;
+        let out = omy_core::keyslot::rewrite_slots(&data, &[current], &keep, action.other_slots())
+            .map_err(map_core_err)?;
         (out.bytes, out.slot_used)
     };
 

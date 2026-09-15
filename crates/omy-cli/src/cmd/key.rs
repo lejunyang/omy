@@ -9,16 +9,25 @@
 //! # 为什么 add 也要问「其余密码」
 //!
 //! 同一个原因。既然分不清空槽和别人的槽，就无法「挑个空位填进去」——
-//! 猜错会静默覆盖掉另一个密码。所以这三个命令的真实语义都是
-//! **重新声明这个文件的密码集合**：
+//! 猜错会静默覆盖掉另一个密码。所以这三个命令要求调用方声明**本次操作后
+//! 应当能打开此文件的密码**：
 //!
 //! - `add`：解锁用的密码 + 新密码，都保留
 //! - `change`：只保留新密码，解锁用的那个作废
 //! - `remove`：只保留解锁用的密码，其余全部作废
 //!
-//! `remove` 这个语义必须在提示里讲清楚：它不是「删掉某一个密码」，而是
-//! 「只留下我现在用的这个」。用户以为删掉的是别人那个，实际效果一样，
-//! 但如果文件上原本挂着 3 个密码，另外 2 个会一起失效。
+//! # 但「其余密码」不等于「文件上原有的全部密码」
+//!
+//! `add` / `change` 走原样搬运（core 的 `OtherSlots::Carry`）：没在命令里
+//! 出现的槽会被逐字节保留，而不是填成随机。所以用户**不必**穷举这个文件上
+//! 挂过的每一个密码——他不知道、也查不出来的那些（典型是恢复码）会自动
+//! 留下。这解决了一个实测到的真缺陷：改一次密码就永久失去恢复码。
+//!
+//! 只有 `remove` 是清场。它的语义必须在提示里讲清楚：不是「删掉某一个
+//! 密码」，而是「只留下我现在用的这个」，**包括用户可能设过的恢复码**。
+//!
+//! 代价是搬运只能无差别：想清掉某个特定协作者的密码，本命令做不到，
+//! 只能整体 `remove` 或 `key reencrypt`。
 
 use super::Ctx;
 use crate::i18n::t;
@@ -138,6 +147,21 @@ impl Op {
         matches!(self, Self::Reencrypt)
     }
 
+    /// 未被 `keep` 覆盖的那些槽怎么处理。
+    ///
+    /// 只有 `remove` 是清场。`add` / `change` 用户想动的只是自己这一个
+    /// 密码，不该殃及这个文件上的恢复码——实测确认过，填随机会让它静默
+    /// 失效，而用户只在真忘密码那天才发现。
+    ///
+    /// 把它做成 `Op` 的方法而不是在调用点现写：调用点有单文件和树形两处，
+    /// 分开写迟早出现「单文件保住了、目录里没保住」这种不一致。
+    const fn other_slots(self) -> omy_core::keyslot::OtherSlots {
+        match self {
+            Self::Remove => omy_core::keyslot::OtherSlots::Discard,
+            Self::Add | Self::Change | Self::Reencrypt => omy_core::keyslot::OtherSlots::Carry,
+        }
+    }
+
     /// 命令名，用于输出。
     const fn name(self) -> &'static str {
         match self {
@@ -251,8 +275,11 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         },
     };
 
-    // 所有会作废其它密码的操作都要确认。这里的措辞必须点明「其它密码」，
-    // 因为用户很容易以为 add 是纯增量、change 只影响自己那一个
+    // 只有真正会作废其它密码的操作才需要确认。
+    //
+    // change 现在走原样搬运（core 的 OtherSlots::Carry），不再殃及这个文件
+    // 上的恢复码或别人的密码，所以它不该再摆出「其它密码会失效」的警告——
+    // 那是过时且吓人的，会让用户不敢改密码
     if op != Op::Add {
         if op.rewrites_payload() {
             // 与 remove/change 的差异必须讲清，否则用户不知道为什么要
@@ -266,12 +293,22 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
             );
             ctx.out
                 .warn("该文件上除保留密码之外的其它密码都会失效（如果有的话）。");
-        } else {
+        } else if op == Op::Remove {
             ctx.out.warn(t("warn.remove_slot"));
-            ctx.out.warn(match op {
-                Op::Change => "修改后，原密码将无法再打开这个文件。",
-                _ => "该文件上除当前密码之外的其它密码都会失效（如果有的话）。",
-            });
+            // 必须点名恢复码。「其它密码」这个说法太抽象——用户设恢复码时
+            // 想的是「灾难兜底」，不会把它归到「其它密码」里，于是在这里
+            // 一路确认下去，直到真忘密码那天才发现兜底早没了
+            ctx.out.warn(
+                "该文件上除当前密码之外的其它密码都会失效，\
+                 **包括你可能设过的恢复码**。",
+            );
+        } else {
+            // change：只换自己这一个
+            ctx.out.warn("修改后，原密码将无法再打开这个文件。");
+            ctx.out.warn(
+                "该文件上的其它密码（如恢复码）不受影响，会原样保留。\
+                 想清掉它们请用 key remove。",
+            );
         }
         if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
             ctx.out.info(t("msg.cancelled"));
@@ -293,7 +330,24 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
             .detail(&format!("已重写 {} 字节明文", out.plaintext_size));
         (out.bytes, out.slot_used)
     } else {
-        let out = omy_core::keyslot::rewrite_slots(&data, &[unlock], &keep)?;
+        let out = omy_core::keyslot::rewrite_slots(&data, &[unlock], &keep, op.other_slots())?;
+        if out.carried_opaque > 0 {
+            // 不说「保留了 N 个密码」——那个数字把真实密码和随机填充算在
+            // 一起（格式上本就不可区分），说出来就是在报一个我们并不知道
+            // 的事实。只陈述做了什么
+            ctx.out.detail("其它槽位已原样保留（若该文件设过恢复码，它仍然有效）");
+        }
+        if out.may_have_evicted {
+            // add 看起来是纯增量，用户完全想不到它会顶掉一个自己看不见的
+            // 槽。措辞只能说「可能」——那个下标上原来是真密码还是随机填充，
+            // 我们确实不知道
+            ctx.out.warn(
+                "新密码占用的槽位上原本可能挂着别的密码（如恢复码），\
+                 若有则已失效。这是格式限制：无法探测哪个槽位是空的。",
+            );
+            ctx.out
+                .warn("如果这个文件设过恢复码，请重新生成并妥善保存。");
+        }
         (out.bytes, out.slot_used)
     };
 
