@@ -34,6 +34,14 @@ export const state = reactive({
   entries: [],
   /** 侧栏的起点：常用目录与磁盘根。 */
   places: [],
+  /** 已注册的远程位置，每项含 `caps` 能力位图。 */
+  remotePlaces: [],
+  /** 当前所在的远程位置 id；为空表示在本地。 */
+  remotePlace: '',
+  /** 远程位置里的当前目录。 */
+  remoteDir: '',
+  /** 远程目录的条目，已附带识别结果。 */
+  remoteItems: [],
   /**
    * 存储访问权限状态：`{ granted, mode }`。
    *
@@ -1440,6 +1448,109 @@ export async function applyLanguage(pref) {
 function detectSystemLang() {
   const raw = (navigator.language || 'en').toLowerCase();
   return raw.startsWith('zh') ? 'zh-CN' : 'en';
+}
+
+/* ---------------- 远程位置 ---------------- */
+
+/** 当前远程位置的能力位图。
+ *
+ * 不在远程位置时返回本地的全能力——这样上层判断可以统一写
+ * `caps.write`，不必到处分叉「是不是远程」。
+ */
+export const currentCaps = computed(() => {
+  if (!state.remotePlace) {
+    return {
+      read: true,
+      write: true,
+      delete: true,
+      rename: true,
+      create_dir: true,
+      random_write: true,
+      range_read: true,
+    };
+  }
+  const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
+  // 找不到时按只读处理：宁可少几个按钮，也不要对一个状态不明的位置
+  // 发起写操作
+  return (
+    p?.caps || {
+      read: true,
+      write: false,
+      delete: false,
+      rename: false,
+      create_dir: false,
+      random_write: false,
+      range_read: true,
+    }
+  );
+});
+
+/** 刷新远程位置列表。 */
+export async function reloadRemotePlaces() {
+  state.remotePlaces = await api.remotePlaceList().catch(() => []);
+}
+
+/** 进入一个远程位置的根目录。 */
+export async function openRemotePlace(id) {
+  state.remotePlace = id;
+  state.remoteDir = '';
+  await reloadRemoteDir();
+}
+
+/** 离开远程位置，回到本地浏览。 */
+export function leaveRemotePlace() {
+  state.remotePlace = '';
+  state.remoteDir = '';
+  state.remoteItems = [];
+}
+
+/** 列出当前远程目录。
+ *
+ * 失败时清空列表并报错，而不是留着上一个目录的内容——那会让用户
+ * 以为自己进到了一个内容相同的目录。
+ */
+export async function reloadRemoteDir() {
+  if (!state.remotePlace) return;
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  try {
+    state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    state.error = '';
+  } catch (e) {
+    state.remoteItems = [];
+    state.error = i18n.te(api.errCode(e), 'errors.remote_failed');
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
+/** 进入远程子目录。 */
+export async function enterRemoteDir(id) {
+  state.remoteDir = id;
+  await reloadRemoteDir();
+}
+
+/** 远程位置里返回上一级。
+ *
+ * 已在根时离开该位置回到本地，而不是什么都不做——否则用户会觉得
+ * 返回键卡住了。
+ */
+export async function remoteGoUp() {
+  const cur = state.remoteDir.replace(/\/+$/, '');
+  if (!cur) {
+    leaveRemotePlace();
+    return;
+  }
+  const i = cur.lastIndexOf('/');
+  state.remoteDir = i > 0 ? cur.slice(0, i) : '';
+  await reloadRemoteDir();
+}
+
+/** 添加远程位置后刷新列表并进入它。 */
+export async function afterPlaceAdded(id) {
+  await reloadRemotePlaces();
+  await openRemotePlace(id);
 }
 
 // 凭据归零就退出容器视图，不依赖某处记得清状态。

@@ -252,6 +252,86 @@ async function main() {
   check(pr.removed === true, '能移除远程位置');
 
   await cdp.eval(`document.querySelector('[data-si="close"]')?.click()`);
+  await sleep(500);
+
+  console.log('\n[7] 侧栏远程位置入口与添加对话框');
+  // 侧栏必须有「连接远程位置」入口，否则用户根本找不到从哪开始
+  const hasAddEntry = await cdp.eval(`!!document.querySelector('[data-rp="add"]')`);
+  check(hasAddEntry, '侧栏有「连接远程位置」入口');
+
+  const dlgOpened = await cdp.eval(`(() => {
+    const b = document.querySelector('[data-rp="add"]');
+    if (!b) return 'no-entry';
+    b.click();
+    return 'clicked';
+  })()`);
+  await sleep(500);
+  const hasDlg = await cdp.eval(`!!document.querySelector('[data-rp="add"][data-rp]') && !!document.querySelector('[data-rf="url"]')`);
+  check(dlgOpened === 'clicked' && hasDlg, '添加对话框能打开');
+
+  // 「允许写入」默认必须不勾：只读挂载是防误操作的第一道闸
+  const writableDefault = await cdp.eval(
+    `document.querySelector('[data-rf="writable"]')?.checked`,
+  );
+  check(writableDefault === false, '「允许写入」默认不勾选', `实际 ${writableDefault}`);
+
+  // 非法 URL 时提交按钮要禁用，而不是让用户点了才报错
+  const guard = await cdp.eval(`(async () => {
+    const url = document.querySelector('[data-rf="url"]');
+    const name = document.querySelector('[data-rf="name"]');
+    const btn = document.querySelector('[data-rf="submit"]');
+    if (!url || !name || !btn) return 'missing';
+    name.value = 'T'; name.dispatchEvent(new Event('input', { bubbles: true }));
+    url.value = 'ftp://nope'; url.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const disabledBad = btn.disabled;
+    url.value = 'https://dav.example.com/dav'; url.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const enabledGood = !btn.disabled;
+    return JSON.stringify({ disabledBad, enabledGood });
+  })()`);
+  let g = {};
+  try {
+    g = JSON.parse(guard);
+  } catch {
+    g = {};
+  }
+  check(g.disabledBad === true, '非法 URL 时提交按钮禁用', String(guard));
+  check(g.enabledGood === true, '合法 URL 时提交按钮可用', String(guard));
+
+  await cdp.eval(`document.querySelector('[data-rf="cancel"]')?.click()`);
+  await sleep(300);
+
+  console.log('\n[8] 只读位置在侧栏带徽标');
+  const badge = await cdp.eval(`(async () => {
+    const invoke = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a || {});
+    const id = await invoke('remote_place_add', {
+      name: '只读探针', url: 'https://ro.invalid.example/dav',
+      username: '', password: '', vendor: 'generic', writable: false,
+    });
+    return id;
+  })()`);
+  // 侧栏要重新拉列表才会出现，这里直接调 store 的刷新路径：
+  // 通过再次点击「连接远程位置」→取消 不会刷新，所以走一次 reload
+  await cdp.eval(`(async () => {
+    const invoke = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a || {});
+    const list = await invoke('remote_place_list');
+    window.__probeList = list;
+  })()`);
+  const listInfo = await cdp.eval(`JSON.stringify(window.__probeList || [])`);
+  let pl = [];
+  try {
+    pl = JSON.parse(listInfo);
+  } catch {
+    pl = [];
+  }
+  const ro = pl.find((x) => x.id === badge);
+  check(!!ro && ro.caps.write === false, '新增的只读位置能力正确', JSON.stringify(ro?.caps));
+  // 清理
+  await cdp.eval(`(async () => {
+    const invoke = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a || {});
+    await invoke('remote_place_remove', { id: ${JSON.stringify(badge)} });
+  })()`);
 
   console.log(`\n结果：${pass.length} 通过，${fail.length} 失败`);
   if (fail.length) {

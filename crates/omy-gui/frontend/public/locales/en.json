@@ -548,7 +548,10 @@
     "probe_failed": "Could not read",
     "probe_failed_hint": "Tap to retry",
     "locked_hint": "Not for the current password",
-    "connecting": "Connecting…"
+    "connecting": "Connecting…",
+    "empty_dir": "This folder is empty",
+    "add_failed": "Connection failed",
+    "url_scheme": "The URL must start with http:// or https://"
   },
   "common": {
     "back": "Back",

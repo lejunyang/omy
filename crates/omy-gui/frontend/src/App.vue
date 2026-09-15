@@ -41,6 +41,8 @@ import {
   lock,
   switchLanguage,
   applyLanguage,
+  afterPlaceAdded,
+  reloadRemotePlaces,
   selectAll,
   enrich,
   encryptable,
@@ -83,9 +85,22 @@ import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
+import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
+/** 添加远程位置对话框是否打开。 */
+const showAddPlace = ref(false);
+
+/** 远程位置添加成功：刷新列表并直接进去。
+ *
+ * 不留在原地——用户刚填完一串地址和密码，想看到的是里面有什么，
+ * 而不是回到一个看不出有没有添加成功的界面。
+ */
+async function onPlaceAdded(id) {
+  showAddPlace.value = false;
+  await afterPlaceAdded(id);
+}
 
 /** 设置页里改了语言：立刻加载对应语言包。
  *
@@ -562,6 +577,7 @@ onMounted(async () => {
   // 首屏侧栏停在「未授权」的那份列表上，直到下一次刷新才对
   await loadStorageAccess();
   await loadPlaces();
+  await reloadRemotePlaces();
   await refreshDeviceOverview();
 });
 onBeforeUnmount(() => {
@@ -590,6 +606,8 @@ onBeforeUnmount(() => {
     @lang="switchLanguage"
     @devices="showDevices = true"
     @settings="showSettings = true"
+    @add-place="showAddPlace = true"
+    @places="showAddPlace = state.remotePlaces.length === 0"
   />
 
   <DevicePanel
@@ -710,5 +728,11 @@ onBeforeUnmount(() => {
     v-if="showSettings"
     @close="showSettings = false"
     @lang="onSettingsLang"
+  />
+
+  <RemotePlaceDialog
+    v-if="showAddPlace"
+    @cancel="showAddPlace = false"
+    @added="onPlaceAdded"
   />
 </template>

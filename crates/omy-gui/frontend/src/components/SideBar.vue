@@ -3,7 +3,7 @@
 
 import { ref } from 'vue';
 import * as i18n from '../i18n.js';
-import { state, navigate, grantStorageAccess } from '../store.js';
+import { state, navigate, grantStorageAccess, openRemotePlace } from '../store.js';
 
 defineProps({
   /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
@@ -11,7 +11,7 @@ defineProps({
   mobile: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['pick', 'devices', 'navigate', 'lang']);
+const emit = defineEmits(['pick', 'devices', 'navigate', 'lang', 'add-place']);
 
 /** 正在等用户在系统设置页里操作。 */
 const granting = ref(false);
@@ -33,6 +33,12 @@ async function onGrant() {
 /** 进入某个位置，并通知父组件（抽屉据此收起）。 */
 function go(path) {
   navigate(path);
+  emit('navigate');
+}
+
+/** 进入一个远程位置。抽屉同样要收起。 */
+async function goRemote(p) {
+  await openRemotePlace(p.id);
   emit('navigate');
 }
 
@@ -116,6 +122,29 @@ function iconOf(place) {
       <span class="stext">{{ i18n.t('nav.pick_folder') }}</span>
     </button>
 
+    <!-- 远程位置单独分组，不混进「位置」。
+         两者的响应延迟差一个数量级，混在一起用户会以为点进去卡住了。
+         只读位置在名字后面挂徽标，而不是进去以后才知道——「我要把这个
+         文件加密到哪」这个决定发生在点击之前。 -->
+    <div class="sgrp">{{ i18n.t('rplace.title') }}</div>
+    <button
+      v-for="p in state.remotePlaces"
+      :key="p.id"
+      class="sitem"
+      :class="{ sel: state.remotePlace === p.id }"
+      :data-rp="p.id"
+      :title="p.name"
+      @click="goRemote(p)"
+    >
+      <span aria-hidden="true">☁️</span>
+      <span class="stext">{{ p.name }}</span>
+      <span v-if="!p.caps.write" class="ro">{{ i18n.t('rplace.readonly_badge') }}</span>
+    </button>
+    <button class="sitem" data-rp="add" @click="$emit('add-place')">
+      <span aria-hidden="true">➕</span>
+      <span class="stext">{{ i18n.t('rplace.add') }}</span>
+    </button>
+
     <div class="sgrp">{{ i18n.t('places.devices') }}</div>
 
     <!-- 已配对设备直接列出来，点一下打开面板。
@@ -149,5 +178,21 @@ function iconOf(place) {
 .sitem.grant:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* 只读徽标：必须在侧栏就可见。用户决定「把文件加密到哪」是在点击
+   之前，进去才发现不能写已经晚了。 */
+.ro {
+  font-size: 9.5px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 3px;
+  padding: 1px 4px;
+  flex: none;
+  letter-spacing: 0.3px;
+}
+.sitem.sel .ro {
+  border-color: #fff;
+  color: #fff;
 }
 </style>
