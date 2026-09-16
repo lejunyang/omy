@@ -30,6 +30,8 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 - Recognition reads the file header rather than relying on the name, so renamed or moved files are classified correctly;
 - Video, audio, and images use the same preview/playback pipeline as local files. Seeking fetches ciphertext blocks on demand via HTTP `Range` — the whole file is **never** downloaded first;
 - In grid view, unlocked entries whose header carries a thumbnail show it directly. The thumbnail lives in the header TLV and is obtained while listing the directory, so **no body download is involved**; on failure it falls back to a type icon;
+- Listing is **progressive**: once the directory is listed, "Identifying…" skeletons appear immediately and each entry is filled in as soon as it is recognized — you don't wait for every file to finish;
+- A single file whose header can't be fetched because of a network problem is marked separately as "Could not read"; **tap the entry to retry it**. It is never confused with "locked (wrong password)", and you don't have to reload the whole directory;
 - Decryption happens locally. The server and the wire only ever see ciphertext, just like the [LAN sharing](lan-sharing) model: you must know the password yourself.
 
 ## Read-only vs writable
@@ -44,7 +46,7 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 | Ciphertext block cache | ✅ | ✅ |
 | Encrypted upload, new folder, rename, delete | ✅ (planned) | ❌ rejected before any request is sent |
 
-On a read-only location every operation that would rewrite the remote side is disabled, with a hint to decrypt to local first — so you never walk half-way into an action the location cannot accept.
+Operations that rewrite the remote side (encrypted upload, delete, rename, new folder) do not have an entry point yet on read-only locations. When write operations arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a "decrypt to local first" hint where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
 
 ## Ciphertext cache
 
