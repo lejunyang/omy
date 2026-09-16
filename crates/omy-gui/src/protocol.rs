@@ -29,9 +29,13 @@
 //! omystream://localhost/thumb/<id>        本地缩略图
 //! omystream://localhost/rfile/<id>        远端文件明文
 //! omystream://localhost/rthumb/<id>       远端缩略图
+//! omystream://localhost/pfile/<token>     远程存储位置（WebDAV 等）文件明文
+//! omystream://localhost/pthumb/<token>    远程存储位置文件缩略图
 //! ```
 //!
 //! id 由前端从文件列表拿到，是进程内的临时标识，不含路径信息。
+//! `pfile` 的 token 由 `remote_place_open` 颁发，对应一个带密文块缓存的
+//! 远程来源；多次 Range 请求复用同一来源，seek 才不会重复下载。
 //!
 //! # 远端为什么能走同一条路
 //!
@@ -43,6 +47,7 @@
 //! 结果是：远端 1 GB 的视频拖动进度条时，只取那附近的几十 KB，
 //! 既不用先下完整个文件，也没有任何明文落盘。
 
+use crate::place_files::PlaceFiles;
 use crate::remote::RemoteSession;
 use crate::state::AppState;
 use omy_core::crypto::Kek;
@@ -73,6 +78,10 @@ pub enum Target {
     RemoteFile(String),
     /// 远端缩略图。
     RemoteThumb(String),
+    /// 远程存储位置（WebDAV 等）文件正文。
+    PlaceFile(String),
+    /// 远程存储位置缩略图。
+    PlaceThumb(String),
     /// 未加密文件的正文（磁盘明文直读）。
     Plain(String),
     /// 容器（加密文件夹）内单个文件的正文。
@@ -92,6 +101,8 @@ pub fn parse_target(path: &str) -> Option<Target> {
     for (prefix, make) in [
         ("rfile/", Target::RemoteFile as fn(String) -> Target),
         ("rthumb/", Target::RemoteThumb as fn(String) -> Target),
+        ("pfile/", Target::PlaceFile as fn(String) -> Target),
+        ("pthumb/", Target::PlaceThumb as fn(String) -> Target),
         ("file/", Target::File as fn(String) -> Target),
         ("thumb/", Target::Thumb as fn(String) -> Target),
         ("plain/", Target::Plain as fn(String) -> Target),
@@ -216,6 +227,7 @@ fn bare(status: StatusCode) -> Response<Vec<u8>> {
 pub fn handle(
     state: &Arc<AppState>,
     remote: &Arc<RemoteSession>,
+    place_files: &PlaceFiles,
     request: &Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {
     // CORS 预检必须在任何解密之前短路。
@@ -253,6 +265,8 @@ pub fn handle(
         },
         Target::RemoteFile(id) => serve_remote_file(state, remote, request, &id),
         Target::RemoteThumb(id) => serve_remote_thumb(state, remote, &id),
+        Target::PlaceFile(token) => serve_place_file(state, place_files, request, &token),
+        Target::PlaceThumb(token) => serve_place_thumb(state, place_files, &token),
         Target::Plain(token) => serve_plain(state, request, &token),
         Target::ContainerItem(token) => serve_container_item(state, request, &token),
     }
@@ -868,6 +882,131 @@ fn serve_remote_thumb(state: &Arc<AppState>, remote: &Arc<RemoteSession>, id: &s
 ///
 /// 头部字节在 LIST 时就随条目一起拿到了，所以这里不产生任何网络往返。
 fn open_remote(state: &Arc<AppState>, f: &crate::remote::RemoteFile) -> Option<OpenedFile> {
+    let h = omy_core::file::peek_header(&f.header).ok()?;
+    let keks: Vec<Kek> = state.with_session(|s| {
+        s.all_for(&h.vault_salt)
+            .into_iter()
+            .map(|c| c.kek)
+            .collect()
+    })?;
+    omy_core::file::open(&f.header, &keks).ok()
+}
+
+/// 返回远程存储位置（WebDAV 等）文件正文，支持 Range。
+///
+/// Range 处理、`MAX_SPAN` 截断、416、CORS、`no-store` 与本地/局域网版
+/// **完全一致**——这些行为不能有第三套实现，否则云盘会退化成「能播但拖不动」。
+/// 唯一区别是取密文的方式：这里走 [`omy_remote::source::RemoteSource`]，
+/// 它内部做 1 MiB 块对齐、密文磁盘缓存与按需 Range 拉取。
+fn serve_place_file(
+    state: &Arc<AppState>,
+    files: &PlaceFiles,
+    request: &Request<Vec<u8>>,
+    token: &str,
+) -> Response<Vec<u8>> {
+    let Some(f) = files.get(token) else {
+        // 锁定后句柄表被清空，旧 token 一律 404
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Some(opened) = open_place(state, &f) else {
+        // token 还在但当前会话解不开（已锁定 / 换了密码库）：这是凭据问题，
+        // 回 403 而不是 500，前端据此引导重新解锁
+        return bare(StatusCode::FORBIDDEN);
+    };
+
+    let total = opened.header.plaintext_size;
+    let range_header = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok());
+
+    let (start, end_inclusive, is_partial) = match range_header {
+        Some(h) => match parse_range(h, total) {
+            Some(r) => (r.0, r.1, true),
+            None => {
+                return with_common_headers(
+                    Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+                )
+                .body(Vec::new())
+                .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+        },
+        None => (0u64, total.saturating_sub(1), false),
+    };
+
+    // 截断对云盘尤其要紧：多解一段就要真的从网线上多拉一段密文
+    let end_inclusive = if is_partial {
+        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
+    } else {
+        end_inclusive
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+
+    // RemoteSource 实现了 BlockSource，块对齐 / 密文缓存 / Range 拉取都在
+    // 它内部；read_source_range 再负责 header 偏移与压缩索引，所以这里
+    // 不必像局域网版那样手算 payload 绝对偏移
+    let data = match omy_core::source::read_source_range(&f.source, &opened, start, length) {
+        Ok(d) => d,
+        // 上游 WebDAV 读取失败属于「网关错误」，与本地解密失败区分开
+        Err(_) => return bare(StatusCode::BAD_GATEWAY),
+    };
+
+    let mut b = with_common_headers(
+        Response::builder()
+            .header(header::CONTENT_TYPE, f.mime.clone())
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, data.len().to_string()),
+    );
+    b = if is_partial {
+        b.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end_inclusive}/{total}"),
+        )
+    } else {
+        b.status(StatusCode::OK)
+    };
+    b.body(data).unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// 返回远程存储位置文件的缩略图。
+///
+/// 缩略图在头部 TLV 里，打开时头部已完整读入，所以这里不产生额外网络往返。
+fn serve_place_thumb(
+    state: &Arc<AppState>,
+    files: &PlaceFiles,
+    token: &str,
+) -> Response<Vec<u8>> {
+    let Some(f) = files.get(token) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Some(opened) = open_place(state, &f) else {
+        return bare(StatusCode::FORBIDDEN);
+    };
+    let Ok(bytes) = opened.thumbnail() else {
+        // 没有缩略图是正常情况（非媒体或加密时没生成），前端回退类型图标
+        return bare(StatusCode::NOT_FOUND);
+    };
+
+    with_common_headers(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, sniff_image_mime(&bytes))
+            .header(header::CONTENT_LENGTH, bytes.len().to_string()),
+    )
+    .body(bytes)
+    .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// 用会话密钥打开一个远程存储位置文件的头部。
+///
+/// 与 `open_for` / `open_remote` 一样每次请求重新打开，不在内存里长期
+/// 持有 `OpenedFile` 与 payload key；磁盘缓存里也只有密文。
+fn open_place(
+    state: &Arc<AppState>,
+    f: &crate::place_files::OpenPlaceFile,
+) -> Option<OpenedFile> {
     let h = omy_core::file::peek_header(&f.header).ok()?;
     let keks: Vec<Kek> = state.with_session(|s| {
         s.all_for(&h.vault_salt)

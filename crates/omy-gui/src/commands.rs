@@ -294,6 +294,7 @@ pub async fn lock(
     state: State<'_, Shared>,
     devices: State<'_, crate::device_cmds::SharedDevices>,
     remote: State<'_, std::sync::Arc<crate::remote::RemoteSession>>,
+    place_files: State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
 ) -> CmdResult<()> {
     state.lock();
     devices.close();
@@ -307,6 +308,10 @@ pub async fn lock(
     // 锁定的语义是「从现在起什么都看不到」。把这条保证寄托在
     // 「前端记得多调一个函数」上，等于没有这条保证。
     remote.disconnect().await;
+    // 远程云盘的播放句柄同理：token 还在就能凭 omystream://pfile/ 继续
+    // Range 取明文，必须在后端随锁定一并关闭。密文磁盘缓存不删——
+    // 它本就是密文，删不删不影响「锁定后读不到明文」这条保证。
+    place_files.clear();
     Ok(())
 }
 

@@ -14,10 +14,13 @@
 
 use std::sync::Arc;
 
-use crate::commands::{CmdError, CmdResult};
+use crate::commands::{CmdError, CmdResult, Shared};
+use crate::place_files::{OpenPlaceFile, PlaceFiles, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
-use omy_remote::webdav::WebDavConfig;
-use omy_remote::{RemoteStore, Error as RemoteError};
+use omy_core::crypto::Kek;
+use omy_remote::source::RemoteSource;
+use omy_remote::webdav::{WebDavConfig, WebDavStore};
+use omy_remote::{Error as RemoteError, RemoteStore};
 
 /// 远程目录里的一项，已附带识别结果。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -158,6 +161,232 @@ pub async fn remote_browse(
         out.push(e);
     }
     Ok(out)
+}
+
+/// 打开远程 `.omy` 的结果。
+///
+/// 三种结局必须分开，前端据此给三种不同的界面：
+/// - `unlocked=true, token=Some`：可播放，拿 token 去请求 `omystream://pfile/`；
+/// - `unlocked=false, not_encrypted=false`：是 omy 但当前会话密码打不开（不是网络问题）；
+/// - `not_encrypted=true`：根本不是 omy 文件（远程普通文件，本期只能下载/外部打开）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenPlaceResult {
+    /// 播放令牌；仅解锁成功时为 `Some`。
+    pub token: Option<String>,
+    /// 是否成功解锁。
+    pub unlocked: bool,
+    /// 是否为非 omy 的普通文件。
+    pub not_encrypted: bool,
+    /// 解密后的真实文件名。
+    pub name: Option<String>,
+    /// 预览类别 video/audio/image/text/other。
+    pub kind: Option<String>,
+    /// 解密内容的 MIME。
+    pub mime: Option<String>,
+    /// 明文大小。
+    pub size: Option<u64>,
+    /// 密文大小（任何时候都可见）。
+    pub encrypted_size: u64,
+}
+
+/// 打开一个远程 `.omy`，登记可播放来源并返回令牌。
+///
+/// # Errors
+///
+/// 位置不存在、头部读取失败或来源构造失败时返回结构化错误。
+#[tauri::command]
+pub async fn remote_place_open(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    files: tauri::State<'_, Arc<PlaceFiles>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    state: tauri::State<'_, Shared>,
+    place_id: String,
+    path: String,
+    size: u64,
+) -> CmdResult<OpenPlaceResult> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = Arc::clone(&place.store);
+
+    // 读完整头部（识别窗口 + 按需补读到 header_len），载荷一个字节都不碰
+    let header = fetch_full_header(&store, &path, size)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+
+    let parsed = match omy_core::file::peek_header(&header) {
+        Ok(h) => h,
+        Err(_) => {
+            return Ok(OpenPlaceResult {
+                token: None,
+                unlocked: false,
+                not_encrypted: true,
+                name: None,
+                kind: None,
+                mime: None,
+                size: None,
+                encrypted_size: size,
+            });
+        }
+    };
+
+    let keks: Vec<Kek> = state
+        .with_session(|s| {
+            s.all_for(&parsed.vault_salt)
+                .into_iter()
+                .map(|c| c.kek)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let opened = if keks.is_empty() {
+        None
+    } else {
+        omy_core::file::open(&header, &keks).ok()
+    };
+
+    let Some(opened) = opened else {
+        // 是 omy 但当前密码集打不开——明确告诉前端是「未解锁」，
+        // 不能混进 not_encrypted，否则用户会以为文件没加密
+        return Ok(OpenPlaceResult {
+            token: None,
+            unlocked: false,
+            not_encrypted: false,
+            name: None,
+            kind: None,
+            mime: None,
+            size: None,
+            encrypted_size: size,
+        });
+    };
+
+    let real_name = opened.filename().ok();
+    let plaintext_size = opened.header.plaintext_size;
+    let (kind, mime) = match &real_name {
+        Some(n) => {
+            let (k, m) = crate::mime::by_extension(n);
+            (k.to_owned(), m)
+        }
+        None => (
+            crate::mime::kind::OTHER.to_owned(),
+            String::from("application/octet-stream"),
+        ),
+    };
+
+    // RemoteSource 只在构造时 peek 一次头部，之后按 1 MiB 块按需拉载荷。
+    // 缓存句柄取全局共享的一份，多个文件共用同一磁盘缓存与上限。
+    //
+    // 用 tokio 的原始 Handle 而非 tauri::async_runtime::handle()：后者是
+    // tauri 自己的 RuntimeHandle 包装，而 RemoteSource 要在同步协议线程里
+    // block_on，需要的是具体的 tokio 句柄。本命令本身就跑在 tokio 线程上。
+    let rt = tokio::runtime::Handle::current();
+    let source = RemoteSource::new(
+        Arc::clone(&store),
+        place_id.clone(),
+        path.clone(),
+        &header,
+        size,
+        cache.snapshot(),
+        rt,
+    )
+    .map_err(|e| {
+        CmdError::with("remote_open_failed", serde_json::json!({ "detail": e.to_string() }))
+    })?;
+
+    let holder = OpenPlaceFile {
+        header: header.clone(),
+        source,
+        mime: mime.clone(),
+    };
+    let token = files
+        .insert(holder)
+        .ok_or_else(|| CmdError::code("remote_open_failed"))?;
+
+    Ok(OpenPlaceResult {
+        token: Some(token),
+        unlocked: true,
+        not_encrypted: false,
+        name: real_name,
+        kind: Some(kind),
+        mime: Some(mime),
+        size: Some(plaintext_size),
+        encrypted_size: size,
+    })
+}
+
+/// 关闭一个远程播放来源（播放结束时调用），释放句柄。
+#[tauri::command]
+pub fn remote_place_close(
+    files: tauri::State<'_, Arc<PlaceFiles>>,
+    token: String,
+) {
+    files.remove(&token);
+}
+
+/// 读到足以 `open` 的完整文件头。
+///
+/// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的
+/// 文件头部更长，此时按 `peek_header` 给出的 `header_len` 补读，直到覆盖
+/// 完整 TLV 与头部 MAC。载荷依旧一个字节都不下载。
+async fn fetch_full_header(
+    store: &WebDavStore,
+    path: &str,
+    size: u64,
+) -> Result<Vec<u8>, RemoteError> {
+    let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
+    let mut buf = if probe_len == 0 {
+        Vec::new()
+    } else {
+        store.read_range(path, 0, probe_len).await?
+    };
+
+    if let Ok(h) = omy_core::file::peek_header(&buf) {
+        let need = u64::from(h.header_len);
+        if need <= size && (buf.len() as u64) < need {
+            let extra = store
+                .read_range(path, buf.len() as u64, need - buf.len() as u64)
+                .await?;
+            buf.extend_from_slice(&extra);
+        }
+    }
+    Ok(buf)
+}
+
+/// 远程缓存用量，供设置页显示进度条。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemoteCacheUsage {
+    /// 已用字节。
+    pub used: u64,
+    /// 上限字节，0 表示不限。
+    pub limit: u64,
+    /// 缓存根目录（「打开缓存目录」用）。
+    pub root: Option<String>,
+}
+
+/// 查询远程密文缓存用量。
+#[tauri::command]
+pub fn remote_cache_usage(cache: tauri::State<'_, Arc<RemoteCache>>) -> RemoteCacheUsage {
+    RemoteCacheUsage {
+        used: cache.used(),
+        limit: cache.limit(),
+        root: cache.root().map(|p| p.display().to_string()),
+    }
+}
+
+/// 立即清空远程缓存，返回清空后占用（应为 0）。
+#[tauri::command]
+pub fn remote_cache_clear(cache: tauri::State<'_, Arc<RemoteCache>>) -> u64 {
+    cache.clear()
+}
+
+/// 缓存设置变更后重建缓存（改上限或自定义目录）。
+#[tauri::command]
+pub fn remote_cache_apply(
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    limit: u64,
+    cache_dir: Option<String>,
+) {
+    cache.reload(RemoteCache::resolve_root(cache_dir), limit);
 }
 
 /// 用会话里的密钥尝试识别并解开一段文件头。

@@ -48,6 +48,7 @@ mod keymgmt;
 mod lan;
 mod mime;
 mod place_cmds;
+mod place_files;
 mod places;
 mod plain;
 mod protocol;
@@ -84,6 +85,12 @@ pub fn run() {
     // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
     // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
     let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+    // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
+    // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
+    let remote_cache: Arc<place_files::RemoteCache> =
+        Arc::new(place_files::RemoteCache::from_config());
+    let place_files: Arc<place_files::PlaceFiles> = Arc::new(place_files::PlaceFiles::new());
+    let for_protocol_places = Arc::clone(&place_files);
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -105,14 +112,17 @@ pub fn run() {
         .manage(Arc::clone(&share_task))
         .manage(Arc::clone(&remote_session))
         .manage(Arc::clone(&place_registry))
+        .manage(Arc::clone(&remote_cache))
+        .manage(Arc::clone(&place_files))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
             let st = Arc::clone(&for_protocol);
             let rm = Arc::clone(&for_protocol_remote);
+            let pf = Arc::clone(&for_protocol_places);
             // 解密可能耗时，必须离开 WebView 线程
             std::thread::spawn(move || {
-                responder.respond(protocol::handle(&st, &rm, &request));
+                responder.respond(protocol::handle(&st, &rm, &pf, &request));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -180,6 +190,11 @@ pub fn run() {
             place_cmds::remote_place_list,
             place_cmds::remote_place_remove,
             place_cmds::remote_browse,
+            place_cmds::remote_place_open,
+            place_cmds::remote_place_close,
+            place_cmds::remote_cache_usage,
+            place_cmds::remote_cache_clear,
+            place_cmds::remote_cache_apply,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]
