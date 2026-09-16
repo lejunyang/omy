@@ -3,7 +3,7 @@
 
 import { ref } from 'vue';
 import * as i18n from '../i18n.js';
-import { state, navigate, grantStorageAccess, openRemotePlace } from '../store.js';
+import { state, navigate, grantStorageAccess, openPlaceBrowserAt } from '../store.js';
 
 defineProps({
   /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
@@ -38,7 +38,9 @@ function go(path) {
 
 /** 进入一个远程位置。抽屉同样要收起。 */
 async function goRemote(p) {
-  await openRemotePlace(p.id);
+  // 必须经由 openPlaceBrowserAt 切到云盘视图；只调 openRemotePlace 会把
+  // 目录数据加载好却仍停在本地界面，用户看到的就是「点了没反应」
+  await openPlaceBrowserAt(p.id);
   emit('navigate');
 }
 

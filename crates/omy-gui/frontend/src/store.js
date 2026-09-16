@@ -1550,6 +1550,14 @@ export async function openPlaceBrowser() {
   await reloadRemotePlaces();
 }
 
+/** 打开云盘浏览器并直接进入某个已保存位置（桌面侧栏入口）。
+ *  必须同时置 placeBrowserOpen，否则只加载了目录数据、视图却还停在本地，
+ *  表现为点侧栏云盘项「没反应」。 */
+export async function openPlaceBrowserAt(id) {
+  state.placeBrowserOpen = true;
+  await openRemotePlace(id);
+}
+
 /** 关闭云盘浏览器，回到本地文件，并退出当前位置。 */
 export function closePlaceBrowser() {
   state.placeBrowserOpen = false;
