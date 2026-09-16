@@ -43,14 +43,18 @@ function Stop-All {
 
 try {
     $plain = Join-Path $work 'movie.mp4'
-    # 用 ffmpeg 造一段真实可播的 H.264/AAC 短视频（faststart 便于 Range 拖动），
+    # 用 ffmpeg 造一段真实可播的 H.264/AAC 视频（faststart 便于 Range 拖动），
     # 这样预览层会真正挂上 <video>；没有 ffmpeg 才退回确定性字节（无法解码）。
+    # 刻意造到数 MB、画面高熵（testsrc2 每帧变化 + 固定高码率）：密文会跨过多个
+    # 1 MiB 缓存块，解密到本地的全文件哈希比对因此能真正覆盖跨块拼接与中途 seek，
+    # 而不是像短视频那样整块都落在第一个块里、跨块路径从未被执行。
     $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
     if ($ff) {
         & $ff.Source -y -hide_banner -loglevel error `
-            -f lavfi -i 'testsrc=size=320x240:rate=24' `
-            -f lavfi -i 'sine=frequency=440' `
-            -t 6 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest -movflags +faststart `
+            -f lavfi -i 'testsrc2=size=640x480:rate=30:duration=10' `
+            -f lavfi -i 'sine=frequency=440:duration=10' `
+            -t 10 -c:v libx264 -pix_fmt yuv420p -b:v 4M -maxrate 4M -bufsize 8M -g 30 `
+            -c:a aac -shortest -movflags +faststart `
             $plain
     }
     else {

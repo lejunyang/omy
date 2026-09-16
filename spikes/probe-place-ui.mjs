@@ -10,6 +10,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const cdpPort = process.argv[2] || '9467';
 const davUrl = process.argv[3] || 'http://127.0.0.1:8799/';
@@ -17,6 +18,14 @@ const guiDir = process.argv[4];
 const password = process.argv[5] || 'cloud-test-password';
 const shotsDir = process.argv[6] || path.join(process.cwd(), 'spikes', 'shots');
 fs.mkdirSync(shotsDir, { recursive: true });
+
+// 源明文（guiDir 是 .../vault，ffmpeg 造的 movie.mp4 在其父目录）：跨块 seek 与
+// 解密到本地都用它逐字节核对 app 输出的明文是否正确。
+const workDir = path.dirname(guiDir);
+const srcMoviePath = path.join(workDir, 'movie.mp4');
+const srcBuf = fs.readFileSync(srcMoviePath);
+const srcSha = crypto.createHash('sha256').update(srcBuf).digest('hex');
+const srcSize = srcBuf.length;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const shots = [];
@@ -215,6 +224,20 @@ async function main() {
     out.push(await probe('no-range',{}));
     out.push(await probe('open-ended',{headers:{Range:'bytes=0-'}}));
     out.push(await probe('first2',{headers:{Range:'bytes=0-1'}}));
+    // 跨 1 MiB 块边界的中部 seek：块缓存按 1 MiB 对齐，区间故意从边界前 128 KiB
+    // 起、跨到边界后 128 KiB，最容易暴露「块拼接错位 / 偏移算错」。返回这段明文
+    // 的 SHA-256，node 侧用源明文同区间逐字节核对（夹具视频 >2 MiB 才执行）。
+    let span=null;
+    const MI_B=1024*1024;
+    if(r.size > MI_B+262144){
+      const start=MI_B-131072, len=262144, end=start+len-1;
+      const sr=await fetch(url,{headers:{Range:'bytes='+start+'-'+end}});
+      const ab=await sr.arrayBuffer();
+      const digest=await crypto.subtle.digest('SHA-256',ab);
+      const sha=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+      span={status:sr.status,cr:sr.headers.get('Content-Range'),
+        cl:sr.headers.get('Content-Length'),bytes:ab.byteLength,start,end,sha256:sha};
+    }
     // 模拟 crossorigin media 触发的 CORS 预检
     try{
       const op=await fetch(url,{method:'OPTIONS',headers:{'Access-Control-Request-Method':'GET','Access-Control-Request-Headers':'range'}});
@@ -233,7 +256,7 @@ async function main() {
           bytes:tr.status<400?(await tr.arrayBuffer()).byteLength:0};
       }else{ thumbDiag={hasToken:false,unlocked:tt.unlocked,is_encrypted:tt.is_encrypted,probe_failed:tt.probe_failed,real_name:tt.real_name,size:tt.size}; }
     }
-    return JSON.stringify({kind:r.kind,mime:r.mime,total:r.size,out,thumbDiag});
+    return JSON.stringify({kind:r.kind,mime:r.mime,total:r.size,out,span,thumbDiag});
   })()`);
   console.log('       [移动预览诊断]', mdiag);
   // 缩略图夹具存在（有 ffmpeg 才造）时，pthumb 必须回 200 且是图片字节；
@@ -247,6 +270,23 @@ async function main() {
     console.log('       [远程缩略图] pthumb 200', t.ct, t.bytes+'B');
   }else{
     console.log('       [远程缩略图] 夹具无 thumb.mp4.omy（可能无 ffmpeg），跳过');
+  }
+  // 跨 1 MiB 块边界的中部 seek：app 返回的明文段必须与源明文同区间逐字节一致
+  if (md.span) {
+    const s = md.span;
+    if (s.status !== 206 || s.bytes !== (s.end - s.start + 1)) {
+      throw new Error('跨块 seek 响应异常: ' + JSON.stringify(s));
+    }
+    if (!(s.cr || '').endsWith('/' + md.total)) {
+      throw new Error('跨块 seek Content-Range 总长度不符: ' + s.cr + ' total=' + md.total);
+    }
+    const want = crypto.createHash('sha256').update(srcBuf.subarray(s.start, s.end + 1)).digest('hex');
+    if (s.sha256 !== want) {
+      throw new Error('跨块 seek 明文段与源明文不一致（块拼接错位）');
+    }
+    console.log('       [跨块 seek]', s.cr, '明文段 SHA-256 与源一致');
+  } else {
+    throw new Error('夹具视频不足 2 MiB，跨块 seek 路径未被覆盖（应造数 MB 高熵视频）');
   }
   await cdp.shot('m03-preview');
 
@@ -351,11 +391,6 @@ async function main() {
   // ===== 远程「解密到本地」（只读位置也保留的主要用途）=====
   console.log('\n[解密到本地]');
   const decDir = process.argv[8];
-  const crypto = await import('node:crypto');
-  const workDir = path.dirname(guiDir); // guiDir 是 .../vault，源明文在其父目录
-  const srcBuf = fs.readFileSync(path.join(workDir, 'movie.mp4'));
-  const srcSha = crypto.createHash('sha256').update(srcBuf).digest('hex');
-  const srcSize = srcBuf.length;
   fs.mkdirSync(decDir, { recursive: true });
 
   // 桌面右键 movie 条目：菜单必须含「打开/预览」与「解密到本地」，且后者可用
