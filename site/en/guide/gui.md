@@ -34,8 +34,10 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Password management | Add key slots, change passwords, re-encrypt |
 | Context menu | Open, reveal in file manager, password management, move to trash |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
-| Theme | Light and dark |
-| Languages | Simplified Chinese and English, following the system locale |
+| Remote locations | Connect a WebDAV cloud / NAS, browse and stream its `.omy` files, ciphertext block cache; see [Remote locations](remote-locations) |
+| Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
+| Theme | Light and dark (under Settings → General) |
+| Languages | Simplified Chinese and English, following the system locale (under Settings → General) |
 
 ## Security constraints
 
@@ -51,7 +53,7 @@ The native directory picker is invoked only on the Rust side and wrapped in a co
 
 The Android build shares the same components and only swaps the shell — it is not a second interface. List, search, progress and statistics logic are identical.
 
-The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time.
+The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time. On mobile the bottom navigation has four tabs — **Files / Remote / Devices / Settings** — with language and theme moved into **Settings → General**.
 
 ::: tip Touch interaction genuinely differs
 Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
@@ -70,6 +72,24 @@ SAF hands out `content://` URIs. After a rename the URI changes and the granted 
 :::
 
 The permission state is queried live every time, never cached in the app. That is deliberate: a cached "granted" flag would keep claiming access after the user revokes it in system settings, and every file operation would then fail with a permission error whose message points nowhere near the real cause. When access is revoked the sidebar reports an error instead of returning a partial listing.
+
+## Settings
+
+On desktop settings is a dialog (gear in the top bar); on mobile it is a list with second-level pages under the **Settings** tab. The categories are the same:
+
+| Category | Contents |
+|---|---|
+| General | Language, theme, default view (grid / list), open at startup (last folder / home) |
+| Remote locations | Recognition scope, request concurrency, and the **Ciphertext cache** second-level page (limit, usage, clear now, clear on exit) |
+| Security & passwords | Auto-lock (idle duration, whether backgrounding counts as idle, playback exemption), number of passwords loaded in the current session, lock now, recovery-code hint |
+| Encryption defaults | KDF profile, chunk size, pre-encryption compression, filename encryption, original-file handling; these become the initial values in the encrypt dialog |
+| Playback & preview | Whether to show thumbnails in the list (thumbnails live in the file header, so showing them needs no body read) |
+| Devices & sharing | This device's name, whether LAN sharing auto-starts, entry to manage paired devices |
+| About | App version, OMYFILE format version, layered open-source licenses, config path and portable mode |
+
+The default view and startup location are persisted: toggling grid/list in the UI is remembered, and the last browsed folder is restored on the next launch.
+
+Auto-lock semantics: backgrounding counts as **idle** (whether it locks depends on the idle setting), active media playback is not idle, and you can always **Lock now** from the security page.
 
 ## Launching
 

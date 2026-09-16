@@ -14,7 +14,7 @@
 
 import { computed, ref, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n.js';
-import { thumbUrl } from '../store.js';
+import { thumbUrl, state } from '../store.js';
 import { useThumbLoad } from '../thumbload.js';
 import { isMobile } from '../viewport.js';
 
@@ -253,7 +253,7 @@ const tierTitle = computed(() => {
   >
     <div ref="thumbEl" class="thumb">
       <img
-        v-if="known?.has_thumbnail && shouldLoad"
+        v-if="state.showThumbnails && known?.has_thumbnail && shouldLoad"
         :src="thumbUrl(entry.entry_id)"
         alt=""
         loading="lazy"

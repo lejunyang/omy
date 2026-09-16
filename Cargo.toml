@@ -2,6 +2,9 @@
 resolver = "3"
 members = [
     "crates/omy-core",
+    "crates/omy-config",
+    "crates/omy-remote",
+    "crates/omy-secret",
     "crates/omy-cli",
     "crates/omy-media",
     "crates/omy-net",

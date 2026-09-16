@@ -1,28 +1,73 @@
 /** 明暗主题。
  *
- * 存 localStorage，未设置时跟随系统（文档 §4.1）。
+ * # 三态而不是两态
+ *
+ * `auto` / `dark` / `light`。原先只有明暗两态，`localStorage` 里没有值
+ * 就跟随系统——那等于把「跟随系统」做成了一个无法主动选回的隐藏状态：
+ * 用户点过一次切换按钮之后，再也回不到跟随系统。
+ *
+ * 现在 `auto` 是一个显式选项，与配置文件里的 `ui.theme` 三态一一对应。
+ *
+ * # 仍然写 localStorage
+ *
+ * 配置文件是权威来源，但主题要在**界面出现之前**就定下来，否则会闪一下
+ * 白底。读配置要走 IPC，那时页面已经渲染了。所以这里保留一份本地副本
+ * 用于启动时的即时应用，配置文件里的值在加载完成后覆盖它。
+ *
+ * 两处都要写——只写一处的表现是「设置里选了浅色，重启却闪一下深色」。
  */
 
 import { ref } from 'vue';
 
+/** 当前生效的外观：`dark` | `light`。这是**解析后**的结果，不含 auto。 */
 export const theme = ref('dark');
+
+/** 用户的选择：`auto` | `dark` | `light`。设置页显示的是它。 */
+export const themePref = ref('auto');
+
+/** 系统当前是否偏好浅色。 */
+function systemPrefersLight() {
+  return window.matchMedia('(prefers-color-scheme: light)').matches;
+}
+
+/** 把偏好解析成实际外观。 */
+function resolve(pref) {
+  if (pref === 'light' || pref === 'dark') return pref;
+  return systemPrefersLight() ? 'light' : 'dark';
+}
 
 /** 启动时确定初始主题。 */
 export function initTheme() {
   const saved = localStorage.getItem('omy.theme');
-  if (saved === 'light' || saved === 'dark') {
-    theme.value = saved;
-  } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-    theme.value = 'light';
-  }
+  themePref.value = saved === 'light' || saved === 'dark' || saved === 'auto' ? saved : 'auto';
+  theme.value = resolve(themePref.value);
+  apply();
+
+  // 跟随系统时要响应系统切换。不监听的话，用户在系统里切成夜间模式，
+  // 应用要等下次重启才跟上
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (themePref.value === 'auto') {
+      theme.value = resolve('auto');
+      apply();
+    }
+  });
+}
+
+/** 设置主题偏好。 */
+export function setTheme(pref) {
+  themePref.value = pref === 'light' || pref === 'dark' ? pref : 'auto';
+  theme.value = resolve(themePref.value);
+  localStorage.setItem('omy.theme', themePref.value);
   apply();
 }
 
-/** 切换。 */
+/** 在明暗之间切换。
+ *
+ * 从 `auto` 切换时以**当前实际外观**为基准取反，而不是固定跳到某一个：
+ * 否则在浅色系统上点「切换」可能毫无变化，用户会以为按钮坏了。
+ */
 export function toggleTheme() {
-  theme.value = theme.value === 'light' ? 'dark' : 'light';
-  localStorage.setItem('omy.theme', theme.value);
-  apply();
+  setTheme(theme.value === 'light' ? 'dark' : 'light');
 }
 
 function apply() {

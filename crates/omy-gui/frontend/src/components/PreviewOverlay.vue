@@ -20,8 +20,15 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
+import { playing } from '../autolock.js';
 import * as i18n from '../i18n.js';
-import { fileUrl, remoteFileUrl, plainUrl, containerItemUrl } from '../store.js';
+import {
+  fileUrl,
+  remoteFileUrl,
+  plainUrl,
+  containerItemUrl,
+  placeFileUrl,
+} from '../store.js';
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -46,6 +53,12 @@ const props = defineProps({
    * 的一段区间，磁盘上没有对应文件可交给系统程序。
    */
   inContainer: { type: Boolean, default: false },
+  /** 内容来自远程存储位置（WebDAV 等云盘）。
+   *
+   * 只影响 URL 前缀（`/pfile/`）。播放、seek、Range 行为与本地/远端设备
+   * 完全一致——这正是所有来源共用同一个 omystream 协议的目的。
+   */
+  place: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close', 'external']);
@@ -57,6 +70,7 @@ const mediaError = ref('');
 const src = computed(() => {
   if (props.inContainer) return containerItemUrl(props.file.id);
   if (props.plain) return plainUrl(props.file.id);
+  if (props.place) return placeFileUrl(props.file.id);
   return props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id);
 });
 const kind = computed(() => props.file.kind || 'other');
@@ -88,6 +102,9 @@ onMounted(() => {
     text.value = i18n.t('playback.loading');
     loadText();
   }
+  // 播放期间不算闲置：用户看两小时的片子全程不碰鼠标，
+  // 不标记的话自动锁定会把正在看的画面锁掉
+  if (kind.value === 'video' || kind.value === 'audio') playing.value = true;
 });
 
 onBeforeUnmount(() => {
@@ -99,6 +116,9 @@ onBeforeUnmount(() => {
     el.removeAttribute('src');
     el.load?.();
   }
+  // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
+  // 自动锁定就永远不会触发——那等于这个功能默默失效了
+  playing.value = false;
 });
 </script>
 

@@ -334,3 +334,121 @@ export const openExternal = (token) => invoke('open_external', { token });
 
 /** 在系统文件管理器里定位一个文件。加密文件也适用。 */
 export const revealInFolder = (token) => invoke('reveal_in_folder', { token });
+
+/* ---------------- 设置 ---------------- */
+
+/** 读取整份配置。
+ *
+ * 一次取全部而不是逐项：设置页要显示十几项，逐项调用就是十几次 IPC。
+ */
+export const configGet = () => invoke('config_get');
+
+/** 写回整份配置。
+ *
+ * 同样整份写：分项写回会出现「改了两项、第一项成功第二项失败」的
+ * 半截状态，而配置文件本身是原子写的，整份回写反而更安全。
+ */
+export const configSet = (config) => invoke('config_set', { config });
+
+/** 查询配置文件与缓存/数据目录的位置。
+ *
+ * 便携模式下用户需要知道拷走哪个目录能带走全部状态。
+ */
+export const configPaths = () => invoke('config_paths');
+
+/**
+ * 应用版本与 OMYFILE 格式版本，供设置页「关于」显示。
+ * 版本来自后端编译期常量，避免在前端写死后发版漏改。
+ */
+export const appAbout = () => invoke('app_about');
+
+/* ---------------- 远程位置（WebDAV） ---------------- */
+
+/** 添加一个 WebDAV 位置，返回其 id。
+ *
+ * 凭据只进后端，不留在前端——它们在 WebView 里没有任何用途，
+ * 留着只是多一处泄露面。
+ */
+export const remotePlaceAdd = (p) =>
+  invoke('remote_place_add', {
+    name: p.name,
+    url: p.url,
+    username: p.username || '',
+    password: p.password || '',
+    vendor: p.vendor || 'generic',
+    writable: !!p.writable,
+  });
+
+/** 列出已注册的远程位置。返回项含 `caps` 能力位图。 */
+export const remotePlaceList = () => invoke('remote_place_list');
+
+/** 移除一个远程位置。 */
+export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
+
+/** 浏览远程目录，返回已识别加密状态的条目。
+ *
+ * 条目上的 `probe_failed` 与 `unlocked === false` 是**两回事**：
+ * 前者是没读到（网络），后者是密码不对。界面必须分开显示，
+ * 否则用户会对着网络故障反复试密码。
+ */
+export const remoteBrowse = (placeId, dir) =>
+  invoke('remote_browse', { placeId, dir });
+
+/** 重新探测远程目录里的单个文件（「未能读取」条目就地重试，不重载整屏）。 */
+export const remoteProbeEntry = (placeId, id, size) =>
+  invoke('remote_probe_entry', { placeId, id, size });
+
+/**
+ * 订阅「边扫边出」：remote_browse 先返回一屏骨架，后台每识别完一个文件
+ * 就推一条 payload `{ place_id, dir, entry }`，前端就地替换同 id 骨架。
+ * 返回 unlisten。
+ */
+export const onRemoteEntry = (handler) =>
+  listen('remote-entry', (e) => handler(e.payload));
+
+/** 把已解锁的远程 `.omy` 流式解密到本地目录（只读位置也保留的主要用途）。
+ *  嵌套文件引用走 snake_case（与 EncryptRequest 等一致），顶层参数走 camelCase。 */
+export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
+  invoke('remote_decrypt_to_local', {
+    req: { place_id: placeId, path, size },
+    destDir,
+  });
+
+/** 打开一个远程 `.omy`，换回播放令牌。
+ *
+ * 后端在此时读完整头部、用当前会话密钥试解，并构造带密文块缓存的来源。
+ * 返回 `unlocked:false` 表示是 omy 但密码不对（区别于网络错误），
+ * `not_encrypted:true` 表示根本不是 omy。
+ */
+export const remotePlaceOpen = (placeId, path, size) =>
+  invoke('remote_place_open', { placeId, path, size });
+
+/** 关闭一个远程播放来源（播放结束时调用）。 */
+export const remotePlaceClose = (token) =>
+  invoke('remote_place_close', { token });
+
+/** 查询远程密文缓存用量 {used, limit, root}。 */
+export const remoteCacheUsage = () => invoke('remote_cache_usage');
+
+/** 立即清空远程密文缓存，返回清空后占用。 */
+export const remoteCacheClear = () => invoke('remote_cache_clear');
+
+/** 缓存设置变更后让后端按新上限/目录重建缓存。 */
+export const remoteCacheApply = (limit, cacheDir) =>
+  invoke('remote_cache_apply', { limit, cacheDir });
+
+/** 在系统文件管理器中打开缓存目录（桌面端）。 */
+export const remoteCacheOpenDir = () => invoke('remote_cache_open_dir');
+
+/** 查单个远程文件的密文块缓存覆盖情况：
+ *  {cached_blocks,total_blocks,cached_bytes,fully_cached}，不下载载荷。 */
+export const remoteCacheFileStat = (placeId, path, size) =>
+  invoke('remote_cache_file_stat', {
+    req: { place_id: placeId, path, size },
+  });
+
+/** 删除单个远程文件的本地密文块，返回 {freed_bytes}；只读位置也允许。 */
+export const remoteCacheRemoveFile = (placeId, path, size) =>
+  invoke('remote_cache_remove_file', {
+    req: { place_id: placeId, path, size },
+  });

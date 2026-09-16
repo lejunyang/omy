@@ -33,6 +33,8 @@ import {
   reload,
   setNotice,
   loadPlaces,
+  ensureRemoteListeners,
+  restoreStartupDir,
   loadStorageAccess,
   grantStorageAccess,
   encryptSelected,
@@ -40,6 +42,11 @@ import {
   tryUnlock,
   lock,
   switchLanguage,
+  applyLanguage,
+  afterPlaceAdded,
+  reloadRemotePlaces,
+  openPlaceBrowser,
+  closePlaceBrowser,
   selectAll,
   enrich,
   encryptable,
@@ -81,6 +88,59 @@ import NameDialog from './components/NameDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
+import PlaceBrowser from './components/PlaceBrowser.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
+import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
+import { initAutoLock, configureAutoLock } from './autolock.js';
+
+/** 设置对话框是否打开。 */
+const showSettings = ref(false);
+/** 添加远程位置对话框是否打开。 */
+const showAddPlace = ref(false);
+
+/** 远程位置添加成功：刷新列表并直接进去。
+ *
+ * 不留在原地——用户刚填完一串地址和密码，想看到的是里面有什么，
+ * 而不是回到一个看不出有没有添加成功的界面。
+ */
+async function onPlaceAdded(id) {
+  showAddPlace.value = false;
+  // 从桌面侧栏直接添加时浏览器可能还没开，这里保证添加后落在云盘视图里
+  state.placeBrowserOpen = true;
+  await afterPlaceAdded(id);
+}
+
+/** 设置页里改了语言：立刻加载对应语言包。
+ *
+ * 不等关闭后再统一应用——用户选完语言却看不到界面变化，
+ * 无法确认自己选对了。
+ */
+async function onSettingsLang(pref) {
+  await applyLanguage(pref);
+}
+
+/** 设置页关闭：重新应用配置。
+ *
+ * 不这样的话，改了自动锁定超时要等重启才生效——用户会以为没保存住。
+ */
+async function onSettingsClose() {
+  showSettings.value = false;
+  await applySettings();
+}
+
+/** 安全页「立即锁定」：关掉设置弹窗，再走统一锁定收尾（关预览、清会话）。 */
+async function onSettingsLock() {
+  showSettings.value = false;
+  await doLock();
+  await applySettings();
+}
+
+/** 设备页「管理」：关掉设置弹窗、打开完整设备面板，并让本页改动即时生效。 */
+function onSettingsDevices() {
+  showSettings.value = false;
+  showDevices.value = true;
+  applySettings();
+}
 
 const showEncrypt = ref(false);
 const showRestore = ref(false);
@@ -117,6 +177,73 @@ const unlockForRemote = ref(false);
  * 「用加密文件的字段去读明文对象」这类必然出错的代码。
  */
 const plainPreview = ref(null);
+
+/** 云盘（远程位置）文件的预览目标。
+ *
+ * `id` 是后端 remotePlaceOpen 颁发的播放 token（pf{n}），不是文件 id；
+ * 预览组件据此拼 `/pfile/<token>`。关闭时必须 remotePlaceClose 释放句柄，
+ * 否则后端来源表会一直挂着这个文件（密文缓存仍保留，那是刻意的）。
+ */
+const placePreview = ref(null);
+
+/** 在云盘里双击/单击一个已解锁的加密文件：向后端换播放令牌再预览。
+ *
+ * 三态分开处理：拿到 token 才弹预览；`unlocked:false`（密码不在当前会话）
+ * 与 `not_encrypted`（根本不是 omy）给不同提示，不能笼统报「打不开」。
+ */
+async function onOpenPlace(f) {
+  // 打开播放必须知道密文总大小（Range 边界、片尾判断都靠它）。
+  // 目录不会走到这里；文件大小缺失说明 PROPFIND 信息不全，直接提示而非
+  // 给后端传 null 造成参数反序列化失败。
+  const size = Number(f.size);
+  if (!Number.isFinite(size) || size <= 0) {
+    state.error = i18n.t('rplace.open_failed');
+    return;
+  }
+  try {
+    const r = await api.remotePlaceOpen(state.remotePlace, f.id, size);
+    if (r.token) {
+      placePreview.value = {
+        id: r.token,
+        name: r.name || f.real_name || f.name,
+        kind: r.kind || 'other',
+        mime: r.mime || '',
+      };
+      return;
+    }
+    if (r.not_encrypted) {
+      state.error = i18n.t('rplace.err_not_encrypted');
+    } else {
+      state.error = i18n.t('rplace.err_locked');
+    }
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), 'rplace.open_failed');
+  }
+}
+
+/** 关闭云盘预览：先释放后端来源句柄，再清前端目标。 */
+async function onClosePlacePreview() {
+  const token = placePreview.value?.id;
+  placePreview.value = null;
+  if (token) {
+    try {
+      await api.remotePlaceClose(token);
+    } catch {
+      // 释放失败不影响关闭：锁定时后端会统一清句柄
+    }
+  }
+}
+
+/** 退出云盘视图回本地：先关掉可能开着的云盘预览（含释放句柄）。 */
+async function onClosePlaceBrowser() {
+  if (placePreview.value) await onClosePlacePreview();
+  closePlaceBrowser();
+}
+
+/** 侧栏/底部「远程」入口：打开云盘浏览器（位置列表或当前位置）。 */
+async function onPlacesEntry() {
+  await openPlaceBrowser();
+}
 
 /** 预览目标的完整信息（含媒体元数据）。 */
 const previewFile = computed(() => {
@@ -466,6 +593,9 @@ async function doLock() {
   // 容器内文件的预览同样要关，理由更强：那是解密出来的内容。
   // 容器视图本身由 store 的 lock() 与一道 watch 一起收掉
   citemPreview.value = null;
+  // 云盘播放预览同样要关：后端 lock 已清空远程来源句柄，留着只会 403。
+  // 云盘目录浏览本身保留——锁定后仍可看目录，只是文件显示为锁定、点不开
+  placePreview.value = null;
   showDevices.value = false;
   // 断开远端由**后端**的 lock 负责，这里不再重复调用。
   // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
@@ -548,8 +678,38 @@ onMounted(async () => {
   // 首屏侧栏停在「未授权」的那份列表上，直到下一次刷新才对
   await loadStorageAccess();
   await loadPlaces();
+  await reloadRemotePlaces();
+  // 远程「边扫边出」事件监听注册一次即可，不必阻塞首屏
+  void ensureRemoteListeners();
   await refreshDeviceOverview();
+
+  // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
+  // 都是界面首屏需要的，不该为它推迟
+  initAutoLock();
+  await applySettings();
+  // 起始目录放最后：它依赖 places 已加载（home 模式）且只在启动时跑一次，
+  // 设置保存触发的 applySettings 不应把用户拽回起始目录
+  await restoreStartupDir();
 });
+
+/** 读配置并应用到运行时。
+ *
+ * 设置页保存后也要调一次，否则改了超时要等到重启才生效——
+ * 用户会以为设置没保存住。
+ */
+async function applySettings() {
+  try {
+    const c = await api.configGet();
+    configureAutoLock(c.security);
+    // 默认视图也在这里应用：它存在配置里，但界面启动时用的是
+    // store 的初值，不读一次就永远是网格
+    if (c.ui?.view === 'grid' || c.ui?.view === 'list') state.view = c.ui.view;
+    // 缩略图开关：关闭后列表不再渲染缩略图 <img>，也就不发 /thumb 请求
+    state.showThumbnails = c.ui?.thumbnails !== false;
+  } catch {
+    // 配置读不出来就用内置默认值：这不该阻止应用启动
+  }
+}
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
@@ -561,6 +721,15 @@ onBeforeUnmount(() => {
     v-if="state.remoteMode"
     @open="onOpenRemote"
     @unlock="onRemoteUnlock"
+  />
+
+  <!-- 云盘（WebDAV 等远程位置）：位置列表 + 目录浏览 + 点播。
+       与局域网对端 RemoteScreen 互斥，二者都不在时才是本地文件。 -->
+  <PlaceBrowser
+    v-else-if="state.placeBrowserOpen"
+    @open="onOpenPlace"
+    @add="showAddPlace = true"
+    @close="onClosePlaceBrowser"
   />
 
   <MainScreen
@@ -575,6 +744,9 @@ onBeforeUnmount(() => {
     @pick="onPick"
     @lang="switchLanguage"
     @devices="showDevices = true"
+    @settings="showSettings = true"
+    @add-place="showAddPlace = true"
+    @places="onPlacesEntry"
   />
 
   <DevicePanel
@@ -686,5 +858,32 @@ onBeforeUnmount(() => {
     :file="citemPreview"
     in-container
     @close="citemPreview = null"
+  />
+
+  <!-- 云盘文件：同一个预览组件，URL 前缀换成 /pfile/。
+       关闭时要释放后端来源句柄，所以走专门的 close 处理。 -->
+  <PreviewOverlay
+    v-if="placePreview"
+    :key="'f' + placePreview.id"
+    :file="placePreview"
+    place
+    @close="onClosePlacePreview"
+  />
+
+  <!-- 设置。语言改动要立刻生效，所以它自己 emit 一个 lang 事件，
+       而不是等关闭后统一应用——用户选完语言却看不到变化，
+       无法确认自己选对了 -->
+  <SettingsDialog
+    v-if="showSettings"
+    @close="onSettingsClose"
+    @lang="onSettingsLang"
+    @lock="onSettingsLock"
+    @devices="onSettingsDevices"
+  />
+
+  <RemotePlaceDialog
+    v-if="showAddPlace"
+    @cancel="showAddPlace = false"
+    @added="onPlaceAdded"
   />
 </template>

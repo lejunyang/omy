@@ -26,10 +26,34 @@ import {
   selectAll,
   clearSelection,
   clearNotice,
+  enterRemoteDir,
+  setView,
 } from '../store.js';
-import { toggleTheme } from '../theme.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
+
+/** 远程条目的图标。
+ *
+ * 三种异常状态要能一眼区分：探测失败（网络）、锁定（密码不对）、
+ * 正常。用同一个图标的话，用户会把网络故障当成密码问题。
+ */
+function remoteIcon(it) {
+  if (it.probe_failed) return '⚠️';
+  if (it.is_dir) return '📁';
+  if (it.is_encrypted && !it.unlocked) return '🔒';
+  if (it.is_encrypted) return '🔓';
+  return '📄';
+}
+
+/** 打开一个远程条目。
+ *
+ * 目录进去；文件暂不预览——远程预览要先把 RemoteSource 接到
+ * omystream 协议上，那是下一步。现在点文件不做任何事，
+ * 而不是报一个看不懂的错。
+ */
+async function onRemoteOpen(it) {
+  if (it.is_dir) await enterRemoteDir(it.id);
+}
 
 /* ---- 移动端外壳 ----
  *
@@ -80,6 +104,9 @@ const emit = defineEmits([
   'pick',
   'lang',
   'devices',
+  'settings',
+  'places',
+  'add-place',
 ]);
 
 // 总大小按**当前看到的**条目算。在容器里时 `state.entries` 是外层
@@ -179,37 +206,32 @@ function onRowMenu(e, ev) {
     <template v-if="!isMobile">
       <button
         class="iconbtn"
+        data-tb="view-grid"
         :aria-pressed="state.view === 'grid'"
         :title="i18n.t('view.grid')"
         :aria-label="i18n.t('view.grid')"
-        @click="state.view = 'grid'"
+        @click="setView('grid')"
       >
         ⊞
       </button>
       <button
         class="iconbtn"
+        data-tb="view-list"
         :aria-pressed="state.view === 'list'"
         :title="i18n.t('view.list')"
         :aria-label="i18n.t('view.list')"
-        @click="state.view = 'list'"
+        @click="setView('list')"
       >
         ☰
       </button>
       <button
         class="iconbtn"
-        :title="i18n.t('lang.toggle')"
-        :aria-label="i18n.t('lang.toggle')"
-        @click="$emit('lang')"
+        :title="i18n.t('settings.title')"
+        :aria-label="i18n.t('settings.title')"
+        data-tb="settings"
+        @click="$emit('settings')"
       >
-        🌐
-      </button>
-      <button
-        class="iconbtn"
-        :title="i18n.t('theme.toggle')"
-        :aria-label="i18n.t('theme.toggle')"
-        @click="toggleTheme"
-      >
-        ◐
+        ⚙️
       </button>
     </template>
     <button
@@ -239,6 +261,7 @@ function onRowMenu(e, ev) {
       @devices="$emit('devices'); onDrawerNavigate()"
       @navigate="onDrawerNavigate"
       @lang="$emit('lang')"
+      @add-place="$emit('add-place')"
     />
 
     <div class="main">
@@ -307,8 +330,50 @@ function onRowMenu(e, ev) {
       </div>
 
       <div class="content">
+        <!-- 远程位置：与本地同构（有目录层级、能进出），所以复用这个外壳，
+             只在条目渲染上分叉。另起一套组件的话，搜索、空态、统计这些
+             都得写第二遍，迟早出现「本地修了远程还是老样子」。 -->
+        <template v-if="state.remotePlace">
+          <div v-if="state.busy" class="empty">
+            <div class="icon" aria-hidden="true">⏳</div>
+            <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
+          </div>
+          <div v-else-if="!state.remoteItems.length" class="empty">
+            <div class="icon" aria-hidden="true">📭</div>
+            <div class="title">{{ i18n.t('rplace.empty_dir') }}</div>
+          </div>
+          <div v-else class="grid">
+            <div
+              v-for="it in state.remoteItems"
+              :key="it.id"
+              class="card"
+              :class="{ locked: it.is_encrypted && !it.unlocked, failed: it.probe_failed }"
+              data-rit="1"
+              tabindex="0"
+              @dblclick="onRemoteOpen(it)"
+              @click="isMobile && onRemoteOpen(it)"
+              @keydown.enter.prevent="onRemoteOpen(it)"
+            >
+              <div class="thumb">
+                <span aria-hidden="true">{{ remoteIcon(it) }}</span>
+              </div>
+              <div class="cname">{{ it.unlocked && it.real_name ? it.real_name : it.name }}</div>
+              <div class="cmeta">
+                <!-- 三种状态分开：网络失败混进「密码不对」的话，
+                     用户会对着网络故障反复试密码 -->
+                <template v-if="it.probe_failed">{{ i18n.t('rplace.probe_failed') }}</template>
+                <template v-else-if="it.is_encrypted && !it.unlocked">
+                  {{ i18n.t('rplace.locked_hint') }}
+                </template>
+                <template v-else-if="it.is_dir">{{ i18n.t('kind.folder') }}</template>
+                <template v-else>{{ i18n.formatSize(it.plaintext_size ?? it.size) }}</template>
+              </div>
+            </div>
+          </div>
+        </template>
+
         <!-- 还没选位置 -->
-        <div v-if="!state.cwd" class="empty">
+        <div v-else-if="!state.cwd" class="empty">
           <div class="icon" aria-hidden="true">📂</div>
           <div class="title">{{ i18n.t('view.start_title') }}</div>
           <div class="sub">{{ i18n.t('view.start_hint') }}</div>
@@ -423,9 +488,10 @@ function onRowMenu(e, ev) {
     </div>
   </div>
 
-  <!-- 移动端底部导航（原型：📂 文件 / 🌐 设备 / 🕐 最近 / ⚙️ 设置）。
-       「最近」「设置」两页尚未实现，点了给明确提示而不是静默无反应——
-       画一个点了没反应的按钮比不画更糟 -->
+  <!-- 移动端底部导航：文件 / 远程 / 设备 / 设置。
+       语言与主题原先各占一格，现在收进设置页的「通用」第一组——
+       它们原本一点就切换，若收进去还要点两层才够到就是退步，
+       所以在设置里放在最上面。 -->
   <nav v-if="isMobile" class="pnav">
     <button
       class="pnavi"
@@ -436,17 +502,21 @@ function onRowMenu(e, ev) {
     </button>
     <button
       class="pnavi"
+      :class="{ on: tab === 'remote' }"
+      @click="tab = 'remote'; $emit('places')"
+    >
+      <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+    </button>
+    <button
+      class="pnavi"
       :class="{ on: tab === 'devices' }"
       @click="tab = 'devices'; $emit('devices')"
     >
-      <span aria-hidden="true">🌐</span>{{ i18n.t('nav.tab_devices') }}
+      <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
       <span v-if="state.pairedCount" class="ndot"></span>
     </button>
-    <button class="pnavi" @click="$emit('lang')">
-      <span aria-hidden="true">🌐</span>{{ i18n.t('lang.toggle') }}
-    </button>
-    <button class="pnavi" @click="toggleTheme">
-      <span aria-hidden="true">◐</span>{{ i18n.t('theme.toggle') }}
+    <button class="pnavi" @click="$emit('settings')">
+      <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
     </button>
   </nav>
 

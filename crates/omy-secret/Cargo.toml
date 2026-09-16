@@ -1,0 +1,40 @@
+[package]
+name = "omy-secret"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+omy-core = { path = "../omy-core" }
+omy-config = { path = "../omy-config" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+# 与 omy-core 用同一套随机数生态：混用 rand 0.9 会把两套 getrandom
+# 一起拉进来，且「哪个 RNG 在生成密钥」变得不好追
+rand_core = { workspace = true }
+# 仓库里已有 hex，不自己再写一遍十六进制转换
+hex = { workspace = true }
+
+# 桌面三平台走各自的原生凭据库。
+#
+# 不用 keyring 的默认特性，是因为它在 Linux 上默认落到内核 keyutils——
+# 那个后端**重启即失**。「重启后远程位置全没了」和没有持久化几乎一样糟，
+# 而这个差别在 API 上看不出来，只有真的重启一次才会发现。
+# 所以显式要 Secret Service。
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))'.dependencies]
+keyring = { version = "3", default-features = false, features = [
+  "sync-secret-service",
+  "crypto-rust",
+] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

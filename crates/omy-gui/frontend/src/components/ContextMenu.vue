@@ -18,7 +18,8 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, useTemplateRef } f
 import * as i18n from '../i18n.js';
 
 const props = defineProps({
-  /** 菜单项：`{ key, label, icon, danger?, disabled?, hint? }`。 */
+  /** 菜单项：`{ key, label, icon, danger?, disabled?, hint?, note? }`。
+   *  hint 是原生悬浮短标注；note 是显示在标签下方、与标签左对齐的长说明。 */
   items: { type: Array, required: true },
   /** 触发位置（视口坐标）。 */
   x: { type: Number, required: true },
@@ -115,7 +116,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           @click="pick(it)"
         >
           <span class="mic" aria-hidden="true">{{ it.icon }}</span>
-          <span class="mil">{{ it.label }}</span>
+          <span class="mit">
+            <span class="mil">{{ it.label }}</span>
+            <!-- 长说明放标签下方并与之左对齐：右侧只剩百来像素，
+                 右对齐换行会把一句话读断（原型 §2） -->
+            <span v-if="it.note" class="minote">{{ it.note }}</span>
+          </span>
         </button>
       </template>
     </div>

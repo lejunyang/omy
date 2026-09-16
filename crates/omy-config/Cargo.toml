@@ -1,0 +1,24 @@
+[package]
+name = "omy-config"
+description = "omy 的配置读写：CLI 与 GUI 共用同一份定义与默认值。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+# 与 omy-core 一致而非 GPL：配置只是数据结构与读写，
+# 让它跟着核心库一起可被第三方复用，不构成授权负担。
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# 原子写盘复用 core 的实现，不自己再写一遍「写 tmp → fsync → rename」
+omy-core = { path = "../omy-core" }
+serde = { workspace = true }
+# 保留未知字段需要 toml 的动态类型（Value / Table）
+toml = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

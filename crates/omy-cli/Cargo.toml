@@ -18,6 +18,8 @@ path = "src/main.rs"
 # path 与 version 都要写：本地构建用 path，发布到 crates.io 时 cargo 去掉
 # path 只留 version。缺 version 时 `cargo package` 会直接失败。
 omy-core = { path = "../omy-core", version = "0.0.1" }
+# 配置定义与读写，与 GUI 共用同一份，避免两边默认值漂移
+omy-config = { path = "../omy-config", version = "0.0.1" }
 # LGPL-2.1+ 依赖。GPL-3.0 兼容 LGPL-2.1+（后者可升级为 GPL-3.0），
 # 故这个方向的依赖是允许的；反向（core 依赖 media）则会让 MIT 的 core
 # 被 LGPL 传染，绝不可以。

@@ -21,6 +21,7 @@
  */
 
 import { ref, computed, watch, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
+import { playing as mediaActive } from '../autolock.js';
 import * as i18n from '../i18n.js';
 import * as api from '../api.js';
 import { plainUrl } from '../store.js';
@@ -105,6 +106,18 @@ onBeforeUnmount(() => {
     video.value.removeAttribute('src');
     video.value.load();
   }
+  // 关了窗口必须清掉活跃标记，否则自动锁定永远不触发，
+  // 那个功能就默默失效了
+  mediaActive.value = false;
+});
+
+/** 把本地播放状态同步给自动锁定。
+ *
+ * 跟随 `playing` 而不是在挂载时一律置真：这个对话框打开后用户可能只是
+ * 在调编码参数，并没有真的播放。只有真在播的时候才该阻止锁定。
+ */
+watch(playing, (v) => {
+  mediaActive.value = v;
 });
 
 /* ---------------- 时间码 ---------------- */

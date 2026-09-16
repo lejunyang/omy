@@ -47,10 +47,14 @@ mod fileops;
 mod keymgmt;
 mod lan;
 mod mime;
+mod place_cmds;
+mod place_files;
+mod places;
 mod plain;
 mod protocol;
 mod remote;
 mod remote_cmds;
+mod settings;
 mod state;
 mod storage;
 mod video;
@@ -78,6 +82,31 @@ pub fn run() {
     let remote_session: Arc<remote::RemoteSession> = Arc::new(remote::RemoteSession::new());
     let for_protocol_remote = Arc::clone(&remote_session);
 
+    // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
+    // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
+    let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+    // 恢复上次保存的远程位置。
+    //
+    // 放在这里而不是等前端来问：侧栏在首帧就要显示这些位置，晚一步
+    // 会先渲染成空、再突然冒出来。
+    //
+    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
+    if let Ok(cfg) = omy_config::Config::load() {
+        let (n, need_login) = place_registry.restore(&cfg.remote);
+        if n > 0 {
+            eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");
+        }
+    }
+    // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
+    // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
+    let remote_cache: Arc<place_files::RemoteCache> =
+        Arc::new(place_files::RemoteCache::from_config());
+    let place_files: Arc<place_files::PlaceFiles> = Arc::new(place_files::PlaceFiles::new());
+    let for_protocol_places = Arc::clone(&place_files);
+    // 远程列表缩略图句柄表：只存文件头，刷新目录 / 锁定即清空。
+    let place_thumbs: Arc<place_files::PlaceThumbs> = Arc::new(place_files::PlaceThumbs::new());
+    let for_protocol_thumbs = Arc::clone(&place_thumbs);
+
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
     // WebView，而它里面是解密后的内容。
@@ -91,20 +120,26 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(storage::init());
 
-    let result = builder
+    let app = match builder
         .manage(Arc::clone(&shared))
         .manage(Arc::clone(&device_session))
         .manage(Arc::clone(&pair_task))
         .manage(Arc::clone(&share_task))
         .manage(Arc::clone(&remote_session))
+        .manage(Arc::clone(&place_registry))
+        .manage(Arc::clone(&remote_cache))
+        .manage(Arc::clone(&place_files))
+        .manage(Arc::clone(&place_thumbs))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
             let st = Arc::clone(&for_protocol);
             let rm = Arc::clone(&for_protocol_remote);
+            let pf = Arc::clone(&for_protocol_places);
+            let pt = Arc::clone(&for_protocol_thumbs);
             // 解密可能耗时，必须离开 WebView 线程
             std::thread::spawn(move || {
-                responder.respond(protocol::handle(&st, &rm, &request));
+                responder.respond(protocol::handle(&st, &rm, &pf, &pt, &request));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -165,6 +200,25 @@ pub fn run() {
             remote_cmds::remote_status,
             remote_cmds::remote_relock,
             remote_cmds::remote_vaults,
+            settings::config_get,
+            settings::config_set,
+            settings::config_paths,
+            settings::app_about,
+            place_cmds::remote_place_add,
+            place_cmds::remote_place_list,
+            place_cmds::remote_secret_status,
+            place_cmds::remote_place_remove,
+            place_cmds::remote_browse,
+            place_cmds::remote_probe_entry,
+            place_cmds::remote_place_open,
+            place_cmds::remote_place_close,
+            place_cmds::remote_decrypt_to_local,
+            place_cmds::remote_cache_usage,
+            place_cmds::remote_cache_clear,
+            place_cmds::remote_cache_apply,
+            place_cmds::remote_cache_open_dir,
+            place_cmds::remote_cache_file_stat,
+            place_cmds::remote_cache_remove_file,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]
@@ -218,12 +272,28 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+    {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("[omy] 启动失败: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    if let Err(e) = result {
-        eprintln!("[omy] 启动失败: {e}");
-        std::process::exit(1);
-    }
+    // 退出钩子：用户开了「关闭应用时清空缓存」就在进程退出前清掉密文块。
+    // 必须在 ExitRequested 里做而不是靠前端 beforeunload——后者在崩溃、
+    // 被系统回收时根本不触发，而那恰恰是最该不留缓存的场景。
+    let exit_cache = Arc::clone(&remote_cache);
+    app.run(move |_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let cfg = omy_config::Config::load().unwrap_or_default();
+            if cfg.remote.clear_cache_on_exit {
+                let freed = exit_cache.clear();
+                eprintln!("[omy] 已按设置在退出时清空远程缓存，释放 {freed} 字节");
+            }
+        }
+    });
 }
 
 /// 安卓启动时的路径准备。

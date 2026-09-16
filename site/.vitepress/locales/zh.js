@@ -37,6 +37,7 @@ export const zh = {
             { text: '媒体预览与播放', link: '/guide/media' },
             { text: '分片', link: '/guide/sharding' },
             { text: '局域网共享', link: '/guide/lan-sharing' },
+            { text: '远程位置（云盘 / WebDAV）', link: '/guide/remote-locations' },
             { text: '图形界面', link: '/guide/gui' },
           ],
         },

@@ -34,6 +34,27 @@ export const state = reactive({
   entries: [],
   /** 侧栏的起点：常用目录与磁盘根。 */
   places: [],
+  /** 已注册的远程位置，每项含 `caps` 能力位图。 */
+  remotePlaces: [],
+  /** 当前所在的远程位置 id；为空表示在本地。 */
+  remotePlace: '',
+  /** 远程位置里的当前目录。 */
+  remoteDir: '',
+  /** 远程目录的条目，已附带识别结果。 */
+  remoteItems: [],
+  /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
+  remoteRetrying: [],
+  /**
+   * 单文件密文块缓存覆盖情况，键为 `${placeId}\u{1}${path}`，值为后端
+   * FileCacheStat（cached_blocks/total_blocks/cached_bytes/fully_cached）。
+   * 只在打开条目菜单时按需查询——列目录逐文件 stat 数千块会拖慢扫描，
+   * 故不做成常驻卡片角标。
+   */
+  remoteCacheStat: {},
+  /** 云盘（远程位置）浏览器是否打开。与局域网对端的 remoteMode 平行。 */
+  placeBrowserOpen: false,
+  /** 远程目录列表/打开过程中的局部错误（区别于全局 error，不弹底部条）。 */
+  placeError: '',
   /**
    * 存储访问权限状态：`{ granted, mode }`。
    *
@@ -50,6 +71,8 @@ export const state = reactive({
   selected: [],
   /** 视图模式。 */
   view: 'grid',
+  /** 是否在列表中显示缩略图；由设置页 ui.thumbnails 驱动，App 启动/保存设置时同步。 */
+  showThumbnails: true,
   /** 搜索词。 */
   query: '',
   /** 会话里的凭据数量。0 表示没有任何密码，但**不影响浏览**。 */
@@ -155,6 +178,20 @@ export function remoteFileUrl(id) {
 /** 拼出远端文件的缩略图 URL。 */
 export function remoteThumbUrl(id) {
   return `${state.streamBase}/rthumb/${encodeURIComponent(id)}`;
+}
+
+/** 拼出远程位置（WebDAV 等）已打开文件的内容 URL。
+ *
+ * token 由 remotePlaceOpen 颁发，对应后端一个带密文块缓存的来源；
+ * 多次 Range 请求复用它，seek 才不会重复下载。
+ */
+export function placeFileUrl(token) {
+  return `${state.streamBase}/pfile/${encodeURIComponent(token)}`;
+}
+
+/** 拼出远程位置文件的缩略图 URL。 */
+export function placeThumbUrl(token) {
+  return `${state.streamBase}/pthumb/${encodeURIComponent(token)}`;
 }
 
 /** 连接一台设备并进入远端视图。 */
@@ -779,6 +816,65 @@ const containerEntries = computed(() => {
 /* ---------------- 导航 ---------------- */
 
 /** 打开一个目录。 */
+/** 切换网格/列表视图，并把选择持久化为「默认视图」。
+ *
+ * 界面上的切换若只改内存，重启就回到网格——设置页那个「默认视图」选项
+ * 也就形同虚设。这里在切换后读改写一次配置；保存失败不阻断本次切换。
+ */
+export async function setView(v) {
+  if (v !== 'grid' && v !== 'list') return;
+  state.view = v;
+  try {
+    const c = await api.configGet();
+    if (c.ui) {
+      c.ui.view = v;
+      await api.configSet(c);
+    }
+  } catch {
+    // 偏好存不下时本次切换仍生效，只是不跨重启
+  }
+}
+
+/** 记住最后浏览的本地目录，去抖落盘。
+ *
+ * 连续进入多级目录（双击进入、上级、面包屑）会在短时间内触发多次 navigate，
+ * 每次都读改写配置既浪费也可能乱序，去抖后只记最后停留的目录。
+ */
+let lastDirTimer = null;
+function schedulePersistLastDir(dir) {
+  if (lastDirTimer) clearTimeout(lastDirTimer);
+  lastDirTimer = setTimeout(() => {
+    lastDirTimer = null;
+    api.configGet().then((c) => {
+      if (c.ui && c.ui.last_dir !== dir) {
+        c.ui.last_dir = dir;
+        return api.configSet(c);
+      }
+      return undefined;
+    }).catch(() => { /* 记不住不影响本次浏览 */ });
+  }, 800);
+}
+
+/** 启动时按「启动时打开」配置恢复起始目录。
+ *
+ * last：回到上次最后浏览的目录；home：进主目录；其余（询问/指定）不导航。
+ * 目录已失效或未授权时 navigate 自身会给出可关闭的错误条，不阻断启动。
+ */
+export async function restoreStartupDir() {
+  try {
+    const c = await api.configGet();
+    const mode = c.ui?.startup || 'last';
+    if (mode === 'last' && c.ui?.last_dir) {
+      await navigate(c.ui.last_dir);
+    } else if (mode === 'home') {
+      const home = state.places.find((p) => p && p.name === 'home');
+      if (home && home.path) await navigate(home.path);
+    }
+  } catch {
+    // 配置读不出就停在空白起始页，不影响启动
+  }
+}
+
 export async function navigate(dir) {
   state.busy = true;
   state.busyKey = 'busy.loading';
@@ -791,6 +887,7 @@ export async function navigate(dir) {
     // 磁盘路径和容器层级，点哪个都对不上
     state.container = null;
     await refreshKnown();
+    schedulePersistLastDir(dir);
   } catch (e) {
     state.error = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
   } finally {
@@ -1417,6 +1514,291 @@ export async function switchLanguage() {
   await i18n.load(next);
   await api.setLanguage(next);
   localStorage.setItem('omy.lang', next);
+}
+
+/** 切到指定语言。设置页用这个，顶栏的循环切换用 switchLanguage。
+ *
+ * `auto` 表示跟随系统：此处解析成具体语言再加载，因为 i18n.load 要一个
+ * 确定的语言包。配置文件里仍然存 'auto'——存解析结果的话，用户换了系统
+ * 语言之后应用不会跟着变，而他明明选的是「跟随系统」。
+ */
+export async function applyLanguage(pref) {
+  const target = pref === 'auto' ? detectSystemLang() : pref;
+  if (!i18n.LANGS.includes(target)) return;
+  await i18n.load(target);
+  await api.setLanguage(target);
+  localStorage.setItem('omy.lang', pref);
+}
+
+/** 从浏览器环境猜系统语言，猜不出时回落到英文。
+ *
+ * 与后端 `state::detect_language` 是同一套意图——**改一处要想到另一处**。
+ * 两边不一致的表现是「启动瞬间是一种语言，加载完配置后跳成另一种」。
+ */
+function detectSystemLang() {
+  const raw = (navigator.language || 'en').toLowerCase();
+  return raw.startsWith('zh') ? 'zh-CN' : 'en';
+}
+
+/* ---------------- 远程位置 ---------------- */
+
+/** 当前远程位置的能力位图。
+ *
+ * 不在远程位置时返回本地的全能力——这样上层判断可以统一写
+ * `caps.write`，不必到处分叉「是不是远程」。
+ */
+export const currentCaps = computed(() => {
+  if (!state.remotePlace) {
+    return {
+      read: true,
+      write: true,
+      delete: true,
+      rename: true,
+      create_dir: true,
+      random_write: true,
+      range_read: true,
+    };
+  }
+  const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
+  // 找不到时按只读处理：宁可少几个按钮，也不要对一个状态不明的位置
+  // 发起写操作
+  return (
+    p?.caps || {
+      read: true,
+      write: false,
+      delete: false,
+      rename: false,
+      create_dir: false,
+      random_write: false,
+      range_read: true,
+    }
+  );
+});
+
+/** 刷新远程位置列表。 */
+export async function reloadRemotePlaces() {
+  state.remotePlaces = await api.remotePlaceList().catch(() => []);
+}
+
+/** 进入一个远程位置的根目录。 */
+export async function openRemotePlace(id) {
+  state.remotePlace = id;
+  state.remoteDir = '';
+  await reloadRemoteDir();
+}
+
+/** 离开远程位置，回到本地浏览。 */
+export function leaveRemotePlace() {
+  state.remotePlace = '';
+  state.remoteDir = '';
+  state.remoteItems = [];
+  state.remoteRetrying = [];
+}
+
+/** 列出当前远程目录。
+ *
+ * 失败时清空列表并报错，而不是留着上一个目录的内容——那会让用户
+ * 以为自己进到了一个内容相同的目录。
+ */
+export async function reloadRemoteDir() {
+  if (!state.remotePlace) return;
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  state.placeError = '';
+  state.remoteRetrying = [];
+  try {
+    state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+  } catch (e) {
+    state.remoteItems = [];
+    // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
+/** 就地替换一个远程条目（单条目探测与边扫边出共用）。
+ *  只更新当前列表里已存在的 id：切目录后晚到的结果找不到骨架，直接丢弃，
+ *  绝不 push 进新目录，避免上一屏的条目串到下一屏。 */
+export function patchRemoteItem(entry) {
+  const idx = state.remoteItems.findIndex((x) => x.id === entry.id);
+  if (idx >= 0) state.remoteItems[idx] = entry;
+  state.remoteRetrying = state.remoteRetrying.filter((id) => id !== entry.id);
+}
+
+/** 单独重试一个「未能读取（网络）」条目，不重载整个目录。
+ *  命令本身失败（如位置已失效）时恢复可再点的失败态，不吞错也不卡死。 */
+export async function retryRemoteEntry(f) {
+  if (!state.remotePlace || state.remoteRetrying.includes(f.id)) return;
+  state.remoteRetrying = [...state.remoteRetrying, f.id];
+  try {
+    const entry = await api.remoteProbeEntry(state.remotePlace, f.id, f.size || 0);
+    patchRemoteItem(entry);
+  } catch (_) {
+    state.remoteRetrying = state.remoteRetrying.filter((id) => id !== f.id);
+  }
+}
+
+/**
+ * 全局只注册一次「边扫边出」监听：remote_browse 返回骨架后，后台每识别完
+ * 一个文件推一条 remote-entry，这里只在事件仍属于当前位置+当前目录时，
+ * 就地替换同 id 骨架；切走目录后晚到的事件直接丢弃，绝不串屏。
+ */
+let remoteListenerStarted = false;
+export async function ensureRemoteListeners() {
+  if (remoteListenerStarted) return;
+  remoteListenerStarted = true;
+  await api.onRemoteEntry((p) => {
+    if (!p || !p.entry) return;
+    if (p.place_id !== state.remotePlace || p.dir !== state.remoteDir) return;
+    const idx = state.remoteItems.findIndex((x) => x.id === p.entry.id);
+    if (idx >= 0) state.remoteItems[idx] = p.entry;
+  });
+}
+
+/** 把一个已解锁的远程 `.omy` 流式解密到用户选择的本地目录。
+ *  只读位置也保留（这是只读位置的主要用途）。复用全局解密进度条；
+ *  默认不覆盖，目标已存在时后端返回 target_exists。 */
+export async function decryptRemoteToLocal(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted || !f.unlocked) return null;
+  let dest;
+  try {
+    dest = await api.pickFolder(i18n.t('rplace.decrypt_pick_title'));
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.decrypt_failed'));
+    return null;
+  }
+  if (!dest) return null; // 用户在目录选择器里取消
+
+  state.busy = true;
+  state.busyKey = 'busy.remote_decrypt';
+  state.error = '';
+  state.notice = '';
+  state.progress = null;
+  let unlisten = null;
+  try {
+    unlisten = await api.onDecryptProgress((p) => {
+      state.progress = p;
+    });
+  } catch {
+    unlisten = null;
+  }
+  try {
+    const r = await api.remoteDecryptToLocal(state.remotePlace, f.id, f.size || 0, dest);
+    setNotice(i18n.t('rplace.decrypted_local', { name: r.name, dir: dest }));
+    return r;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.decrypt_failed'));
+    return null;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+    state.progress = null;
+    if (unlisten) unlisten();
+  }
+}
+
+/** 远程单文件缓存状态在 state.remoteCacheStat 里的键。 */
+function remoteFileCacheKey(placeId, path) {
+  // 控制字符分隔，正常路径里不会出现，避免 place/path 粘连
+  return `${placeId}\u{1}${path}`;
+}
+
+/**
+ * 打开条目菜单时按需查询该文件的密文块缓存覆盖情况（不阻塞菜单弹出）。
+ * 列目录不逐文件查：一部几 GB 的电影有数千块，逐文件 stat 会拖慢整屏扫描。
+ */
+export async function requestRemoteFileCache(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return;
+  try {
+    const stat = await api.remoteCacheFileStat(state.remotePlace, f.id, f.size || 0);
+    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    state.remoteCacheStat = { ...state.remoteCacheStat, [key]: stat };
+  } catch {
+    // 查不到（非加密 / 头部读取失败）就当无缓存：菜单本就可以没有这一项，不打扰用户
+  }
+}
+
+/** 读取已查询过的单文件缓存状态（供菜单响应式判断是否显示「从缓存中移除」）。 */
+export function remoteFileCache(f) {
+  if (!f || !state.remotePlace) return null;
+  return state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] || null;
+}
+
+/** 删除单个远程文件的本地密文块。只读位置也允许：只清本机缓存，绝不写云端。 */
+export async function removeRemoteFileCache(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return false;
+  try {
+    const r = await api.remoteCacheRemoveFile(state.remotePlace, f.id, f.size || 0);
+    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    const prev = state.remoteCacheStat[key];
+    const zero = {
+      cached_blocks: 0,
+      total_blocks: prev ? prev.total_blocks : 0,
+      cached_bytes: 0,
+      fully_cached: false,
+    };
+    state.remoteCacheStat = { ...state.remoteCacheStat, [key]: zero };
+    setNotice(i18n.t('rplace.removed_cache', { size: i18n.formatSize(r.freed_bytes || 0) }));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.remove_cache_failed'));
+    return false;
+  }
+}
+
+/** 打开云盘浏览器（停在位置列表）。 */
+export async function openPlaceBrowser() {
+  state.placeBrowserOpen = true;
+  await reloadRemotePlaces();
+}/** 打开云盘浏览器并直接进入某个已保存位置（桌面侧栏入口）。
+ *  必须同时置 placeBrowserOpen，否则只加载了目录数据、视图却还停在本地，
+ *  表现为点侧栏云盘项「没反应」。 */
+export async function openPlaceBrowserAt(id) {
+  state.placeBrowserOpen = true;
+  await openRemotePlace(id);
+}
+
+/** 关闭云盘浏览器，回到本地文件，并退出当前位置。 */
+export function closePlaceBrowser() {
+  state.placeBrowserOpen = false;
+  leaveRemotePlace();
+}
+
+/** 移除一个远程位置；若正在浏览它，先退回到位置列表。 */
+export async function removeRemotePlace(id) {
+  await api.remotePlaceRemove(id);
+  if (state.remotePlace === id) leaveRemotePlace();
+  await reloadRemotePlaces();
+}
+
+/** 进入远程子目录。 */
+export async function enterRemoteDir(id) {
+  state.remoteDir = id;
+  await reloadRemoteDir();
+}
+
+/** 远程位置里返回上一级。
+ *
+ * 已在根时离开该位置回到本地，而不是什么都不做——否则用户会觉得
+ * 返回键卡住了。
+ */
+export async function remoteGoUp() {
+  const cur = state.remoteDir.replace(/\/+$/, '');
+  if (!cur) {
+    leaveRemotePlace();
+    return;
+  }
+  const i = cur.lastIndexOf('/');
+  state.remoteDir = i > 0 ? cur.slice(0, i) : '';
+  await reloadRemoteDir();
+}
+
+/** 添加远程位置后刷新列表并进入它。 */
+export async function afterPlaceAdded(id) {
+  await reloadRemotePlaces();
+  await openRemotePlace(id);
 }
 
 // 凭据归零就退出容器视图，不依赖某处记得清状态。
