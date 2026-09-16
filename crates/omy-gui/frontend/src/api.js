@@ -439,3 +439,16 @@ export const remoteCacheApply = (limit, cacheDir) =>
 
 /** 在系统文件管理器中打开缓存目录（桌面端）。 */
 export const remoteCacheOpenDir = () => invoke('remote_cache_open_dir');
+
+/** 查单个远程文件的密文块缓存覆盖情况：
+ *  {cached_blocks,total_blocks,cached_bytes,fully_cached}，不下载载荷。 */
+export const remoteCacheFileStat = (placeId, path, size) =>
+  invoke('remote_cache_file_stat', {
+    req: { place_id: placeId, path, size },
+  });
+
+/** 删除单个远程文件的本地密文块，返回 {freed_bytes}；只读位置也允许。 */
+export const remoteCacheRemoveFile = (placeId, path, size) =>
+  invoke('remote_cache_remove_file', {
+    req: { place_id: placeId, path, size },
+  });

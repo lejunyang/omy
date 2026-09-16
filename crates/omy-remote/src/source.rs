@@ -20,7 +20,7 @@ use omy_core::error::{Error as CoreError, Result as CoreResult};
 use omy_core::header::FixedHeader;
 use omy_core::source::BlockSource;
 
-use crate::cache::{blocks_for, BlockCache, BLOCK_SIZE};
+use crate::cache::{blocks_for, BlockCache, FileCacheStat, BLOCK_SIZE};
 use crate::store::RemoteStore;
 
 /// 远程 `.omy` 文件的密文来源。
@@ -97,6 +97,40 @@ impl<S: RemoteStore> RemoteSource<S> {
     fn cache_key(&self) -> String {
         // 用控制字符分隔，正常 URL/路径里不会出现，避免 id 与版本号粘连
         format!("{}\u{1}{}", self.id, self.cache_version)
+    }
+
+    /// 密文载荷按块大小向上取整的总块数。
+    #[must_use]
+    pub fn total_ct_blocks(&self) -> u64 {
+        if self.payload_len == 0 {
+            0
+        } else {
+            (self.payload_len.saturating_add(BLOCK_SIZE - 1)) / BLOCK_SIZE
+        }
+    }
+
+    /// 该文件在本地密文块缓存里的覆盖情况（不发起任何网络请求）。
+    #[must_use]
+    pub fn cache_stat(&self) -> FileCacheStat {
+        let total = self.total_ct_blocks();
+        match &self.cache {
+            Some(c) => c.stat_file(&self.place, &self.cache_key(), total),
+            None => FileCacheStat {
+                cached_blocks: 0,
+                total_blocks: total,
+                cached_bytes: 0,
+                fully_cached: false,
+            },
+        }
+    }
+
+    /// 删除该文件的全部本地密文块，返回释放字节数。只读远程位置也允许：
+    /// 它只清理本机缓存，绝不向云端发写请求。
+    pub fn remove_cached_blocks(&self) -> u64 {
+        match &self.cache {
+            Some(c) => c.remove_file_blocks(&self.place, &self.cache_key(), self.total_ct_blocks()),
+            None => 0,
+        }
     }
 
     /// 按块取密文，优先走缓存。

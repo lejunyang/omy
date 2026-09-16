@@ -204,6 +204,8 @@ pub fn run() {
             place_cmds::remote_cache_clear,
             place_cmds::remote_cache_apply,
             place_cmds::remote_cache_open_dir,
+            place_cmds::remote_cache_file_stat,
+            place_cmds::remote_cache_remove_file,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]

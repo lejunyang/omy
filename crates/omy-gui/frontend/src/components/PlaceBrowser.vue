@@ -34,6 +34,9 @@ import {
   removeRemotePlace,
   retryRemoteEntry,
   decryptRemoteToLocal,
+  requestRemoteFileCache,
+  remoteFileCache,
+  removeRemoteFileCache,
   placeThumbUrl,
 } from '../store.js';
 
@@ -148,6 +151,9 @@ function menuable(f) {
 function openMenuAt(f, x, y) {
   if (!menuable(f)) return;
   rmenu.value = { entry: f, x, y };
+  // 打开菜单时按需查该文件的密文缓存覆盖情况，查到有缓存块才让
+  // 「从缓存中移除」出现；不 await，菜单先弹，结果回来后响应式补项。
+  requestRemoteFileCache(f);
 }
 
 /** 桌面右键。 */
@@ -199,9 +205,10 @@ function onPointerUp() {
   clearPress();
 }
 
-/** 菜单项按条目状态投影：首期只读位置只保留「打开/预览」与
- *  「解密到本地」（仅已解锁单文件）。写类操作等写链路落地后再按
- *  writable 能力整项出现，不放假控件。 */
+/** 菜单项按条目状态投影：首期只读位置保留「打开/预览」「解密到本地」
+ *  （仅已解锁单文件）与「从缓存中移除」（仅当该文件确有本地密文块，只读
+ *  位置也允许——只清本机、不碰云端）。写类操作等写链路落地后再按 writable
+ *  能力整项出现，不放假控件。 */
 const rmenuItems = computed(() => {
   const f = rmenu.value?.entry;
   if (!f) return [];
@@ -218,6 +225,15 @@ const rmenuItems = computed(() => {
       label: i18n.t('rplace.menu_decrypt_local'),
     });
   }
+  // 缓存状态是打开菜单时异步查的，查到非零块前这一项不出现（避免空操作）
+  const cstat = !f.is_dir && f.is_encrypted ? remoteFileCache(f) : null;
+  if (cstat && cstat.cached_blocks > 0) {
+    items.push({
+      key: 'remove-cache',
+      icon: '🗄️',
+      label: i18n.t('rplace.menu_remove_cache'),
+    });
+  }
   return items;
 });
 
@@ -229,6 +245,8 @@ async function onMenuPick(key) {
     activate(f);
   } else if (key === 'decrypt-local') {
     await decryptRemoteToLocal(f);
+  } else if (key === 'remove-cache') {
+    await removeRemoteFileCache(f);
   }
 }
 

@@ -656,6 +656,62 @@ pub async fn remote_decrypt_to_local(
     }
 }
 
+/// 仅取头部、构造一个远程源，供只需要文件结构而不解密明文的缓存操作使用。
+///
+/// 与播放/解密不同，这里不需要 KEK：缓存里只有密文，统计覆盖情况、删除本地
+/// 密文块都不触及明文，因此锁定（未解锁）的文件也允许查/移除它的缓存。
+/// 构造后调用方只能用不发起网络载荷请求的方法（`cache_stat` /
+/// `remove_cached_blocks`），它们只做本地 metadata 查询与删除。
+async fn build_remote_source(
+    reg: &tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: &tauri::State<'_, Arc<RemoteCache>>,
+    req: &RemoteFileRef,
+) -> CmdResult<RemoteSource<WebDavStore>> {
+    let place = reg
+        .get(&req.place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = Arc::clone(&place.store);
+    let header = fetch_full_header(&store, &req.path, req.size)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+    let rt = tokio::runtime::Handle::current();
+    RemoteSource::new(
+        store,
+        req.place_id.clone(),
+        req.path.clone(),
+        &header,
+        req.size,
+        cache.snapshot(),
+        rt,
+    )
+    .map_err(|_| CmdError::code("not_an_omy_file"))
+}
+
+/// 查询单个远程文件在本地密文块缓存里的覆盖情况（不下载载荷）。
+#[tauri::command]
+pub async fn remote_cache_file_stat(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    req: RemoteFileRef,
+) -> CmdResult<omy_remote::cache::FileCacheStat> {
+    let source = build_remote_source(&reg, &cache, &req).await?;
+    Ok(source.cache_stat())
+}
+
+/// 删除单个远程文件的本地密文块，返回释放字节数。
+///
+/// 只读位置也允许：它只清理本机缓存，绝不向云端发任何写请求。
+#[tauri::command]
+pub async fn remote_cache_remove_file(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    req: RemoteFileRef,
+) -> CmdResult<serde_json::Value> {
+    let source = build_remote_source(&reg, &cache, &req).await?;
+    let freed_bytes = source.remove_cached_blocks();
+    Ok(serde_json::json!({ "freed_bytes": freed_bytes }))
+}
+
 /// 读到足以 `open` 的完整文件头。
 ///
 /// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的

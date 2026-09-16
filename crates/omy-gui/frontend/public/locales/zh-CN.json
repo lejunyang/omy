@@ -590,7 +590,10 @@
     "menu_decrypt_local": "解密到本地…",
     "decrypt_pick_title": "选择保存解密文件的文件夹",
     "decrypt_failed": "解密到本地失败",
-    "decrypted_local": "已解密 {{name}}，保存到 {{dir}}"
+    "decrypted_local": "已解密 {{name}}，保存到 {{dir}}",
+    "menu_remove_cache": "从缓存中移除",
+    "removed_cache": "已从缓存移除，释放 {{size}}",
+    "remove_cache_failed": "移除缓存失败"
   },
   "common": {
     "back": "返回",

@@ -45,9 +45,10 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 | Listing thumbnails (read header, not body) | ✅ | ✅ |
 | Decrypt to local (plaintext lands only on this machine) | ✅ | ✅ |
 | Ciphertext block cache | ✅ | ✅ |
+| Remove a single file from the cache (local ciphertext only) | ✅ | ✅ |
 | Encrypted upload, new folder, rename, delete | ✅ (planned) | ❌ rejected before any request is sent |
 
-**Right-click on desktop, long-press on mobile** on an entry opens its context menu, which currently offers "Preview / Open" and "Decrypt to local…".
+**Right-click on desktop, long-press on mobile** on an entry opens its context menu, which currently offers "Preview / Open", "Decrypt to local…", and — once that file actually has local ciphertext blocks cached — "Remove from cache".
 
 ### Decrypt to local
 
@@ -74,6 +75,8 @@ Under **Settings → Remote locations → Ciphertext cache** you can:
 - See current usage and clear it immediately;
 - Open the cache directory;
 - Clear the cache on exit.
+
+Beyond clearing everything in settings, you can clean up a single file: choose "Remove from cache" in an entry's context menu. It deletes only that file's locally downloaded ciphertext blocks and never touches the remote file, so it is available on read-only locations too. The menu queries on demand — the item only appears when the file actually has some cached blocks; a file with no cache never shows an empty action. Whether a file is fully cached (available offline) is counted block by block at 1 MiB; this is not scanned for every file while listing the directory, to avoid slowing down browsing when there are many files.
 
 "Cache on Wi-Fi only" on mobile will follow in a later release.
 

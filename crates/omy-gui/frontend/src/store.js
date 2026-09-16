@@ -44,6 +44,13 @@ export const state = reactive({
   remoteItems: [],
   /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
   remoteRetrying: [],
+  /**
+   * 单文件密文块缓存覆盖情况，键为 `${placeId}\u{1}${path}`，值为后端
+   * FileCacheStat（cached_blocks/total_blocks/cached_bytes/fully_cached）。
+   * 只在打开条目菜单时按需查询——列目录逐文件 stat 数千块会拖慢扫描，
+   * 故不做成常驻卡片角标。
+   */
+  remoteCacheStat: {},
   /** 云盘（远程位置）浏览器是否打开。与局域网对端的 remoteMode 平行。 */
   placeBrowserOpen: false,
   /** 远程目录列表/打开过程中的局部错误（区别于全局 error，不弹底部条）。 */
@@ -1691,13 +1698,60 @@ export async function decryptRemoteToLocal(f) {
   }
 }
 
+/** 远程单文件缓存状态在 state.remoteCacheStat 里的键。 */
+function remoteFileCacheKey(placeId, path) {
+  // 控制字符分隔，正常路径里不会出现，避免 place/path 粘连
+  return `${placeId}\u{1}${path}`;
+}
+
+/**
+ * 打开条目菜单时按需查询该文件的密文块缓存覆盖情况（不阻塞菜单弹出）。
+ * 列目录不逐文件查：一部几 GB 的电影有数千块，逐文件 stat 会拖慢整屏扫描。
+ */
+export async function requestRemoteFileCache(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return;
+  try {
+    const stat = await api.remoteCacheFileStat(state.remotePlace, f.id, f.size || 0);
+    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    state.remoteCacheStat = { ...state.remoteCacheStat, [key]: stat };
+  } catch {
+    // 查不到（非加密 / 头部读取失败）就当无缓存：菜单本就可以没有这一项，不打扰用户
+  }
+}
+
+/** 读取已查询过的单文件缓存状态（供菜单响应式判断是否显示「从缓存中移除」）。 */
+export function remoteFileCache(f) {
+  if (!f || !state.remotePlace) return null;
+  return state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] || null;
+}
+
+/** 删除单个远程文件的本地密文块。只读位置也允许：只清本机缓存，绝不写云端。 */
+export async function removeRemoteFileCache(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return false;
+  try {
+    const r = await api.remoteCacheRemoveFile(state.remotePlace, f.id, f.size || 0);
+    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    const prev = state.remoteCacheStat[key];
+    const zero = {
+      cached_blocks: 0,
+      total_blocks: prev ? prev.total_blocks : 0,
+      cached_bytes: 0,
+      fully_cached: false,
+    };
+    state.remoteCacheStat = { ...state.remoteCacheStat, [key]: zero };
+    setNotice(i18n.t('rplace.removed_cache', { size: i18n.formatSize(r.freed_bytes || 0) }));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.remove_cache_failed'));
+    return false;
+  }
+}
+
 /** 打开云盘浏览器（停在位置列表）。 */
 export async function openPlaceBrowser() {
   state.placeBrowserOpen = true;
   await reloadRemotePlaces();
-}
-
-/** 打开云盘浏览器并直接进入某个已保存位置（桌面侧栏入口）。
+}/** 打开云盘浏览器并直接进入某个已保存位置（桌面侧栏入口）。
  *  必须同时置 placeBrowserOpen，否则只加载了目录数据、视图却还停在本地，
  *  表现为点侧栏云盘项「没反应」。 */
 export async function openPlaceBrowserAt(id) {

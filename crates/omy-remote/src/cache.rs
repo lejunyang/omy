@@ -186,8 +186,7 @@ impl BlockCache {
     /// # Errors
     ///
     /// 根目录无法读取时返回。
-    pub fn clear(&self) -> std::io::Result<()> {
-        if !self.root.exists() {
+    pub fn clear(&self) -> std::io::Result<()> {        if !self.root.exists() {
             std::fs::create_dir_all(&self.root)?;
             omy_core::fsatomic::mark_dir_no_index(&self.root).ok();
             return Ok(());
@@ -207,6 +206,66 @@ impl BlockCache {
         }
         Ok(())
     }
+
+    /// 统计单个远程文件在缓存里的覆盖情况。
+    ///
+    /// `key` 是 `RemoteSource` 拼出的逻辑键（id 混入文件版本），`total_blocks`
+    /// 是该文件密文载荷按 [`BLOCK_SIZE`] 向上取整的块数。块路径由哈希决定，
+    /// 因此只能逐块枚举判断是否存在——这是 O(块数) 的 metadata 查询，**不能**
+    /// 在列目录时对每个文件做（一部 5 GB 电影就是约 5000 次 stat），只在用户
+    /// 打开该条目的菜单、或主动移除时按需调用。
+    #[must_use]
+    pub fn stat_file(&self, place: &str, key: &str, total_blocks: u64) -> FileCacheStat {
+        let mut cached_blocks = 0u64;
+        let mut cached_bytes = 0u64;
+        for block in 0..total_blocks {
+            let p = self.path_of(place, key, block);
+            if let Ok(m) = std::fs::metadata(&p) {
+                if m.is_file() {
+                    cached_blocks += 1;
+                    cached_bytes = cached_bytes.saturating_add(m.len());
+                }
+            }
+        }
+        FileCacheStat {
+            cached_blocks,
+            total_blocks,
+            cached_bytes,
+            // 空文件（0 块）谈不上「已完整缓存」，按未缓存处理
+            fully_cached: total_blocks > 0 && cached_blocks == total_blocks,
+        }
+    }
+
+    /// 删除单个远程文件的全部缓存块，返回实际释放的字节数。
+    ///
+    /// 删的只是本地密文块、绝不碰云端文件，因此只读位置也允许这个操作。
+    /// 单个块删除失败不计入释放量，也不中断其余块的清理。
+    #[must_use]
+    pub fn remove_file_blocks(&self, place: &str, key: &str, total_blocks: u64) -> u64 {
+        let mut freed = 0u64;
+        for block in 0..total_blocks {
+            let p = self.path_of(place, key, block);
+            if let Ok(m) = std::fs::metadata(&p) {
+                if m.is_file() && std::fs::remove_file(&p).is_ok() {
+                    freed = freed.saturating_add(m.len());
+                }
+            }
+        }
+        freed
+    }
+}
+
+/// 单个远程文件的密文块缓存覆盖情况。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct FileCacheStat {
+    /// 已缓存的密文块数。
+    pub cached_blocks: u64,
+    /// 该文件密文载荷的总块数。
+    pub total_blocks: u64,
+    /// 已缓存块占用的字节数。
+    pub cached_bytes: u64,
+    /// 是否所有块都已缓存（可离线播放的判定依据）。
+    pub fully_cached: bool,
 }
 
 /// 把区间扩展到块边界，返回涉及的块号范围。
@@ -298,6 +357,50 @@ mod tests {
         c.put("nas", "/a", 0, &data);
         assert_eq!(c.get("nas", "/a", 0).as_deref(), Some(data.as_slice()));
         assert!(c.get("nas", "/a", 1).is_none(), "未写入的块应未命中");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 单文件缓存统计要正确反映部分 / 完整覆盖。
+    ///
+    /// 不这样会怎样：菜单上的「从缓存中移除」可能对根本没缓存的文件也出现，
+    /// 或「可离线播放（完整缓存）」标错。
+    #[test]
+    fn stat_file_reports_partial_then_full() {
+        let d = tmp("stat");
+        let c = BlockCache::new(&d, 0).expect("建缓存");
+        let chunk: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        c.put("nas", "/a\u{1}v1", 0, &chunk);
+        c.put("nas", "/a\u{1}v1", 1, &chunk);
+
+        let partial = c.stat_file("nas", "/a\u{1}v1", 3);
+        assert_eq!(partial.cached_blocks, 2);
+        assert_eq!(partial.total_blocks, 3);
+        assert_eq!(partial.cached_bytes, 2 * chunk.len() as u64);
+        assert!(!partial.fully_cached, "还差一块不能算完整缓存");
+
+        c.put("nas", "/a\u{1}v1", 2, &chunk);
+        assert!(c.stat_file("nas", "/a\u{1}v1", 3).fully_cached);
+        // 另一个文件（不同版本键）的缓存不能算到这个文件头上
+        assert_eq!(c.stat_file("nas", "/a\u{1}v2", 3).cached_blocks, 0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 移除单文件缓存只能删该文件（含版本键）的块，不能波及别的文件。
+    #[test]
+    fn remove_file_blocks_is_scoped_to_that_file() {
+        let d = tmp("remove-file");
+        let c = BlockCache::new(&d, 0).expect("建缓存");
+        let a: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let b: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
+        c.put("nas", "/a\u{1}v1", 0, &a);
+        c.put("nas", "/b\u{1}v9", 0, &b);
+
+        let freed = c.remove_file_blocks("nas", "/a\u{1}v1", 1);
+        assert_eq!(freed, a.len() as u64, "返回值应等于实际释放字节");
+        assert!(c.get("nas", "/a\u{1}v1", 0).is_none(), "目标文件块应已删");
+        assert!(c.get("nas", "/b\u{1}v9", 0).is_some(), "别的文件块不能被误删");
+        // 再删一次幂等，返回 0
+        assert_eq!(c.remove_file_blocks("nas", "/a\u{1}v1", 1), 0);
         std::fs::remove_dir_all(&d).ok();
     }
 

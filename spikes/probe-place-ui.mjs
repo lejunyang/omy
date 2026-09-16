@@ -306,12 +306,23 @@ async function main() {
     await new Promise(res=>setTimeout(res,200));
     return document.querySelector('.ctxmenu')?'menu':'none';
   })()`, 100);
-  const mmenu = await cdp.eval(`(()=>{ const m=document.querySelector('.ctxmenu');
-    if(!m) return 'none';
-    return JSON.stringify([...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi'))); })()`);
+  // 菜单的「从缓存中移除」是打开菜单时异步查单文件缓存状态后才响应式加入的，
+  // m03 预览已缓存该文件头部若干密文块，故轮询等待该项出现（最多 4 秒）。
+  const mmenu = await cdp.eval(`(async()=>{
+    for(let i=0;i<40;i++){
+      const m=document.querySelector('.ctxmenu');
+      const keys=m?[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi')):[];
+      if(keys.includes('remove-cache')) return JSON.stringify(keys);
+      await new Promise(r=>setTimeout(r,100));
+    }
+    const m=document.querySelector('.ctxmenu');
+    return JSON.stringify(m?[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi')):[]);
+  })()`);
   console.log('       移动长按菜单 ->', mmenu);
-  if (!/open/.test(mmenu) || !/decrypt-local/.test(mmenu)) {
-    throw new Error('移动长按未弹出含「解密到本地」的条目菜单: ' + mmenu);
+  const mmkeys = JSON.parse(mmenu);
+  if (!mmkeys.includes('open') || !mmkeys.includes('decrypt-local')
+      || !mmkeys.includes('remove-cache')) {
+    throw new Error('移动长按菜单应含 预览/解密到本地/从缓存中移除（预览后有密文缓存）: ' + mmenu);
   }
   await cdp.shot('m10-menu');
   await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
@@ -427,7 +438,15 @@ async function main() {
   const decDir = process.argv[8];
   fs.mkdirSync(decDir, { recursive: true });
 
-  // 桌面右键 movie 条目：菜单必须含「打开/预览」与「解密到本地」，且后者可用
+  // 取 movie 条目引用，供缓存 stat/移除断言复用
+  const dmov = JSON.parse(await cdp.eval(`(async()=>{
+    const list=await window.__p.invoke('remote_browse',{placeId:window.__rp,dir:''});
+    const m=list.find(x=>/movie\\.mp4\\.omy$/.test(x.id));
+    return JSON.stringify({id:m.id,size:Number(m.size)});
+  })()`));
+
+  // 桌面右键 movie 条目：菜单必须含「打开/预览」「解密到本地」与「从缓存中移除」
+  // （d02 预览已缓存头部密文块，该项由打开菜单时的异步 stat 响应式加入）。
   const menuOpen = await click(`(()=>{
     const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
     const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('movie.mp4'));
@@ -436,7 +455,16 @@ async function main() {
     r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:b.x+20,clientY:b.y+20}));
     return 'ok';
   })()`, 500);
-  const menuDiag = await cdp.eval(`(()=>{
+  const menuDiag = await cdp.eval(`(async()=>{
+    for(let i=0;i<40;i++){
+      const m=document.querySelector('.ctxmenu');
+      const keys=m?[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi')):[];
+      if(keys.includes('remove-cache')){
+        const dl=m.querySelector('[data-mi="decrypt-local"]');
+        return JSON.stringify({open:true,keys,decryptDisabled:dl?dl.disabled:null});
+      }
+      await new Promise(r=>setTimeout(r,100));
+    }
     const m=document.querySelector('.ctxmenu');
     if(!m) return JSON.stringify({open:false});
     const keys=[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi'));
@@ -447,8 +475,8 @@ async function main() {
   await cdp.shot('d10-menu');
   const dmm = JSON.parse(menuDiag);
   if (!dmm.open || !dmm.keys.includes('open') || !dmm.keys.includes('decrypt-local')
-      || dmm.decryptDisabled === true) {
-    throw new Error('桌面右键菜单缺少可用的「解密到本地」项: ' + menuDiag);
+      || !dmm.keys.includes('remove-cache') || dmm.decryptDisabled === true) {
+    throw new Error('桌面右键菜单缺少可用的「解密到本地 / 从缓存中移除」项: ' + menuDiag);
   }
 
   // 真实点击菜单项：pick_folder 自动化旁路返回 davDir，前端 action 应在该目录
@@ -493,6 +521,69 @@ async function main() {
     throw new Error('独立目录解密明文与源明文不一致');
   }
   console.log('       流式解密字节/哈希一致，重复解密被 target_exists 拒绝');
+
+  // ===== 单文件密文块缓存：完整覆盖 → 前端菜单移除 → 清空 → 菜单隐藏 =====
+  console.log('\n[单文件缓存]');
+  const fileRef = `{place_id:window.__rp,path:${JSON.stringify(dmov.id)},size:${dmov.size}}`;
+  // 解密读了全文，该文件所有密文块都应已缓存；夹具是跨 5 块的高熵大片，
+  // total_blocks 必须 >=2，否则说明根本没走到跨块路径
+  const st1 = JSON.parse(await cdp.eval(`(async()=>JSON.stringify(
+    await window.__p.invoke('remote_cache_file_stat',{req:${fileRef}})))()`));
+  console.log('       解密后缓存覆盖 ->', JSON.stringify(st1));
+  if (!(st1.total_blocks >= 2) || st1.cached_blocks !== st1.total_blocks
+      || st1.fully_cached !== true || st1.cached_bytes === 0) {
+    throw new Error('解密读全文后应完整缓存且跨多块: ' + JSON.stringify(st1));
+  }
+
+  // 前端真实链路：右键 → 点「从缓存中移除」→ 菜单关闭并清空该文件密文块
+  const ctxMovie = `(()=>{
+    const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
+    const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('movie.mp4'));
+    if(!r) return 'no-movie';
+    const b=r.getBoundingClientRect();
+    r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:b.x+20,clientY:b.y+20}));
+    return 'ok';
+  })()`;
+  await click(ctxMovie, 500);
+  await click(`(async()=>{
+    for(let i=0;i<40;i++){
+      const b=document.querySelector('.ctxmenu [data-mi="remove-cache"]');
+      if(b){ b.click(); return 'clicked'; }
+      await new Promise(r=>setTimeout(r,100));
+    }
+    return 'no-remove-item';
+  })()`, 1500);
+  await sleep(800);
+  const st2 = JSON.parse(await cdp.eval(`(async()=>JSON.stringify(
+    await window.__p.invoke('remote_cache_file_stat',{req:${fileRef}})))()`));
+  console.log('       前端移除后 ->', JSON.stringify(st2));
+  if (st2.cached_blocks !== 0 || st2.fully_cached !== false || st2.cached_bytes !== 0) {
+    throw new Error('前端「从缓存中移除」后该文件缓存应清零: ' + JSON.stringify(st2));
+  }
+  // 后端移除幂等：已清空再删返回 freed_bytes=0，同时验证返回结构含该字段
+  const freedAgain = JSON.parse(await cdp.eval(`(async()=>JSON.stringify(
+    await window.__p.invoke('remote_cache_remove_file',{req:${fileRef}})))()`));
+  if (freedAgain.freed_bytes !== 0) {
+    throw new Error('缓存已空时移除应幂等返回 0: ' + JSON.stringify(freedAgain));
+  }
+  // 缓存清零后，菜单不应再出现「从缓存中移除」（避免空操作）
+  await click(ctxMovie, 500);
+  const hiddenDiag = await cdp.eval(`(async()=>{
+    for(let i=0;i<12;i++){
+      const b=document.querySelector('.ctxmenu [data-mi="remove-cache"]');
+      if(b) return 'still-present';
+      await new Promise(r=>setTimeout(r,100));
+    }
+    const m=document.querySelector('.ctxmenu');
+    return JSON.stringify(m?[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi')):[]);
+  })()`);
+  console.log('       清空后菜单 ->', hiddenDiag);
+  if (hiddenDiag === 'still-present' || /remove-cache/.test(hiddenDiag)) {
+    throw new Error('缓存已清空的文件不应再显示「从缓存中移除」: ' + hiddenDiag);
+  }
+  await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
+  await sleep(300);
+
   await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
   await sleep(300);
 

@@ -590,7 +590,10 @@
     "menu_decrypt_local": "Decrypt to local…",
     "decrypt_pick_title": "Choose a folder to save the decrypted file",
     "decrypt_failed": "Failed to decrypt to local",
-    "decrypted_local": "Decrypted {{name}} into {{dir}}"
+    "decrypted_local": "Decrypted {{name}} into {{dir}}",
+    "menu_remove_cache": "Remove from cache",
+    "removed_cache": "Removed from cache, freed {{size}}",
+    "remove_cache_failed": "Failed to remove cached blocks"
   },
   "common": {
     "back": "Back",
