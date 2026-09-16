@@ -68,6 +68,16 @@ const visible = computed(() => {
   });
 });
 
+/** 状态栏的 🔓已解锁 / 🔒未解锁计数：只数加密文件，明文与目录不计。
+ *  跟随搜索过滤后的可见集合，和「N 个文件」口径一致。probing 中的条目
+ *  is_encrypted 尚未确定（false），自然不计入，识别完会响应式更新。 */
+const unlockedCount = computed(
+  () => visible.value.filter((f) => !f.is_dir && f.is_encrypted && f.unlocked).length,
+);
+const lockedCount = computed(
+  () => visible.value.filter((f) => !f.is_dir && f.is_encrypted && !f.unlocked).length,
+);
+
 /** 进入某个已保存位置。 */
 async function open(p) {
   await openRemotePlace(p.id);
@@ -309,7 +319,7 @@ function rowTitle(f) {
 </script>
 
 <template>
-  <div class="main">
+  <div class="main" data-ui="place-browser">
     <div class="crumb">
       <button
         class="crumbbtn"
@@ -422,7 +432,7 @@ function rowTitle(f) {
             v-for="f in visible"
             :key="f.id"
             class="card"
-            :class="{ locked: f.is_encrypted && !f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -461,7 +471,7 @@ function rowTitle(f) {
             v-for="f in visible"
             :key="f.id"
             class="lrow"
-            :class="{ off: !activatable(f), probing: !f.is_dir && f.probing }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -496,6 +506,8 @@ function rowTitle(f) {
       </span>
       <span v-else>☁️ {{ i18n.t('rplace.title') }}</span>
       <span v-if="state.remotePlace">{{ i18n.tn('status.files', visible.length) }}</span>
+      <span v-if="state.remotePlace && unlockedCount > 0" data-stat="unlocked" :data-n="unlockedCount">🔓 {{ unlockedCount }}</span>
+      <span v-if="state.remotePlace && lockedCount > 0" data-stat="locked" :data-n="lockedCount">🔒 {{ lockedCount }}</span>
       <span class="spacer"></span>
       <span v-if="state.remotePlace" class="readonly">{{ capsLabel() }}</span>
     </div>

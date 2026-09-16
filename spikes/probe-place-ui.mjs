@@ -294,6 +294,30 @@ async function main() {
   await sleep(800);
   await cdp.shot('m04-back-to-dir');
 
+  // 状态栏按原型给出 🔓已解锁 / 🔒不可解锁计数。纯读 DOM 对账（绝不反复
+  // invoke remote_browse——那会重新扫描整目录、把列表打回 probing 永不收敛）：
+  // 轮询等「识别中」骨架收敛，再比对状态栏 data-stat 与卡片锁定/解锁 class。
+  let statCounts = null;
+  for (let i = 0; i < 40; i++) {
+    statCounts = await cdp.eval(`(()=>{
+      const root=document.querySelector('[data-ui="place-browser"]');
+      const probing=root.querySelectorAll('.card.probing, .lrow.probing').length;
+      const n=sel=>{ const el=root.querySelector('.statusbar [data-stat="'+sel+'"]'); return el?Number(el.dataset.n):0; };
+      return JSON.stringify({probing,domUnlocked:n('unlocked'),domLocked:n('locked'),
+        lockedCards:root.querySelectorAll('.card.locked, .lrow.locked').length,
+        unlockedCards:root.querySelectorAll('.card.is-unlocked, .lrow.is-unlocked').length});
+    })()`);
+    const s = JSON.parse(statCounts);
+    if (s.probing === 0) break;
+    await sleep(250);
+  }
+  console.log('       [状态栏解锁计数]', statCounts);
+  const sc = JSON.parse(statCounts);
+  if (sc.probing !== 0
+      || sc.domLocked !== sc.lockedCards
+      || sc.domUnlocked !== sc.unlockedCards) {
+    throw new Error('状态栏 🔓/🔒 计数与卡片锁定态不一致或骨架未收敛: ' + statCounts);
+  }
   // 移动长按条目应弹出条目菜单（触屏没有右键），含「预览/解密到本地」
   const mm = await click(`(async()=>{
     const rows=[...document.querySelectorAll('.content .lrow, .content .card')];

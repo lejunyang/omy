@@ -32,6 +32,7 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 - In grid view, unlocked entries whose header carries a thumbnail show it directly. The thumbnail lives in the header TLV and is obtained while listing the directory, so **no body download is involved**; on failure it falls back to a type icon;
 - Listing is **progressive**: once the directory is listed, "Identifying…" skeletons appear immediately and each entry is filled in as soon as it is recognized — you don't wait for every file to finish;
 - A single file whose header can't be fetched because of a network problem is marked separately as "Could not read"; **tap the entry to retry it**. It is never confused with "locked (wrong password)", and you don't have to reload the whole directory;
+- Besides the item count, the bottom status bar separately counts 🔓 unlocked and 🔒 still-locked (wrong or untried password) encrypted files in the current directory. The numbers update live as scanning progresses; entries still being identified are not counted yet;
 - Decryption happens locally. The server and the wire only ever see ciphertext, just like the [LAN sharing](lan-sharing) model: you must know the password yourself.
 
 ## Read-only vs writable
