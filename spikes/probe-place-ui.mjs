@@ -122,15 +122,23 @@ async function main() {
   if (tabR !== 'ok') throw new Error(`移动端切到远程标签失败: ${tabR}`);
   await cdp.shot('m01-places');
 
-  const enterR = await click(`(()=>{
+  const enterR = await click(`(async()=>{
     // 必须按 id 精确定位，不能取「第一个」位置。
     //
     // 远程位置现在会持久化，机器上可能留着别的测试或用户自己加的位置，
     // 取第一个会进错地方——表现为列表空白、卡在「正在读取」，
     // 看起来像产品缺陷，实际是进了一个指向已停服务器的位置。
-    const b=document.querySelector('[data-pb-enter="'+window.__rp+'"]');
-    if(!b) return 'no-enter:'+window.__rp;
-    b.click(); return 'ok';
+    //
+    // 要等按钮出现再点：前面刚增删过位置，Vue 的 DOM 更新是异步的，
+    // 立刻查会扑空。
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    for(let i=0;i<30;i++){
+      const b=document.querySelector('[data-pb-enter="'+window.__rp+'"]');
+      if(b){ b.click(); return 'ok'; }
+      await sleep(100);
+    }
+    const all=[...document.querySelectorAll('[data-pb-enter]')].map(e=>e.getAttribute('data-pb-enter'));
+    return 'no-enter:'+window.__rp+' 现有:'+JSON.stringify(all);
   })()`, 450);
   if (enterR !== 'ok') throw new Error(`移动端进入云盘目录失败: ${enterR}`);
   await cdp.shot('m02-dir');
