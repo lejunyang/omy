@@ -22,7 +22,13 @@
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import { playing } from '../autolock.js';
 import * as i18n from '../i18n.js';
-import { fileUrl, remoteFileUrl, plainUrl, containerItemUrl } from '../store.js';
+import {
+  fileUrl,
+  remoteFileUrl,
+  plainUrl,
+  containerItemUrl,
+  placeFileUrl,
+} from '../store.js';
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -47,6 +53,12 @@ const props = defineProps({
    * 的一段区间，磁盘上没有对应文件可交给系统程序。
    */
   inContainer: { type: Boolean, default: false },
+  /** 内容来自远程存储位置（WebDAV 等云盘）。
+   *
+   * 只影响 URL 前缀（`/pfile/`）。播放、seek、Range 行为与本地/远端设备
+   * 完全一致——这正是所有来源共用同一个 omystream 协议的目的。
+   */
+  place: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close', 'external']);
@@ -58,6 +70,7 @@ const mediaError = ref('');
 const src = computed(() => {
   if (props.inContainer) return containerItemUrl(props.file.id);
   if (props.plain) return plainUrl(props.file.id);
+  if (props.place) return placeFileUrl(props.file.id);
   return props.remote ? remoteFileUrl(props.file.id) : fileUrl(props.file.id);
 });
 const kind = computed(() => props.file.kind || 'other');

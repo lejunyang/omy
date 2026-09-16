@@ -551,7 +551,17 @@
     "connecting": "正在连接…",
     "empty_dir": "这个目录是空的",
     "add_failed": "连接失败",
-    "url_scheme": "地址需要以 http:// 或 https:// 开头"
+    "url_scheme": "地址需要以 http:// 或 https:// 开头",
+    "add_short": "添加",
+    "empty_hint": "连接支持 WebDAV 的 NAS 或网盘，在线浏览、播放其中的加密文件。",
+    "enter": "进入",
+    "retry": "重试",
+    "folder": "文件夹",
+    "plain_file": "未加密",
+    "caps_writable": "可写",
+    "err_not_encrypted": "这不是 OMYFILE 加密文件，无法在线播放。",
+    "err_locked": "该文件的密码不在当前会话，请先在本地解锁对应密码库。",
+    "open_failed": "无法打开远程文件"
   },
   "common": {
     "back": "返回",

@@ -551,7 +551,17 @@
     "connecting": "Connecting…",
     "empty_dir": "This folder is empty",
     "add_failed": "Connection failed",
-    "url_scheme": "The URL must start with http:// or https://"
+    "url_scheme": "The URL must start with http:// or https://",
+    "add_short": "Add",
+    "empty_hint": "Connect a WebDAV NAS or cloud drive to browse and play encrypted files in place.",
+    "enter": "Open",
+    "retry": "Retry",
+    "folder": "Folder",
+    "plain_file": "Not encrypted",
+    "caps_writable": "Writable",
+    "err_not_encrypted": "This is not an OMYFILE encrypted file and cannot be played online.",
+    "err_locked": "This file's password is not in the current session. Unlock the matching vault locally first.",
+    "open_failed": "Could not open the remote file"
   },
   "common": {
     "back": "Back",

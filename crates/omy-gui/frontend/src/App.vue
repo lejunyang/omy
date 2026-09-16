@@ -43,6 +43,8 @@ import {
   applyLanguage,
   afterPlaceAdded,
   reloadRemotePlaces,
+  openPlaceBrowser,
+  closePlaceBrowser,
   selectAll,
   enrich,
   encryptable,
@@ -84,6 +86,7 @@ import NameDialog from './components/NameDialog.vue';
 import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
+import PlaceBrowser from './components/PlaceBrowser.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock.js';
@@ -100,6 +103,8 @@ const showAddPlace = ref(false);
  */
 async function onPlaceAdded(id) {
   showAddPlace.value = false;
+  // 从桌面侧栏直接添加时浏览器可能还没开，这里保证添加后落在云盘视图里
+  state.placeBrowserOpen = true;
   await afterPlaceAdded(id);
 }
 
@@ -156,6 +161,65 @@ const unlockForRemote = ref(false);
  * 「用加密文件的字段去读明文对象」这类必然出错的代码。
  */
 const plainPreview = ref(null);
+
+/** 云盘（远程位置）文件的预览目标。
+ *
+ * `id` 是后端 remotePlaceOpen 颁发的播放 token（pf{n}），不是文件 id；
+ * 预览组件据此拼 `/pfile/<token>`。关闭时必须 remotePlaceClose 释放句柄，
+ * 否则后端来源表会一直挂着这个文件（密文缓存仍保留，那是刻意的）。
+ */
+const placePreview = ref(null);
+
+/** 在云盘里双击/单击一个已解锁的加密文件：向后端换播放令牌再预览。
+ *
+ * 三态分开处理：拿到 token 才弹预览；`unlocked:false`（密码不在当前会话）
+ * 与 `not_encrypted`（根本不是 omy）给不同提示，不能笼统报「打不开」。
+ */
+async function onOpenPlace(f) {
+  try {
+    const r = await api.remotePlaceOpen(state.remotePlace, f.id, f.size ?? null);
+    if (r.token) {
+      placePreview.value = {
+        id: r.token,
+        name: r.name || f.real_name || f.name,
+        kind: r.kind || 'other',
+        mime: r.mime || '',
+      };
+      return;
+    }
+    if (r.not_encrypted) {
+      state.error = i18n.t('rplace.err_not_encrypted');
+    } else {
+      state.error = i18n.t('rplace.err_locked');
+    }
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), 'rplace.open_failed');
+  }
+}
+
+/** 关闭云盘预览：先释放后端来源句柄，再清前端目标。 */
+async function onClosePlacePreview() {
+  const token = placePreview.value?.id;
+  placePreview.value = null;
+  if (token) {
+    try {
+      await api.remotePlaceClose(token);
+    } catch {
+      // 释放失败不影响关闭：锁定时后端会统一清句柄
+    }
+  }
+}
+
+/** 退出云盘视图回本地：先关掉可能开着的云盘预览（含释放句柄）。 */
+async function onClosePlaceBrowser() {
+  if (placePreview.value) await onClosePlacePreview();
+  closePlaceBrowser();
+}
+
+/** 侧栏/底部「远程」入口：打开云盘浏览器（位置列表或当前位置）。 */
+async function onPlacesEntry() {
+  await openPlaceBrowser();
+}
 
 /** 预览目标的完整信息（含媒体元数据）。 */
 const previewFile = computed(() => {
@@ -505,6 +569,9 @@ async function doLock() {
   // 容器内文件的预览同样要关，理由更强：那是解密出来的内容。
   // 容器视图本身由 store 的 lock() 与一道 watch 一起收掉
   citemPreview.value = null;
+  // 云盘播放预览同样要关：后端 lock 已清空远程来源句柄，留着只会 403。
+  // 云盘目录浏览本身保留——锁定后仍可看目录，只是文件显示为锁定、点不开
+  placePreview.value = null;
   showDevices.value = false;
   // 断开远端由**后端**的 lock 负责，这里不再重复调用。
   // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
@@ -625,6 +692,15 @@ onBeforeUnmount(() => {
     @unlock="onRemoteUnlock"
   />
 
+  <!-- 云盘（WebDAV 等远程位置）：位置列表 + 目录浏览 + 点播。
+       与局域网对端 RemoteScreen 互斥，二者都不在时才是本地文件。 -->
+  <PlaceBrowser
+    v-else-if="state.placeBrowserOpen"
+    @open="onOpenPlace"
+    @add="showAddPlace = true"
+    @close="onClosePlaceBrowser"
+  />
+
   <MainScreen
     v-else
     @open="onOpen"
@@ -639,7 +715,7 @@ onBeforeUnmount(() => {
     @devices="showDevices = true"
     @settings="showSettings = true"
     @add-place="showAddPlace = true"
-    @places="showAddPlace = state.remotePlaces.length === 0"
+    @places="onPlacesEntry"
   />
 
   <DevicePanel
@@ -751,6 +827,16 @@ onBeforeUnmount(() => {
     :file="citemPreview"
     in-container
     @close="citemPreview = null"
+  />
+
+  <!-- 云盘文件：同一个预览组件，URL 前缀换成 /pfile/。
+       关闭时要释放后端来源句柄，所以走专门的 close 处理。 -->
+  <PreviewOverlay
+    v-if="placePreview"
+    :key="'f' + placePreview.id"
+    :file="placePreview"
+    place
+    @close="onClosePlacePreview"
   />
 
   <!-- 设置。语言改动要立刻生效，所以它自己 emit 一个 lang 事件，

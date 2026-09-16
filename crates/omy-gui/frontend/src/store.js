@@ -42,6 +42,10 @@ export const state = reactive({
   remoteDir: '',
   /** 远程目录的条目，已附带识别结果。 */
   remoteItems: [],
+  /** 云盘（远程位置）浏览器是否打开。与局域网对端的 remoteMode 平行。 */
+  placeBrowserOpen: false,
+  /** 远程目录列表/打开过程中的局部错误（区别于全局 error，不弹底部条）。 */
+  placeError: '',
   /**
    * 存储访问权限状态：`{ granted, mode }`。
    *
@@ -163,6 +167,20 @@ export function remoteFileUrl(id) {
 /** 拼出远端文件的缩略图 URL。 */
 export function remoteThumbUrl(id) {
   return `${state.streamBase}/rthumb/${encodeURIComponent(id)}`;
+}
+
+/** 拼出远程位置（WebDAV 等）已打开文件的内容 URL。
+ *
+ * token 由 remotePlaceOpen 颁发，对应后端一个带密文块缓存的来源；
+ * 多次 Range 请求复用它，seek 才不会重复下载。
+ */
+export function placeFileUrl(token) {
+  return `${state.streamBase}/pfile/${encodeURIComponent(token)}`;
+}
+
+/** 拼出远程位置文件的缩略图 URL。 */
+export function placeThumbUrl(token) {
+  return `${state.streamBase}/pthumb/${encodeURIComponent(token)}`;
 }
 
 /** 连接一台设备并进入远端视图。 */
@@ -1513,16 +1531,36 @@ export async function reloadRemoteDir() {
   if (!state.remotePlace) return;
   state.busy = true;
   state.busyKey = 'busy.loading';
+  state.placeError = '';
   try {
     state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
-    state.error = '';
   } catch (e) {
     state.remoteItems = [];
-    state.error = i18n.te(api.errCode(e), 'errors.remote_failed');
+    // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
   } finally {
     state.busy = false;
     state.busyKey = '';
   }
+}
+
+/** 打开云盘浏览器（停在位置列表）。 */
+export async function openPlaceBrowser() {
+  state.placeBrowserOpen = true;
+  await reloadRemotePlaces();
+}
+
+/** 关闭云盘浏览器，回到本地文件，并退出当前位置。 */
+export function closePlaceBrowser() {
+  state.placeBrowserOpen = false;
+  leaveRemotePlace();
+}
+
+/** 移除一个远程位置；若正在浏览它，先退回到位置列表。 */
+export async function removeRemotePlace(id) {
+  await api.remotePlaceRemove(id);
+  if (state.remotePlace === id) leaveRemotePlace();
+  await reloadRemotePlaces();
 }
 
 /** 进入远程子目录。 */

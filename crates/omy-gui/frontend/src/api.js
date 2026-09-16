@@ -387,3 +387,26 @@ export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
  */
 export const remoteBrowse = (placeId, dir) =>
   invoke('remote_browse', { placeId, dir });
+
+/** 打开一个远程 `.omy`，换回播放令牌。
+ *
+ * 后端在此时读完整头部、用当前会话密钥试解，并构造带密文块缓存的来源。
+ * 返回 `unlocked:false` 表示是 omy 但密码不对（区别于网络错误），
+ * `not_encrypted:true` 表示根本不是 omy。
+ */
+export const remotePlaceOpen = (placeId, path, size) =>
+  invoke('remote_place_open', { placeId, path, size });
+
+/** 关闭一个远程播放来源（播放结束时调用）。 */
+export const remotePlaceClose = (token) =>
+  invoke('remote_place_close', { token });
+
+/** 查询远程密文缓存用量 {used, limit, root}。 */
+export const remoteCacheUsage = () => invoke('remote_cache_usage');
+
+/** 立即清空远程密文缓存，返回清空后占用。 */
+export const remoteCacheClear = () => invoke('remote_cache_clear');
+
+/** 缓存设置变更后让后端按新上限/目录重建缓存。 */
+export const remoteCacheApply = (limit, cacheDir) =>
+  invoke('remote_cache_apply', { limit, cacheDir });
