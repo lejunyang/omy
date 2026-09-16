@@ -176,8 +176,16 @@ const placePreview = ref(null);
  * 与 `not_encrypted`（根本不是 omy）给不同提示，不能笼统报「打不开」。
  */
 async function onOpenPlace(f) {
+  // 打开播放必须知道密文总大小（Range 边界、片尾判断都靠它）。
+  // 目录不会走到这里；文件大小缺失说明 PROPFIND 信息不全，直接提示而非
+  // 给后端传 null 造成参数反序列化失败。
+  const size = Number(f.size);
+  if (!Number.isFinite(size) || size <= 0) {
+    state.error = i18n.t('rplace.open_failed');
+    return;
+  }
   try {
-    const r = await api.remotePlaceOpen(state.remotePlace, f.id, f.size ?? null);
+    const r = await api.remotePlaceOpen(state.remotePlace, f.id, size);
     if (r.token) {
       placePreview.value = {
         id: r.token,
