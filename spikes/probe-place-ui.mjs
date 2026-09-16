@@ -188,6 +188,18 @@ async function main() {
   await click(`(()=>{ const n=document.querySelector('[data-sp="remote"]'); if(!n) return 'no-remote-nav'; n.click(); return 'ok'; })()`, 600);
   await cdp.shot('d04-remote');
   await click(`(()=>{ const b=document.querySelector('[data-sf="cache_entry"]'); if(!b) return 'no-cache-entry'; b.click(); return 'ok'; })()`, 700);
+  const pcCacheDiag = await cdp.eval(`(()=>({
+    panes: [...document.querySelectorAll('[data-pane]')].map(e=>e.getAttribute('data-pane')),
+    titles: [...document.querySelectorAll('.sethn')].map(e=>e.textContent.trim()),
+    paneSectionCount: document.querySelectorAll('.setbody section.pane').length,
+    hasNav: !!document.querySelector('.setnav'),
+    hasMlist: !!document.querySelector('.mlist'),
+    hasCacheLimit: !!document.querySelector('[data-sf="cache_limit"]'),
+    hasScanScope: !!document.querySelector('[data-sf="scan_omy_only"]'),
+    w: window.innerWidth,
+    mq: window.matchMedia('(max-width:768px)').matches
+  }))()`);
+  console.log('[PC缓存诊断] ' + JSON.stringify(pcCacheDiag));
   await cdp.shot('d05-cache');
   await cdp.eval(`document.querySelector('[data-si="close"]')?.click(); 'closed'`);
 
