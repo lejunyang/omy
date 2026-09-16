@@ -30,6 +30,23 @@ use blake2::digest::{Update, VariableOutput};
 /// 与加密分块（默认 256 KiB）不必相同——这是网络传输的粒度。
 pub const BLOCK_SIZE: u64 = 1024 * 1024;
 
+/// 各平台「不要索引/不要缩略图」的目录标记文件名。
+///
+/// 这些是 [`omy_core::fsatomic::mark_dir_no_index`] 写在缓存根目录的标记，
+/// **不是缓存块**：既不能计入用量（否则设置页永远显示几十字节清不掉），
+/// 也不能被 LRU 淘汰或被 `clear` 删掉（删了索引标记就没了，而且 Windows 上
+/// `desktop.ini` 可能被资源管理器/Defender 短暂打开，强删会让整个
+/// `remove_dir_all` 失败、反而留下真正的数据块）。缓存键是两级十六进制路径，
+/// 绝不会与这些名字冲突。
+const MARKER_FILES: &[&str] = &["desktop.ini", ".metadata_never_index", ".nomedia"];
+
+/// 判断一个文件名是否为目录标记文件。
+fn is_marker(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .map(|n| MARKER_FILES.contains(&n))
+        .unwrap_or(false)
+}
+
 /// 磁盘上的密文块缓存。
 #[derive(Debug, Clone)]
 pub struct BlockCache {
@@ -57,6 +74,12 @@ impl BlockCache {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// 配置的上限字节数；`0` 表示不限制。
+    #[must_use]
+    pub fn limit(&self) -> u64 {
+        self.limit
     }
 
     /// 当前占用字节数。
@@ -150,16 +173,39 @@ impl BlockCache {
         }
     }
 
-    /// 清空全部缓存。
+    /// 清空全部缓存块。
+    ///
+    /// 只删除根目录下的缓存条目（两级哈希子目录与块文件），**保留根目录
+    /// 本身和索引标记文件**。这样：
+    /// - 标记（Windows 的 `desktop.ini` 等）不被删，免得失效，也不会因为它
+    ///   被资源管理器短暂占用而让整个删除失败、反而留下数据块；
+    /// - 不重建根目录，语义更接近「清空内容」而非「删库重建」。
+    ///
+    /// 单个块删除失败不致命：它是密文，下次 `clear` 或 LRU 仍会回收。
     ///
     /// # Errors
     ///
-    /// 目录删除失败时返回。
+    /// 根目录无法读取时返回。
     pub fn clear(&self) -> std::io::Result<()> {
-        if self.root.exists() {
-            std::fs::remove_dir_all(&self.root)?;
+        if !self.root.exists() {
+            std::fs::create_dir_all(&self.root)?;
+            omy_core::fsatomic::mark_dir_no_index(&self.root).ok();
+            return Ok(());
         }
-        std::fs::create_dir_all(&self.root)
+        for entry in std::fs::read_dir(&self.root)? {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            // 标记文件原样保留，见 MARKER_FILES 的说明
+            if path.file_name().map(is_marker).unwrap_or(false) {
+                continue;
+            }
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -181,9 +227,13 @@ fn walk(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
         let p = e.path();
         if p.is_dir() {
             out.extend(walk(&p));
-        } else if let Ok(m) = e.metadata() {
-            let at = m.accessed().or_else(|_| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            out.push((p, m.len(), at));
+        } else if p.file_name().map(|n| !is_marker(n)).unwrap_or(true) {
+            // 目录标记文件（desktop.ini / .nomedia 等）不是缓存块，不计入
+            // 用量、也不参与 LRU
+            if let Ok(m) = e.metadata() {
+                let at = m.accessed().or_else(|_| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                out.push((p, m.len(), at));
+            }
         }
     }
     out
@@ -322,6 +372,33 @@ mod tests {
         c.clear().expect("清空");
         assert_eq!(c.used(), 0);
         assert!(c.root().exists(), "目录要保留，否则下次写入还要重建");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 目录标记文件既不计入用量，也不被清空删除。
+    ///
+    /// 不这样会怎样：Windows 的 `desktop.ini`（约 39 字节）会让设置页的缓存
+    /// 用量永远清不到 0；而强删它又可能因资源管理器短暂占用导致整个
+    /// remove_dir_all 失败，反而留下真正的数据块。
+    #[test]
+    fn marker_files_are_ignored_and_preserved() {
+        let d = tmp("marker");
+        let c = BlockCache::new(&d, 0).expect("建缓存");
+        // new() 只写当前平台的标记；这里把三种都放上，模拟跨平台残留
+        for m in MARKER_FILES {
+            std::fs::write(d.join(m), b"[shell]").ok();
+        }
+        assert_eq!(c.used(), 0, "标记文件不能计入用量");
+
+        c.put("nas", "/a", 0, &[0u8; 100]);
+        assert!(c.used() >= 100, "数据块要计入用量");
+
+        c.clear().expect("清空");
+        assert_eq!(c.used(), 0, "清空后数据块应为 0");
+        for m in MARKER_FILES {
+            assert!(d.join(m).exists(), "标记文件 {m} 必须保留");
+        }
+        assert!(c.root().exists(), "根目录保留");
         std::fs::remove_dir_all(&d).ok();
     }
 }
