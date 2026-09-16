@@ -944,6 +944,15 @@ fn serve_place_file(
     };
     let length = end_inclusive.saturating_sub(start).saturating_add(1);
 
+    // 无 Range 的请求同样要设上限（与 serve_plain / serve_container 一致）：
+    // 大视频的第一个请求常不带 Range，不截断会把整片从云端拉下、整块解密进内存。
+    // 返回前 MAX_SPAN 并如实标 206，播放器会继续要后面的区间。
+    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
+    } else {
+        (length, is_partial, end_inclusive)
+    };
+
     // RemoteSource 实现了 BlockSource，块对齐 / 密文缓存 / Range 拉取都在
     // 它内部；read_source_range 再负责 header 偏移与压缩索引，所以这里
     // 不必像局域网版那样手算 payload 绝对偏移
