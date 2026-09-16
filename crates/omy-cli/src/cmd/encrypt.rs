@@ -43,6 +43,13 @@ pub struct Args {
     #[arg(long, value_enum, value_name = "MODE")]
     pub name_mode: Option<NameMode>,
 
+    /// 槽位模式：deniable 不可枚举（默认），managed 可精确管理
+    ///
+    /// managed 让渡的是「对已经能打开这个文件的人，无法再隐瞒还有几个
+    /// 密码」——对打不开的人两者保护的一样多，因为目录本身是加密的。
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub slot_mode: Option<SlotMode>,
+
     /// 从环境变量读取密码（传变量名）
     #[arg(long, value_name = "VAR")]
     pub password_env: Option<String>,
@@ -252,6 +259,15 @@ pub enum DirMode {
     Tree,
 }
 
+/// 槽位模式（规范 §3.5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SlotMode {
+    /// 槽位不可枚举，连你自己也分不清哪个槽是谁的
+    Deniable,
+    /// 可枚举槽位类型，能精确删除某个密码而保住恢复码
+    Managed,
+}
+
 /// 执行 `encrypt`。
 ///
 /// # Errors
@@ -369,13 +385,32 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         let meta = std::fs::metadata(p)
             .with_context(|| format!("无法访问 {}", p.display()))?;
 
+        // 槽位目录：可管理模式才有。加密时 keks 的第 i 把占第 i 个槽，
+        // 所以目录照着填即可。
+        //
+        // 全部记成 Vault：这条路径上收到的都是用户输入的浏览密码。恢复码
+        // 与设备密钥是后续用 key recovery / key device 挂上去的，那时
+        // 由各自的命令按真实类型写目录
+        let slot_dir = match a.slot_mode {
+            Some(SlotMode::Managed) => {
+                let mut d = omy_core::slotdir::SlotDirectory::new();
+                for i in 0..keks.len().min(omy_core::header::SLOT_COUNT) {
+                    d.set(i, omy_core::slotdir::SlotEntry::of(
+                        omy_core::slotdir::SlotKind::Vault,
+                    ))?;
+                }
+                Some(d.encode())
+            }
+            Some(SlotMode::Deniable) | None => None,
+        };
+
         // 树形模式走完全不同的流程：它自己往磁盘写很多个文件，
         // 没有单一的「明文载荷 + 密文字节」可以交给下面那条流水线。
         // 硬塞进去的话，进度条、媒体探测、JSON 契约全都要加分支判断，
         // 而它们对树形模式没有一个是适用的
         if meta.is_dir() && a.mode == DirMode::Tree {
             let one = encrypt_as_tree(ctx, p, a, &keks, &vault_salt, &opts_base(
-                name_mode, compress, level, chunk_u32, cipher, params,
+                name_mode, compress, level, chunk_u32, cipher, params, slot_dir.clone(),
             ), original)?;
             total_in += one.0;
             total_out += one.1;
@@ -438,6 +473,7 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             media_meta: prepared.media_meta.clone(),
             moov_cache: prepared.moov_cache.clone(),
             folder_index: folder_index.clone(),
+            slot_directory: slot_dir.clone(),
         };
 
         // 进度条按**明文**字节走。回调在加密线程内同步调用，
@@ -516,6 +552,7 @@ fn opts_base(
     chunk_u32: u32,
     cipher: Cipher,
     params: omy_core::crypto::Argon2Params,
+    slot_directory: Option<Vec<u8>>,
 ) -> EncryptOptions {
     EncryptOptions {
         filename: None,
@@ -526,6 +563,7 @@ fn opts_base(
         cipher: cipher.id(),
         argon2: params,
         write_content_hash: true,
+        slot_directory,
         ..EncryptOptions::default()
     }
 }

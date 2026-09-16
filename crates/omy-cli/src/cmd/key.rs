@@ -139,6 +139,21 @@ pub struct RestoreArgs {
 pub struct ListArgs {
     /// 目标文件
     pub file: PathBuf,
+
+    /// 从环境变量读取密码（传变量名）
+    ///
+    /// 只对可管理模式有用：那时槽位目录是加密的，读它要先能打开文件。
+    /// 可否认模式下给密码也换不来任何信息——槽位设计上就不可探测。
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+
+    /// 从文件读取密码
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+
+    /// 从标准输入读取密码
+    #[arg(long)]
+    pub password_stdin: bool,
 }
 
 /// 执行 `key` 子命令。
@@ -183,23 +198,50 @@ fn recovery(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
     };
     let old = read_password(&src, t("prompt.password"), false)?;
     let old_kek = Kek::from_password(&old, &h.vault_salt, h.argon2_params())?;
-    // 尽早验密码：让用户看完一长串恢复码再被告知「密码不对」很糟
-    omy_core::file::open(&data, &[old_kek.duplicate()])?;
+    // 尽早验密码：让用户看完一长串恢复码再被告知「密码不对」很糟。
+    // 顺带留着 opened——可管理模式要从它读槽位目录
+    let opened = omy_core::file::open(&data, &[old_kek.duplicate()])?;
 
     let code = omy_core::recovery::RecoveryCode::generate();
     let reco_kek = code.to_kek(&h.vault_salt);
 
     // keep 里必须同时有当前密码与恢复码：只放恢复码的话，这条命令就成了
     // 「把密码换成恢复码」，用户的日常密码会当场失效
-    let keep = vec![old_kek.duplicate(), reco_kek];
-    let out = omy_core::keyslot::rewrite_slots(
-        &data,
-        &[old_kek],
-        &keep,
-        // 搬运而非清场：这个文件上可能还挂着别人的密码，
-        // 「加一个恢复码」不该顺手把它们抹了
-        omy_core::keyslot::OtherSlots::Carry,
-    )?;
+    let out = if opened.is_slot_managed() {
+        // 可管理模式：找一个真正空闲的槽，并把类型如实记成 recovery。
+        //
+        // 不记的话目录会说那个槽是空的，下次 add 就会拿它去放新密码，
+        // 恢复码静默消失——这种不一致正是 CRITICAL 标志要防的
+        use omy_core::keyslot::SlotPlan;
+        use omy_core::slotdir::{SlotEntry, SlotKind};
+        let mut dir = opened.slot_directory()?;
+        let free = dir.first_free().ok_or_else(|| {
+            anyhow::anyhow!("8 个槽位已全部占用，放不下恢复码。先用 key remove 腾出一个。")
+        })?;
+        let mut plans: Vec<SlotPlan> =
+            (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+        *plans.get_mut(free).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+            SlotPlan::Write(reco_kek.duplicate());
+        dir.set(free, SlotEntry::of(SlotKind::Recovery))?;
+        ctx.out.detail(&format!("恢复码写入 slot {free}，已记入槽位目录"));
+        omy_core::keyslot::rewrite_slots_managed(
+            &data,
+            &[old_kek.duplicate()],
+            &plans,
+            &dir,
+        )?
+    } else {
+        let keep = vec![old_kek.duplicate(), reco_kek.duplicate()];
+        omy_core::keyslot::rewrite_slots(
+            &data,
+            &[old_kek.duplicate()],
+            &keep,
+            // 搬运而非清场：这个文件上可能还挂着别人的密码，
+            // 「加一个恢复码」不该顺手把它们抹了
+            omy_core::keyslot::OtherSlots::Carry,
+        )?
+    };
+    let keep = vec![old_kek, reco_kek];
 
     // 写回前自证：恢复码真的能打开新文件。顺序不能反——先写回再发现
     // 恢复码无效，用户会拿着一张废纸以为自己有了兜底
@@ -617,28 +659,202 @@ impl Op {
 fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
     let head = read_prefix(&a.file, omy_core::scan::MIN_PROBE_SIZE)?;
     let h = omy_core::file::peek_header(&head)?;
+    let managed = h.has_flag(omy_core::header::flags::SLOT_DIRECTORY);
+
+    // 可管理模式且给了密码：列出每个槽位的类型。
+    //
+    // 需要密码不是不便，正是设计要的：目录是 ENCRYPTED 的，读它要先有
+    // FEK。对打不开这个文件的人，两种模式保护的东西一样多。
+    if managed && (a.password_env.is_some() || a.password_file.is_some() || a.password_stdin) {
+        return list_managed(ctx, a, &h);
+    }
+
+    let (note, used) = if managed {
+        (
+            "这个文件是可管理模式：槽位类型可以列出，但需要密码——\n\
+             槽位目录是加密的，读它要先能打开这个文件。\n\
+             加上 --password-env / --password-file 再试一次。",
+            t("info.slots_unknown"),
+        )
+    } else {
+        (
+            "slot 区始终填满，真实 slot 与随机填充在字节层面无法区分。\n\
+             这是可否认性设计的基础：无法判断该文件配置了几个密码。",
+            t("info.slots_unknown"),
+        )
+    };
 
     let human = format!(
-        "文件        {}\nSlot 总数   {}\nSlot 占用   {}\n\n\
-         slot 区始终填满，真实 slot 与随机填充在字节层面无法区分。\n\
-         这是可否认性设计的基础：无法判断该文件配置了几个密码。",
+        "文件        {}\n槽位模式    {}\nSlot 总数   {}\nSlot 占用   {}\n\n{}",
         a.file.display(),
+        if managed { "可管理（managed）" } else { "可否认（deniable）" },
         h.slot_count,
-        t("info.slots_unknown")
+        used,
+        note,
     );
 
     ctx.out.result(
         &human,
         &json!({
             "file": a.file.display().to_string(),
+            "slot_mode": if managed { "managed" } else { "deniable" },
             "slot_total": h.slot_count,
-            // 恒为 null：设计上不可探测
+            // 可否认模式下恒为 null：设计上不可探测。
+            // 可管理模式下没给密码也是 null，加上密码才有值
             "slot_used": serde_json::Value::Null,
         }),
     );
     Ok(())
 }
 
+/// 列出可管理模式文件的槽位类型。
+fn list_managed(ctx: &Ctx<'_>, a: &ListArgs, h: &omy_core::header::FixedHeader) -> Result<()> {
+    let data = std::fs::read(&a.file)
+        .with_context(|| format!("读取 {} 失败", a.file.display()))?;
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let pw = read_password(&src, t("prompt.password"), false)?;
+    let kek = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+    let opened = omy_core::file::open(&data, &[kek])?;
+    let dir = opened.slot_directory()?;
+
+    let mut lines = Vec::new();
+    let mut rows = Vec::new();
+    for (i, e) in dir.entries().iter().enumerate() {
+        let name = match e.kind {
+            omy_core::slotdir::SlotKind::Empty => "空",
+            omy_core::slotdir::SlotKind::Vault => "日常密码",
+            omy_core::slotdir::SlotKind::Device => "设备密钥",
+            omy_core::slotdir::SlotKind::Portable => "单文件密码",
+            omy_core::slotdir::SlotKind::Recovery => "恢复码",
+            // 不认识的类型如实说「未知」，不当成空——把未知当空会让
+            // 新版本写的槽被旧版本覆盖掉
+            omy_core::slotdir::SlotKind::Unknown(_) => "未知类型",
+        };
+        lines.push(format!("  slot {i}  {name}"));
+        rows.push(json!({
+            "index": i,
+            "kind": e.kind.name(),
+            "label_id": e.label_id,
+        }));
+    }
+
+    let human = format!(
+        "文件        {}\n槽位模式    可管理（managed）\nSlot 总数   {}\nSlot 占用   {}\n\n{}\n\n\
+         可管理模式下能精确删除某个密码而保住其它的。代价是：**能打开这个\n\
+         文件的人**可以看到这份清单——对打不开的人，与可否认模式一样什么\n\
+         都看不出来。",
+        a.file.display(),
+        h.slot_count,
+        dir.used(),
+        lines.join("\n"),
+    );
+
+    ctx.out.result(
+        &human,
+        &json!({
+            "file": a.file.display().to_string(),
+            "slot_mode": "managed",
+            "slot_total": h.slot_count,
+            "slot_used": dir.used(),
+            "slots": rows,
+        }),
+    );
+    Ok(())
+}
+
+/// 可管理模式下按槽位目录精确改写。
+///
+/// 与可否认路径的差别只在一件事：这里**知道**每个下标是谁，于是
+///
+/// - `add` 找一个真正空闲的槽。可否认模式只能写在 `keep.len()` 那个下标
+///   上、赌它原来是空的——实测过这会顶掉恢复码，而且无法避免。
+/// - `remove` 能如实说出要清掉哪几个、其中有没有恢复码。可否认模式下
+///   只能含糊地说「如果有的话」。
+/// - `change` 就地替换当前密码所在的那一个槽，其余一律不动。
+fn managed_rewrite(
+    ctx: &Ctx<'_>,
+    data: &[u8],
+    opened: &omy_core::file::OpenedFile,
+    unlock: &Kek,
+    keep: &[Kek],
+    op: Op,
+) -> Result<omy_core::keyslot::RewriteOutcome> {
+    use omy_core::keyslot::SlotPlan;
+    use omy_core::slotdir::{SlotEntry, SlotKind};
+
+    let mut dir = opened.slot_directory()?;
+    // slot_index 是 u16（格式里就这么存的），这里要当下标用
+    let cur = usize::from(opened.slot_index);
+
+    let mut plans: Vec<SlotPlan> =
+        (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+
+    match op {
+        Op::Add => {
+            // keep = [当前密码, 新密码]
+            let newcomer = keep.last().ok_or_else(|| anyhow::anyhow!("add 需要一个新密码"))?;
+            let free = dir.first_free().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "8 个槽位已全部占用。先用 key remove 腾出一个，\n\
+                     或用 key list --password-env ... 看看哪些还在用。"
+                )
+            })?;
+            *plans.get_mut(free).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+                SlotPlan::Write(newcomer.duplicate());
+            dir.set(free, SlotEntry::of(SlotKind::Vault))?;
+            ctx.out.detail(&format!("新密码写入 slot {free}（目录确认它是空的）"));
+        }
+        Op::Change => {
+            // 就地替换：当前密码在哪个槽，新密码就写哪个槽。其余一律 Keep
+            let newcomer = keep.first().ok_or_else(|| anyhow::anyhow!("change 需要一个新密码"))?;
+            *plans.get_mut(cur).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+                SlotPlan::Write(newcomer.duplicate());
+            ctx.out.detail(&format!("在 slot {cur} 上就地替换，其余槽位不动"));
+        }
+        Op::Remove => {
+            let mut cleared = Vec::new();
+            for i in 0..omy_core::header::SLOT_COUNT {
+                if i == cur {
+                    continue;
+                }
+                if dir.get(i).is_some_and(|e| e.kind.is_occupied()) {
+                    cleared.push((i, dir.get(i).map_or(SlotKind::Empty, |e| e.kind)));
+                }
+                *plans.get_mut(i).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+                    SlotPlan::Clear;
+                dir.set(i, SlotEntry::empty())?;
+            }
+            if cleared.is_empty() {
+                ctx.out.detail("目录显示本来就只有当前密码，没有其它可清的");
+            } else {
+                for (i, kind) in &cleared {
+                    ctx.out.warn(&format!("将清除 slot {i}（{}）", kind_label(*kind)));
+                }
+            }
+        }
+        // 调用点已排除：轮换换掉 FEK 之后整个 slot 区都要重建
+        Op::Reencrypt => bail!("reencrypt 不走精确改写路径"),
+    }
+
+    Ok(omy_core::keyslot::rewrite_slots_managed(data, &[unlock.duplicate()], &plans, &dir)?)
+}
+
+/// 槽位类型的中文名。
+const fn kind_label(k: omy_core::slotdir::SlotKind) -> &'static str {
+    use omy_core::slotdir::SlotKind;
+    match k {
+        SlotKind::Empty => "空",
+        SlotKind::Vault => "日常密码",
+        SlotKind::Device => "设备密钥",
+        SlotKind::Portable => "单文件密码",
+        SlotKind::Recovery => "恢复码",
+        SlotKind::Unknown(_) => "未知类型",
+    }
+}
 fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
     // 目录走树形分支。不先判断的话，std::fs::read 会返回一个含糊的 IO
     // 错误（Windows 上是「拒绝访问」），用户看不出这是「该用树形方式」
@@ -769,6 +985,10 @@ fn modify(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
         )?;
         ctx.out
             .detail(&format!("已重写 {} 字节明文", out.plaintext_size));
+        (out.bytes, out.slot_used)
+    } else if opened.is_slot_managed() {
+        // 可管理模式：按槽位目录精确改写，不必赌下标也不会无差别抹槽
+        let out = managed_rewrite(ctx, &data, &opened, &unlock, &keep, op)?;
         (out.bytes, out.slot_used)
     } else {
         let out = omy_core::keyslot::rewrite_slots(&data, &[unlock], &keep, op.other_slots())?;
