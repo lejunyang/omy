@@ -106,17 +106,61 @@ async function main() {
   check(typeof placeId === 'string' && !placeId.startsWith('ERR'), '位置已添加', String(placeId));
 
   console.log('\n[3] 浏览云端根目录：加密文件 / 普通文件 / 中文目录');
+  // 识别是异步的：remote_browse 只回骨架，真实结果随后由 remote-entry
+  // 事件逐个推送（「边扫边出」）。直接断言返回值会永远读到
+  // is_encrypted=false——那是骨架的初值，不是识别结论。
+  //
+  // 所以这里复刻界面的真实做法：先挂上事件收集器，再浏览，
+  // 然后等事件把条目补全。不这样做，探针测的是一个用户永远看不到的中间态。
+  await cdp.eval(`(() => {
+    window.__entries = new Map();
+    if (!window.__unlistenRemote) {
+      window.__unlistenRemote = true;
+      // 用 Tauri 内部的事件注册通道，而不是 window.__TAURI__.event：
+      // 后者只有在 withGlobalTauri 开启时才存在，这个应用没开，
+      // 直接用会抛 undefined，表现成「事件一条都收不到」。
+      window.__TAURI_INTERNALS__.invoke('plugin:event|listen', {
+        event: 'remote-entry',
+        target: { kind: 'Any' },
+        handler: window.__TAURI_INTERNALS__.transformCallback((ev) => {
+          const p = ev && ev.payload;
+          if (p && p.entry) window.__entries.set(p.entry.id, p.entry);
+        }),
+      });
+    }
+    return 'ok';
+  })()`);
+
   const rootList = await cdp.eval(`(async () => {
     try { return JSON.stringify(await window.__p.invoke('remote_browse', { placeId: ${JSON.stringify(placeId)}, dir: '' })); }
     catch (e) { return 'ERR:' + e; }
   })()`);
+  let skeleton = [];
+  try { skeleton = JSON.parse(rootList); } catch { skeleton = []; }
+
+  // 等到所有非目录条目都不再是「识别中」，或超时
+  const merged = await cdp.eval(`(async () => {
+    const want = ${JSON.stringify(skeleton.filter((e) => !e.is_dir).map((e) => e.id))};
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const done = want.every((id) => {
+        const e = window.__entries.get(id);
+        return e && e.probing === false;
+      });
+      if (done) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    const base = ${JSON.stringify(skeleton)};
+    return JSON.stringify(base.map((e) => window.__entries.get(e.id) || e));
+  })()`);
   let root = [];
-  try { root = JSON.parse(rootList); } catch { root = []; }
-  if (typeof root[0] === 'string') { /* 容错：若返回被双重包裹 */ }
+  try { root = JSON.parse(merged); } catch { root = skeleton; }
+
   const names = root.map((e) => e.name);
   console.log('       ', names.join(', '));
   const movie = root.find((e) => e.name === 'movie.mp4.omy');
   check(Array.isArray(root) && root.length >= 2, '根目录列出条目', rootList.slice(0, 200));
+  check(!!movie && movie.probing === false, 'movie 的识别已完成（骨架已被事件替换）', movie ? `probing=${movie.probing}` : '缺失');
   check(!!movie && movie.is_encrypted === true, 'movie.mp4.omy 识别为加密', movie ? JSON.stringify(movie).slice(0, 160) : '缺失');
   check(!!movie && movie.unlocked === true, '同库密文在本地解锁后显示为可打开（unlocked）', movie ? `unlocked=${movie.unlocked}` : '缺失');
   check(root.some((e) => e.name === 'plain.txt' && e.is_encrypted === false), '普通文件标记为非加密');
@@ -124,13 +168,27 @@ async function main() {
   check(!!cnDir, '中文目录可列出', names.join(','));
 
   console.log('\n[4] 进中文目录，验证中文 + 空格路径往返');
+  // 同 [3]：列目录只回骨架，要等 remote-entry 把识别结果补回来
   const cnList = cnDir ? await cdp.eval(`(async () => {
-    try { return JSON.stringify(await window.__p.invoke('remote_browse', { placeId: ${JSON.stringify(placeId)}, dir: ${JSON.stringify(cnDir.id)} })); }
-    catch (e) { return 'ERR:' + e; }
+    try {
+      const sk = await window.__p.invoke('remote_browse', { placeId: ${JSON.stringify(placeId)}, dir: ${JSON.stringify(cnDir.id)} });
+      const want = sk.filter((e) => !e.is_dir).map((e) => e.id);
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        if (want.every((id) => { const e = window.__entries.get(id); return e && e.probing === false; })) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      return JSON.stringify(sk.map((e) => window.__entries.get(e.id) || e));
+    } catch (e) { return 'ERR:' + e; }
   })()`) : '[]';
   let cn = [];
   try { cn = JSON.parse(cnList); } catch { cn = []; }
   check(cn.some((e) => e.name && e.name.endsWith('.omy')), '中文目录内列出加密文件', cnList.slice(0, 160));
+  check(
+    cn.some((e) => e.name && e.name.endsWith('.omy') && e.is_encrypted === true),
+    '中文 + 空格路径下的密文同样被识别（证明路径编码往返正确）',
+    cnList.slice(0, 200),
+  );
 
   console.log('\n[5] 打开云端 movie，拿到播放 token');
   const opened = await cdp.eval(`(async () => {
