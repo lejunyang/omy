@@ -199,6 +199,7 @@ pub fn run() {
             place_cmds::remote_probe_entry,
             place_cmds::remote_place_open,
             place_cmds::remote_place_close,
+            place_cmds::remote_decrypt_to_local,
             place_cmds::remote_cache_usage,
             place_cmds::remote_cache_clear,
             place_cmds::remote_cache_apply,

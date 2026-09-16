@@ -73,5 +73,8 @@
   "remote_rate_limited": "Too many requests, try again later",
   "remote_unsupported": "That location does not support this action",
   "remote_network": "Network error, check your connection",
-  "remote_failed": "Remote operation failed"
+  "remote_failed": "Remote operation failed",
+  "remote_container_unsupported": "Encrypted folders can't be decrypted to local yet; handle them locally",
+  "target_exists": "A file with the same name already exists in the target folder; nothing was overwritten",
+  "decrypt_failed": "Decryption failed; the file may be corrupt or the network dropped"
 }

@@ -1649,6 +1649,48 @@ export async function ensureRemoteListeners() {
   });
 }
 
+/** 把一个已解锁的远程 `.omy` 流式解密到用户选择的本地目录。
+ *  只读位置也保留（这是只读位置的主要用途）。复用全局解密进度条；
+ *  默认不覆盖，目标已存在时后端返回 target_exists。 */
+export async function decryptRemoteToLocal(f) {
+  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted || !f.unlocked) return null;
+  let dest;
+  try {
+    dest = await api.pickFolder(i18n.t('rplace.decrypt_pick_title'));
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.decrypt_failed'));
+    return null;
+  }
+  if (!dest) return null; // 用户在目录选择器里取消
+
+  state.busy = true;
+  state.busyKey = 'busy.remote_decrypt';
+  state.error = '';
+  state.notice = '';
+  state.progress = null;
+  let unlisten = null;
+  try {
+    unlisten = await api.onDecryptProgress((p) => {
+      state.progress = p;
+    });
+  } catch {
+    unlisten = null;
+  }
+  try {
+    const r = await api.remoteDecryptToLocal(state.remotePlace, f.id, f.size || 0, dest);
+    setNotice(i18n.t('rplace.decrypted_local', { name: r.name, dir: dest }));
+    return r;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.decrypt_failed'));
+    return null;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+    state.progress = null;
+    if (unlisten) unlisten();
+  }
+}
+
 /** 打开云盘浏览器（停在位置列表）。 */
 export async function openPlaceBrowser() {
   state.placeBrowserOpen = true;

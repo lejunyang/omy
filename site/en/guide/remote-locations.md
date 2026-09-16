@@ -43,10 +43,22 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 | List, recognize `.omy` | ✅ | ✅ |
 | Preview / stream (read ciphertext on demand) | ✅ | ✅ |
 | Listing thumbnails (read header, not body) | ✅ | ✅ |
+| Decrypt to local (plaintext lands only on this machine) | ✅ | ✅ |
 | Ciphertext block cache | ✅ | ✅ |
 | Encrypted upload, new folder, rename, delete | ✅ (planned) | ❌ rejected before any request is sent |
 
-Operations that rewrite the remote side (encrypted upload, delete, rename, new folder) do not have an entry point yet on read-only locations. When write operations arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a "decrypt to local first" hint where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
+**Right-click on desktop, long-press on mobile** on an entry opens its context menu, which currently offers "Preview / Open" and "Decrypt to local…".
+
+### Decrypt to local
+
+A read-only location cannot be rewritten, yet you may still need to bring a file back to this machine to edit or keep — that is what "Decrypt to local" is for: the server only ever holds ciphertext, and plaintext is written only into a local folder you choose.
+
+- After you pick a local folder, the app **streams** ciphertext, decrypts, and writes it out chunk by chunk; a multi-GB video is never loaded fully into memory.
+- Downloads reuse the ciphertext block cache, so parts already streamed while scrubbing are not fetched twice.
+- The file name comes from the original name recorded in the header (and is sanitized to stop a crafted name from writing outside the target folder). It **never overwrites**: if a same-named file already exists, it errors out and asks you to pick another location.
+- Encrypted folders (containers) cannot yet be decrypted to local from a remote location; handle them locally for now.
+
+Operations that rewrite the remote side (encrypted upload, delete, rename, new folder) do not have an entry point yet. When they arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a note under the item — left-aligned with its label — where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
 
 ## Ciphertext cache
 
@@ -77,7 +89,7 @@ See [Configuration](configuration) for the full list of keys.
 ## Current limitations (first iteration)
 
 - **Remote locations are kept in memory for the current session only**; after a restart you re-add and re-authenticate. Persisting locations and encrypting credentials is the next problem to solve.
-- **Write operations** — encrypted upload, decrypt-to-local, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing and streaming.
+- **Remote write operations** — encrypted upload, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing, streaming, and decrypt-to-local. Decrypting an encrypted folder (container) from remote to local is not supported yet either.
 - No private (non-WebDAV) cloud drivers yet.
 
 The design and progress notes live in `docs/research/14-remote-locations-cloud.md` in the repository.

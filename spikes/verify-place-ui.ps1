@@ -20,7 +20,9 @@ $plainLen = 3 * 1024 * 1024 + 512 * 1024
 $shots = Join-Path $PSScriptRoot 'shots'
 New-Item -ItemType Directory -Force -Path $shots | Out-Null
 Get-ChildItem $shots -Filter 'm0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem $shots -Filter 'm10-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem $shots -Filter 'd0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem $shots -Filter 'd10-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem $shots -Filter 'e0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 
 foreach ($b in @($gui, $omy, $dav)) {
@@ -30,7 +32,9 @@ foreach ($b in @($gui, $omy, $dav)) {
 $work = Join-Path $env:TEMP "omy-cloud-ui-$PID"
 $davDir = Join-Path $work 'dav'
 $vaultDir = Join-Path $work 'vault'
-New-Item -ItemType Directory -Force -Path $davDir, $vaultDir | Out-Null
+# 「解密到本地」的独立输出目录：不能写到 dav 根，否则会改变服务器文件计数
+$decDir = Join-Path $work 'decrypted'
+New-Item -ItemType Directory -Force -Path $davDir, $vaultDir, $decDir | Out-Null
 $davProc = $null
 function Stop-All {
     Get-Process omy-gui -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -120,7 +124,7 @@ try {
     Start-Process -FilePath $gui -RedirectStandardError $guiErr -RedirectStandardOutput $guiOut | Out-Null
 
     $out = & $node --experimental-websocket (Join-Path $PSScriptRoot 'probe-place-ui.mjs') `
-        "$cdpPort" "http://127.0.0.1:$davPort/" "$vaultDir" "$pass" "$shots" "$davDir" 2>&1 | Out-String
+        "$cdpPort" "http://127.0.0.1:$davPort/" "$vaultDir" "$pass" "$shots" "$davDir" "$decDir" 2>&1 | Out-String
     Write-Output $out
     if ($out -notmatch 'UI_SHOTS_OK') { throw '截图探针未完成' }
     Write-Output "=== 截图已保存到 $shots ==="

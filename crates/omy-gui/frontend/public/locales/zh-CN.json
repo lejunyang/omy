@@ -584,7 +584,13 @@
     "caps_writable": "可写",
     "err_not_encrypted": "这不是 OMYFILE 加密文件，无法在线播放。",
     "err_locked": "该文件的密码不在当前会话，请先在本地解锁对应密码库。",
-    "open_failed": "无法打开远程文件"
+    "open_failed": "无法打开远程文件",
+    "menu_open": "打开",
+    "menu_preview": "预览",
+    "menu_decrypt_local": "解密到本地…",
+    "decrypt_pick_title": "选择保存解密文件的文件夹",
+    "decrypt_failed": "解密到本地失败",
+    "decrypted_local": "已解密 {{name}}，保存到 {{dir}}"
   },
   "common": {
     "back": "返回",

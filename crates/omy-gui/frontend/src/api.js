@@ -406,6 +406,14 @@ export const remoteProbeEntry = (placeId, id, size) =>
 export const onRemoteEntry = (handler) =>
   listen('remote-entry', (e) => handler(e.payload));
 
+/** 把已解锁的远程 `.omy` 流式解密到本地目录（只读位置也保留的主要用途）。
+ *  嵌套文件引用走 snake_case（与 EncryptRequest 等一致），顶层参数走 camelCase。 */
+export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
+  invoke('remote_decrypt_to_local', {
+    req: { place_id: placeId, path, size },
+    destDir,
+  });
+
 /** 打开一个远程 `.omy`，换回播放令牌。
  *
  * 后端在此时读完整头部、用当前会话密钥试解，并构造带密文块缓存的来源。

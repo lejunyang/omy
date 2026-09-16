@@ -584,7 +584,13 @@
     "caps_writable": "Writable",
     "err_not_encrypted": "This is not an OMYFILE encrypted file and cannot be played online.",
     "err_locked": "This file's password is not in the current session. Unlock the matching vault locally first.",
-    "open_failed": "Could not open the remote file"
+    "open_failed": "Could not open the remote file",
+    "menu_open": "Open",
+    "menu_preview": "Preview",
+    "menu_decrypt_local": "Decrypt to local…",
+    "decrypt_pick_title": "Choose a folder to save the decrypted file",
+    "decrypt_failed": "Failed to decrypt to local",
+    "decrypted_local": "Decrypted {{name}} into {{dir}}"
   },
   "common": {
     "back": "Back",

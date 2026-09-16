@@ -254,6 +254,29 @@ async function main() {
   await sleep(800);
   await cdp.shot('m04-back-to-dir');
 
+  // 移动长按条目应弹出条目菜单（触屏没有右键），含「预览/解密到本地」
+  const mm = await click(`(async()=>{
+    const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
+    const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('movie.mp4'));
+    if(!r) return 'no-movie';
+    const b=r.getBoundingClientRect();
+    r.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',clientX:b.x+15,clientY:b.y+15}));
+    await new Promise(res=>setTimeout(res,520));
+    r.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch'}));
+    await new Promise(res=>setTimeout(res,200));
+    return document.querySelector('.ctxmenu')?'menu':'none';
+  })()`, 100);
+  const mmenu = await cdp.eval(`(()=>{ const m=document.querySelector('.ctxmenu');
+    if(!m) return 'none';
+    return JSON.stringify([...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi'))); })()`);
+  console.log('       移动长按菜单 ->', mmenu);
+  if (!/open/.test(mmenu) || !/decrypt-local/.test(mmenu)) {
+    throw new Error('移动长按未弹出含「解密到本地」的条目菜单: ' + mmenu);
+  }
+  await cdp.shot('m10-menu');
+  await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
+  await sleep(300);
+
   // 退回位置列表再退回本地
   await click(`(()=>{ const s=document.querySelector('.crumbpath .crumbseg'); if(s){s.click();return 'list';} return 'none'; })()`, 600);
   await click(`(()=>{ const b=document.querySelector('.crumb .crumbbtn'); if(b){b.click();return 'close';} return 'none'; })()`, 700);
@@ -324,6 +347,86 @@ async function main() {
 
   await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
   await sleep(700);
+
+  // ===== 远程「解密到本地」（只读位置也保留的主要用途）=====
+  console.log('\n[解密到本地]');
+  const decDir = process.argv[8];
+  const crypto = await import('node:crypto');
+  const workDir = path.dirname(guiDir); // guiDir 是 .../vault，源明文在其父目录
+  const srcBuf = fs.readFileSync(path.join(workDir, 'movie.mp4'));
+  const srcSha = crypto.createHash('sha256').update(srcBuf).digest('hex');
+  const srcSize = srcBuf.length;
+  fs.mkdirSync(decDir, { recursive: true });
+
+  // 桌面右键 movie 条目：菜单必须含「打开/预览」与「解密到本地」，且后者可用
+  const menuOpen = await click(`(()=>{
+    const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
+    const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('movie.mp4'));
+    if(!r) return 'no-movie';
+    const b=r.getBoundingClientRect();
+    r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:b.x+20,clientY:b.y+20}));
+    return 'ok';
+  })()`, 500);
+  const menuDiag = await cdp.eval(`(()=>{
+    const m=document.querySelector('.ctxmenu');
+    if(!m) return JSON.stringify({open:false});
+    const keys=[...m.querySelectorAll('.mi')].map(x=>x.getAttribute('data-mi'));
+    const dl=m.querySelector('[data-mi="decrypt-local"]');
+    return JSON.stringify({open:true,keys,decryptDisabled:dl?dl.disabled:null});
+  })()`);
+  console.log('       桌面右键菜单 ->', menuDiag);
+  await cdp.shot('d10-menu');
+  const dmm = JSON.parse(menuDiag);
+  if (!dmm.open || !dmm.keys.includes('open') || !dmm.keys.includes('decrypt-local')
+      || dmm.decryptDisabled === true) {
+    throw new Error('桌面右键菜单缺少可用的「解密到本地」项: ' + menuDiag);
+  }
+
+  // 真实点击菜单项：pick_folder 自动化旁路返回 davDir，前端 action 应在该目录
+  // 落一份明文。这一步覆盖菜单点击→选目录→invoke→进度→落盘的完整前端链路。
+  const davDir = process.argv[7];
+  fs.rmSync(path.join(davDir, 'movie.mp4'), { force: true });
+  await click(`(()=>{ const b=document.querySelector('.ctxmenu [data-mi="decrypt-local"]');
+    if(!b) return 'no-item'; b.click(); return 'ok'; })()`, 2800);
+  const viaMenu = path.join(davDir, 'movie.mp4');
+  if (!fs.existsSync(viaMenu)) throw new Error('菜单「解密到本地」未在所选目录落盘');
+  const viaBuf = fs.readFileSync(viaMenu);
+  if (viaBuf.length !== srcSize
+      || crypto.createHash('sha256').update(viaBuf).digest('hex') !== srcSha) {
+    throw new Error('菜单解密出的明文与源明文不一致');
+  }
+  console.log('       菜单解密落盘校验通过', viaBuf.length + 'B');
+  fs.rmSync(viaMenu, { force: true });
+  fs.rmSync(path.join(davDir, 'movie.mp4.part'), { force: true });
+
+  // 独立目录直接 invoke：验证后端流式落盘字节正确，且默认不覆盖（第二次 target_exists）
+  const decDiag = await cdp.eval(`(async()=>{
+    const list=await window.__p.invoke('remote_browse',{placeId:window.__rp,dir:''});
+    const m=list.find(x=>/movie\\.mp4\\.omy$/.test(x.id));
+    const args={req:{place_id:window.__rp,path:m.id,size:Number(m.size)},destDir:${JSON.stringify(decDir)}};
+    const r1=await window.__p.invoke('remote_decrypt_to_local',args);
+    let second='';
+    try{ await window.__p.invoke('remote_decrypt_to_local',args); second='no-error'; }
+    catch(e){ second=(e && typeof e==='object' && e.code) ? e.code : String(e); }
+    return JSON.stringify({r1,second});
+  })()`);
+  console.log('       后端流式解密/覆盖 ->', decDiag);
+  const dd = JSON.parse(decDiag);
+  if (!dd.r1 || dd.r1.bytes !== srcSize || !/movie\.mp4$/.test(dd.r1.saved_path || '')) {
+    throw new Error('远程解密到本地返回不符合预期: ' + decDiag);
+  }
+  if (!/target_exists/.test(dd.second)) {
+    throw new Error('目标已存在时未拒绝覆盖: ' + decDiag);
+  }
+  const decBuf = fs.readFileSync(path.join(decDir, 'movie.mp4'));
+  if (decBuf.length !== srcSize
+      || crypto.createHash('sha256').update(decBuf).digest('hex') !== srcSha) {
+    throw new Error('独立目录解密明文与源明文不一致');
+  }
+  console.log('       流式解密字节/哈希一致，重复解密被 target_exists 拒绝');
+  await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
+  await sleep(300);
+
   await click(`(()=>{ const s=document.querySelector('.crumbpath .crumbseg'); if(s){s.click();return 'list';} return 'none'; })()`, 500);
   await click(`(()=>{ const b=document.querySelector('.crumb .crumbbtn'); if(b){b.click();return 'close';} return 'none'; })()`, 600);
 

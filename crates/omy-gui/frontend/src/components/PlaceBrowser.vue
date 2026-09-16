@@ -22,6 +22,7 @@
 import { computed, ref } from 'vue';
 import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
+import ContextMenu from './ContextMenu.vue';
 import {
   state,
   currentCaps,
@@ -32,6 +33,7 @@ import {
   remoteGoUp,
   removeRemotePlace,
   retryRemoteEntry,
+  decryptRemoteToLocal,
   placeThumbUrl,
 } from '../store.js';
 
@@ -96,6 +98,11 @@ async function remove(p) {
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
 function onEntryClick(f) {
   if (!isMobile.value) return;
+  // 长按刚弹了菜单，浏览器补来的 click 要吃掉，否则会同时触发打开
+  if (longFired) {
+    longFired = false;
+    return;
+  }
   activate(f);
 }
 
@@ -106,7 +113,7 @@ function onEntryDbl(f) {
 /** 打开一个条目的统一入口：目录下钻，已解锁的加密文件交给父组件点播。
  *  锁定项与非加密文件首期不可在线打开；「未能读取」条目点击则就地重试。 */
 function activate(f) {
-  if (isRetrying(f)) return;
+  if (f.probing || isRetrying(f)) return;
   // 「未能读取（网络）」整卡/整行可点：只重试这一条，不重载整个目录，
   // 也绝不能把它当成「密码不对」——那是 probe_failed 与锁定的根本区别。
   if (f.probe_failed) {
@@ -125,6 +132,104 @@ function activate(f) {
 /** 该条目是否正处于单条目重试中（此时显示 ⏳ 且不可再点）。 */
 function isRetrying(f) {
   return state.remoteRetrying.includes(f.id);
+}
+
+/* ---------------- 条目右键 / 长按菜单 ---------------- */
+
+/** 当前打开的条目菜单：`{ entry, x, y }`，null 表示关闭。 */
+const rmenu = ref(null);
+
+/** 只有「能对它做点什么」的正常条目才给菜单：骨架、未能读取、重试中
+ *  都直接走整卡点击（重试），不进菜单。 */
+function menuable(f) {
+  return !f.probing && !f.probe_failed && !isRetrying(f) && activatable(f);
+}
+
+function openMenuAt(f, x, y) {
+  if (!menuable(f)) return;
+  rmenu.value = { entry: f, x, y };
+}
+
+/** 桌面右键。 */
+function onEntryContext(f, ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  openMenuAt(f, ev.clientX, ev.clientY);
+}
+
+/* 移动端长按：pointerdown 计时，移动超过容差取消，到点弹菜单。
+   桌面右键走 contextmenu，这里只在触屏/主键按下时计时。 */
+const LONGPRESS_MS = 450;
+const PRESS_TOLERANCE = 10;
+let pressTimer = null;
+let pressX = 0;
+let pressY = 0;
+let longFired = false;
+
+function clearPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+}
+
+function onPointerDown(f, ev) {
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  longFired = false;
+  pressX = ev.clientX;
+  pressY = ev.clientY;
+  clearPress();
+  pressTimer = setTimeout(() => {
+    longFired = true;
+    openMenuAt(f, pressX, pressY);
+  }, LONGPRESS_MS);
+}
+
+function onPointerMove(ev) {
+  if (!pressTimer) return;
+  if (
+    Math.abs(ev.clientX - pressX) > PRESS_TOLERANCE ||
+    Math.abs(ev.clientY - pressY) > PRESS_TOLERANCE
+  ) {
+    clearPress();
+  }
+}
+
+function onPointerUp() {
+  clearPress();
+}
+
+/** 菜单项按条目状态投影：首期只读位置只保留「打开/预览」与
+ *  「解密到本地」（仅已解锁单文件）。写类操作等写链路落地后再按
+ *  writable 能力整项出现，不放假控件。 */
+const rmenuItems = computed(() => {
+  const f = rmenu.value?.entry;
+  if (!f) return [];
+  const items = [];
+  items.push({
+    key: 'open',
+    icon: f.is_dir ? '📁' : '👁️',
+    label: f.is_dir ? i18n.t('rplace.menu_open') : i18n.t('rplace.menu_preview'),
+  });
+  if (!f.is_dir && f.is_encrypted && f.unlocked) {
+    items.push({
+      key: 'decrypt-local',
+      icon: '📥',
+      label: i18n.t('rplace.menu_decrypt_local'),
+    });
+  }
+  return items;
+});
+
+async function onMenuPick(key) {
+  const f = rmenu.value?.entry;
+  rmenu.value = null;
+  if (!f) return;
+  if (key === 'open') {
+    activate(f);
+  } else if (key === 'decrypt-local') {
+    await decryptRemoteToLocal(f);
+  }
 }
 
 /** 列表/网格里显示的名字。 */
@@ -305,6 +410,11 @@ function rowTitle(f) {
             @dblclick="onEntryDbl(f)"
             @click="onEntryClick(f)"
             @keydown.enter.prevent="onEntryDbl(f)"
+            @contextmenu.prevent="onEntryContext(f, $event)"
+            @pointerdown="onPointerDown(f, $event)"
+            @pointermove="onPointerMove($event)"
+            @pointerup="onPointerUp"
+            @pointercancel="onPointerUp"
           >
             <div class="thumb">
               <img
@@ -339,6 +449,11 @@ function rowTitle(f) {
             @dblclick="onEntryDbl(f)"
             @click="onEntryClick(f)"
             @keydown.enter.prevent="onEntryDbl(f)"
+            @contextmenu.prevent="onEntryContext(f, $event)"
+            @pointerdown="onPointerDown(f, $event)"
+            @pointermove="onPointerMove($event)"
+            @pointerup="onPointerUp"
+            @pointercancel="onPointerUp"
           >
             <span class="ic">{{ icon(f) }}</span>
             <span class="nm">{{ displayName(f) }}</span>
@@ -366,6 +481,15 @@ function rowTitle(f) {
       <span class="spacer"></span>
       <span v-if="state.remotePlace" class="readonly">{{ capsLabel() }}</span>
     </div>
+
+    <ContextMenu
+      v-if="rmenu"
+      :items="rmenuItems"
+      :x="rmenu.x"
+      :y="rmenu.y"
+      @pick="onMenuPick"
+      @close="rmenu = null"
+    />
   </div>
 </template>
 
@@ -414,5 +538,13 @@ function rowTitle(f) {
 }
 @media (prefers-reduced-motion: reduce) {
   .card.probing .thumb { animation: none; }
+}
+/* 长按弹菜单：禁掉系统的文字选择/放大镜/图片保存气泡，
+   否则触屏长按会先弹系统菜单而不是我们的条目菜单 */
+.card,
+.lrow {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 </style>

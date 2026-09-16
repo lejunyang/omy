@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 use crate::commands::{CmdError, CmdResult, Shared};
+use crate::decrypt::{DecryptProgress, DECRYPT_PROGRESS_EVENT};
 use crate::place_files::{OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
 use omy_core::crypto::Kek;
@@ -475,6 +476,184 @@ pub fn remote_place_close(
     token: String,
 ) {
     files.remove(&token);
+}
+
+/// 每次落盘的明文窗口：远程文件可能是好几 GB 的视频，绝不能像本地还原那样
+/// 先把整份明文解进内存；按 1 MiB 窗口「读一段密文→解密→写盘」流式推进。
+const LOCAL_WRITE_CHUNK: u64 = 1024 * 1024;
+
+/// 定位一个远程文件所需的三元组：哪个位置、位置内路径、总字节数。
+///
+/// 多个远程命令都要这三样（打开、解密到本地、未来的写操作），合成一个嵌套
+/// 请求结构，既避免 Tauri 命令参数过多，也让前端传参口径统一。嵌套结构走
+/// serde 默认的 snake_case，与 `EncryptRequest` 等一致。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RemoteFileRef {
+    pub place_id: String,
+    pub path: String,
+    pub size: u64,
+}
+
+/// 「解密到本地」结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemoteDecryptResult {
+    /// 最终写出的明文文件绝对路径。
+    pub saved_path: String,
+    /// 明文文件名（取自头部 TLV，已做路径清洗）。
+    pub name: String,
+    /// 写出的明文字节数。
+    pub bytes: u64,
+}
+
+/// 把一个已解锁的远程 `.omy` **流式解密到本地目录**。
+///
+/// 这是只读位置也保留的主要用途（见原型能力矩阵）：服务器上始终只有密文，
+/// 明文只在本机生成。复用播放链路同一套 `RemoteSource`（块对齐 + 密文缓存）
+/// 与 `read_source_range`（header 偏移 / 压缩索引 / 解密），不允许出现第二套
+/// 解密读取实现。
+///
+/// 能力安全边界：前端只对「已解锁单文件」放出口子，但这里仍独立校验——
+/// 未解锁、非加密、加密文件夹（容器）一律拒绝，devtools 直接 invoke 也绕不过。
+#[tauri::command]
+pub async fn remote_decrypt_to_local(
+    app: tauri::AppHandle,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    state: tauri::State<'_, Shared>,
+    req: RemoteFileRef,
+    dest_dir: String,
+) -> CmdResult<RemoteDecryptResult> {
+    let RemoteFileRef { place_id, path, size } = req;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = Arc::clone(&place.store);
+
+    let header = fetch_full_header(&store, &path, size)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+    let parsed = omy_core::file::peek_header(&header)
+        .map_err(|_| CmdError::code("not_an_omy_file"))?;
+
+    let keks: Vec<Kek> = state
+        .with_session(|s| {
+            s.all_for(&parsed.vault_salt)
+                .into_iter()
+                .map(|c| c.kek)
+                .collect()
+        })
+        .unwrap_or_default();
+    if keks.is_empty() {
+        return Err(CmdError::code("locked"));
+    }
+
+    // 先 open 一次做能力判定与取名/大小；真正解密在阻塞线程里再 open 一次
+    // （OpenedFile 不长期持有，与 omystream 每请求重开一致）。
+    let probe = omy_core::file::open(&header, &keks).map_err(|_| CmdError::code("locked"))?;
+    // 容器（加密文件夹）需要整份索引后解压，无法走单文件流式，本期明确拒绝，
+    // 不静默产出一个打不开的东西
+    if probe.is_container() {
+        return Err(CmdError::code("remote_container_unsupported"));
+    }
+    let raw_name = probe
+        .filename()
+        .map_err(|_| CmdError::code("decrypt_failed"))?;
+    // 文件名来自加密文件内部 TLV，是不可信输入，必须清洗，否则一个构造的
+    // TLV（如 ../../x）就能把明文写到目标目录之外
+    let safe = omy_core::unpack::sanitize_filename(&raw_name);
+    let total = probe.header.plaintext_size;
+
+    let dest = std::path::PathBuf::from(&dest_dir);
+    let final_path = dest.join(&safe);
+    // 默认不覆盖，与本地还原一致
+    if final_path.exists() {
+        return Err(CmdError::code("target_exists"));
+    }
+    // 先写 .part 再原子改名：中途失败/取消不会留下一个看起来完整的半成品
+    let part_path = dest.join(format!("{safe}.part"));
+
+    let cache_snap = cache.snapshot();
+    let rt = tokio::runtime::Handle::current();
+    let app2 = app.clone();
+    let name_for_event = safe.clone();
+    // 闭包会拿走 part_path 的所有权，错误清理另留一份
+    let part_cleanup = part_path.clone();
+    let join = tokio::task::spawn_blocking(move || -> Result<RemoteDecryptResult, String> {
+        // RemoteSource 的读方法内部用保存的 Handle block_on 网络请求，
+        // 必须在阻塞线程里调（async 线程里 block_on 当前 runtime 会 panic）
+        let source = RemoteSource::new(
+            store,
+            place_id,
+            path,
+            &header,
+            size,
+            cache_snap,
+            rt,
+        )
+        .map_err(|e| e.to_string())?;
+        let opened = omy_core::file::open(&header, &keks).map_err(|_| "locked".to_string())?;
+
+        use std::io::Write;
+        let _ = std::fs::remove_file(&part_path);
+        let mut out = std::fs::File::create(&part_path).map_err(|_| "write_failed".to_string())?;
+
+        let mut done: u64 = 0;
+        let mut last_pct: Option<u8> = None;
+        while done < total {
+            let want = (total - done).min(LOCAL_WRITE_CHUNK);
+            let chunk = omy_core::source::read_source_range(&source, &opened, done, want)
+                .map_err(|_| "decrypt_failed".to_string())?;
+            if chunk.is_empty() {
+                return Err("decrypt_failed".to_string());
+            }
+            out.write_all(&chunk).map_err(|_| "write_failed".to_string())?;
+            done = done.saturating_add(chunk.len() as u64);
+
+            // 按整百分比节流，否则大文件发几千次事件，IPC 反而拖慢传输
+            let pct = u8::try_from(done.saturating_mul(100).checked_div(total).unwrap_or(100))
+                .unwrap_or(100);
+            if last_pct != Some(pct) {
+                last_pct = Some(pct);
+                let _ = app2.emit(
+                    DECRYPT_PROGRESS_EVENT,
+                    DecryptProgress {
+                        index: 1,
+                        total_files: 1,
+                        name: name_for_event.clone(),
+                        done,
+                        total,
+                    },
+                );
+            }
+        }
+        out.sync_all().map_err(|_| "write_failed".to_string())?;
+        drop(out);
+
+        // rename 前再查一次存在性，堵住并发下的覆盖
+        if final_path.exists() {
+            let _ = std::fs::remove_file(&part_path);
+            return Err("target_exists".to_string());
+        }
+        std::fs::rename(&part_path, &final_path).map_err(|_| "write_failed".to_string())?;
+        Ok(RemoteDecryptResult {
+            saved_path: final_path.to_string_lossy().into_owned(),
+            name: name_for_event,
+            bytes: done,
+        })
+    })
+    .await;
+
+    match join {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(code)) => {
+            let _ = std::fs::remove_file(&part_cleanup);
+            Err(CmdError::code(&code))
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&part_cleanup);
+            Err(CmdError::code("decrypt_failed"))
+        }
+    }
 }
 
 /// 读到足以 `open` 的完整文件头。
