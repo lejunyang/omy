@@ -68,7 +68,42 @@ Slot 占用   未知（设计上不可探测）
 The cost is that you cannot check either — you have to remember what you configured.
 :::
 
-`key list` **takes no password flag**: since slot occupancy is unprobeable by design, a password would reveal nothing extra.
+### Want to see the slots? Choose manageable mode when encrypting
+
+What is described above is **deniable mode** (the default). At encryption time you can
+choose **manageable mode** instead:
+
+```bash
+omy encrypt file.txt --slot-mode managed
+```
+
+The file then carries an encrypted slot directory recording what each slot holds. Give
+`key list` a password and it lists them:
+
+```bash
+omy key list file.omy --password-env PW
+```
+
+The trade-offs:
+
+| | Deniable (default) | Manageable |
+|---|---|---|
+| Can others tell how many passwords? | No | No |
+| Can **you** tell? | No | Yes, with the password |
+| Remove a single password | No, only "keep the current one" | Yes, precisely |
+| Does changing a password affect the recovery code? | No | No |
+| Can adding a password evict another? | Possibly (no way to detect free slots) | No |
+
+The key point: **to anyone who cannot open the file, both modes protect exactly the
+same amount**. The slot directory is encrypted, so reading it requires opening the file
+first. What you give up is only the ability to hide, from someone who already has a
+password, how many passwords exist.
+
+The mode is fixed at encryption time and **cannot be changed afterwards** — it lives in
+the file header, so switching means re-encrypting.
+
+Avoid mixing both modes within one vault: the same command would behave differently on
+different files.
 
 ## Changing passwords
 

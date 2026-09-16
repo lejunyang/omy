@@ -75,6 +75,7 @@ omy encrypt [OPTIONS] <PATHS>...
 | `--compress` | Enable zstd compression |
 | `--compress-level <N>` | zstd level 1-19 |
 | `--mode <MODE>` | `container` (default) / `tree` |
+| `--slot-mode <MODE>` | Password management: `deniable` (default, nobody can tell how many passwords exist) / `managed` (slots can be listed and removed precisely; fixed at encryption time) |
 | `--original <ACTION>` | `keep` (default) / `trash` / `delete` |
 | `--thumbnail <MODE>` | `auto` (default) / `none` |
 | `--thumbnail-frame <T>` | Video frame timestamp, e.g. `00:01:23` / `83` / `83.5` |
@@ -179,7 +180,26 @@ omy key <COMMAND> <FILE>
 
 `add` and `change` take the new password via `--new-password-file` / `--new-password-env`.
 
-`key list` **accepts no password flag** — occupancy is unprobeable anyway, so a password adds nothing.
+In deniable mode (the default) `key list` needs no password: slot occupancy is
+unprobeable anyway, so a password adds nothing.
+
+For a file in manageable mode you can supply one, and it lists what each slot holds:
+
+```bash
+omy key list file.omy --password-env PW
+```
+
+| Option | Description |
+|---|---|
+| `--password-env <VAR>` | Read the password from an environment variable |
+| `--password-file <PATH>` | Read the password from a file |
+| `--password-stdin` | Read the password from stdin |
+
+Requiring a password is by design — the slot directory is encrypted, so reading it
+means opening the file first.
+
+`encrypt` takes `--slot-mode <deniable|managed>` to pick the mode; the default is
+`deniable`. The mode lives in the file header and cannot be changed after encryption.
 
 ### How change differs from remove
 

@@ -75,6 +75,7 @@ omy encrypt [OPTIONS] <PATHS>...
 | `--compress` | 启用 zstd 压缩 |
 | `--compress-level <N>` | zstd 级别 1–19 |
 | `--mode <MODE>` | `container`（默认）/ `tree` |
+| `--slot-mode <MODE>` | 密码管理方式：`deniable`（默认，查不出配了几个密码）/ `managed`（能列出并精确删除，加密后改不了） |
 | `--original <ACTION>` | `keep`（默认）/ `trash` / `delete` |
 | `--thumbnail <MODE>` | `auto`（默认）/ `none` |
 | `--thumbnail-frame <T>` | 视频取帧时间点，如 `00:01:23` / `83` / `83.5` |
@@ -179,7 +180,24 @@ omy key <COMMAND> <FILE>
 
 `add` 与 `change` 用 `--new-password-file` / `--new-password-env` 提供新密码。
 
-`key list` **不接受密码参数**——槽位占用本就不可探测，给密码也没有额外信息。
+可否认模式（默认）下 `key list` 不需要密码：槽位占用本就不可探测，给密码也没有额外信息。
+
+可管理模式的文件则可以给密码，那时它会列出每个槽位的类型：
+
+```bash
+omy key list file.omy --password-env PW
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--password-env <VAR>` | 从环境变量读密码 |
+| `--password-file <PATH>` | 从文件读密码 |
+| `--password-stdin` | 从标准输入读密码 |
+
+需要密码是设计使然——槽位目录是加密的，读它要先能打开这个文件。
+
+`encrypt` 的 `--slot-mode <deniable|managed>` 决定用哪种模式，默认 `deniable`。
+模式写在文件头里，加密后改不了。
 
 ### change 与 remove 的关键区别
 
