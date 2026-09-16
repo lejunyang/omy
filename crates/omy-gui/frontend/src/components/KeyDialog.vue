@@ -16,13 +16,14 @@
  *
  * 它与前三个的代价差一个数量级，所以要显式警示耗时，并用红色确认按钮。
  *
- * # 为什么不显示「当前有几个密码」
+ * # 「当前有几个密码」分两种情况
  *
- * 查不出来。未使用的槽位填的是随机数据，与真实槽位不可区分（可否认性）。
- * 界面显示一个猜出来的数字比不显示更糟，所以这里明确告诉用户查不出来。
+ * 可否认模式下查不出来：未使用的槽位填的是随机数据，与真实槽位不可区分。
+ * 界面显示一个猜出来的数字比不显示更糟，所以明确告诉用户查不出来。直接
+ * 后果是 `remove` 只能说「只保留当前密码」，不能说「删除某个密码」。
  *
- * 直接后果是 `remove` 只能说「只保留当前密码」，不能说「删除某个密码」——
- * 我们既不知道有哪些密码，也无法只删其中一个。
+ * 可管理模式下能查：文件里带一份加密的槽位目录，输入密码后就能列出每个
+ * 槽位是什么，并精确删掉其中一个。这是加密时选的，事后改不了。
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
@@ -31,6 +32,12 @@ import * as i18n from '../i18n.js';
 const props = defineProps({
   /** 目标条目，需要 path 与显示名。 */
   entry: { type: Object, required: true },
+  /**
+   * 查询槽位的函数，由父组件注入。
+   *
+   * 不在这里直接 import api：对话框只管展示，让父组件决定怎么调后端。
+   */
+  querySlots: { type: Function, default: null },
   busy: { type: Boolean, default: false },
   error: { type: String, default: '' },
   /** 目标是树形加密的目录（整棵树共用一个密码）。 */
@@ -47,7 +54,7 @@ const props = defineProps({
   retryCount: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['cancel', 'retry', 'submit']);
+const emit = defineEmits(['cancel', 'retry', 'submit', 'remove-slot']);
 
 /** `add` / `change` / `remove` / `reencrypt` */
 const action = ref(props.isTree ? 'change' : 'add');
@@ -96,6 +103,51 @@ const same = computed(
     requiresNext.value && next.value.length > 0 && next.value === current.value,
 );
 
+/** 槽位清单。null 表示还没查过。 */
+const slots = ref(null);
+/** 是不是可管理模式。null 表示还不知道（没查过或查失败）。 */
+const managed = ref(null);
+const slotsLoading = ref(false);
+
+/**
+ * 查询槽位清单。
+ *
+ * 要密码才能查——槽位目录是加密的。这不是不便，正是可管理模式的边界：
+ * 对打不开这个文件的人，它与可否认模式一样什么都不透露。
+ */
+async function loadSlots() {
+  if (!props.querySlots || !current.value || slotsLoading.value) return;
+  slotsLoading.value = true;
+  try {
+    const r = await props.querySlots(props.entry.path, current.value);
+    managed.value = r.managed;
+    slots.value = r.slots;
+  } catch {
+    // 查不到就当作不知道，界面退回「不显示清单」。不弹错：用户可能只是
+    // 密码还没打完，提交时自然会报「密码不正确」
+    managed.value = null;
+    slots.value = null;
+  } finally {
+    slotsLoading.value = false;
+  }
+}
+
+/** 只显示占用的槽位。空槽对用户没有意义，列出来只是噪声。 */
+const usedSlots = computed(() => (slots.value || []).filter((s) => s.kind !== 'empty'));
+
+/** 还剩几把能打开文件的钥匙。用来拦住「删到一个不剩」。 */
+const remaining = computed(() => usedSlots.value.length);
+
+function removeSlot(s) {
+  if (props.busy) return;
+  emit('remove-slot', {
+    path: props.entry.path,
+    current: current.value,
+    slotIndex: s.index,
+    kind: s.kind,
+  });
+}
+
 const canSubmit = computed(() => {
   if (props.busy || !current.value) return false;
   if (requiresNext.value && next.value.length === 0) return false;
@@ -141,8 +193,12 @@ function submit() {
       <!-- 这句必须常驻，不能藏在展开区里：用户对「有几个密码」的第一反应
            就是去界面上找那个数字，找不到会以为是 bug。
            树形不显示：整棵树只有一个密码，说「查不出有几个」反而制造困惑 -->
-      <div v-if="!isTree" class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
-      <div v-else class="hint">{{ i18n.t('keymgmt.tree_single_password') }}</div>
+      <div v-if="isTree" class="hint">{{ i18n.t('keymgmt.tree_single_password') }}</div>
+      <!-- 可管理模式不能再说「查不出来」：下面就列着清单，两句话自相矛盾 -->
+      <div v-else-if="managed === true" class="hint">
+        {{ i18n.t('keymgmt.slots_note_managed') }}
+      </div>
+      <div v-else class="hint">{{ i18n.t('keymgmt.slots_hidden') }}</div>
 
       <!-- 边车告知只对树显示：单个文件没有它。
            常驻而不是折叠起来——删掉 .omy-keys 是不可逆的，而它看起来
@@ -217,8 +273,34 @@ function submit() {
           v-model="current"
           type="password"
           autocomplete="current-password"
+          @change="querySlots && loadSlots()"
+          @blur="querySlots && loadSlots()"
         />
         <div class="fhint">{{ i18n.t('keymgmt.current_hint') }}</div>
+      </div>
+
+      <!-- 槽位清单只在可管理模式下出现。可否认模式不显示空清单——
+           那会让用户以为「一个密码都没有」，而文件明明能打开 -->
+      <div v-if="managed === true && usedSlots.length" class="field slots">
+        <div class="flabel">{{ i18n.t('keymgmt.slots_title') }}</div>
+        <div v-for="s in usedSlots" :key="s.index" class="slotrow">
+          <span class="sk">{{ i18n.t(`keymgmt.slot_kind_${s.kind}`) }}</span>
+          <span v-if="s.current" class="sbadge">{{ i18n.t('keymgmt.slot_current') }}</span>
+          <!-- 当前密码那一行不给删除按钮：删掉正在用的这把，对话框
+               下一步就没法继续了 -->
+          <button
+            v-if="!s.current"
+            type="button"
+            class="btn slim danger"
+            :disabled="busy || remaining <= 1"
+            @click="removeSlot(s)"
+          >
+            {{ i18n.t('keymgmt.slot_remove') }}
+          </button>
+        </div>
+      </div>
+      <div v-else-if="managed === false && slots !== null" class="note if">
+        {{ i18n.t('keymgmt.slots_deniable') }}
       </div>
 
       <template v-if="showsNext">

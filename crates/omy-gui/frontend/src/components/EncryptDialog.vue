@@ -34,6 +34,11 @@ const original = ref('keep');
  * 上次选过 tree 就默默沿用——container 是更安全的那个，作默认值合适。
  */
 const folderMode = ref('container');
+/**
+ * 槽位模式。默认 deniable——多一分保护的那个应当是默认值，
+ * 想要便利的人会自己去选。
+ */
+const slotMode = ref('deniable');
 
 /** 是否生成缩略图。
  *
@@ -182,6 +187,7 @@ function submit() {
     kdf_profile: strength.value,
     original: original.value,
     folder_mode: folderMode.value,
+    slot_mode: slotMode.value,
     thumbnail: thumbnail.value ? 'auto' : 'none',
     thumbnail_frame: thumbnail.value ? frameSeconds.value : null,
     /** 视频处理后的中间文件。非空时加密它，加密完由调用方清理。 */
@@ -243,6 +249,27 @@ function submit() {
         <label class="flabel" for="e-pass2">{{ i18n.t('encrypt.password_again') }}</label>
         <input id="e-pass2" v-model="password2" type="password" autocomplete="new-password" />
         <div v-if="mismatch" class="ferr">{{ i18n.t('encrypt.password_mismatch') }}</div>
+      </div>
+
+      <div class="field">
+        <div class="flabel">{{ i18n.t('encrypt.slot_mode') }}</div>
+        <label class="radio">
+          <input v-model="slotMode" type="radio" value="deniable" />
+          <span>
+            {{ i18n.t('encrypt.slot_mode_deniable') }}
+            <div class="d">{{ i18n.t('encrypt.slot_mode_deniable_desc') }}</div>
+          </span>
+        </label>
+        <label class="radio">
+          <input v-model="slotMode" type="radio" value="managed" />
+          <span>
+            {{ i18n.t('encrypt.slot_mode_managed') }}
+            <div class="d">{{ i18n.t('encrypt.slot_mode_managed_desc') }}</div>
+          </span>
+        </label>
+        <!-- 这个选择加密后改不了：模式写在文件头里，换模式等于重新加密。
+             不说清楚的话，用户会以为和其它选项一样能随时回来改 -->
+        <div class="fhint">{{ i18n.t('encrypt.slot_mode_permanent') }}</div>
       </div>
 
       <div class="field">

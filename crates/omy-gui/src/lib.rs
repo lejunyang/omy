@@ -177,6 +177,7 @@ pub fn run() {
             fileops::rename_path,
             fileops::create_folder,
             keymgmt::manage_key,
+            keymgmt::list_slots,
             keymgmt::retry_key_files,
             keymgmt::generate_recovery,
             keymgmt::restore_with_recovery,

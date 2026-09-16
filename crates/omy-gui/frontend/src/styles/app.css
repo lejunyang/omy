@@ -1854,6 +1854,45 @@ input {
   width: 100%;
 }
 
+/* ---------- 槽位清单（可管理模式） ---------- */
+
+/* 一行一个密码：类型在左、删除按钮靠右。
+   用 grid 而不是 flex + margin-left:auto，是为了让所有行的按钮
+   纵向对齐——类型名长短不一，靠 auto 推会参差不齐 */
+.slotrow {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  padding: calc(var(--sp) * 1.25) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.slotrow:last-child {
+  border-bottom: none;
+}
+
+.slotrow .sk {
+  font-size: 13px;
+}
+
+/* 「当前使用」标记。必须和类型名区分开——两个都是纯文字时，
+   用户会把它读成类型的一部分 */
+.slotrow .sbadge {
+  padding: 1px calc(var(--sp) * 1.5);
+  border-radius: var(--r-m);
+  background: color-mix(in srgb, var(--accent, var(--fg2)) 16%, transparent);
+  color: var(--fg2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 行内按钮比常规按钮小一圈：它属于这一行，不是对话框级操作 */
+.btn.slim {
+  padding: calc(var(--sp) * 0.75) calc(var(--sp) * 2);
+  font-size: 12px;
+}
+
 .warnbox {
   font-size: 11.5px;
   line-height: 1.6;

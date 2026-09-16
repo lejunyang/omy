@@ -74,6 +74,13 @@ pub struct EncryptRequest {
     /// 泄露文件数与树形（N6），必须由用户明确选择，不能是默认值。
     #[serde(default = "default_container")]
     pub folder_mode: String,
+    /// 槽位模式：`deniable`（默认）/ `managed`。
+    ///
+    /// 默认给可否认——多一分保护的那个应当是默认值。想要「能看清有几个
+    /// 密码」这份便利的人会自己去选，而不知道这个选择存在的人不该因此
+    /// 少一层保护。
+    #[serde(default = "default_deniable")]
+    pub slot_mode: String,
     /// 缩略图模式：`auto` 自动生成，`none` 完全不生成。
     ///
     /// 默认 auto。缩略图存在加密 TLV 里，只有拿到密码才能读，所以生成它
@@ -115,6 +122,32 @@ fn default_auto() -> String {
 fn default_keep() -> String {
     String::from("keep")
 }
+/// 按请求里的槽位模式造一份初始槽位目录。
+///
+/// 只记 slot 0 是日常密码——这条路径拿到的就是用户刚输入的那个密码。
+/// 恢复码、设备密钥是后续由各自的命令写进目录的。
+fn slot_directory_for(req: &EncryptRequest) -> Option<Vec<u8>> {
+    if req.slot_mode != "managed" {
+        return None;
+    }
+    let mut dir = omy_core::slotdir::SlotDirectory::new();
+    // set 只会在下标越界时失败，0 不可能越界
+    if dir
+        .set(
+            0,
+            omy_core::slotdir::SlotEntry::of(omy_core::slotdir::SlotKind::Vault),
+        )
+        .is_err()
+    {
+        return None;
+    }
+    Some(dir.encode())
+}
+
+fn default_deniable() -> String {
+    "deniable".into()
+}
+
 fn default_container() -> String {
     String::from("container")
 }
@@ -378,12 +411,14 @@ fn encrypt_one(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| String::from("unnamed"));
 
+    let slot_dir = slot_directory_for(req);
     let opts = EncryptOptions {
         filename: req.encrypt_filename.then(|| filename.clone()),
         preserve_extension: req.preserve_extension,
         compress: req.compress,
         chunk_size: req.chunk_size,
         folder_index,
+        slot_directory: slot_dir,
         thumbnail: prepared.thumbnail,
         media_meta: prepared.media_meta,
         moov_cache: prepared.moov_cache,
@@ -524,6 +559,7 @@ fn encrypt_one_as_tree(
     params: Argon2Params,
     req: &EncryptRequest,
 ) -> Result<EncryptedItem, String> {
+    let slot_dir = slot_directory_for(req);
     let opts = EncryptOptions {
         // 文件名一律加密：树形模式下磁盘名是随机的 uuid，
         // 原名只能存在 TLV 里。不加密的话文件名压根没地方放
@@ -531,6 +567,7 @@ fn encrypt_one_as_tree(
         preserve_extension: req.preserve_extension,
         compress: req.compress,
         chunk_size: req.chunk_size,
+        slot_directory: slot_dir,
         // 与容器模式同一个理由：必须显式传，否则头部记的参数与
         // 实际派生 KEK 用的参数不一致，文件永远打不开
         argon2: params,
@@ -728,6 +765,7 @@ mod tests {
             kdf_profile: String::from("interactive"),
             original: String::from("keep"),
             folder_mode: String::from("container"),
+            slot_mode: String::from("deniable"),
             thumbnail: String::from("auto"),
             thumbnail_frame: None,
             converted_path: None,

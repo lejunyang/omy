@@ -148,7 +148,13 @@
     "video_process_desc": "看着画面挑封面帧，也可在加密前转换格式",
     "video_frame_set": "封面帧 {{time}}",
     "video_frame_auto": "封面帧自动选取",
-    "video_converted": "已转换：{{name}}"
+    "video_converted": "已转换：{{name}}",
+    "slot_mode": "密码管理方式",
+    "slot_mode_deniable": "可否认（推荐）",
+    "slot_mode_deniable_desc": "无法判断这个文件配了几个密码，连你自己也不行。代价：以后删除某个密码时只能\"只保留当前密码\"，会连同恢复码一起清掉",
+    "slot_mode_managed": "可管理",
+    "slot_mode_managed_desc": "能看到每个槽位是什么（日常密码／恢复码／设备），可以精确删掉其中一个而保住其它。代价：能打开这个文件的人也能看到这份清单",
+    "slot_mode_permanent": "这个选择加密后无法更改——模式写在文件头里，换模式等于重新加密。"
   },
   "video": {
     "title": "视频处理",
@@ -415,7 +421,22 @@
     "tree_reencrypt_warning": "将逐个重写这棵树里每个文件的内容，耗时与总数据量成正比。完成后旧的文件密钥彻底作废；但已经流出去的副本是独立的密文，仍可用当时的密码打开。",
     "done_tree_rotate": "已重新加密 {{n}} 个文件",
     "retry_failed": "只重试这 {{n}} 个文件",
-    "done_retry": "已补上 {{n}} 个文件"
+    "done_retry": "已补上 {{n}} 个文件",
+    "slots_title": "这个文件上的密码",
+    "slots_deniable": "这个文件用的是可否认模式，看不出配了几个密码——这正是它要的效果。所以下面的操作只能\"保留当前密码、清掉其余\"，无法单独删除某一个。",
+    "slot_kind_empty": "空",
+    "slot_kind_vault": "日常密码",
+    "slot_kind_device": "设备密钥",
+    "slot_kind_portable": "单文件密码",
+    "slot_kind_recovery": "恢复码",
+    "slot_kind_unknown": "未知类型（更新版本后可见）",
+    "slot_current": "当前使用",
+    "slot_remove": "删除这个",
+    "slot_remove_confirm": "删除 slot {{index}}（{{kind}}）？这一步不可撤销。",
+    "slot_remove_last": "这是最后一个能打开文件的密码，删了就再也打不开了。",
+    "slots_loading": "正在读取槽位…",
+    "slots_note_managed": "这个文件用的是可管理模式：输入密码后能看到每个槽位是什么，也能精确删掉其中一个而保住其它。",
+    "ok_remove_slot": "已删除这个密码，其它的不受影响"
   },
   "restore": {
     "title_one": "还原 1 个文件",

@@ -57,6 +57,13 @@ pub struct KeyRequest {
     pub path: String,
     /// 操作：`add` / `change` / `remove` / `reencrypt`。
     pub action: String,
+    /// 可管理模式下要精确删除的槽位下标。
+    ///
+    /// 只对 `remove` 有意义：给了就只删这一个，不给就沿用老语义
+    /// （保留当前密码、清掉其余）。可否认模式下必须为空——那里
+    /// 分不清哪个下标是谁，给了也没法照办。
+    #[serde(default)]
+    pub slot_index: Option<usize>,
     /// 当前密码，用于解开文件。四种操作都必需。
     pub current: String,
     /// 新密码。`add` / `change` 必需，`reencrypt` 可选（留空即沿用当前密码）。
@@ -133,6 +140,87 @@ pub async fn manage_key(
         .map_err(|_| CmdError::code("internal"))?
 }
 
+/// 一个槽位在界面上的样子。
+#[derive(Debug, serde::Serialize)]
+pub struct SlotInfo {
+    /// 槽位下标，0..8。
+    pub index: usize,
+    /// 类型代号：`empty` / `vault` / `device` / `portable` / `recovery` / `unknown`。
+    pub kind: String,
+    /// 是否是当前密码所在的那一个。界面据此禁用它的删除按钮——
+    /// 删掉自己正在用的这把钥匙，对话框下一步就没法继续了。
+    pub current: bool,
+}
+
+/// 槽位清单查询的结果。
+#[derive(Debug, serde::Serialize)]
+pub struct SlotList {
+    /// 是否是可管理模式。false 时 `slots` 为空，界面据此显示说明而非清单。
+    pub managed: bool,
+    /// 槽位清单。可否认模式下恒为空——那不是「读取失败」，是设计如此。
+    pub slots: Vec<SlotInfo>,
+}
+
+/// 读取一个文件的槽位清单。
+///
+/// 需要密码：槽位目录是加密的。这不是不便，正是可管理模式的边界——
+/// 对**打不开这个文件的人**，它与可否认模式一样什么都不透露。
+///
+/// # Errors
+///
+/// 文件读不了、不是 omy 文件、密码不对时返回对应错误码。
+#[tauri::command]
+pub async fn list_slots(state: State<'_, Shared>, req: SlotQuery) -> CmdResult<SlotList> {
+    let handle: Shared = std::sync::Arc::clone(&state);
+    // Argon2 几百毫秒，不能占着异步执行器
+    tauri::async_runtime::spawn_blocking(move || read_slots(&handle, &req))
+        .await
+        .map_err(|_| CmdError::code("internal"))?
+}
+
+/// `list_slots` 的入参。
+#[derive(Debug, serde::Deserialize)]
+pub struct SlotQuery {
+    /// 目标文件路径。
+    pub path: String,
+    /// 当前密码。
+    pub password: String,
+}
+
+fn read_slots(_state: &Shared, req: &SlotQuery) -> CmdResult<SlotList> {
+    let path = Path::new(&req.path);
+    // 树形目录还没有槽位目录这个概念：整棵树共用一份 .omy-keys，
+    // 那里的槽位语义要单独设计。如实说「不支持」而不是报一个含糊的
+    // IO 错误——后者会让用户以为文件坏了
+    if path.is_dir() {
+        return Ok(SlotList { managed: false, slots: Vec::new() });
+    }
+    let data = std::fs::read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
+        _ => CmdError::code("io_error"),
+    })?;
+    let h = omy_core::file::peek_header(&data).map_err(|_| CmdError::code("not_omy_file"))?;
+    let kek = derive(&req.password, &h.vault_salt, h.argon2_params())?;
+    let opened =
+        omy_core::file::open(&data, &[kek]).map_err(|_| CmdError::code("wrong_password"))?;
+
+    if !opened.is_slot_managed() {
+        return Ok(SlotList { managed: false, slots: Vec::new() });
+    }
+    let dir = opened.slot_directory().map_err(|_| CmdError::code("bad_slot_directory"))?;
+    let cur = usize::from(opened.slot_index);
+    let slots = dir
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(i, e)| SlotInfo {
+            index: i,
+            kind: e.kind.name().to_string(),
+            current: i == cur,
+        })
+        .collect();
+    Ok(SlotList { managed: true, slots })
+}
 /// 造一个把 core 进度转成前端事件的回调。
 ///
 /// `stage` / `stages` 直接映射成 `index` / `total_files`，复用前端现成的
@@ -237,6 +325,73 @@ impl Action {
     }
 }
 
+/// 可管理模式下按槽位目录精确改写。
+///
+/// 与可否认路径的差别只在一件事：这里**知道**每个下标是谁，于是
+/// `add` 能找一个真正空闲的槽（而不是赌 `keep.len()` 那个下标是空的，
+/// 那会顶掉恢复码），`remove` 能只删指定的那一个。
+fn managed_rewrite(
+    data: &[u8],
+    opened: &omy_core::file::OpenedFile,
+    current: &Kek,
+    keep: &[Kek],
+    action: Action,
+    target: Option<usize>,
+) -> CmdResult<omy_core::keyslot::RewriteOutcome> {
+    use omy_core::keyslot::SlotPlan;
+    use omy_core::slotdir::{SlotEntry, SlotKind};
+
+    let mut dir = opened.slot_directory().map_err(|_| CmdError::code("bad_slot_directory"))?;
+    let cur = usize::from(opened.slot_index);
+    let mut plans: Vec<SlotPlan> =
+        (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+
+    match action {
+        Action::Add => {
+            let newcomer = keep.last().ok_or_else(|| CmdError::code("new_password_required"))?;
+            let free = dir.first_free().ok_or_else(|| CmdError::code("slots_full"))?;
+            *plans.get_mut(free).ok_or_else(|| CmdError::code("internal"))? =
+                SlotPlan::Write(newcomer.duplicate());
+            dir.set(free, SlotEntry::of(SlotKind::Vault))
+                .map_err(|_| CmdError::code("internal"))?;
+        }
+        Action::Change => {
+            // 就地替换当前密码所在的那一个槽，其余一律不动。
+            // 这正是「改密码不该殃及恢复码」
+            let newcomer = keep.first().ok_or_else(|| CmdError::code("new_password_required"))?;
+            *plans.get_mut(cur).ok_or_else(|| CmdError::code("internal"))? =
+                SlotPlan::Write(newcomer.duplicate());
+        }
+        Action::Remove => {
+            if let Some(i) = target {
+                // 精确删除一个。不能删自己正在用的那把——删完这个对话框
+                // 下一步就没法继续了，而且文件可能就此打不开
+                if i == cur {
+                    return Err(CmdError::code("cannot_remove_current"));
+                }
+                if i >= omy_core::header::SLOT_COUNT {
+                    return Err(CmdError::code("bad_slot_index"));
+                }
+                *plans.get_mut(i).ok_or_else(|| CmdError::code("internal"))? = SlotPlan::Clear;
+                dir.set(i, SlotEntry::empty()).map_err(|_| CmdError::code("internal"))?;
+            } else {
+                // 老语义：保留当前密码，清掉其余
+                for i in 0..omy_core::header::SLOT_COUNT {
+                    if i == cur {
+                        continue;
+                    }
+                    *plans.get_mut(i).ok_or_else(|| CmdError::code("internal"))? = SlotPlan::Clear;
+                    dir.set(i, SlotEntry::empty()).map_err(|_| CmdError::code("internal"))?;
+                }
+            }
+        }
+        // 调用点已排除：轮换换掉 FEK 之后整个 slot 区都要重建
+        Action::Reencrypt => return Err(CmdError::code("internal")),
+    }
+
+    omy_core::keyslot::rewrite_slots_managed(data, &[current.duplicate()], &plans, &dir)
+        .map_err(map_core_err)
+}
 fn run(
     state: &Shared,
     app: &tauri::AppHandle,
@@ -299,7 +454,19 @@ fn run(
         )
         .map_err(map_core_err)?;
         (out.bytes, out.slot_used)
+    } else if header.has_flag(omy_core::header::flags::SLOT_DIRECTORY) {
+        // 这里再开一次只是用 FEK 解头部，不含 Argon2，开销可忽略；
+        // 换来的是不必把 OpenedFile 从上面一路传下来
+        let opened = omy_core::file::open(&data, &[current.duplicate()])
+            .map_err(|_| CmdError::code("wrong_password"))?;
+        let out = managed_rewrite(&data, &opened, &current, &keep, action, req.slot_index)?;
+        (out.bytes, out.slot_used)
     } else {
+        // 可否认模式收到 slot_index 要如实拒绝，不能悄悄忽略：
+        // 用户以为删掉的是某一个，实际做的是「清掉其余全部」
+        if req.slot_index.is_some() {
+            return Err(CmdError::code("slot_index_not_supported"));
+        }
         let out = omy_core::keyslot::rewrite_slots(&data, &[current], &keep, action.other_slots())
             .map_err(map_core_err)?;
         (out.bytes, out.slot_used)

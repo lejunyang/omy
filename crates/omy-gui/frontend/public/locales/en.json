@@ -148,7 +148,13 @@
     "video_process_desc": "Pick the cover frame while watching, and optionally convert before encrypting",
     "video_frame_set": "Cover frame {{time}}",
     "video_frame_auto": "Cover frame chosen automatically",
-    "video_converted": "Converted: {{name}}"
+    "video_converted": "Converted: {{name}}",
+    "slot_mode": "Password management",
+    "slot_mode_deniable": "Deniable (recommended)",
+    "slot_mode_deniable_desc": "Nobody can tell how many passwords this file has — not even you. Trade-off: removing a password later can only \"keep the current one and clear the rest\", which also wipes the recovery code",
+    "slot_mode_managed": "Manageable",
+    "slot_mode_managed_desc": "Shows what each slot is (password / recovery code / device) and lets you remove one precisely while keeping the others. Trade-off: anyone who can open the file can also see this list",
+    "slot_mode_permanent": "This choice cannot be changed after encryption — the mode lives in the file header, so switching means re-encrypting."
   },
   "video": {
     "title": "Video processing",
@@ -415,7 +421,22 @@
     "tree_reencrypt_warning": "Every file in this tree will be rewritten; this takes time proportional to the total data size. Afterwards the old file keys are useless — but copies that already left your machine are separate ciphertext and still open with the password they had.",
     "done_tree_rotate": "Re-encrypted {{n}} files",
     "retry_failed": "Retry these {{n}} file(s)",
-    "done_retry": "Completed {{n}} file(s)"
+    "done_retry": "Completed {{n}} file(s)",
+    "slots_title": "Passwords on this file",
+    "slots_deniable": "This file uses deniable mode, so there is no way to tell how many passwords it has — that is the whole point. Which is why the actions below can only \"keep the current password and clear the rest\", never remove a single one.",
+    "slot_kind_empty": "Empty",
+    "slot_kind_vault": "Password",
+    "slot_kind_device": "Device key",
+    "slot_kind_portable": "File password",
+    "slot_kind_recovery": "Recovery code",
+    "slot_kind_unknown": "Unknown type (visible after an update)",
+    "slot_current": "in use",
+    "slot_remove": "Remove",
+    "slot_remove_confirm": "Remove slot {{index}} ({{kind}})? This cannot be undone.",
+    "slot_remove_last": "This is the last key that can open the file — removing it locks you out for good.",
+    "slots_loading": "Reading slots…",
+    "slots_note_managed": "This file uses manageable mode: enter the password to see what each slot holds, and remove one precisely while keeping the others.",
+    "ok_remove_slot": "That password was removed; the others are unaffected"
   },
   "restore": {
     "title_one": "Restore 1 file",

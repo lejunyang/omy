@@ -371,6 +371,39 @@ async function onEncryptSubmit(opts) {
   if (r) showEncrypt.value = false;
 }
 
+/** 查询槽位清单。交给对话框自己处理失败——用户可能只是密码还没打完。 */
+function onQuerySlots(path, password) {
+  return api.listSlots(path, password);
+}
+
+/**
+ * 精确删除一个槽位。
+ *
+ * 与 onKeySubmit 分开：它删完不关对话框——用户往往要连删几个，
+ * 每删一个就关掉再重开一遍太难用。
+ */
+async function onRemoveSlot({ path, current, slotIndex, kind }) {
+  const label = i18n.t(`keymgmt.slot_kind_${kind}`);
+  if (!window.confirm(i18n.t('keymgmt.slot_remove_confirm', { index: slotIndex, kind: label }))) {
+    return;
+  }
+  keyError.value = '';
+  const ok = await manageKey({
+    path,
+    action: 'remove',
+    current,
+    next: '',
+    slot_index: slotIndex,
+  });
+  if (ok) {
+    setNotice(i18n.t('keymgmt.ok_remove_slot'));
+  } else {
+    keyError.value = state.error;
+    // 错误已经显示在对话框里，不要再占用底部提示条重复一遍
+    state.error = '';
+  }
+}
+
 async function onKeySubmit(req) {
   const r = await manageKey(req);
   if (r) {
@@ -780,9 +813,11 @@ onBeforeUnmount(() => {
     :retry-count="state.retry ? state.retry.paths.length : 0"
     :busy="state.busy"
     :error="keyError"
+    :query-slots="onQuerySlots"
     @cancel="onKeyCancel"
     @retry="onKeyRetry"
     @submit="onKeySubmit"
+    @remove-slot="onRemoveSlot"
   />
 
   <RecoveryDialog

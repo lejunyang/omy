@@ -150,6 +150,15 @@ export const onDecryptProgress = (handler) =>
 export const manageKey = (req) => invoke('manage_key', { req });
 
 /**
+ * 读取一个文件的槽位清单。
+ *
+ * 要密码：槽位目录是加密的。可否认模式下返回 managed=false 与空清单，
+ * 那不是「读取失败」，是设计如此——界面据此显示说明而非清单。
+ */
+export const listSlots = (path, password) =>
+  invoke('list_slots', { req: { path, password } });
+
+/**
  * 只重试上次失败的那些文件。
  *
  * `paths` 取自 `tree_partial` 错误里的 `paths`（完整路径，不是展示用的短名）。
