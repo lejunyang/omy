@@ -380,6 +380,74 @@ async fn list_seek_range_and_cache() {
     server.shutdown().await;
 }
 
+/// 复现真实视频：开启压缩但内容本身已压缩（高熵、压不进去），且不足一个 1 MiB 块。
+///
+/// 不这样会怎样：早期端到端用 `i % 251` 充当「不可压缩」数据，但它是周期序列、
+/// 实际高度可压缩，走的是整块压缩分支，给了虚假信心——25 项断言全绿却播不了
+/// 真实 H.264。真实视频压不进去，会落到「逐块判定不可压缩」的分支。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn small_incompressible_compressed_read() {
+    let root = unique_dir("incompress");
+
+    // xorshift 伪随机：高熵且确定性，zstd 基本压不动
+    let n = 84_755usize;
+    let mut plain = Vec::with_capacity(n);
+    let mut x = 0x1234_5678u32;
+    for _ in 0..n {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        plain.push((x & 0xff) as u8);
+    }
+
+    let salt = [0x44u8; 16];
+    let params = Argon2Params::TEST_WEAK;
+    let kek = Kek::from_password(b"pw", &salt, params).expect("KEK");
+    let opts = EncryptOptions {
+        filename: Some(String::from("v.mp4")),
+        argon2: params,
+        compress: true,
+        ..EncryptOptions::default()
+    };
+    let enc = encrypt(
+        &plain,
+        std::slice::from_ref(&kek),
+        &salt,
+        &opts,
+        &RandomMaterial::generate(),
+    )
+    .expect("加密");
+    let bytes = enc.bytes;
+    std::fs::write(root.join("v.mp4.omy"), &bytes).expect("写盘");
+
+    let server = spawn_server(root.clone(), None).await;
+    let base = server.base_url();
+    let store = Arc::new(store_for(&base, "", "", false));
+    let e = find_entry(&store, "", "v.mp4.omy").await;
+    assert_eq!(e.size, Some(bytes.len() as u64), "content-length 要准");
+
+    let total = bytes.len() as u64;
+    let want_len = plain.len() as u64;
+    let rt = tokio::runtime::Handle::current();
+    let store2 = Arc::clone(&store);
+    let id = e.id.clone();
+    let place = base.clone();
+    let head = bytes.clone(); // peek_header 只需前缀；给完整字节等价于「头部已完整补读」
+    let got = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let src = RemoteSource::new(store2, place, id, &head, total, None, rt)
+            .map_err(|e| format!("RemoteSource: {e}"))?;
+        let opened = open(&head, &[kek]).map_err(|e| format!("open: {e}"))?;
+        read_source_range(&src, &opened, 0, want_len).map_err(|e| format!("read: {e}"))
+    })
+    .await
+    .expect("spawn_blocking 完成")
+    .expect("远程读取成功");
+
+    assert_eq!(got.len(), plain.len(), "长度不符");
+    assert_eq!(got, plain, "高熵小文件远程解密必须逐字节一致");
+    server.shutdown().await;
+}
+
 /// 可写位置的完整往返：建目录 → 上传 → 改名 → 再传 → 删除；
 /// 只读位置必须在发出任何 HTTP 请求之前拒绝全部写操作。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
