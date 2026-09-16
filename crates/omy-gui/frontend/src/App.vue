@@ -126,6 +126,13 @@ async function onSettingsClose() {
   await applySettings();
 }
 
+/** 安全页「立即锁定」：关掉设置弹窗，再走统一锁定收尾（关预览、清会话）。 */
+async function onSettingsLock() {
+  showSettings.value = false;
+  await doLock();
+  await applySettings();
+}
+
 const showEncrypt = ref(false);
 const showRestore = ref(false);
 /** 密码管理的目标条目；null 表示对话框关着。
@@ -854,6 +861,7 @@ onBeforeUnmount(() => {
     v-if="showSettings"
     @close="onSettingsClose"
     @lang="onSettingsLang"
+    @lock="onSettingsLock"
   />
 
   <RemotePlaceDialog

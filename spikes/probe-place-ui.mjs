@@ -146,6 +146,10 @@ async function main() {
   // 设置（底栏第 4 项）
   await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[3]; if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
   await cdp.shot('m05-settings');
+  await click(`(()=>{ const n=document.querySelector('[data-sp="security"]'); if(!n) return 'no-security-nav'; n.click(); return 'ok'; })()`, 500);
+  await cdp.shot('m08-security');
+  await cdp.eval(`document.querySelector('[data-si="back"]')?.click(); 'back'`);
+  await sleep(300);
   await click(`(()=>{ const n=document.querySelector('[data-sp="remote"]'); if(!n) return 'no-remote-nav'; n.click(); return 'ok'; })()`, 600);
   await cdp.shot('m06-remote');
   await click(`(()=>{ const b=document.querySelector('[data-sf="cache_entry"]'); if(!b) return 'no-cache-entry'; b.click(); return 'ok'; })()`, 700);
@@ -185,6 +189,8 @@ async function main() {
   // PC 设置弹窗
   await click(`(()=>{ const b=document.querySelector('[data-tb="settings"]'); if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
   await cdp.shot('d03-settings');
+  await click(`(()=>{ const n=document.querySelector('[data-sp="security"]'); if(!n) return 'no-security-nav'; n.click(); return 'ok'; })()`, 500);
+  await cdp.shot('d06-security');
   await click(`(()=>{ const n=document.querySelector('[data-sp="remote"]'); if(!n) return 'no-remote-nav'; n.click(); return 'ok'; })()`, 600);
   await cdp.shot('d04-remote');
   await click(`(()=>{ const b=document.querySelector('[data-sf="cache_entry"]'); if(!b) return 'no-cache-entry'; b.click(); return 'ok'; })()`, 700);
@@ -202,6 +208,27 @@ async function main() {
   console.log('[PC缓存诊断] ' + JSON.stringify(pcCacheDiag));
   await cdp.shot('d05-cache');
   await cdp.eval(`document.querySelector('[data-si="close"]')?.click(); 'closed'`);
+  // 关闭走 onClose→save（落盘 + 应用缓存设置）是异步的，没等它真正关闭就点
+  // 齿轮，点击会被尚未消失的遮罩吞掉、设置窗不再打开。
+  await sleep(1200);
+
+  // 安全页「立即锁定」真实验证：重开设置 → 安全 → 点锁定，
+  // 断言会话密码数归零、设置弹窗被关闭（走 App 统一锁定收尾）。
+  console.log('\n[立即锁定]');
+  const reopened = await click(`(()=>{ const b=document.querySelector('[data-tb="settings"]'); if(!b) return 'no-settings'; b.click(); return String(!!document.querySelector('.setdlg')); })()`, 800);
+  const dlgOpen = await cdp.eval(`String(!!document.querySelector('.setdlg'))`);
+  console.log('       重开设置 ->', reopened, 'dlgOpen=', dlgOpen);
+  const before = await cdp.eval(`window.__p.invoke('credential_count').then(n=>String(n))`);
+  await click(`(()=>{ const n=document.querySelector('[data-sp="security"]'); if(n) n.click(); return 'ok'; })()`, 400);
+  const clicked = await click(`(()=>{ const b=document.querySelector('[data-sf="lock_now"]'); if(!b) return 'no-lock-btn'; if(b.disabled) return 'disabled'; b.click(); return 'clicked'; })()`, 1200);
+  await sleep(600);
+  const after = await cdp.eval(`window.__p.invoke('credential_count').then(n=>String(n))`);
+  const dlgGone = await cdp.eval(`String(!document.querySelector('.setdlg'))`);
+  const lockAssert = { before, clicked, after, dlgGone };
+  console.log('[立即锁定诊断] ' + JSON.stringify(lockAssert));
+  if (before !== '1' || clicked !== 'clicked' || after !== '0' || dlgGone !== 'true') {
+    throw new Error('立即锁定未生效: ' + JSON.stringify(lockAssert));
+  }
 
   console.log('\n截图目录:', shotsDir);
   shots.forEach((s) => console.log('  ', path.basename(s)));

@@ -26,7 +26,7 @@ import { theme, setTheme } from '../theme.js';
 import * as api from '../api.js';
 import { state, setNotice } from '../store.js';
 
-const emit = defineEmits(['close', 'lang']);
+const emit = defineEmits(['close', 'lang', 'lock']);
 
 /** 当前分类。`cache` 是「远程位置」的二级页。 */
 const pane = ref('general');
@@ -43,6 +43,9 @@ const error = ref('');
  *  配置里的 cache_limit 是「将要保存」的值，这里是「磁盘上现在」的值。 */
 const cacheUsage = ref({ used: 0, limit: 0, root: '' });
 const clearing = ref(false);
+
+/** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
+const loadedCount = ref(0);
 
 async function loadCacheUsage() {
   try {
@@ -88,6 +91,12 @@ onMounted(async () => {
   }
   // 用量与配置独立加载：配置失败不该连累用量显示
   loadCacheUsage();
+  // 读不出来按 0 处理：按钮会因此禁用，不会误导用户去锁一个空会话
+  try {
+    loadedCount.value = Number(await api.credentialCount()) || 0;
+  } catch {
+    loadedCount.value = 0;
+  }
 });
 
 /** 保存整份配置。
@@ -120,6 +129,13 @@ async function save() {
 async function onClose() {
   const ok = await save();
   if (ok) emit('close');
+}
+
+/** 安全页「立即锁定」：先把设置落盘，再交给 App 走统一的锁定收尾
+ *  （关各类预览、清会话），避免在这里只调 lock 而留下打开的解密预览。 */
+async function lockNow() {
+  await save();
+  emit('lock');
 }
 
 /** 语言要立刻生效：选完还得关掉设置页才看到变化的话，
@@ -441,6 +457,21 @@ async function openCacheDir() {
               </div>
             </div>
             <div class="row">
+              <label class="lb">{{ i18n.t('settings.session') }}</label>
+              <div class="fld">
+                <div>{{ i18n.t('settings.loaded_passwords', { n: loadedCount }) }}</div>
+                <button
+                  type="button"
+                  class="btn small"
+                  data-sf="lock_now"
+                  :disabled="loadedCount === 0"
+                  @click="lockNow"
+                >
+                  {{ i18n.t('settings.lock_now_btn') }}
+                </button>
+              </div>
+            </div>
+            <div class="row">
               <label class="lb">{{ i18n.t('settings.background') }}</label>
               <div class="fld">
                 <label class="chk">
@@ -458,6 +489,10 @@ async function openCacheDir() {
                   {{ i18n.t('settings.wipe_temp') }}
                 </label>
               </div>
+            </div>
+            <div class="hint">
+              <span aria-hidden="true">ⓘ</span>
+              <span>{{ i18n.t('settings.recovery_hint') }}</span>
             </div>
           </template>
 
