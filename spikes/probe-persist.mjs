@@ -155,7 +155,19 @@ async function main() {
             dir: '',
           });
           return JSON.stringify({ ok: true, n: Array.isArray(r) ? r.length : -1 });
-        } catch (e) { return JSON.stringify({ ok: false, e: String(e) }); }
+        } catch (e) {
+          // 错误对象直接 String() 会得到没用的 [object Object]，
+          // 把能拿到的字段全挖出来，否则失败时完全看不出原因。
+          //
+          // 这里用字符串拼接而不是模板串：这整段本身就在一个模板串里，
+          // 内层再写 \${} 会被外层提前求值，结果是语法错误。
+          var d = { id: ${JSON.stringify(place.id)} };
+          if (e && typeof e === 'object') {
+            d.code = e.code; d.message = e.message; d.detail = e.detail;
+            try { d.keys = Object.keys(e).join(','); } catch (_) {}
+          } else { d.raw = String(e); }
+          return JSON.stringify({ ok: false, e: JSON.stringify(d) });
+        }
       })()`);
       let br = {};
       try { br = JSON.parse(browsed); } catch { br = {}; }

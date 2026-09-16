@@ -19,6 +19,16 @@ function Stop-All {
     Start-Sleep -Milliseconds 500
 }
 
+# 只停应用，**保留 WebDAV**。
+#
+# 这里要模拟的是「用户关掉 omy 再打开」，服务器一直在。若连服务器一起停，
+# 第二阶段浏览必然失败，而错误是 remote_network——看起来像密码没解开，
+# 实际只是没人应答，会把脚本缺陷误判成产品缺陷。
+function Stop-Gui {
+    taskkill /F /IM omy-gui.exe 2>&1 | Out-Null
+    Start-Sleep -Milliseconds 500
+}
+
 # 跑之前先清干净：残留的 GUI 会占着调试端口，之后每次都连到旧进程，
 # 跑的始终是改动前的二进制（AGENTS.md 里记着这个坑）
 Stop-All
@@ -29,7 +39,7 @@ New-Item -ItemType Directory -Force -Path "$work\dav" | Out-Null
 Set-Content -Path "$work\dav\hello.txt" -Value 'hi' -NoNewline
 
 Write-Output '=== [1] 起 WebDAV ==='
-Start-Process -FilePath $dav -ArgumentList "`"$work\dav`"", "$port" -WindowStyle Hidden
+Start-Process -FilePath $dav -ArgumentList "`"$work\dav`"", "$port", "testuser:verify-secret-pw" -WindowStyle Hidden
 Start-Sleep -Seconds 2
 
 # 每次从干净配置开始，否则上一轮的位置会让断言失去意义
@@ -58,8 +68,8 @@ if ($protected) {
     Write-Output '  （凭据库不可用，将验证降级行为：位置保留、密码不存、无明文）'
 }
 
-Stop-All
-Write-Output '=== [3] 应用已退出，检查配置文件 ==='
+Stop-Gui
+Write-Output '=== [3] 应用已退出（WebDAV 仍在），检查配置文件 ==='
 if (-not (Test-Path $cfgPath)) { throw "配置文件没有生成：$cfgPath" }
 $cfgText = [System.IO.File]::ReadAllText($cfgPath)
 if ($cfgText -notmatch 'omy-persist-test') { throw '配置里没有保存这个位置' }

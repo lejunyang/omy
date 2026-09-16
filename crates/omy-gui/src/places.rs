@@ -252,6 +252,9 @@ impl PlaceRegistry {
     /// 返回成功恢复的位置数与其中缺密码的个数。
     pub fn restore(&self, cfg: &omy_config::Remote) -> (usize, usize) {
         let key = Self::protect_key();
+        if key.is_none() {
+            eprintln!("[omy] 恢复远程位置：取不到本机保护密钥，所有密码都将为空");
+        }
         let mut total = 0usize;
         let mut need_login = 0usize;
 
@@ -259,8 +262,22 @@ impl PlaceRegistry {
             let password = sp
                 .secret
                 .as_ref()
-                .and_then(|v| v.clone().try_into::<omy_secret::Envelope>().ok())
-                .and_then(|env| key.as_ref().and_then(|k| omy_secret::unseal(k, &env).ok()))
+                .and_then(|v| match v.clone().try_into::<omy_secret::Envelope>() {
+                    Ok(env) => Some(env),
+                    Err(e) => {
+                        eprintln!("[omy] 位置 {} 的凭据信封无法解析：{e}", sp.name);
+                        None
+                    }
+                })
+                .and_then(|env| {
+                    key.as_ref().and_then(|k| match omy_secret::unseal(k, &env) {
+                        Ok(pt) => Some(pt),
+                        Err(e) => {
+                            eprintln!("[omy] 位置 {} 的凭据解密失败：{e}", sp.name);
+                            None
+                        }
+                    })
+                })
                 .and_then(|pt| String::from_utf8(pt.to_vec()).ok())
                 .unwrap_or_default();
 

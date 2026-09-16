@@ -41,11 +41,20 @@ async fn main() {
     let root = args
         .get(1)
         .cloned()
-        .expect("用法: dav_server <root目录> [端口]");
+        .expect("用法: dav_server <root目录> [端口] [用户:密码]");
     let port: u16 = args
         .get(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(8799);
+    // 第三个参数给出 `用户:密码` 时启用 Basic 认证。
+    //
+    // 不带认证的服务器**验不出密码对不对**：凭据持久化的端到端测试要证明
+    // 「重启后解密出来的密码可用」，而一个谁都放行的服务器让这条断言永远
+    // 通过——实测过，把解密逻辑整个换成返回空密码，7 项断言照样全绿。
+    let auth: Option<(String, String)> = args.get(3).and_then(|s| {
+        s.split_once(':')
+            .map(|(u, p)| (u.to_owned(), p.to_owned()))
+    });
 
     // 参数与 tests/webdav_server.rs 保持一致：不做 case 检查、不隐藏点文件，
     // 免得测试里能列到的文件这里列不到
@@ -58,18 +67,26 @@ async fn main() {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
         .await
         .expect("绑定端口");
-    eprintln!("WebDAV 正在服务 {root} → http://127.0.0.1:{port}/ （Ctrl-C 退出）");
+    let mode = if auth.is_some() { "需认证" } else { "匿名" };
+    eprintln!("WebDAV 正在服务 {root} → http://127.0.0.1:{port}/ （{mode}，Ctrl-C 退出）");
 
     loop {
         let (stream, _) = listener.accept().await.expect("accept");
         let handler = handler.clone();
         let root_for_conn = root.clone();
+        let auth_for_conn = auth.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let svc = service_fn(move |mut req: Request<Incoming>| {
                 let handler = handler.clone();
                 let root = root_for_conn.clone();
+                let auth = auth_for_conn.clone();
                 async move {
+                    if let Some((u, p)) = &auth {
+                        if !check_auth(&req, u, p) {
+                            return Ok::<_, Infallible>(unauthorized());
+                        }
+                    }
                     maybe_inject(&mut req, &root).await;
                     Ok::<_, Infallible>(handler.handle(req).await)
                 }
@@ -79,6 +96,61 @@ async fn main() {
             }
         });
     }
+}
+
+/// 校验 Basic 认证头。
+///
+/// 只做最朴素的比较：这是自测服务器，不需要防时序攻击。
+fn check_auth(req: &Request<Incoming>, user: &str, pass: &str) -> bool {
+    let Some(v) = req.headers().get(http::header::AUTHORIZATION) else {
+        return false;
+    };
+    let Ok(s) = v.to_str() else { return false };
+    let Some(b64) = s.strip_prefix("Basic ") else {
+        return false;
+    };
+    let Ok(raw) = base64_decode(b64.trim()) else {
+        return false;
+    };
+    let Ok(text) = String::from_utf8(raw) else {
+        return false;
+    };
+    text == format!("{user}:{pass}")
+}
+
+/// 最小的 base64 解码，避免为一个自测服务器引入新依赖。
+fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0u8;
+    for c in s.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let Some(idx) = T.iter().position(|&t| t == c) else {
+            return Err(());
+        };
+        buf = (buf << 6) | u32::try_from(idx).map_err(|_| ())?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            let byte = u8::try_from((buf >> bits) & 0xFF).map_err(|_| ())?;
+            out.push(byte);
+        }
+    }
+    Ok(out)
+}
+
+/// 401 响应，带 `WWW-Authenticate` 让客户端知道要发 Basic 认证。
+fn unauthorized() -> hyper::Response<dav_server::body::Body> {
+    let mut r = hyper::Response::new(dav_server::body::Body::from(String::from("unauthorized")));
+    *r.status_mut() = hyper::StatusCode::UNAUTHORIZED;
+    r.headers_mut().insert(
+        http::header::WWW_AUTHENTICATE,
+        http::HeaderValue::from_static("Basic realm=\"omy-test\""),
+    );
+    r
 }
 
 /// 按 root 下的标记文件对读请求做故障/延迟注入。只处理 GET/HEAD。
