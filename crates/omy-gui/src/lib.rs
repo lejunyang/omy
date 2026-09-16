@@ -196,6 +196,7 @@ pub fn run() {
             place_cmds::remote_place_list,
             place_cmds::remote_place_remove,
             place_cmds::remote_browse,
+            place_cmds::remote_probe_entry,
             place_cmds::remote_place_open,
             place_cmds::remote_place_close,
             place_cmds::remote_cache_usage,

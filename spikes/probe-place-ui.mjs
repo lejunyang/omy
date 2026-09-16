@@ -100,6 +100,45 @@ async function main() {
   await click(`(()=>{ const b=document.querySelector('[data-pb-enter]'); if(!b) return 'no-enter'; b.click(); return 'ok'; })()`, 1800);
   await cdp.shot('m02-dir');
 
+  // —— 失败条目「点击重试」——
+  // retry.omy 带 .failmarker，dav 自测服务器把它的读请求改写成 404，首次浏览应是
+  // 「未能读取」；删掉故障标记后点击该卡，应就地重试成功，密文名变成唯一明文名。
+  const retryBefore = await cdp.eval(`(async()=>{
+    const list=await window.__p.invoke('remote_browse',{placeId:window.__rp,dir:''});
+    const r=list.find(x=>/retry\\.omy$/.test(x.id));
+    return r?JSON.stringify({id:r.id,probe_failed:r.probe_failed,unlocked:r.unlocked,is_encrypted:r.is_encrypted}):'missing';
+  })()`);
+  console.log('       [重试] 首次探测', retryBefore);
+  const rb = JSON.parse(retryBefore);
+  // 不这样会怎样：网络失败被混进「密码不对」，用户会去反复试密码而不是检查网络
+  if (rb.probe_failed !== true || rb.unlocked !== false || rb.is_encrypted !== false) {
+    throw new Error('失败条目初始态错误（应是未能读取，而非锁定/非加密）: ' + retryBefore);
+  }
+  await cdp.shot('m02b-failed');
+  // 删掉故障注入标记（davDir 是第 7 个参数），再在真实界面上点该失败卡触发重试
+  fs.unlinkSync(path.join(process.argv[7] || '', 'retry.omy.failmarker'));
+  const retryClick = await click(`(()=>{
+    const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
+    const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').trim()==='retry.omy');
+    if(!r) return 'no-retry-row';
+    r.click(); return 'clicked';
+  })()`, 400);
+  if (retryClick !== 'clicked') throw new Error('没点到失败条目: ' + retryClick);
+  const retryOk = await cdp.eval(`(async()=>{
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    const rows=()=>[...document.querySelectorAll('.content .lrow, .content .card')]
+      .map(x=>(x.querySelector('.nm,.cname')?.textContent||'').trim());
+    for(let i=0;i<40;i++){
+      const ts=rows();
+      if(ts.includes('retry-src.mp4') && !ts.includes('retry.omy')) return 'retried';
+      await sleep(200);
+    }
+    return 'timeout:'+JSON.stringify(rows());
+  })()`);
+  console.log('       [重试] 点击后', retryOk);
+  if (retryOk !== 'retried') throw new Error('失败条目点击重试未恢复: ' + retryOk);
+  await cdp.shot('m02c-retried');
+
   await click(`(()=>{
     const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
     const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('movie.mp4'));

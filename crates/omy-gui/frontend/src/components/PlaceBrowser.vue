@@ -31,6 +31,7 @@ import {
   enterRemoteDir,
   remoteGoUp,
   removeRemotePlace,
+  retryRemoteEntry,
   placeThumbUrl,
 } from '../store.js';
 
@@ -103,15 +104,27 @@ function onEntryDbl(f) {
 }
 
 /** 打开一个条目的统一入口：目录下钻，已解锁的加密文件交给父组件点播。
- *  锁定项与非加密文件首期不可在线打开（见模板里的提示）。 */
+ *  锁定项与非加密文件首期不可在线打开；「未能读取」条目点击则就地重试。 */
 function activate(f) {
+  if (isRetrying(f)) return;
+  // 「未能读取（网络）」整卡/整行可点：只重试这一条，不重载整个目录，
+  // 也绝不能把它当成「密码不对」——那是 probe_failed 与锁定的根本区别。
+  if (f.probe_failed) {
+    retryRemoteEntry(f);
+    return;
+  }
   if (f.is_dir) {
     enterRemoteDir(f.id);
     return;
   }
-  if (f.is_encrypted && f.unlocked && !f.probe_failed) {
+  if (f.is_encrypted && f.unlocked) {
     emit('open', f);
   }
+}
+
+/** 该条目是否正处于单条目重试中（此时显示 ⏳ 且不可再点）。 */
+function isRetrying(f) {
+  return state.remoteRetrying.includes(f.id);
 }
 
 /** 列表/网格里显示的名字。 */
@@ -124,6 +137,7 @@ function displayName(f) {
 /** 按真实文件名后缀给一个粗图标；识别不了就用通用文件图标。 */
 function icon(f) {
   if (f.is_dir) return '📁';
+  if (isRetrying(f)) return '⏳';
   if (f.probe_failed) return '⚠️';
   if (!f.is_encrypted) return '📄';
   if (!f.unlocked) return '🔒';
@@ -135,9 +149,11 @@ function icon(f) {
   return '📄';
 }
 
-/** 条目能否被激活（决定可点击观感）。 */
+/** 条目能否被激活（决定可点击观感）。
+ *  失败条目可点（=重试）；重试中转 ⏳ 暂时不可点；锁定项/普通文件不可点。 */
 function activatable(f) {
-  return f.is_dir || (f.is_encrypted && f.unlocked && !f.probe_failed);
+  if (isRetrying(f)) return false;
+  return f.is_dir || f.probe_failed || (f.is_encrypted && f.unlocked);
 }
 
 // 加载失败的缩略图 token：回退到类型图标，不留一块破图。
@@ -159,6 +175,13 @@ function kindLabel(p) {
 function capsLabel() {
   const c = currentCaps.value;
   return c.write ? i18n.t('rplace.caps_writable') : i18n.t('rplace.readonly_badge');
+}
+
+/** 悬停标题：失败条目提示「点击重试」，重试中转「识别中」，其余不给标题。 */
+function rowTitle(f) {
+  if (isRetrying(f)) return i18n.t('rplace.probing');
+  if (f.probe_failed) return i18n.t('rplace.probe_failed_hint');
+  return '';
 }
 </script>
 
@@ -277,6 +300,7 @@ function capsLabel() {
             :key="f.id"
             class="card"
             :class="{ locked: f.is_encrypted && !f.unlocked, off: !activatable(f) }"
+            :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
             @click="onEntryClick(f)"
@@ -295,6 +319,10 @@ function capsLabel() {
             <div class="cname">{{ displayName(f) }}</div>
             <div class="cmeta">
               <template v-if="f.is_dir">📁</template>
+              <template v-else-if="isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
+              <template v-else-if="f.probe_failed">
+                <span class="retryhint">{{ i18n.t('rplace.probe_failed_hint') }}</span>
+              </template>
               <template v-else>{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</template>
             </div>
           </div>
@@ -306,6 +334,7 @@ function capsLabel() {
             :key="f.id"
             class="lrow"
             :class="{ off: !activatable(f) }"
+            :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
             @click="onEntryClick(f)"
@@ -318,6 +347,7 @@ function capsLabel() {
             </span>
             <span class="tg">
               <template v-if="f.is_dir">{{ i18n.t('rplace.folder') }}</template>
+              <template v-else-if="isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
               <template v-else-if="f.probe_failed">{{ i18n.t('rplace.probe_failed') }}</template>
               <template v-else-if="!f.is_encrypted">{{ i18n.t('rplace.plain_file') }}</template>
               <template v-else-if="!f.unlocked">{{ i18n.t('kind.encrypted') }}</template>
@@ -362,5 +392,10 @@ function capsLabel() {
 }
 .card.off {
   cursor: default;
+}
+/* 「未能读取」卡片上的点击重试提示：用警告色与普通大小区分，提示可点 */
+.retryhint {
+  color: #9a6a2f;
+  font-size: 12px;
 }
 </style>

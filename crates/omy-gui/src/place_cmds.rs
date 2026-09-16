@@ -129,19 +129,25 @@ pub async fn remote_browse(
     let omy_only = scan_cfg.remote.scan_omy_only;
     let concurrency = scan_cfg.remote.scan_concurrency.clamp(1, 32);
 
-    // 先并发把每个待识别文件的**完整头部**取回来（网络往返是瓶颈），
-    // 再在本任务里串行做会话密钥探测——密钥状态不能跨任务共享 guard。
-    //
-    // 用信号量限流 + 无界通道回收，避免为每个文件都 spawn 一个不受控请求
+    // 缩略图 token 只服务当前这一屏：开始探测前清掉上一屏登记的头部，
+    // 避免反复进出目录让句柄表无限增长，也防止旧 token 串到新列表。
+    thumbs.clear();
+
+    // 先给每个条目建骨架，待探测文件随后并发补齐——网络往返是瓶颈，
+    // 探测（含密钥校验与缩略图登记）收敛到 probe_remote_entry 一处，
+    // 单条目重试与整屏浏览走同一条路径，不允许出现两套识别结果。
+    let mut entries: Vec<RemoteEntry> = items
+        .iter()
+        .map(|it| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size))
+        .collect();
+
+    // 信号量限流 + 无界通道回收：不为每个文件都 spawn 一个不受控请求
     // （那正是设置里「并发请求数」要防的服务端限流）。
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Result<Vec<u8>, RemoteError>)>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, RemoteEntry)>();
+    let shared: Arc<crate::state::AppState> = state.inner().clone();
+    let thumbs_arc: Arc<PlaceThumbs> = thumbs.inner().clone();
 
-    // 每个原始下标对应一份头部结果；None 表示该条目按策略无需探测。
-    // 不能用 vec![None; n]：RemoteError 不是 Clone。
-    let mut heads: Vec<Option<Result<Vec<u8>, RemoteError>>> =
-        std::iter::repeat_with(|| None).take(items.len()).collect();
-    let mut pending = 0usize;
     for (idx, it) in items.iter().enumerate() {
         let size = it.size.unwrap_or(0);
         let too_small = size < omy_core::scan::MIN_FILE_SIZE as u64;
@@ -151,10 +157,13 @@ pub async fn remote_browse(
         if it.is_dir || too_small || (omy_only && !ext_omy) {
             continue;
         }
-        pending += 1;
         let permit = Arc::clone(&sem).acquire_owned();
         let store = Arc::clone(&place.store);
-        let path = it.id.clone();
+        let base = entries.get(idx).cloned().unwrap_or_else(|| {
+            skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size)
+        });
+        let shared = Arc::clone(&shared);
+        let thumbs = Arc::clone(&thumbs_arc);
         let tx = tx.clone();
         tokio::spawn(async move {
             // 拿到许可才发请求；permit 在任务结束时释放
@@ -162,68 +171,112 @@ pub async fn remote_browse(
                 Ok(g) => g,
                 Err(_) => return,
             };
-            let res = fetch_full_header(store.as_ref(), &path, size).await;
-            let _ = tx.send((idx, res));
+            let out = probe_remote_entry(store.as_ref(), &shared, &thumbs, base).await;
+            let _ = tx.send((idx, out));
         });
     }
     drop(tx);
-    while let Some((idx, res)) = rx.recv().await {
-        // idx 来自前面的 enumerate，必然落在 heads 范围内；用 get_mut 而非
+    while let Some((idx, e)) = rx.recv().await {
+        // idx 来自前面的 enumerate，必然落在 entries 范围内；用 get_mut 而非
         // 裸索引，既满足「GUI 产品代码不允许可能 panic 的索引」也不改变语义
-        if let Some(slot) = heads.get_mut(idx) {
-            *slot = Some(res);
+        if let Some(slot) = entries.get_mut(idx) {
+            *slot = e;
         }
     }
-    debug_assert_eq!(
-        heads.iter().flatten().count(),
-        pending,
-        "每个待探测文件都应回收一份头部"
-    );
 
-    // 缩略图 token 只服务当前这一屏：开始组装结果前清掉上一屏登记的头部，
-    // 避免反复进出目录让句柄表无限增长，也防止旧 token 串到新列表。
-    thumbs.clear();
+    Ok(entries)
+}
 
-    let mut out = Vec::with_capacity(items.len());
-    for (idx, it) in items.into_iter().enumerate() {
-        let mut e = RemoteEntry {
-            id: it.id.clone(),
-            name: it.name.clone(),
-            is_dir: it.is_dir,
-            size: it.size,
-            is_encrypted: false,
-            unlocked: false,
-            real_name: None,
-            plaintext_size: None,
-            probe_failed: false,
-            thumb_token: None,
-        };
+/// 重新探测远程目录里的**单个文件**，供「未能读取」条目就地重试。
+///
+/// 整屏浏览里某个文件因一次网络抖动被标成 `probe_failed` 时，不该逼用户
+/// 重载整个目录（其余文件已识别好）；这个命令只重取该文件头部并重算识别
+/// 结果，前端按 `id` 替换对应条目。路径与大小前端列表里都有。
+///
+/// # Errors
+///
+/// 位置不存在时返回；单文件读取失败不报错，而是落到 `probe_failed`，
+/// 与整屏浏览的状态语义保持一致。
+#[tauri::command]
+pub async fn remote_probe_entry(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    place_id: String,
+    id: String,
+    size: u64,
+) -> CmdResult<RemoteEntry> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
 
-        if let Some(Some(res)) = heads.get(idx) {
-            match res {
-                Ok(bytes) => {
-                    // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
-                    // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
-                    if let Some((unlocked, real, psize, has_thumb)) = probe_omy(bytes, &state) {
-                        e.is_encrypted = true;
-                        e.unlocked = unlocked;
-                        e.real_name = real;
-                        e.plaintext_size = psize;
-                        // 已解锁且头部带缩略图：头部此刻已在手里，登记一份
-                        // 轻量句柄即可让列表直接显示缩略图，不再多发一次请求。
-                        if unlocked && has_thumb {
-                            e.thumb_token = thumbs.insert(bytes.clone());
-                        }
-                    }
+    // 列表里的 name 是路径最后一段；重试只拿到 id（路径），现解一次。
+    // rsplit 按字符 '/' 切，不会切坏多字节 UTF-8。
+    let name = id
+        .rsplit('/')
+        .find(|seg| !seg.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| id.clone());
+    let base = skeleton_entry(id, name, false, Some(size));
+    let out = probe_remote_entry(&place.store, state.inner(), thumbs.inner(), base).await;
+    Ok(out)
+}
+
+/// 一个尚未识别的远程条目骨架：目录天然完整，文件默认全部「待定」。
+fn skeleton_entry(
+    id: String,
+    name: String,
+    is_dir: bool,
+    size: Option<u64>,
+) -> RemoteEntry {
+    RemoteEntry {
+        id,
+        name,
+        is_dir,
+        size,
+        is_encrypted: false,
+        unlocked: false,
+        real_name: None,
+        plaintext_size: None,
+        probe_failed: false,
+        thumb_token: None,
+    }
+}
+
+/// 拉取单个远程**文件**的完整头部并探测加密状态，就地补全条目字段。
+///
+/// 这是整屏浏览与单条目重试共用的唯一识别路径：
+/// - 读不到头部（网络/权限）→ `probe_failed = true`，**绝不**静默当成普通文件；
+/// - 能读到但不是 omy → 保持非加密；
+/// - 是 omy 且当前会话密钥能开 → `unlocked`，头部带缩略图则登记轻量句柄。
+async fn probe_remote_entry(
+    store: &WebDavStore,
+    shared: &Shared,
+    thumbs: &PlaceThumbs,
+    mut e: RemoteEntry,
+) -> RemoteEntry {
+    let size = e.size.unwrap_or(0);
+    match fetch_full_header(store, &e.id, size).await {
+        Ok(bytes) => {
+            // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
+            // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
+            if let Some((unlocked, real, psize, has_thumb)) = probe_omy(&bytes, shared) {
+                e.is_encrypted = true;
+                e.unlocked = unlocked;
+                e.real_name = real;
+                e.plaintext_size = psize;
+                // 已解锁且头部带缩略图：头部此刻已在手里，登记一份
+                // 轻量句柄即可让列表直接显示缩略图，不再多发一次请求。
+                if unlocked && has_thumb {
+                    e.thumb_token = thumbs.insert(bytes);
                 }
-                // 读不到就如实标记，不要静默当成普通文件——那会让用户
-                // 以为文件不是加密的，而实际只是这次没读到
-                Err(_) => e.probe_failed = true,
             }
         }
-        out.push(e);
+        // 读不到就如实标记，不要静默当成普通文件——那会让用户
+        // 以为文件不是加密的，而实际只是这次没读到
+        Err(_) => e.probe_failed = true,
     }
-    Ok(out)
+    e
 }
 
 /// 打开远程 `.omy` 的结果。

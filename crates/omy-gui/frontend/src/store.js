@@ -42,6 +42,8 @@ export const state = reactive({
   remoteDir: '',
   /** 远程目录的条目，已附带识别结果。 */
   remoteItems: [],
+  /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
+  remoteRetrying: [],
   /** 云盘（远程位置）浏览器是否打开。与局域网对端的 remoteMode 平行。 */
   placeBrowserOpen: false,
   /** 远程目录列表/打开过程中的局部错误（区别于全局 error，不弹底部条）。 */
@@ -1582,6 +1584,7 @@ export function leaveRemotePlace() {
   state.remotePlace = '';
   state.remoteDir = '';
   state.remoteItems = [];
+  state.remoteRetrying = [];
 }
 
 /** 列出当前远程目录。
@@ -1594,6 +1597,7 @@ export async function reloadRemoteDir() {
   state.busy = true;
   state.busyKey = 'busy.loading';
   state.placeError = '';
+  state.remoteRetrying = [];
   try {
     state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
   } catch (e) {
@@ -1603,6 +1607,28 @@ export async function reloadRemoteDir() {
   } finally {
     state.busy = false;
     state.busyKey = '';
+  }
+}
+
+/** 就地替换一个远程条目（单条目探测与边扫边出共用）。
+ *  只更新当前列表里已存在的 id：切目录后晚到的结果找不到骨架，直接丢弃，
+ *  绝不 push 进新目录，避免上一屏的条目串到下一屏。 */
+export function patchRemoteItem(entry) {
+  const idx = state.remoteItems.findIndex((x) => x.id === entry.id);
+  if (idx >= 0) state.remoteItems[idx] = entry;
+  state.remoteRetrying = state.remoteRetrying.filter((id) => id !== entry.id);
+}
+
+/** 单独重试一个「未能读取（网络）」条目，不重载整个目录。
+ *  命令本身失败（如位置已失效）时恢复可再点的失败态，不吞错也不卡死。 */
+export async function retryRemoteEntry(f) {
+  if (!state.remotePlace || state.remoteRetrying.includes(f.id)) return;
+  state.remoteRetrying = [...state.remoteRetrying, f.id];
+  try {
+    const entry = await api.remoteProbeEntry(state.remotePlace, f.id, f.size || 0);
+    patchRemoteItem(entry);
+  } catch (_) {
+    state.remoteRetrying = state.remoteRetrying.filter((id) => id !== f.id);
   }
 }
 

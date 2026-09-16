@@ -79,6 +79,21 @@ try {
         Copy-Item $thumbLocal (Join-Path $davDir 'thumb.mp4.omy')
     }
 
+    # 造一个「首次读取失败、删掉标记后点击重试即恢复」的条目：
+    # 用独立明文源名 retry-src.mp4 加密（同 vault 同 salt，会话里已有 KEK），
+    # 复制到云盘时改名为 retry.omy——失败时列表显示密文名 retry.omy，
+    # 重试成功后显示唯一明文名 retry-src.mp4，探针据此精确断言，不和 movie 重名。
+    # 再放 .failmarker，让 dav 自测服务器把它的 GET/HEAD 改写成 404，
+    # 首次浏览应标成「未能读取」；探针删掉 marker 后点击该条目应就地重试成功。
+    # marker 本身会以未加密文件形式列出来（自测服务器不过滤），探针按 id 定位、忽略它。
+    $retryPlain = Join-Path $work 'retry-src.mp4'
+    Copy-Item $plain $retryPlain
+    $retryLocal = Join-Path $vaultDir 'retry-src.mp4.omy'
+    & $omy encrypt $retryPlain -o $retryLocal --password-env OMY_CLOUD_PW --kdf-profile mobile --thumbnail none 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '重试样例加密失败' }
+    Copy-Item $retryLocal (Join-Path $davDir 'retry.omy')
+    Set-Content -Path (Join-Path $davDir 'retry.omy.failmarker') -Value '1' -NoNewline
+
     Get-Process dav_server -ErrorAction SilentlyContinue | Stop-Process -Force
     $davProc = Start-Process -FilePath $dav -ArgumentList "`"$davDir`"", "$davPort" -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 800

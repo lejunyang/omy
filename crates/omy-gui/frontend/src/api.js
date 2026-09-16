@@ -394,6 +394,10 @@ export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
 export const remoteBrowse = (placeId, dir) =>
   invoke('remote_browse', { placeId, dir });
 
+/** 重新探测远程目录里的单个文件（「未能读取」条目就地重试，不重载整屏）。 */
+export const remoteProbeEntry = (placeId, id, size) =>
+  invoke('remote_probe_entry', { placeId, id, size });
+
 /** 打开一个远程 `.omy`，换回播放令牌。
  *
  * 后端在此时读完整头部、用当前会话密钥试解，并构造带密文块缓存的来源。

@@ -569,6 +569,7 @@
     "empty": "还没有远程位置",
     "probe_failed": "未能读取",
     "probe_failed_hint": "点击重试",
+    "probing": "识别中…",
     "locked_hint": "不属于当前密码",
     "connecting": "正在连接…",
     "empty_dir": "这个目录是空的",

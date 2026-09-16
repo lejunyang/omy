@@ -569,6 +569,7 @@
     "empty": "No remote locations yet",
     "probe_failed": "Could not read",
     "probe_failed_hint": "Tap to retry",
+    "probing": "Identifying…",
     "locked_hint": "Not for the current password",
     "connecting": "Connecting…",
     "empty_dir": "This folder is empty",
