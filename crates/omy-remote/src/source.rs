@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+use blake2::digest::{Update, VariableOutput};
+
 use omy_core::error::{Error as CoreError, Result as CoreResult};
 use omy_core::header::FixedHeader;
 use omy_core::source::BlockSource;
@@ -31,6 +33,14 @@ pub struct RemoteSource<S: RemoteStore> {
     header: FixedHeader,
     payload_start: u64,
     payload_len: u64,
+    /// 缓存键里的「文件版本」：完整密文头部 + 密文大小的 blake2 哈希（十六进制）。
+    ///
+    /// 缓存键若只有 `位置 ‖ id ‖ 块号`，同名文件在云端被**覆盖更新**（重新加密
+    /// 上传、或别的设备传了同名新文件）后，本地仍会命中上一版的密文块，第 0 块
+    /// 就 `ChunkAuthFailed`，而且因为缓存一直命中而**无法自愈**。每次加密都会产生
+    /// 新的随机 nonce / 盐，头部字节必然改变，把头部哈希混进键里即可让旧块失效。
+    /// 头部本身是密文，参与哈希不会泄露明文信息（文件名也不会进路径）。
+    cache_version: String,
     cache: Option<BlockCache>,
     /// 用于在同步上下文里驱动异步请求。
     rt: tokio::runtime::Handle,
@@ -55,6 +65,20 @@ impl<S: RemoteStore> RemoteSource<S> {
     ) -> CoreResult<Self> {
         let header = omy_core::file::peek_header(header_bytes)?;
         let hlen = u64::from(header.header_len);
+
+        // 文件版本：完整头部 + 密文大小的哈希。头部是密文，可安全参与哈希；
+        // 详见字段文档中关于「覆盖更新后旧缓存块必须失效」的说明。
+        let mut hasher = blake2::Blake2bVar::new(16)
+            .unwrap_or_else(|_| blake2::Blake2bVar::new(16).expect("blake2 16 字节合法"));
+        hasher.update(header_bytes);
+        hasher.update(b"\0");
+        hasher.update(&total_size.to_le_bytes());
+        let mut digest = [0u8; 16];
+        hasher
+            .finalize_variable(&mut digest)
+            .expect("16 字节输出长度合法");
+        let cache_version = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
         Ok(Self {
             store,
             place: place.into(),
@@ -62,9 +86,17 @@ impl<S: RemoteStore> RemoteSource<S> {
             payload_start: hlen,
             payload_len: total_size.saturating_sub(hlen),
             header,
+            cache_version,
             cache,
             rt,
         })
+    }
+
+    /// 传给 [`BlockCache`] 的逻辑条目键：WebDAV id 再混入文件版本，
+    /// 使同名文件覆盖更新后不会复用旧密文块（见 `cache_version` 文档）。
+    fn cache_key(&self) -> String {
+        // 用控制字符分隔，正常 URL/路径里不会出现，避免 id 与版本号粘连
+        format!("{}\u{1}{}", self.id, self.cache_version)
     }
 
     /// 按块取密文，优先走缓存。
@@ -72,8 +104,9 @@ impl<S: RemoteStore> RemoteSource<S> {
     /// 缓存写入点在这里——**拿到密文、尚未解密时**。放到解密之后会把明文
     /// 写进缓存目录，那是威胁模型不允许的。
     fn fetch_block(&self, block: u64) -> CoreResult<Vec<u8>> {
+        let key = self.cache_key();
         if let Some(c) = &self.cache {
-            if let Some(hit) = c.get(&self.place, &self.id, block) {
+            if let Some(hit) = c.get(&self.place, &key, block) {
                 return Ok(hit);
             }
         }
@@ -97,7 +130,7 @@ impl<S: RemoteStore> RemoteSource<S> {
             .map_err(|e| CoreError::Io(std::io::Error::other(e.to_string())))?;
 
         if let Some(c) = &self.cache {
-            c.put(&self.place, &self.id, block, &data);
+            c.put(&self.place, &key, block, &data);
         }
         Ok(data)
     }
@@ -141,9 +174,10 @@ impl<S: RemoteStore> BlockSource for RemoteSource<S> {
             // 会一边下一边把刚下的块删掉，下一段又得重下——同一块被反复
             // 请求，进度永远不前进。
             if let Some(c) = &self.cache {
+                let key = self.cache_key();
                 let keep: Vec<_> = used_blocks
                     .iter()
-                    .map(|n| c.path_of(&self.place, &self.id, *n))
+                    .map(|n| c.path_of(&self.place, &key, *n))
                     .collect();
                 c.evict(&keep);
             }
@@ -322,6 +356,64 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 同名文件在云端被覆盖更新后，绝不能继续返回上一版的缓存块。
+    ///
+    /// 不这样会怎样：缓存键只有 `位置 ‖ id ‖ 块号` 时，重新加密上传同名文件
+    /// （每次 nonce/盐都不同）后，本地仍命中旧密文块，第 0 块就 ChunkAuthFailed，
+    /// 而且因为缓存一直命中、永远不会重新拉取，故障无法自愈。
+    #[test]
+    fn changed_file_does_not_use_stale_cache() {
+        // 同长度明文加密两次：RandomMaterial 随机，头部 nonce 不同，密文必不同
+        let (b1, _) = make_file(200_000);
+        let (b2, _) = make_file(200_000);
+        assert_ne!(b1, b2, "两次加密的 nonce 不同，密文必须不同");
+
+        let store1 = Arc::new(FakeStore::new(b1.clone()));
+        let store2 = Arc::new(FakeStore::new(b2.clone()));
+
+        let dir = std::env::temp_dir()
+            .join(format!("omy_rs_stale_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let cache = BlockCache::new(&dir, 0).expect("建缓存");
+        let r = rt();
+
+        let make_src = |bytes: &Vec<u8>, store: Arc<FakeStore>| {
+            RemoteSource::new(
+                store,
+                "test",
+                "/a.omy",
+                bytes,
+                bytes.len() as u64,
+                Some(cache.clone()),
+                r.handle().clone(),
+            )
+            .expect("构造来源")
+        };
+
+        // 第一版：读一块，落进缓存
+        let src1 = make_src(&b1, store1.clone());
+        let _ = src1.read_ct(0, 100).expect("读 v1");
+
+        // 同位置、同 id，但文件已被覆盖成第二版
+        let src2 = make_src(&b2, store2.clone());
+        let got = src2.read_ct(0, 100).expect("读 v2");
+
+        assert!(
+            store2.call_count() > 0,
+            "文件更新后必须 miss 旧缓存、真正向新存储发请求"
+        );
+        let hlen2 = u64::from(
+            omy_core::file::peek_header(&b2).expect("解析 v2 头部").header_len,
+        ) as usize;
+        assert_eq!(
+            got,
+            b2[hlen2..hlen2 + 100],
+            "返回的必须是新版密文，不能是旧缓存块"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 缓存目录里不能出现明文。
     ///
     /// 这是 §8.1 那条硬约束唯一靠得住的验证方式：造一个内容已知的文件，
@@ -455,7 +547,8 @@ mod tests {
         //
         // 实测过：去掉豁免时块 0、1 的 cached 会变成 false，本断言即失败。
         for b in 0..blocks {
-            let p = probe.path_of("test", "/big.omy", b);
+            // 键里含文件版本，需用来源实际使用的缓存键，不能再用裸 id
+            let p = probe.path_of("test", &src.cache_key(), b);
             assert!(
                 p.exists(),
                 "块 {b} 被淘汰了——淘汰时没有豁免本次正在使用的块"
