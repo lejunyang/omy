@@ -105,7 +105,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(storage::init());
 
-    let result = builder
+    let app = match builder
         .manage(Arc::clone(&shared))
         .manage(Arc::clone(&device_session))
         .manage(Arc::clone(&pair_task))
@@ -195,6 +195,7 @@ pub fn run() {
             place_cmds::remote_cache_usage,
             place_cmds::remote_cache_clear,
             place_cmds::remote_cache_apply,
+            place_cmds::remote_cache_open_dir,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]
@@ -248,12 +249,28 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+    {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("[omy] 启动失败: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    if let Err(e) = result {
-        eprintln!("[omy] 启动失败: {e}");
-        std::process::exit(1);
-    }
+    // 退出钩子：用户开了「关闭应用时清空缓存」就在进程退出前清掉密文块。
+    // 必须在 ExitRequested 里做而不是靠前端 beforeunload——后者在崩溃、
+    // 被系统回收时根本不触发，而那恰恰是最该不留缓存的场景。
+    let exit_cache = Arc::clone(&remote_cache);
+    app.run(move |_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let cfg = omy_config::Config::load().unwrap_or_default();
+            if cfg.remote.clear_cache_on_exit {
+                let freed = exit_cache.clear();
+                eprintln!("[omy] 已按设置在退出时清空远程缓存，释放 {freed} 字节");
+            }
+        }
+    });
 }
 
 /// 安卓启动时的路径准备。

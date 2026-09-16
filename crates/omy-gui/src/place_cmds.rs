@@ -119,8 +119,65 @@ pub async fn remote_browse(
 
     let items = place.store.list(&dir).await.map_err(|e| to_cmd_err(&e))?;
 
+    // 扫描行为读配置：识别范围（仅 .omy / 所有文件）与并发上限。
+    // 每次浏览读一次配置，改完设置无需重启即可生效。
+    let scan_cfg = omy_config::Config::load().unwrap_or_default();
+    let omy_only = scan_cfg.remote.scan_omy_only;
+    let concurrency = scan_cfg.remote.scan_concurrency.clamp(1, 32);
+
+    // 先并发把每个待识别文件的**完整头部**取回来（网络往返是瓶颈），
+    // 再在本任务里串行做会话密钥探测——密钥状态不能跨任务共享 guard。
+    //
+    // 用信号量限流 + 无界通道回收，避免为每个文件都 spawn 一个不受控请求
+    // （那正是设置里「并发请求数」要防的服务端限流）。
+    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Result<Vec<u8>, RemoteError>)>();
+
+    // 每个原始下标对应一份头部结果；None 表示该条目按策略无需探测。
+    // 不能用 vec![None; n]：RemoteError 不是 Clone。
+    let mut heads: Vec<Option<Result<Vec<u8>, RemoteError>>> =
+        std::iter::repeat_with(|| None).take(items.len()).collect();
+    let mut pending = 0usize;
+    for (idx, it) in items.iter().enumerate() {
+        let size = it.size.unwrap_or(0);
+        let too_small = size < omy_core::scan::MIN_FILE_SIZE as u64;
+        // 「仅 .omy」模式下，扩展名不是 .omy 的文件连头部都不请求——
+        // 远程每个文件都要一次往返，这一项省的就是这个。
+        let ext_omy = it.name.to_ascii_lowercase().ends_with(".omy");
+        if it.is_dir || too_small || (omy_only && !ext_omy) {
+            continue;
+        }
+        pending += 1;
+        let permit = Arc::clone(&sem).acquire_owned();
+        let store = Arc::clone(&place.store);
+        let path = it.id.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            // 拿到许可才发请求；permit 在任务结束时释放
+            let _permit = match permit.await {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let res = fetch_full_header(store.as_ref(), &path, size).await;
+            let _ = tx.send((idx, res));
+        });
+    }
+    drop(tx);
+    while let Some((idx, res)) = rx.recv().await {
+        // idx 来自前面的 enumerate，必然落在 heads 范围内；用 get_mut 而非
+        // 裸索引，既满足「GUI 产品代码不允许可能 panic 的索引」也不改变语义
+        if let Some(slot) = heads.get_mut(idx) {
+            *slot = Some(res);
+        }
+    }
+    debug_assert_eq!(
+        heads.iter().flatten().count(),
+        pending,
+        "每个待探测文件都应回收一份头部"
+    );
+
     let mut out = Vec::with_capacity(items.len());
-    for it in items {
+    for (idx, it) in items.into_iter().enumerate() {
         let mut e = RemoteEntry {
             id: it.id.clone(),
             name: it.name.clone(),
@@ -133,30 +190,22 @@ pub async fn remote_browse(
             probe_failed: false,
         };
 
-        // 目录不必探测；太小的文件不可能是 omy（连头部都装不下）
-        let size = it.size.unwrap_or(0);
-        if it.is_dir || size < omy_core::scan::MIN_FILE_SIZE as u64 {
-            out.push(e);
-            continue;
-        }
-
-        // 必须读到**完整头部**再试解锁，不能只取 480 字节识别窗：
-        // 文件名等 TLV（带缩略图时还有整张缩略图）会让 header_len 超过
-        // MIN_PROBE_SIZE，只拿识别窗去 open 必然失败，于是明明会话里有密码、
-        // 列表却把文件显示成锁定态且不还原真实名（点开却能播，自相矛盾）。
-        // fetch_full_header 先读识别窗、按 header_len 补读，载荷一字节不碰。
-        match fetch_full_header(place.store.as_ref(), &it.id, size).await {
-            Ok(bytes) => {
-                if let Some((unlocked, real, psize)) = probe_omy(&bytes, &state) {
-                    e.is_encrypted = true;
-                    e.unlocked = unlocked;
-                    e.real_name = real;
-                    e.plaintext_size = psize;
+        if let Some(Some(res)) = heads.get(idx) {
+            match res {
+                Ok(bytes) => {
+                    // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
+                    // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
+                    if let Some((unlocked, real, psize)) = probe_omy(bytes, &state) {
+                        e.is_encrypted = true;
+                        e.unlocked = unlocked;
+                        e.real_name = real;
+                        e.plaintext_size = psize;
+                    }
                 }
+                // 读不到就如实标记，不要静默当成普通文件——那会让用户
+                // 以为文件不是加密的，而实际只是这次没读到
+                Err(_) => e.probe_failed = true,
             }
-            // 读不到就如实标记，不要静默当成普通文件——那会让用户
-            // 以为文件不是加密的，而实际只是这次没读到
-            Err(_) => e.probe_failed = true,
         }
         out.push(e);
     }
@@ -387,6 +436,49 @@ pub fn remote_cache_apply(
     cache_dir: Option<String>,
 ) {
     cache.reload(RemoteCache::resolve_root(cache_dir), limit);
+}
+
+/// 在系统文件管理器里打开缓存目录。移动端没有可浏览的外部目录，明确不支持。
+#[tauri::command]
+pub fn remote_cache_open_dir(cache: tauri::State<'_, Arc<RemoteCache>>) -> CmdResult<()> {
+    let Some(root) = cache.root() else {
+        return Err(CmdError::code("remote_cache_unavailable"));
+    };
+    open_in_file_manager(&root)
+}
+
+/// 调起系统文件管理器并定位到目录。只 spawn 不等退出码——
+/// explorer.exe 即使成功也常返回非零，wait 会误判成失败。
+#[cfg(target_os = "windows")]
+fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
+    std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+}
+
+#[cfg(target_os = "macos")]
+fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+}
+
+#[cfg(target_os = "android")]
+fn open_in_file_manager(_path: &std::path::Path) -> CmdResult<()> {
+    Err(CmdError::code("remote_unsupported"))
 }
 
 /// 用会话里的密钥尝试识别并解开一段文件头。

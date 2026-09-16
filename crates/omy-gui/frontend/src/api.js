@@ -410,3 +410,6 @@ export const remoteCacheClear = () => invoke('remote_cache_clear');
 /** 缓存设置变更后让后端按新上限/目录重建缓存。 */
 export const remoteCacheApply = (limit, cacheDir) =>
   invoke('remote_cache_apply', { limit, cacheDir });
+
+/** 在系统文件管理器中打开缓存目录（桌面端）。 */
+export const remoteCacheOpenDir = () => invoke('remote_cache_open_dir');
