@@ -155,6 +155,20 @@ pub fn encrypt_dirname(
     nonce: &[u8; NONCE_LEN],
     cipher: CipherId,
 ) -> Result<EncryptedDirname> {
+    encrypt_with_key(name, key.as_key(), nonce, cipher)
+}
+
+/// 目录名加密的实际实现，按裸密钥工作。
+///
+/// 抽出来是因为现在有两种密钥来源（单钥匙派生的 [`DirnameKey`]、随机的
+/// [`crate::dirsidecar::DirKey`]），而截断、边车、base32 这些逻辑一个字
+/// 都不该有两份——同一套规则实现两遍，迟早在某次改动里只改了一边。
+fn encrypt_with_key(
+    name: &str,
+    key: &SecretKey,
+    nonce: &[u8; NONCE_LEN],
+    cipher: CipherId,
+) -> Result<EncryptedDirname> {
     if name.is_empty() {
         return Err(Error::MalformedTlv {
             tlv_type: 0,
@@ -171,7 +185,7 @@ pub fn encrypt_dirname(
     }
 
     // nonce 必须前置存储：解密时要先取出它才能解密，而它本身不是秘密
-    let ct = cipher.encrypt(key.as_key(), nonce, name.as_bytes(), &[])?;
+    let ct = cipher.encrypt(key, nonce, name.as_bytes(), &[])?;
     let mut blob = Vec::with_capacity(NONCE_LEN.saturating_add(ct.len()));
     blob.extend_from_slice(nonce);
     blob.extend_from_slice(&ct);
@@ -216,6 +230,16 @@ pub fn decrypt_dirname(
     key: &DirnameKey,
     cipher: CipherId,
 ) -> Result<String> {
+    decrypt_with_key(disk_name, sidecar, key.as_key(), cipher)
+}
+
+/// 目录名解密的实际实现，按裸密钥工作。理由同 [`encrypt_with_key`]。
+fn decrypt_with_key(
+    disk_name: &str,
+    sidecar: Option<&[u8]>,
+    key: &SecretKey,
+    cipher: CipherId,
+) -> Result<String> {
     let stem = disk_name.strip_suffix(DIR_SUFFIX).ok_or(Error::MalformedTlv {
         tlv_type: 0,
         reason: "not an encrypted directory name",
@@ -243,7 +267,7 @@ pub fn decrypt_dirname(
     n.copy_from_slice(nonce);
 
     let plain = cipher
-        .decrypt(key.as_key(), &n, ct, &[])?
+        .decrypt(key, &n, ct, &[])?
         // 认证失败最可能的原因是密钥不对（换了密码 / 不是这个 vault 的目录）。
         // 用 ContentHashMismatch 而不是自造变体：它归到 Corrupted 退出码，
         // 与其它 AEAD 失败一致
@@ -253,6 +277,46 @@ pub fn decrypt_dirname(
         tlv_type: 0,
         reason: "decrypted directory name is not valid UTF-8",
     })
+}
+
+/// 用目录密钥加密目录名（两层结构）。
+///
+/// 与 [`encrypt_dirname`] 的区别只在密钥来源：这里收的是随机生成的
+/// [`DirKey`]，它本身被每把 KEK 各包一份放进边车。
+///
+/// # 为什么要有这个而不是改 `encrypt_dirname` 的签名
+///
+/// [`DirnameKey`] 由单把 KEK 派生，结构上只能被那一把钥匙解开——这正是
+/// 多密码和恢复码在树上用不了的根因。两者的**密钥语义不同**，共用一个
+/// 函数名会让调用方分不清自己拿的是哪一种，而拿错的后果是目录名解不开。
+///
+/// # Errors
+///
+/// 同 [`encrypt_dirname`]。
+pub fn encrypt_dirname_with(
+    name: &str,
+    dk: &crate::dirsidecar::DirKey,
+    nonce: &[u8; NONCE_LEN],
+    cipher: CipherId,
+) -> Result<EncryptedDirname> {
+    encrypt_with_key(name, dk.as_key(), nonce, cipher)
+}
+
+/// 用目录密钥解密目录名（两层结构）。
+///
+/// `long_name` 是名字被截断时存下来的完整密文。注意它与「钥匙包裹边车」
+/// 是**两回事**：前者存的是目录名密文，后者存的是 DK 的包裹。
+///
+/// # Errors
+///
+/// 同 [`decrypt_dirname`]。
+pub fn decrypt_dirname_with(
+    disk_name: &str,
+    long_name: Option<&[u8]>,
+    dk: &crate::dirsidecar::DirKey,
+    cipher: CipherId,
+) -> Result<String> {
+    decrypt_with_key(disk_name, long_name, dk.as_key(), cipher)
 }
 
 /// 判断一个磁盘名是否可能是密文目录名。

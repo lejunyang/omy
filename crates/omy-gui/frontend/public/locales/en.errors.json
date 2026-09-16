@@ -1,5 +1,7 @@
 {
   "wrong_password": "Wrong password, or no file in this folder uses it",
+  "not_encrypted_tree": "No encrypted file was found in this folder — it may not be an omy-encrypted folder.",
+  "tree_partial_failure": "{{failed}} files could not be rewritten ({{changed}} succeeded). The ones that did are valid; fix the cause and run again to finish the rest.",
   "tree_not_supported": "Encrypted folders do not support recovery codes yet. Every file in a tree carries its own key slots, and whether a tree should share one code or hold one each is still undecided — set one on an individual file instead.",
   "code_required": "Enter the recovery code",
   "new_password_required": "Enter a new password",

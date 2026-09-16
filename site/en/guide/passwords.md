@@ -137,6 +137,41 @@ Locking via the 🔒 in the status bar clears every loaded password at once; the
 The earlier section is about how many passwords can open **one file** (8 key slots). This one is about how many passwords **one session** holds and tries. They are independent: you can browse with three passwords while every individual file carries only one.
 :::
 
+## Encrypted folders: multiple passwords and `.omy-keys`
+
+A folder encrypted with `--mode tree` supports multiple passwords and a
+recovery code just like a single file does, and every one of them opens
+the whole tree:
+
+```bash
+omy key add folder.omy          # add a password
+omy key recovery folder.omy     # one recovery code for the whole tree
+```
+
+The tree shares one recovery code rather than one per file — otherwise you
+would be copying down N slips of paper, and losing one would cost you a
+file, which defeats the point.
+
+### Do not delete `.omy-keys`
+
+Every encrypted folder contains a `.omy-keys` file — the key that unlocks
+the **folder name**. Delete it and that name can never be recovered: the
+files inside are still there, but all you will see is a string of gibberish.
+
+Keep it with the folder when copying or moving. It lives *inside* the folder
+for exactly this reason: it travels with it, so even a single subdirectory
+copied out on its own still opens.
+
+It is a fixed 408 bytes regardless of how many passwords you have, so it
+does not reveal that count to anyone.
+
+### Changing the password does not rename the folder
+
+The folder name is encrypted with its own directory key, independent of any
+password. Change the password and the name stays put; the path you are
+holding remains valid.
+
+
 ## Recovery codes: the only way back in
 
 By design there is **no backdoor and no master key** — we cannot open your files
