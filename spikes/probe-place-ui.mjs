@@ -323,6 +323,40 @@ async function main() {
 
   // 设置（底栏第 4 项）
   await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[3]; if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
+  // 移动设置主页：语言/主题/默认视图/启动位置必须直接平铺可改（不再藏进通用二级页），
+  // 且通用分类入口应消失（已平铺），其余分类入口仍在
+  const mhome = await cdp.eval(`(()=>{
+    const q=s=>!!document.querySelector(s);
+    return JSON.stringify({
+      lang:q('.mlist [data-sf="m_language"]'), theme:q('.mlist [data-sf="m_theme"]'),
+      view:q('.mlist [data-sf="m_view"]'), startup:q('.mlist [data-sf="m_startup"]'),
+      generalEntry:q('.mlist [data-sp="general"]'), remoteEntry:q('.mlist [data-sp="remote"]'),
+    });
+  })()`);
+  console.log('       [移动设置主页]', mhome);
+  const mh = JSON.parse(mhome);
+  if (!mh.lang || !mh.theme || !mh.view || !mh.startup || mh.generalEntry || !mh.remoteEntry) {
+    throw new Error('移动设置主页未把通用项平铺或分类入口异常: ' + mhome);
+  }
+  // 语言在主页切换必须即时生效（选 English 组标题应变，再切回中文），不留下语言污染
+  const langDiag = await cdp.eval(`(async()=>{
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    const sel=document.querySelector('.mlist [data-sf="m_language"]');
+    const gh=()=>document.querySelector('.mlist .mgh')?.textContent;
+    const before=gh();
+    sel.value='en'; sel.dispatchEvent(new Event('change',{bubbles:true}));
+    await sleep(180);
+    const en=gh();
+    sel.value='zh-CN'; sel.dispatchEvent(new Event('change',{bubbles:true}));
+    await sleep(180);
+    const zh=gh();
+    return JSON.stringify({before,en,zh});
+  })()`);
+  console.log('       [主页语言即时切换]', langDiag);
+  const ld = JSON.parse(langDiag);
+  if (!ld.before || ld.en === ld.before || ld.zh !== ld.before) {
+    throw new Error('移动主页语言切换未即时生效或未还原: ' + langDiag);
+  }
   await cdp.shot('m05-settings');
   await click(`(()=>{ const n=document.querySelector('[data-sp="security"]'); if(!n) return 'no-security-nav'; n.click(); return 'ok'; })()`, 500);
   await cdp.shot('m08-security');

@@ -78,6 +78,13 @@ const PANES = [
   { key: 'about', icon: 'ℹ️', label: 'settings.about' },
 ];
 
+/**
+ * 移动端主列表展示的分类：「通用」整组被直接平铺到设置主页（语言/主题等原本在
+ * 底栏一键即切，收进设置后若还要点两层才够到就是退步），因此不再单列通用入口。
+ * PC 端左栏仍保留完整的通用页。
+ */
+const mobilePanes = computed(() => PANES.filter((p) => p.key !== 'general'));
+
 /** 缓存上限的可选值（字节）。0 表示不限制。 */
 const CACHE_LIMITS = [
   { v: 512 * 1024 * 1024, k: '512 MB' },
@@ -294,10 +301,53 @@ async function openCacheDir() {
           </button>
         </nav>
 
-        <!-- 移动端主列表 -->
+        <!-- 移动端主列表：通用高频项直接平铺可改，其余为二级页入口 -->
         <div v-if="isMobile && !mobilePane" class="mlist">
+          <!-- 语言/主题原本在底栏一点即切，收进设置后必须在主页一层就够得到 -->
+          <div class="mgh">{{ i18n.t('settings.general') }}</div>
+          <div class="mqrow">
+            <label class="mqlb" for="m-set-language">{{ i18n.t('settings.language') }}</label>
+            <select
+              id="m-set-language"
+              data-sf="m_language"
+              :value="cfg.ui.language"
+              @change="onLanguage($event.target.value)"
+            >
+              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div class="mqrow">
+            <label class="mqlb" for="m-set-theme">{{ i18n.t('settings.theme') }}</label>
+            <select
+              id="m-set-theme"
+              data-sf="m_theme"
+              :value="cfg.ui.theme"
+              @change="onTheme($event.target.value)"
+            >
+              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
+              <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
+              <option value="light">{{ i18n.t('settings.theme_light') }}</option>
+            </select>
+          </div>
+          <div class="mqrow">
+            <label class="mqlb" for="m-set-view">{{ i18n.t('settings.default_view') }}</label>
+            <select id="m-set-view" data-sf="m_view" v-model="cfg.ui.view">
+              <option value="grid">{{ i18n.t('view.grid') }}</option>
+              <option value="list">{{ i18n.t('view.list') }}</option>
+            </select>
+          </div>
+          <div class="mqrow">
+            <label class="mqlb" for="m-set-startup">{{ i18n.t('settings.startup') }}</label>
+            <select id="m-set-startup" data-sf="m_startup" v-model="cfg.ui.startup">
+              <option value="last">{{ i18n.t('settings.startup_last') }}</option>
+              <option value="home">{{ i18n.t('settings.startup_home') }}</option>
+            </select>
+          </div>
+
           <button
-            v-for="p in PANES"
+            v-for="p in mobilePanes"
             :key="p.key"
             class="mrow"
             :data-sp="p.key"
@@ -874,6 +924,31 @@ async function openCacheDir() {
 /* 移动端主列表 */
 .mlist {
   overflow: auto;
+}
+/* 移动设置主页的分组标题（通用 / 其余分类） */
+.mgh {
+  padding: 14px 12px 6px;
+  font-size: 12px;
+  color: var(--fg2);
+  font-weight: 600;
+}
+/* 通用组里一行一项：标签在左、选择器在右，整行触控目标不小于 48px */
+.mqrow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 48px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.mqlb {
+  flex: 1;
+  font-size: 13.5px;
+  color: var(--fg);
+}
+.mqrow select {
+  flex: none;
+  max-width: 56%;
 }
 .mrow {
   display: flex;
