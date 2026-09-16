@@ -50,6 +50,10 @@ const loadedCount = ref(0);
 /** 关于页的版本信息，来自后端编译期常量。 */
 const aboutInfo = ref({ app_version: '', format_major: 1, format_minor: 0 });
 
+/** 已连接的远程位置数量，设置主页「已连接的位置」摘要用。
+ *  单独拉一次，不依赖此刻是否正开着云盘浏览器（那里才会 reload 列表）。 */
+const remotePlaceCount = ref(0);
+
 /** 跳到完整的设备与共享面板：配对/撤销需要先解锁设备库，
  *  不在设置弹窗里复制那套流程与计数（库没解锁时计数会失真成 0）。
  *  跳走前先保存，否则在这一页改的本机名称/自启会丢。 */
@@ -79,11 +83,11 @@ const PANES = [
 ];
 
 /**
- * 移动端主列表展示的分类：「通用」整组被直接平铺到设置主页（语言/主题等原本在
- * 底栏一键即切，收进设置后若还要点两层才够到就是退步），因此不再单列通用入口。
- * PC 端左栏仍保留完整的通用页。
+ * 移动端主列表不渲染通用分类按钮：「通用」整组直接平铺到设置主页
+ * （语言/主题原本在底栏一点即切，收进设置后还要点两层才够到就是退步）。
+ * 其余分类在模板里按「远程位置 / 安全 / 其他」分组、并带当前值摘要，
+ * 顺序与分组见模板；PC 端左栏仍用完整的 PANES（含通用页）。
  */
-const mobilePanes = computed(() => PANES.filter((p) => p.key !== 'general'));
 
 /** 缓存上限的可选值（字节）。0 表示不限制。 */
 const CACHE_LIMITS = [
@@ -121,6 +125,13 @@ onMounted(async () => {
     aboutInfo.value = await api.appAbout();
   } catch {
     /* 用内置占位 */
+  }
+  // 位置数读不出来按 0 显示，不挡住设置页
+  try {
+    const places = await api.remotePlaceList();
+    remotePlaceCount.value = Array.isArray(places) ? places.length : 0;
+  } catch {
+    remotePlaceCount.value = 0;
   }
 });
 
@@ -346,15 +357,48 @@ async function openCacheDir() {
             </select>
           </div>
 
-          <button
-            v-for="p in mobilePanes"
-            :key="p.key"
-            class="mrow"
-            :data-sp="p.key"
-            @click="goMobile(p.key)"
-          >
-            <span class="mri" aria-hidden="true">{{ p.icon }}</span>
-            <span class="mrt">{{ i18n.t(p.label) }}</span>
+          <div class="mgh">{{ i18n.t('settings.remote') }}</div>
+          <button class="mrow" type="button" data-sp="remote" @click="goMobile('remote')">
+            <span class="mri" aria-hidden="true">☁️</span>
+            <span class="mrt">{{ i18n.t('settings.connected_places') }}</span>
+            <span class="mrv">{{ remotePlaceCount }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+          <button class="mrow" type="button" data-sf="cache_entry" @click="openCachePane">
+            <span class="mri" aria-hidden="true">🗄️</span>
+            <span class="mrt">{{ i18n.t('settings.cache_title') }}</span>
+            <span class="mrv">{{ usedText }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+
+          <div class="mgh">{{ i18n.t('settings.group_security') }}</div>
+          <button class="mrow" type="button" data-sp="security" @click="goMobile('security')">
+            <span class="mri" aria-hidden="true">🔐</span>
+            <span class="mrt">{{ i18n.t('settings.security') }}</span>
+            <span class="mrv" v-if="cfg">{{ lockLabel(cfg.security.auto_lock_secs) }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+          <button class="mrow" type="button" data-sp="encrypt" @click="goMobile('encrypt')">
+            <span class="mri" aria-hidden="true">🔒</span>
+            <span class="mrt">{{ i18n.t('settings.encrypt_defaults') }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+          <button class="mrow" type="button" data-sp="devices" @click="goMobile('devices')">
+            <span class="mri" aria-hidden="true">📡</span>
+            <span class="mrt">{{ i18n.t('settings.devices') }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+
+          <div class="mgh">{{ i18n.t('settings.group_other') }}</div>
+          <button class="mrow" type="button" data-sp="playback" @click="goMobile('playback')">
+            <span class="mri" aria-hidden="true">🎬</span>
+            <span class="mrt">{{ i18n.t('settings.playback') }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
+          <button class="mrow" type="button" data-sp="about" @click="goMobile('about')">
+            <span class="mri" aria-hidden="true">ℹ️</span>
+            <span class="mrt">{{ i18n.t('settings.about') }}</span>
+            <span class="mrv">{{ aboutInfo.app_version }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
         </div>
@@ -974,6 +1018,17 @@ async function openCacheDir() {
 .mrt {
   flex: 1;
   font-size: 13.5px;
+}
+/* 行右侧的当前值摘要（已连接位置数 / 缓存用量 / 锁定时间 / 版本） */
+.mrv {
+  flex: none;
+  max-width: 46%;
+  font-size: 12.5px;
+  color: var(--fg2);
+  text-align: end;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mra {
   color: var(--fg2);

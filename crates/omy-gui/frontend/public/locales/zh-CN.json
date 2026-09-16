@@ -474,6 +474,9 @@
   "settings": {
     "title": "设置",
     "general": "通用",
+    "group_security": "安全",
+    "group_other": "其他",
+    "connected_places": "已连接的位置",
     "remote": "远程位置",
     "security": "安全与密码",
     "encrypt_defaults": "加密默认值",

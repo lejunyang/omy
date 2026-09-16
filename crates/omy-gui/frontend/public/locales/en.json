@@ -474,6 +474,9 @@
   "settings": {
     "title": "Settings",
     "general": "General",
+    "group_security": "Security",
+    "group_other": "Other",
+    "connected_places": "Connected locations",
     "remote": "Remote locations",
     "security": "Security",
     "encrypt_defaults": "Encryption defaults",

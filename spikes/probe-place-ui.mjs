@@ -334,20 +334,30 @@ async function main() {
 
   // 设置（底栏第 4 项）
   await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[3]; if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
-  // 移动设置主页：语言/主题/默认视图/启动位置必须直接平铺可改（不再藏进通用二级页），
-  // 且通用分类入口应消失（已平铺），其余分类入口仍在
+  // 移动设置主页：语言/主题/默认视图/启动位置直接平铺可改；其余按
+  // 「远程位置/安全/其他」分组，每行带当前值摘要，缓存可一键直达二级页。
   const mhome = await cdp.eval(`(()=>{
     const q=s=>!!document.querySelector(s);
+    const rv=sp=>document.querySelector('.mlist [data-sp="'+sp+'"] .mrv')?.textContent || '';
     return JSON.stringify({
       lang:q('.mlist [data-sf="m_language"]'), theme:q('.mlist [data-sf="m_theme"]'),
       view:q('.mlist [data-sf="m_view"]'), startup:q('.mlist [data-sf="m_startup"]'),
-      generalEntry:q('.mlist [data-sp="general"]'), remoteEntry:q('.mlist [data-sp="remote"]'),
+      generalEntry:q('.mlist [data-sp="general"]'),
+      remote:q('.mlist [data-sp="remote"]'), security:q('.mlist [data-sp="security"]'),
+      encrypt:q('.mlist [data-sp="encrypt"]'), devices:q('.mlist [data-sp="devices"]'),
+      playback:q('.mlist [data-sp="playback"]'), about:q('.mlist [data-sp="about"]'),
+      cacheEntry:q('.mlist [data-sf="cache_entry"]'),
+      groups:document.querySelectorAll('.mlist .mgh').length,
+      remoteCount:rv('remote'), securityVal:rv('security'), aboutVer:rv('about'),
     });
   })()`);
   console.log('       [移动设置主页]', mhome);
   const mh = JSON.parse(mhome);
-  if (!mh.lang || !mh.theme || !mh.view || !mh.startup || mh.generalEntry || !mh.remoteEntry) {
-    throw new Error('移动设置主页未把通用项平铺或分类入口异常: ' + mhome);
+  if (!mh.lang || !mh.theme || !mh.view || !mh.startup || mh.generalEntry
+      || !mh.remote || !mh.security || !mh.encrypt || !mh.devices || !mh.playback
+      || !mh.about || !mh.cacheEntry || mh.groups !== 4
+      || mh.remoteCount !== '1' || !/0\.0\.1/.test(mh.aboutVer)) {
+    throw new Error('移动设置主页分组/入口/摘要不符合原型: ' + mhome);
   }
   // 语言在主页切换必须即时生效（选 English 组标题应变，再切回中文），不留下语言污染
   const langDiag = await cdp.eval(`(async()=>{
