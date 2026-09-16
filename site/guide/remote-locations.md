@@ -122,6 +122,33 @@ Linux 上必须有实现了 Secret Service 的服务（装了桌面环境通常�
 所以 omy 不用它。
 :::
 
+::: warning Windows：凭据管理器可能被别的程序占满
+如果设置里显示「无法安全保存密码」，而你用的是 Windows，多半是凭据管理器
+已经满了——某些程序（实测见过 VS Code 的微软账号令牌）会不断累积凭据而从不
+清理，攒到几百条就再也写不进新的。
+
+先看是谁占的：
+
+```powershell
+(cmdkey /list | Out-String) -split "`r?`n" |
+  Where-Object { $_ -match 'Target:' } |
+  ForEach-Object { ($_ -replace '.*Target:\s*','') -split '[|:/]' | Select-Object -First 1 } |
+  Group-Object | Sort-Object Count -Descending | Select-Object -First 5
+```
+
+确认某一类可以安全删除后（登录令牌删掉只需重新登录一次，不会丢数据），
+按关键词清理：
+
+```powershell
+(cmdkey /list | Out-String) -split "`r?`n" |
+  Where-Object { $_ -match '关键词' } |
+  ForEach-Object { (($_ -replace '.*Target:\s*','').Trim()) -replace '^LegacyGeneric:target=','' } |
+  ForEach-Object { cmdkey /delete:$_ }
+```
+
+目标名要去掉 `LegacyGeneric:target=` 前缀，带着前缀删会报「找不到元素」。
+:::
+
 配置文件里的**名字、地址、用户名是明文的**，只有密码加密。这是有意的：
 没有密钥时也要能列出这些位置告诉你「需要重新登录」，而不是显示一片空白
 让人以为配置丢了。代价是看到配置文件的人能知道你在用哪个服务器。

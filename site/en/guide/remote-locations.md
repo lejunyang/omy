@@ -131,6 +131,35 @@ which would mean re-entering the password after every restart, so omy does not
 use it.
 :::
 
+::: warning Windows: Credential Manager can be filled up by other programs
+If Settings reports that passwords cannot be stored securely and you are on
+Windows, Credential Manager is most likely full. Some programs (VS Code's
+Microsoft account tokens, observed in practice) keep appending credentials and
+never clean them up; after a few hundred entries nothing new can be written.
+
+First see who is using the space:
+
+```powershell
+(cmdkey /list | Out-String) -split "`r?`n" |
+  Where-Object { $_ -match 'Target:' } |
+  ForEach-Object { ($_ -replace '.*Target:\s*','') -split '[|:/]' | Select-Object -First 1 } |
+  Group-Object | Sort-Object Count -Descending | Select-Object -First 5
+```
+
+Once you have confirmed a group is safe to remove (deleting sign-in tokens just
+means signing in again; no data is lost), clear it by keyword:
+
+```powershell
+(cmdkey /list | Out-String) -split "`r?`n" |
+  Where-Object { $_ -match 'keyword' } |
+  ForEach-Object { (($_ -replace '.*Target:\s*','').Trim()) -replace '^LegacyGeneric:target=','' } |
+  ForEach-Object { cmdkey /delete:$_ }
+```
+
+The target name must have the `LegacyGeneric:target=` prefix stripped; deleting
+with the prefix reports "Element not found".
+:::
+
 The **name, address and username are stored in plain text**; only the password
 is encrypted. This is deliberate: without the key those locations must still be
 listed so you can be told to log in again, rather than showing an empty list

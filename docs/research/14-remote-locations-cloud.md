@@ -1169,10 +1169,35 @@ NAS——它们不是凭据，但确实是信息暴露，不要以为整条记�
   （三条往返断言失败）、`random_key` 返回固定值（`wrong_key_fails` 等三条失败，
   那正是机器绑定失效的样子）。
 - `pwsh -File spikes/verify-place-persist.ps1`：**真的关掉应用再打开**，
-  按凭据库是否可用分别断言。
-- ⚠️ **本机实测时凭据管理器恰好存满**（204 条 LegacyGeneric，系统自带的
-  `cmdkey` 也写不进去，报 `ERROR_NOT_ENOUGH_MEMORY`）。因此**加密路径尚未在
-  真实 Windows 凭据管理器上跑通**，已验证的是降级路径：位置保留、密码不存、
-  配置无明文。在凭据槽位充足的机器上应复跑一次确认加密路径。
-  单测跳过时会打印醒目的「未验证任何东西」，设 `OMY_REQUIRE_KEYSTORE=1`
-  可让 CI 强制要求真实验证。
+  按凭据库是否可用分别断言。自测服务器**开着 Basic 认证**——不开的话
+  「密码解密正确」这条断言是虚的：实测过，把解密换成返回空密码，7 项
+  断言照样全绿。开了之后同一个变异立刻被抓到。
+- ✅ **加密路径已在真实 Windows 凭据管理器上跑通**（2026-09-17）：
+  `protected` 状态、信封落盘、重启后用解密出的密码真正连上服务端。
+  单测在 `OMY_REQUIRE_KEYSTORE=1` 下全部真实执行，无跳过。
+
+### 14.7 踩过的坑：凭据库会被别的程序占满
+
+首次实测时 Windows 凭据管理器写不进去，报 `ERROR_NOT_ENOUGH_MEMORY`——
+连系统自带的 `cmdkey` 都失败。排查发现是 **VS Code 存了 164 条**微软账号
+令牌分片（同一 client id，末尾 `-12`/`-22` 是分片号，只增不减地累积），
+占了全部 206 条的 80%。清掉后立刻恢复正常。
+
+两点值得记住：
+
+- **每应用 20 条那个限制不适用**。它管的是 UWP 的 Credential Locker
+  （`PasswordVault` API），而我们和 VS Code 走的都是传统 `CredWrite`，
+  属于另一套存储。直调 `CredWriteW` 验证过：SESSION / LOCAL_MACHINE /
+  ENTERPRISE 三种持久化模式全部返回错误 8，说明是整库容量到顶。
+- **这是真实用户会遇到的场景**，不是测试环境特有。降级路径（位置保留、
+  密码不存、绝不明文）因此不是可选项。
+
+清理命令（目标名要去掉 `LegacyGeneric:target=` 前缀，带前缀删会报
+`Element not found`）：
+
+```powershell
+(cmdkey /list | Out-String) -split "`r?`n" |
+  Where-Object { $_ -match 'vscode\.microsoft-authentication' } |
+  ForEach-Object { (($_ -replace '.*Target:\s*','').Trim()) -replace '^LegacyGeneric:target=','' } |
+  ForEach-Object { cmdkey /delete:$_ }
+```
