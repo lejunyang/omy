@@ -398,6 +398,14 @@ export const remoteBrowse = (placeId, dir) =>
 export const remoteProbeEntry = (placeId, id, size) =>
   invoke('remote_probe_entry', { placeId, id, size });
 
+/**
+ * 订阅「边扫边出」：remote_browse 先返回一屏骨架，后台每识别完一个文件
+ * 就推一条 payload `{ place_id, dir, entry }`，前端就地替换同 id 骨架。
+ * 返回 unlisten。
+ */
+export const onRemoteEntry = (handler) =>
+  listen('remote-entry', (e) => handler(e.payload));
+
 /** 打开一个远程 `.omy`，换回播放令牌。
  *
  * 后端在此时读完整头部、用当前会话密钥试解，并构造带密文块缓存的来源。

@@ -137,7 +137,7 @@ function displayName(f) {
 /** 按真实文件名后缀给一个粗图标；识别不了就用通用文件图标。 */
 function icon(f) {
   if (f.is_dir) return '📁';
-  if (isRetrying(f)) return '⏳';
+  if (f.probing || isRetrying(f)) return '⏳';
   if (f.probe_failed) return '⚠️';
   if (!f.is_encrypted) return '📄';
   if (!f.unlocked) return '🔒';
@@ -152,7 +152,7 @@ function icon(f) {
 /** 条目能否被激活（决定可点击观感）。
  *  失败条目可点（=重试）；重试中转 ⏳ 暂时不可点；锁定项/普通文件不可点。 */
 function activatable(f) {
-  if (isRetrying(f)) return false;
+  if (f.probing || isRetrying(f)) return false;
   return f.is_dir || f.probe_failed || (f.is_encrypted && f.unlocked);
 }
 
@@ -179,7 +179,7 @@ function capsLabel() {
 
 /** 悬停标题：失败条目提示「点击重试」，重试中转「识别中」，其余不给标题。 */
 function rowTitle(f) {
-  if (isRetrying(f)) return i18n.t('rplace.probing');
+  if (f.probing || isRetrying(f)) return i18n.t('rplace.probing');
   if (f.probe_failed) return i18n.t('rplace.probe_failed_hint');
   return '';
 }
@@ -299,7 +299,7 @@ function rowTitle(f) {
             v-for="f in visible"
             :key="f.id"
             class="card"
-            :class="{ locked: f.is_encrypted && !f.unlocked, off: !activatable(f) }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -319,7 +319,7 @@ function rowTitle(f) {
             <div class="cname">{{ displayName(f) }}</div>
             <div class="cmeta">
               <template v-if="f.is_dir">📁</template>
-              <template v-else-if="isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
+              <template v-else-if="f.probing || isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
               <template v-else-if="f.probe_failed">
                 <span class="retryhint">{{ i18n.t('rplace.probe_failed_hint') }}</span>
               </template>
@@ -333,7 +333,7 @@ function rowTitle(f) {
             v-for="f in visible"
             :key="f.id"
             class="lrow"
-            :class="{ off: !activatable(f) }"
+            :class="{ off: !activatable(f), probing: !f.is_dir && f.probing }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -347,7 +347,7 @@ function rowTitle(f) {
             </span>
             <span class="tg">
               <template v-if="f.is_dir">{{ i18n.t('rplace.folder') }}</template>
-              <template v-else-if="isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
+              <template v-else-if="f.probing || isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
               <template v-else-if="f.probe_failed">{{ i18n.t('rplace.probe_failed') }}</template>
               <template v-else-if="!f.is_encrypted">{{ i18n.t('rplace.plain_file') }}</template>
               <template v-else-if="!f.unlocked">{{ i18n.t('kind.encrypted') }}</template>
@@ -397,5 +397,22 @@ function rowTitle(f) {
 .retryhint {
   color: #9a6a2f;
   font-size: 12px;
+}
+/* 边扫边出的「识别中」骨架：不沿用 .off 的灰化（它不是失败/不可用），
+   只用缩略图区的轻微脉冲表达进行中；条目不可点（activatable=false） */
+.card.probing,
+.lrow.probing {
+  opacity: 1;
+  cursor: default;
+}
+.card.probing .thumb {
+  animation: omy-probe-pulse 1.1s ease-in-out infinite;
+}
+@keyframes omy-probe-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.probing .thumb { animation: none; }
 }
 </style>

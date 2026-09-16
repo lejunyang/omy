@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+use tauri::Emitter;
+
 use crate::commands::{CmdError, CmdResult, Shared};
 use crate::place_files::{OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
@@ -50,6 +52,13 @@ pub struct RemoteEntry {
     /// 列表缩略图令牌：仅当已解锁且文件头里确实带缩略图时为 `Some`，
     /// 前端据此请求 `omystream://pthumb/<token>`；否则回退类型图标。
     pub thumb_token: Option<String>,
+    /// 是否仍在后台识别中（边扫边出的骨架态）。
+    ///
+    /// 列目录（PROPFIND）很快、逐文件读头部识别较慢；前端先拿到一屏带
+    /// `probing=true` 的骨架立即渲染，后台每识别完一个就用事件推一条最终
+    /// 条目（`probing=false`）就地替换。该态与「未能读取」「锁定」都不同，
+    /// 必须单独成态，不能让用户对着还没出结果的条目猜密码。
+    pub probing: bool,
 }
 
 /// 把远程错误映射为结构化错误码。
@@ -111,6 +120,7 @@ pub fn remote_place_remove(reg: tauri::State<'_, Arc<PlaceRegistry>>, id: String
 /// 位置不存在、网络失败或认证失败时返回。
 #[tauri::command]
 pub async fn remote_browse(
+    app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
     thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
@@ -133,18 +143,20 @@ pub async fn remote_browse(
     // 避免反复进出目录让句柄表无限增长，也防止旧 token 串到新列表。
     thumbs.clear();
 
-    // 先给每个条目建骨架，待探测文件随后并发补齐——网络往返是瓶颈，
+    // 边扫边出：PROPFIND 列目录很快、逐文件读头部识别较慢。先返回一屏骨架
+    // （待探测文件标 probing=true）让界面立刻有内容，后台每识别完一个就 emit
+    // 一条最终条目，前端按「当前位置+目录」过滤后就地替换骨架。
+    //
     // 探测（含密钥校验与缩略图登记）收敛到 probe_remote_entry 一处，
-    // 单条目重试与整屏浏览走同一条路径，不允许出现两套识别结果。
+    // 边扫边出与单条目重试走同一条识别路径，不允许出现两套结果。
     let mut entries: Vec<RemoteEntry> = items
         .iter()
-        .map(|it| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size))
+        .map(|it| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, false))
         .collect();
 
-    // 信号量限流 + 无界通道回收：不为每个文件都 spawn 一个不受控请求
+    // 信号量限流：不为每个文件都 spawn 一个不受控请求
     // （那正是设置里「并发请求数」要防的服务端限流）。
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, RemoteEntry)>();
     let shared: Arc<crate::state::AppState> = state.inner().clone();
     let thumbs_arc: Arc<PlaceThumbs> = thumbs.inner().clone();
 
@@ -157,34 +169,54 @@ pub async fn remote_browse(
         if it.is_dir || too_small || (omy_only && !ext_omy) {
             continue;
         }
+        // 该文件骨架进入「识别中」
+        if let Some(slot) = entries.get_mut(idx) {
+            slot.probing = true;
+        }
         let permit = Arc::clone(&sem).acquire_owned();
         let store = Arc::clone(&place.store);
-        let base = entries.get(idx).cloned().unwrap_or_else(|| {
-            skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size)
-        });
+        let base = entries
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, true));
         let shared = Arc::clone(&shared);
         let thumbs = Arc::clone(&thumbs_arc);
-        let tx = tx.clone();
+        let app = app.clone();
+        let place_id = place_id.clone();
+        let dir = dir.clone();
         tokio::spawn(async move {
             // 拿到许可才发请求；permit 在任务结束时释放
             let _permit = match permit.await {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            let out = probe_remote_entry(store.as_ref(), &shared, &thumbs, base).await;
-            let _ = tx.send((idx, out));
+            let entry = probe_remote_entry(store.as_ref(), &shared, &thumbs, base).await;
+            // 切目录后晚到的事件由前端按 位置+目录 过滤丢弃；这里照常发即可，
+            // 多跑的只是几个 480B 的头部请求。
+            let _ = app.emit(
+                REMOTE_ENTRY_EVENT,
+                RemoteEntryEvent {
+                    place_id,
+                    dir,
+                    entry,
+                },
+            );
         });
     }
-    drop(tx);
-    while let Some((idx, e)) = rx.recv().await {
-        // idx 来自前面的 enumerate，必然落在 entries 范围内；用 get_mut 而非
-        // 裸索引，既满足「GUI 产品代码不允许可能 panic 的索引」也不改变语义
-        if let Some(slot) = entries.get_mut(idx) {
-            *slot = e;
-        }
-    }
 
+    // 立即返回骨架，不等后台识别（结果走 remote-entry 事件）
     Ok(entries)
+}
+
+/// 后台识别完一个远程条目时推送的事件名。
+pub const REMOTE_ENTRY_EVENT: &str = "remote-entry";
+
+/// `remote-entry` 事件载荷：附带位置与目录，供前端判断是否属于当前这一屏。
+#[derive(Debug, Clone, serde::Serialize)]
+struct RemoteEntryEvent {
+    place_id: String,
+    dir: String,
+    entry: RemoteEntry,
 }
 
 /// 重新探测远程目录里的**单个文件**，供「未能读取」条目就地重试。
@@ -217,17 +249,19 @@ pub async fn remote_probe_entry(
         .find(|seg| !seg.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| id.clone());
-    let base = skeleton_entry(id, name, false, Some(size));
+    let base = skeleton_entry(id, name, false, Some(size), false);
     let out = probe_remote_entry(&place.store, state.inner(), thumbs.inner(), base).await;
     Ok(out)
 }
 
-/// 一个尚未识别的远程条目骨架：目录天然完整，文件默认全部「待定」。
+/// 一个远程条目骨架：目录天然完整，文件默认全部「待定」。
+/// `probing` 仅文件在后台识别中为 true。
 fn skeleton_entry(
     id: String,
     name: String,
     is_dir: bool,
     size: Option<u64>,
+    probing: bool,
 ) -> RemoteEntry {
     RemoteEntry {
         id,
@@ -240,6 +274,7 @@ fn skeleton_entry(
         plaintext_size: None,
         probe_failed: false,
         thumb_token: None,
+        probing,
     }
 }
 
@@ -276,6 +311,9 @@ async fn probe_remote_entry(
         // 以为文件不是加密的，而实际只是这次没读到
         Err(_) => e.probe_failed = true,
     }
+    // 走到这里识别已经结束（成功/非加密/失败三态之一），骨架态必须清除，
+    // 否则前端会永远停在「识别中」。
+    e.probing = false;
     e
 }
 
@@ -625,11 +663,12 @@ mod tests {
             plaintext_size: None,
             probe_failed: true,
             thumb_token: None,
+            probing: false,
         };
         let j = serde_json::to_value(&e).expect("序列化");
         for k in [
             "id", "name", "is_dir", "size", "is_encrypted", "unlocked", "real_name",
-            "plaintext_size", "probe_failed", "thumb_token",
+            "plaintext_size", "probe_failed", "thumb_token", "probing",
         ] {
             assert!(j.get(k).is_some(), "字段 {k} 不能改名或缺失");
         }

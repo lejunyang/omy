@@ -94,6 +94,16 @@ try {
     Copy-Item $retryLocal (Join-Path $davDir 'retry.omy')
     Set-Content -Path (Join-Path $davDir 'retry.omy.failmarker') -Value '1' -NoNewline
 
+    # slow.omy：读正文/头部前服务端延迟 2.2s（PROPFIND 列目录不受影响），
+    # 稳定复现「边扫边出」：进入目录后它先停在识别中骨架，约 2.2s 后出最终结果。
+    $slowPlain = Join-Path $work 'slow-src.mp4'
+    Copy-Item $plain $slowPlain
+    $slowLocal = Join-Path $vaultDir 'slow-src.mp4.omy'
+    & $omy encrypt $slowPlain -o $slowLocal --password-env OMY_CLOUD_PW --kdf-profile mobile --thumbnail none 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '延迟样例加密失败' }
+    Copy-Item $slowLocal (Join-Path $davDir 'slow.omy')
+    [System.IO.File]::WriteAllText((Join-Path $davDir 'slow.omy.slowmarker'), '2200')
+
     Get-Process dav_server -ErrorAction SilentlyContinue | Stop-Process -Force
     $davProc = Start-Process -FilePath $dav -ArgumentList "`"$davDir`"", "$davPort" -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 800

@@ -97,16 +97,40 @@ async function main() {
   await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[1]; if(!b) return 'no-tab'; b.click(); return 'ok'; })()`);
   await cdp.shot('m01-places');
 
-  await click(`(()=>{ const b=document.querySelector('[data-pb-enter]'); if(!b) return 'no-enter'; b.click(); return 'ok'; })()`, 1800);
+  await click(`(()=>{ const b=document.querySelector('[data-pb-enter]'); if(!b) return 'no-enter'; b.click(); return 'ok'; })()`, 450);
   await cdp.shot('m02-dir');
+
+  // —— 边扫边出：slow.omy 服务端延迟 2.2s，进目录后它必须先停在「识别中」骨架 ——
+  const probing = await cdp.eval(`(async()=>{
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    for(let i=0;i<20;i++){
+      const cards=[...document.querySelectorAll('.content .card.probing, .content .lrow.probing')];
+      const slow=cards.find(x=>(x.querySelector('.cname,.nm')?.textContent||'').trim()==='slow.omy');
+      if(slow) return JSON.stringify({probing:true,meta:(slow.querySelector('.cmeta,.tg')?.textContent||'').trim()});
+      const settled=[...document.querySelectorAll('.content .card, .content .lrow')]
+        .find(x=>(x.querySelector('.cname,.nm')?.textContent||'').trim()==='slow.omy');
+      if(settled && i>3) return JSON.stringify({probing:false,reason:'slow-already-final'});
+      await sleep(100);
+    }
+    return JSON.stringify({probing:false,reason:'timeout'});
+  })()`);
+  console.log('       [边扫边出] 骨架态', probing);
+  const pb = JSON.parse(probing);
+  // 不这样会怎样：慢文件会把整屏列表堵到全部识别完才显示，失去边扫边出的意义
+  if (pb.probing !== true || !pb.meta) throw new Error('未出现 slow.omy 的识别中骨架: ' + probing);
+  await cdp.shot('m02a-probing');
 
   // —— 失败条目「点击重试」——
   // retry.omy 带 .failmarker，dav 自测服务器把它的读请求改写成 404，首次浏览应是
   // 「未能读取」；删掉故障标记后点击该卡，应就地重试成功，密文名变成唯一明文名。
+  // 边扫边出后 remote_browse 立即返回的是「识别中」骨架，拿不到最终三态；
+  // 这里用单条目探测命令（不经过事件流、不改界面）取权威结果。
   const retryBefore = await cdp.eval(`(async()=>{
-    const list=await window.__p.invoke('remote_browse',{placeId:window.__rp,dir:''});
-    const r=list.find(x=>/retry\\.omy$/.test(x.id));
-    return r?JSON.stringify({id:r.id,probe_failed:r.probe_failed,unlocked:r.unlocked,is_encrypted:r.is_encrypted}):'missing';
+    const skel=await window.__p.invoke('remote_browse',{placeId:window.__rp,dir:''});
+    const s=skel.find(x=>/retry\\.omy$/.test(x.id));
+    if(!s) return 'missing';
+    const r=await window.__p.invoke('remote_probe_entry',{placeId:window.__rp,id:s.id,size:Number(s.size)});
+    return JSON.stringify({id:r.id,probe_failed:r.probe_failed,unlocked:r.unlocked,is_encrypted:r.is_encrypted});
   })()`);
   console.log('       [重试] 首次探测', retryBefore);
   const rb = JSON.parse(retryBefore);
@@ -114,6 +138,18 @@ async function main() {
   if (rb.probe_failed !== true || rb.unlocked !== false || rb.is_encrypted !== false) {
     throw new Error('失败条目初始态错误（应是未能读取，而非锁定/非加密）: ' + retryBefore);
   }
+  // 截图前先在真实界面上等到失败卡出现「点击重试」，避免截到还在识别中的骨架
+  const failedShown = await cdp.eval(`(async()=>{
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    for(let i=0;i<40;i++){
+      const card=[...document.querySelectorAll('.content .lrow, .content .card')]
+        .find(x=>(x.querySelector('.nm,.cname')?.textContent||'').trim()==='retry.omy');
+      if(card && card.querySelector('.retryhint')) return 'shown';
+      await sleep(150);
+    }
+    return 'timeout';
+  })()`);
+  if (failedShown !== 'shown') throw new Error('失败卡未出现点击重试提示: ' + failedShown);
   await cdp.shot('m02b-failed');
   // 删掉故障注入标记（davDir 是第 7 个参数），再在真实界面上点该失败卡触发重试
   fs.unlinkSync(path.join(process.argv[7] || '', 'retry.omy.failmarker'));
@@ -138,6 +174,21 @@ async function main() {
   console.log('       [重试] 点击后', retryOk);
   if (retryOk !== 'retried') throw new Error('失败条目点击重试未恢复: ' + retryOk);
   await cdp.shot('m02c-retried');
+
+  // slow.omy 在约 2.2s 后应收敛成最终条目 slow-src.mp4，且全列表不再有识别中骨架
+  const slowDone = await cdp.eval(`(async()=>{
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    for(let i=0;i<40;i++){
+      const names=[...document.querySelectorAll('.content .lrow, .content .card')]
+        .map(x=>(x.querySelector('.nm,.cname')?.textContent||'').trim());
+      const probing=document.querySelectorAll('.content .card.probing, .content .lrow.probing').length;
+      if(names.includes('slow-src.mp4') && !names.includes('slow.omy') && probing===0) return 'settled';
+      await sleep(150);
+    }
+    return 'timeout';
+  })()`);
+  console.log('       [边扫边出] 收敛', slowDone);
+  if (slowDone !== 'settled') throw new Error('识别中骨架未收敛为最终条目: ' + slowDone);
 
   await click(`(()=>{
     const rows=[...document.querySelectorAll('.content .lrow, .content .card')];
@@ -169,11 +220,13 @@ async function main() {
       const op=await fetch(url,{method:'OPTIONS',headers:{'Access-Control-Request-Method':'GET','Access-Control-Request-Headers':'range'}});
       out.push({label:'options',status:op.status,am:op.headers.get('Access-Control-Allow-Methods'),ah:op.headers.get('Access-Control-Allow-Headers'),ao:op.headers.get('Access-Control-Allow-Origin')});
     }catch(e){out.push({label:'options',error:String(e)});}
-    // 远程缩略图：browse 已读完整头部，带缩略图的条目应直接给 pthumb token，
-    // 凭它取文件头里的缩略图，不应再有额外网络往返。
+    // 远程缩略图：边扫边出后 browse 先回骨架（无 token），对带缩略图的条目
+    // 用单条目探测取权威结果，应直接给 pthumb token，凭它取文件头里的缩略图，
+    // 不再依赖整屏 browse 是否已经探测到它。
     let thumbDiag=null;
-    const tt=list.find(x=>(x.real_name||x.name||'').includes('thumb.mp4'));
-    if(tt){
+    const ts=list.find(x=>(x.real_name||x.name||'').includes('thumb.mp4'));
+    if(ts){
+      const tt=await window.__p.invoke('remote_probe_entry',{placeId:window.__rp,id:ts.id,size:Number(ts.size)});
       if(tt.thumb_token){
         const tr=await fetch(base+'/pthumb/'+tt.thumb_token);
         thumbDiag={hasToken:true,status:tr.status,ct:tr.headers.get('Content-Type'),

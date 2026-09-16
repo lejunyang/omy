@@ -1632,6 +1632,23 @@ export async function retryRemoteEntry(f) {
   }
 }
 
+/**
+ * 全局只注册一次「边扫边出」监听：remote_browse 返回骨架后，后台每识别完
+ * 一个文件推一条 remote-entry，这里只在事件仍属于当前位置+当前目录时，
+ * 就地替换同 id 骨架；切走目录后晚到的事件直接丢弃，绝不串屏。
+ */
+let remoteListenerStarted = false;
+export async function ensureRemoteListeners() {
+  if (remoteListenerStarted) return;
+  remoteListenerStarted = true;
+  await api.onRemoteEntry((p) => {
+    if (!p || !p.entry) return;
+    if (p.place_id !== state.remotePlace || p.dir !== state.remoteDir) return;
+    const idx = state.remoteItems.findIndex((x) => x.id === p.entry.id);
+    if (idx >= 0) state.remoteItems[idx] = p.entry;
+  });
+}
+
 /** 打开云盘浏览器（停在位置列表）。 */
 export async function openPlaceBrowser() {
   state.placeBrowserOpen = true;

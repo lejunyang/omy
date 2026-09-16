@@ -33,6 +33,7 @@ import {
   reload,
   setNotice,
   loadPlaces,
+  ensureRemoteListeners,
   restoreStartupDir,
   loadStorageAccess,
   grantStorageAccess,
@@ -678,6 +679,8 @@ onMounted(async () => {
   await loadStorageAccess();
   await loadPlaces();
   await reloadRemotePlaces();
+  // 远程「边扫边出」事件监听注册一次即可，不必阻塞首屏
+  void ensureRemoteListeners();
   await refreshDeviceOverview();
 
   // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
