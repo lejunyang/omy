@@ -142,6 +142,165 @@ pub fn parse_vendor(s: &str) -> Vendor {
     }
 }
 
+/// 厂商转回配置里的字符串。
+///
+/// 与 [`parse_vendor`] 是一对，**改一处必须改两处**，
+/// 否则存进去的值读回来会变成 `Generic`。
+#[must_use]
+pub fn vendor_str(v: Vendor) -> &'static str {
+    match v {
+        Vendor::Nextcloud => "nextcloud",
+        Vendor::Generic => "generic",
+    }
+}
+
+/// 凭据在本机凭据库里的服务名。
+const SECRET_SERVICE: &str = "omy-remote-places";
+
+/// 所有远程位置共用的那一把密钥的 id。
+///
+/// 只用一把：每个位置一条钥匙串记录的话，删位置时漏清就会在用户的
+/// 钥匙串里堆垃圾，而 Linux 的 Secret Service 对条目数也不友好。
+const SECRET_KEY_ID: &str = "places-key-v1";
+
+/// 持久化状态：这台机器上凭据能不能保护。
+///
+/// 界面需要区分这三种，因为给用户的话完全不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretStatus {
+    /// 凭据库可用，密码已加密保存。
+    Protected,
+    /// 没有可用的凭据库（典型：Linux 无 Secret Service）。
+    ///
+    /// 此时位置**仍会保存**，但密码不保存——下次要重新输入。
+    /// 绝不退回明文存储。
+    Unavailable,
+}
+
+impl PlaceRegistry {
+    /// 取本机的保护密钥。
+    ///
+    /// 每次现取而不缓存：钥匙串可能中途被锁上，缓存会让我们用一把
+    /// 已经无权使用的密钥，错误也就推迟到更难解释的地方才出现。
+    fn protect_key() -> Option<omy_secret::ProtectKey> {
+        let p = omy_secret::default_protector(SECRET_SERVICE).ok()?;
+        p.retrieve_or_create(SECRET_KEY_ID).ok()
+    }
+
+    /// 本机凭据保护是否可用。
+    #[must_use]
+    pub fn secret_status() -> SecretStatus {
+        if Self::protect_key().is_some() {
+            SecretStatus::Protected
+        } else {
+            SecretStatus::Unavailable
+        }
+    }
+
+    /// 把当前所有位置写进配置。
+    ///
+    /// 密码经 `omy-secret` 加密；拿不到保护密钥时**丢掉密码**而不是
+    /// 明文写入——用户下次需要重新登录，但配置文件里不会有裸密码。
+    ///
+    /// # Errors
+    ///
+    /// 配置写盘失败时返回。
+    pub fn persist(&self) -> Result<(), String> {
+        let key = Self::protect_key();
+        let (Ok(m), Ok(o)) = (self.places.lock(), self.order.lock()) else {
+            return Err(String::from("注册表锁失效"));
+        };
+
+        let saved: Vec<omy_config::SavedPlace> = o
+            .iter()
+            .filter_map(|id| m.get(id))
+            .map(|p| {
+                let c = p.store.config();
+                // 没有密码就不必造信封；有密码但没有保护密钥时也不存，
+                // 两种情况在配置里都表现为 secret 缺失，界面提示重新登录
+                let secret = if c.password.is_empty() {
+                    None
+                } else {
+                    key.as_ref()
+                        .and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
+                        .and_then(|env| toml::Value::try_from(env).ok())
+                };
+                omy_config::SavedPlace {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    kind: p.kind.clone(),
+                    url: c.base_url.clone(),
+                    username: c.username.clone(),
+                    vendor: String::from(vendor_str(c.vendor)),
+                    writable: c.writable,
+                    secret,
+                }
+            })
+            .collect();
+
+        let mut cfg = omy_config::Config::load().map_err(|e| e.to_string())?;
+        cfg.remote.places = saved;
+        cfg.save().map_err(|e| e.to_string())
+    }
+
+    /// 从配置恢复已保存的位置。
+    ///
+    /// 解不开密码的位置**照样恢复**，只是没有密码：用户会看到这个位置
+    /// 还在、标着需要重新登录，而不是以为自己的配置丢了。
+    ///
+    /// 返回成功恢复的位置数与其中缺密码的个数。
+    pub fn restore(&self, cfg: &omy_config::Remote) -> (usize, usize) {
+        let key = Self::protect_key();
+        let mut total = 0usize;
+        let mut need_login = 0usize;
+
+        for sp in &cfg.places {
+            let password = sp
+                .secret
+                .as_ref()
+                .and_then(|v| v.clone().try_into::<omy_secret::Envelope>().ok())
+                .and_then(|env| key.as_ref().and_then(|k| omy_secret::unseal(k, &env).ok()))
+                .and_then(|pt| String::from_utf8(pt.to_vec()).ok())
+                .unwrap_or_default();
+
+            // 有密文却解不开（换了机器、清了钥匙串）要单独计数：
+            // 这与「本来就是匿名位置」完全不同，界面给的提示也不同
+            if sp.secret.is_some() && password.is_empty() {
+                need_login += 1;
+            }
+
+            let wcfg = WebDavConfig {
+                base_url: sp.url.clone(),
+                username: sp.username.clone(),
+                password,
+                writable: sp.writable,
+                vendor: parse_vendor(&sp.vendor),
+                ..WebDavConfig::default()
+            };
+            let Ok(store) = WebDavStore::new(wcfg) else {
+                // URL 坏了就跳过这一条，不要让整个恢复流程失败——
+                // 其余位置还是好的
+                continue;
+            };
+            let place = Arc::new(Place {
+                id: sp.id.clone(),
+                name: sp.name.clone(),
+                kind: sp.kind.clone(),
+                store: Arc::new(store),
+            });
+            if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
+                // 恢复时保留原 id：前端可能存了「上次打开的位置」
+                if m.insert(sp.id.clone(), place).is_none() {
+                    o.push(sp.id.clone());
+                }
+                total += 1;
+            }
+        }
+        (total, need_login)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +387,170 @@ mod tests {
         assert_eq!(parse_vendor("owncloud"), Vendor::Nextcloud);
         assert_eq!(parse_vendor("generic"), Vendor::Generic);
         assert_eq!(parse_vendor("某个未来才有的厂商"), Vendor::Generic);
+    }
+
+    /// 厂商的写出与读回必须互为逆运算。
+    ///
+    /// 不这样会怎样：存 Nextcloud 读回 Generic，针对该厂商的兼容处理
+    /// 静默失效——位置还能用，只是某些请求方式退回通用路径，很难察觉。
+    #[test]
+    fn vendor_roundtrips() {
+        for v in [Vendor::Nextcloud, Vendor::Generic] {
+            assert_eq!(parse_vendor(vendor_str(v)), v, "{v:?} 往返后变了");
+        }
+    }
+
+    /// 持久化再恢复，位置的各字段与密码都要回来。
+    ///
+    /// 环境没有可用凭据库时（CI 容器常见）跳过密码断言，但仍验证
+    /// 其余字段——因为那正是「没有密钥也要能列出位置」的要求。
+    #[test]
+    fn saved_place_roundtrips_through_config() {
+        let r = PlaceRegistry::new();
+        r.add_webdav(String::from("我的NAS"), cfg(true)).expect("添加");
+
+        // 不碰真实配置文件：手工走一遍 persist 用的那套转换
+        let key = PlaceRegistry::protect_key();
+        let saved: Vec<omy_config::SavedPlace> = r
+            .list()
+            .iter()
+            .filter_map(|info| r.get(&info.id))
+            .map(|p| {
+                let c = p.store.config();
+                let secret = key
+                    .as_ref()
+                    .and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
+                    .and_then(|env| toml::Value::try_from(env).ok());
+                omy_config::SavedPlace {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    kind: p.kind.clone(),
+                    url: c.base_url.clone(),
+                    username: c.username.clone(),
+                    vendor: String::from(vendor_str(c.vendor)),
+                    writable: c.writable,
+                    secret,
+                }
+            })
+            .collect();
+
+        let remote = omy_config::Remote {
+            places: saved,
+            ..omy_config::Remote::default()
+        };
+        let restored = PlaceRegistry::new();
+        let (n, _) = restored.restore(&remote);
+        assert_eq!(n, 1, "应恢复一个位置");
+
+        let got = restored.list();
+        let first = got.first().expect("应有一个");
+        assert_eq!(first.name, "我的NAS");
+        assert!(first.caps.any_write(), "可写标志必须跟着恢复");
+
+        let place = restored.get(&first.id).expect("取回");
+        let c = place.store.config();
+        assert_eq!(c.base_url, "https://dav.example.com/dav");
+        assert_eq!(c.username, "u");
+        if key.is_some() {
+            assert_eq!(c.password, "secret-pw", "密码必须能解回来");
+        } else {
+            eprintln!("跳过密码断言：当前环境没有可用的凭据后端");
+        }
+    }
+
+    /// 解不开密码时，位置照样要恢复出来，只是没有密码。
+    ///
+    /// 不这样会怎样：用户换了机器或清了钥匙串，打开应用发现远程位置
+    /// 全空了，会以为配置损坏——而实际上只需要重新输一次密码。
+    #[test]
+    fn undecryptable_secret_still_restores_place() {
+        let remote = omy_config::Remote {
+            places: vec![omy_config::SavedPlace {
+                id: String::from("p1"),
+                name: String::from("换过机器的NAS"),
+                kind: String::from("webdav"),
+                url: String::from("https://dav.example.com/dav"),
+                username: String::from("u"),
+                vendor: String::from("generic"),
+                writable: false,
+                // 一个解不开的信封：字段合法但密钥对不上
+                secret: toml::Value::try_from(omy_secret::Envelope {
+                    v: 1,
+                    n: String::from("000102030405060708090a0b"),
+                    c: String::from("deadbeef"),
+                })
+                .ok(),
+            }],
+            ..omy_config::Remote::default()
+        };
+
+        let r = PlaceRegistry::new();
+        let (n, need_login) = r.restore(&remote);
+        assert_eq!(n, 1, "位置必须恢复出来");
+        assert_eq!(need_login, 1, "必须被计为需要重新登录");
+        let place = r.get("p1").expect("应存在");
+        assert!(place.store.config().password.is_empty(), "密码应为空");
+        assert_eq!(place.store.config().base_url, "https://dav.example.com/dav");
+    }
+
+    /// URL 损坏的条目跳过，不能让整个恢复流程失败。
+    ///
+    /// 不这样会怎样：配置里一条坏记录会让所有远程位置都消失。
+    #[test]
+    fn broken_entry_does_not_abort_restore() {
+        let mk = |id: &str, url: &str| omy_config::SavedPlace {
+            id: String::from(id),
+            name: String::from(id),
+            kind: String::from("webdav"),
+            url: String::from(url),
+            username: String::new(),
+            vendor: String::from("generic"),
+            writable: false,
+            secret: None,
+        };
+        let remote = omy_config::Remote {
+            places: vec![
+                mk("bad", "not a url at all"),
+                mk("good", "https://dav.example.com/dav"),
+            ],
+            ..omy_config::Remote::default()
+        };
+        let r = PlaceRegistry::new();
+        let (n, _) = r.restore(&remote);
+        assert_eq!(n, 1, "坏的跳过，好的要恢复");
+        assert!(r.get("good").is_some());
+    }
+
+    /// 序列化成 TOML 后，配置里绝不能出现明文密码。
+    ///
+    /// 不这样会怎样：这是整个 omy-secret 存在的唯一理由。哪怕只是某次
+    /// 重构把 password 字段也加进了 SavedPlace，密码就明文躺在磁盘上，
+    /// 而功能表现上毫无异常——没有这条断言根本发现不了。
+    #[test]
+    fn persisted_config_has_no_plaintext_password() {
+        let Some(key) = PlaceRegistry::protect_key() else {
+            eprintln!("跳过：当前环境没有可用的凭据后端");
+            return;
+        };
+        let env = omy_secret::seal(&key, b"secret-pw").expect("加密");
+        let sp = omy_config::SavedPlace {
+            id: String::from("p1"),
+            name: String::from("NAS"),
+            kind: String::from("webdav"),
+            url: String::from("https://dav.example.com/dav"),
+            username: String::from("u"),
+            vendor: String::from("generic"),
+            writable: true,
+            secret: toml::Value::try_from(env).ok(),
+        };
+        let remote = omy_config::Remote {
+            places: vec![sp],
+            ..omy_config::Remote::default()
+        };
+        let text = toml::to_string(&remote).expect("序列化");
+        assert!(
+            !text.contains("secret-pw"),
+            "配置里出现了明文密码：\n{text}"
+        );
     }
 }

@@ -35,6 +35,8 @@ thiserror = { workspace = true }
 blake2 = { workspace = true }
 # 百分号编码：WebDAV 路径里的中文与空格必须编码，否则部分服务端 400
 percent-encoding = "2.3"
+# 添加位置时就校验地址，而不是等第一次浏览才报错
+url = "2.5"
 
 [dev-dependencies]
 dav-server = "0.11.0"

@@ -262,6 +262,53 @@ pub struct Remote {
     ///
     /// 为 `false` 时能识别伪装文件，但远程每个文件都要多一次请求。
     pub scan_omy_only: bool,
+    /// 已保存的远程位置。
+    ///
+    /// 密码不在这里——它经 `omy-secret` 加密后放在 [`SavedPlace::secret`]，
+    /// 解开需要本机凭据库里的密钥。配置文件本身被拷走也用不了。
+    #[serde(default)]
+    pub places: Vec<SavedPlace>,
+}
+
+/// 一个持久化的远程位置。
+///
+/// # 为什么密码单独走信封而不整条记录加密
+///
+/// 名字、URL、用户名要在**没有密钥时**也能显示：Linux 上没有 Secret
+/// Service、或用户换了机器时，界面仍应列出这些位置并提示「需要重新
+/// 登录」，而不是一片空白让人以为配置丢了。
+///
+/// 所以只有密码是密文，其余明文。这也意味着 URL 和用户名在配置文件里
+/// 可见——它们不是凭据，但确实暴露「你在用哪个 NAS」，这一点在
+/// 设计文档里写明，不要让人误以为整条记录都被保护了。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedPlace {
+    /// 稳定标识，跨重启不变。
+    pub id: String,
+    /// 显示名。
+    pub name: String,
+    /// 驱动类型，目前只有 `webdav`。
+    pub kind: String,
+    /// 服务地址。
+    pub url: String,
+    /// 用户名，匿名时为空。
+    #[serde(default)]
+    pub username: String,
+    /// 厂商标识，用于兼容性调整。
+    #[serde(default)]
+    pub vendor: String,
+    /// 是否允许写入。
+    #[serde(default)]
+    pub writable: bool,
+    /// 加密后的密码信封（`omy-secret` 的 `Envelope` 序列化结果）。
+    ///
+    /// 类型用 `toml::Value` 而不是具体结构：`omy-config` 不该依赖
+    /// `omy-secret`（那会让 CLI 也被迫链上凭据库），而信封的字段将来
+    /// 可能随版本增减，在这里放一个不透明值正好把两者解耦。
+    ///
+    /// 为 `None` 表示这个位置没有密码（匿名），或密钥已丢失需要重新登录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<toml::Value>,
 }
 
 impl Default for Remote {
@@ -275,6 +322,7 @@ impl Default for Remote {
             cache_wifi_only: false,
             scan_concurrency: 8,
             scan_omy_only: true,
+            places: Vec::new(),
         }
     }
 }

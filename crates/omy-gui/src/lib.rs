@@ -85,6 +85,18 @@ pub fn run() {
     // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
     // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
     let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+    // 恢复上次保存的远程位置。
+    //
+    // 放在这里而不是等前端来问：侧栏在首帧就要显示这些位置，晚一步
+    // 会先渲染成空、再突然冒出来。
+    //
+    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
+    if let Ok(cfg) = omy_config::Config::load() {
+        let (n, need_login) = place_registry.restore(&cfg.remote);
+        if n > 0 {
+            eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");
+        }
+    }
     // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
     // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
     let remote_cache: Arc<place_files::RemoteCache> =
@@ -194,6 +206,7 @@ pub fn run() {
             settings::app_about,
             place_cmds::remote_place_add,
             place_cmds::remote_place_list,
+            place_cmds::remote_secret_status,
             place_cmds::remote_place_remove,
             place_cmds::remote_browse,
             place_cmds::remote_probe_entry,

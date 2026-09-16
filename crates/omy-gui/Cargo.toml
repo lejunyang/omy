@@ -38,6 +38,9 @@ omy-core = { path = "../omy-core" }
 omy-config = { path = "../omy-config" }
 # 远程位置：RemoteStore 抽象与 WebDAV 驱动
 omy-remote = { path = "../omy-remote" }
+omy-secret = { path = "../omy-secret" }
+# 远程位置的凭据信封以 toml::Value 形式存进配置，不透明转发
+toml = { workspace = true }
 omy-media = { path = "../omy-media" }
 # 局域网共享：设备发现、配对、零密钥服务端
 omy-net = { path = "../omy-net" }

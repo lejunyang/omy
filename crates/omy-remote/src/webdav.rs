@@ -122,12 +122,42 @@ impl std::fmt::Debug for WebDavStore {
 }
 
 impl WebDavStore {
+    /// 建连时用的配置。
+    ///
+    /// 持久化时要把这些字段写回配置文件，所以必须能读回来。
+    ///
+    /// 返回引用而非克隆：`WebDavConfig` 里有密码，多一份克隆就多一处
+    /// 可能被遗留在内存里的明文。调用方只取自己要的字段。
+    #[must_use]
+    pub fn config(&self) -> &WebDavConfig {
+        &self.cfg
+    }
+
     /// 建立连接（不发请求，仅构造客户端）。
     ///
     /// # Errors
     ///
     /// URL 非法或 TLS 初始化失败时返回。
     pub fn new(cfg: WebDavConfig) -> Result<Self> {
+        // 自己校验 URL：reqwest_dav 的 ClientBuilder 只是存下字符串，
+        // 构造阶段不发请求，所以 "not a url" 这种也能建成功，直到第一次
+        // 浏览才报一个语焉不详的网络错误。
+        //
+        // 对用户来说差别很大：地址输错时应当在「添加位置」那一步就说
+        // 「这不是一个合法的地址」，而不是加完之后点进去才失败。
+        // 恢复配置时也靠这个把坏记录跳过。
+        let parsed = url::Url::parse(&cfg.base_url)
+            .map_err(|e| Error::Protocol(format!("地址无法解析：{e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(Error::Protocol(format!(
+                "地址必须以 http:// 或 https:// 开头，实际是 {}://",
+                parsed.scheme()
+            )));
+        }
+        if !parsed.has_host() {
+            return Err(Error::Protocol(String::from("地址里没有主机名")));
+        }
+
         let http = reqwest::Client::builder()
             .timeout(cfg.timeout)
             // 跟随重定向时 reqwest 会丢掉 Authorization 头（这是正确的

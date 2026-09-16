@@ -3129,6 +3129,7 @@ dependencies = [
  "omy-media",
  "omy-net",
  "omy-remote",
+ "omy-secret",
  "serde",
  "serde_json",
  "sys-locale",
@@ -3136,6 +3137,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tokio",
+ "toml 1.1.4+spec-1.1.0",
  "trash",
  "zeroize",
 ]
@@ -3190,6 +3192,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "url",
 ]
 
 [[package]]

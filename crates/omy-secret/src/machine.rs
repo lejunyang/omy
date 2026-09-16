@@ -213,18 +213,39 @@ impl Protector for MachineProtector {
 mod tests {
     use super::*;
 
+    /// 取一个可用的后端，拿不到就说明这台机器上真的不可用。
+    ///
+    /// # 为什么打印得这么醒目
+    ///
+    /// 这三个测试在没有后端时会跳过，于是**显示为通过却什么都没验**。
+    /// 已经踩过：Windows 凭据管理器存满（cmdkey 也写不进去）时，三个
+    /// 测试一起静默跳过，看上去全绿，实际零覆盖。
+    ///
+    /// 用 `--nocapture` 跑就能看到这行。真要在 CI 上强制验证，
+    /// 设 `OMY_REQUIRE_KEYSTORE=1`，那时拿不到后端直接失败而不是跳过。
+    fn backend_or_skip(service: &str) -> Option<MachineProtector> {
+        match MachineProtector::new(service) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                let msg = format!("!!! 跳过（未验证任何东西）：凭据后端不可用 —— {e}");
+                assert!(
+                    std::env::var("OMY_REQUIRE_KEYSTORE").is_err(),
+                    "{msg}\n设了 OMY_REQUIRE_KEYSTORE 就必须真的验证"
+                );
+                eprintln!("{msg}");
+                None
+            }
+        }
+    }
+
     /// 真实钥匙串的读写往返。
     ///
     /// 这个测试会真的写进系统凭据库，所以用一个带进程 id 的服务名，
     /// 避免并行测试互相踩，并在结束时清理。
-    ///
-    /// 环境不支持时（CI 上的 Linux 容器通常没有 D-Bus）跳过而不是失败：
-    /// 那不是代码的问题，而 `NoBackend` 本身已经被下一个测试覆盖。
     #[test]
     fn roundtrip_on_real_backend() {
         let service = format!("omy-test-{}", std::process::id());
-        let Ok(p) = MachineProtector::new(&service) else {
-            eprintln!("跳过：当前环境没有可用的凭据后端");
+        let Some(p) = backend_or_skip(&service) else {
             return;
         };
 
@@ -248,8 +269,7 @@ mod tests {
     #[test]
     fn missing_key_is_not_found() {
         let service = format!("omy-test-missing-{}", std::process::id());
-        let Ok(p) = MachineProtector::new(&service) else {
-            eprintln!("跳过：当前环境没有可用的凭据后端");
+        let Some(p) = backend_or_skip(&service) else {
             return;
         };
         assert!(matches!(p.retrieve("never-stored"), Err(Error::NotFound)));
@@ -263,10 +283,27 @@ mod tests {
     #[test]
     fn machine_protector_needs_no_presence() {
         let service = format!("omy-test-presence-{}", std::process::id());
-        let Ok(p) = MachineProtector::new(&service) else {
-            eprintln!("跳过：当前环境没有可用的凭据后端");
+        let Some(p) = backend_or_skip(&service) else {
             return;
         };
         assert!(!p.requires_user_presence());
+    }
+
+    /// 后端不可用时必须报 `NoBackend`，而不是别的错误或假装成功。
+    ///
+    /// 这条**不依赖环境**：无论这台机器的凭据库能不能用，
+    /// `MachineProtector::new` 的结果都只能是成功、或者一个明确的
+    /// `NoBackend`。归错类会让上层把「这台机器不支持」显示成
+    /// 「操作失败，请重试」，用户重试一百次也没用。
+    #[test]
+    fn unavailable_backend_is_classified() {
+        let service = format!("omy-test-class-{}", std::process::id());
+        match MachineProtector::new(&service) {
+            Ok(_) => { /* 可用，这条不适用 */ }
+            Err(e) => assert!(
+                matches!(e, Error::NoBackend(_)),
+                "后端用不了时必须是 NoBackend，实际是 {e:?}"
+            ),
+        }
     }
 }

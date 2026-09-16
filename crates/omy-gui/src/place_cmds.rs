@@ -99,7 +99,15 @@ pub fn remote_place_add(
         writable,
         ..WebDavConfig::default()
     };
-    reg.add_webdav(name, cfg).map_err(|e| to_cmd_err(&e))
+    let id = reg.add_webdav(name, cfg).map_err(|e| to_cmd_err(&e))?;
+    // 立刻落盘：用户加完位置就可能直接关掉应用，等到退出再存会丢。
+    //
+    // 存不上不让整个添加失败——位置在本次会话里是可用的，只是重启后
+    // 要重加。那比「加了半天说失败了、其实连接是好的」体验好。
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 远程位置未能保存：{e}");
+    }
+    Ok(id)
 }
 
 /// 列出已注册的远程位置。
@@ -108,10 +116,24 @@ pub fn remote_place_list(reg: tauri::State<'_, Arc<PlaceRegistry>>) -> Vec<Place
     reg.list()
 }
 
+/// 本机凭据保护是否可用。
+///
+/// 设置页据此显示「密码已加密保存在本机」还是「这台机器无法安全保存
+/// 密码，每次启动需重新输入」。
+#[tauri::command]
+#[must_use]
+pub fn remote_secret_status() -> crate::places::SecretStatus {
+    PlaceRegistry::secret_status()
+}
+
 /// 移除一个远程位置。
 #[tauri::command]
 pub fn remote_place_remove(reg: tauri::State<'_, Arc<PlaceRegistry>>, id: String) {
     reg.remove(&id);
+    // 同样立刻落盘，否则删掉的位置重启后又回来了
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 远程位置未能保存：{e}");
+    }
 }
 
 /// 浏览远程目录，并尝试识别其中的加密文件。
