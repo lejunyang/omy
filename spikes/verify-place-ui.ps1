@@ -21,6 +21,7 @@ $shots = Join-Path $PSScriptRoot 'shots'
 New-Item -ItemType Directory -Force -Path $shots | Out-Null
 Get-ChildItem $shots -Filter 'm0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem $shots -Filter 'd0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem $shots -Filter 'e0*-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 
 foreach ($b in @($gui, $omy, $dav)) {
     if (-not (Test-Path $b)) { Write-Output "FAIL 缺少 $b，先按脚本头注释构建"; exit 1 }
@@ -70,12 +71,15 @@ try {
     Get-Process omy-gui -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 400
     $env:OMY_GUI_CDP_PORT = "$cdpPort"
+    # 自动化旁路：点「打开文件夹…」时原生选择器 CDP 点不到，直接返回 dav 目录
+    # （该目录含明文 plain.txt，供加密默认值对话框验证）
+    $env:OMY_GUI_PICK_FOLDER = "$davDir"
     $guiErr = Join-Path $work 'gui.err'
     $guiOut = Join-Path $work 'gui.out'
     Start-Process -FilePath $gui -RedirectStandardError $guiErr -RedirectStandardOutput $guiOut | Out-Null
 
     $out = & $node --experimental-websocket (Join-Path $PSScriptRoot 'probe-place-ui.mjs') `
-        "$cdpPort" "http://127.0.0.1:$davPort/" "$vaultDir" "$pass" "$shots" 2>&1 | Out-String
+        "$cdpPort" "http://127.0.0.1:$davPort/" "$vaultDir" "$pass" "$shots" "$davDir" 2>&1 | Out-String
     Write-Output $out
     if ($out -notmatch 'UI_SHOTS_OK') { throw '截图探针未完成' }
     Write-Output "=== 截图已保存到 $shots ==="
@@ -88,5 +92,6 @@ finally {
     Stop-All
     Remove-Item Env:\OMY_CLOUD_PW -ErrorAction SilentlyContinue
     Remove-Item Env:\OMY_GUI_CDP_PORT -ErrorAction SilentlyContinue
+    Remove-Item Env:\OMY_GUI_PICK_FOLDER -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

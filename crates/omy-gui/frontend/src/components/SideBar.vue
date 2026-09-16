@@ -119,7 +119,7 @@ function iconOf(place) {
       </span>
     </button>
 
-    <button class="sitem" @click="$emit('pick')">
+    <button class="sitem" data-side="pick-folder" @click="$emit('pick')">
       <span aria-hidden="true">➕</span>
       <span class="stext">{{ i18n.t('nav.pick_folder') }}</span>
     </button>

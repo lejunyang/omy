@@ -517,6 +517,16 @@ async function openCacheDir() {
               </select>
             </div>
             <div class="row">
+              <label class="lb">{{ i18n.t('encrypt.filename') }}</label>
+              <div class="fld">
+                <select data-sf="name_mode" v-model="cfg.defaults.name_mode">
+                  <option value="encrypt">{{ i18n.t('encrypt.filename_encrypt') }}</option>
+                  <option value="keep-ext">{{ i18n.t('encrypt.filename_keep_ext') }}</option>
+                  <option value="plain">{{ i18n.t('encrypt.filename_plain') }}</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
               <label class="lb">{{ i18n.t('encrypt.compress') }}</label>
               <div class="fld">
                 <label class="chk">
@@ -531,6 +541,7 @@ async function openCacheDir() {
                 <select data-sf="original_action" v-model="cfg.defaults.original_action">
                   <option value="keep">{{ i18n.t('settings.original_keep') }}</option>
                   <option value="trash">{{ i18n.t('settings.original_trash') }}</option>
+                  <option value="delete">{{ i18n.t('encrypt.original_delete') }}</option>
                 </select>
                 <div class="desc">{{ i18n.t('settings.original_action_desc') }}</div>
               </div>

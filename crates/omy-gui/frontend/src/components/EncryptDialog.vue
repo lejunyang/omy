@@ -5,8 +5,9 @@
  * 以及决策 D-14（分块大小可自定义）、D-19（不提供安全擦除）。
  */
 
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import * as i18n from '../i18n.js';
+import * as api from '../api.js';
 import VideoDialog from './VideoDialog.vue';
 
 const props = defineProps({
@@ -115,6 +116,46 @@ const CHUNKS = [65536, 131072, 262144, 524288, 1048576, 2097152, 4194304, 838860
 
 const chunkSize = computed(() => CHUNKS[chunkIndex.value] ?? 262144);
 const chunkLabel = computed(() => i18n.formatSize(chunkSize.value));
+
+/** 把配置里的分块代码（`64K`/`256K`/`1M`/`4M`）换算成滑块索引，认不出返回 -1。 */
+function chunkCodeToIndex(code) {
+  if (typeof code !== 'string' || !code) return -1;
+  const m = code.trim().match(/^(\d+)\s*([KM])?$/i);
+  if (!m) return -1;
+  const unit = (m[2] || '').toUpperCase();
+  const mult = unit === 'M' ? 1048576 : unit === 'K' ? 1024 : 1;
+  return CHUNKS.indexOf(Number(m[1]) * mult);
+}
+
+/**
+ * 打开时用「设置 → 加密默认值」初始化各选项。
+ *
+ * 没有这步，设置页里改的默认值只在 CLI 生效，GUI 对话框永远是硬编码那一套，
+ * 用户会以为设置没保存。只认对话框确实提供的取值（强度没有 mobile 档），
+ * 配置里出现认不出的值就保留对话框自带默认，避免单选组一个都选不中。
+ * 读配置失败也静默沿用内置默认，不让设置缺失挡住加密。
+ */
+onMounted(async () => {
+  let cfg;
+  try {
+    cfg = await api.configGet();
+  } catch {
+    return;
+  }
+  const d = cfg?.defaults || {};
+  if (['interactive', 'moderate', 'sensitive'].includes(d.kdf_profile)) {
+    strength.value = d.kdf_profile;
+  }
+  const ci = chunkCodeToIndex(d.chunk_size);
+  if (ci >= 0) chunkIndex.value = ci;
+  if (typeof cfg?.compress?.enabled === 'boolean') compress.value = cfg.compress.enabled;
+  if (['keep', 'trash', 'delete'].includes(d.original_action)) {
+    original.value = d.original_action;
+  }
+  // 配置序列化为 keep-ext（连字符），对话框 radio 值用 keep_ext（下划线）
+  if (d.name_mode === 'encrypt' || d.name_mode === 'plain') filenameMode.value = d.name_mode;
+  else if (d.name_mode === 'keep-ext') filenameMode.value = 'keep_ext';
+});
 
 const hasFolder = computed(() => props.targets.some((t) => t.is_dir));
 
@@ -228,7 +269,7 @@ function submit() {
 
       <div class="field">
         <label class="radio">
-          <input v-model="compress" type="checkbox" />
+          <input v-model="compress" type="checkbox" data-sf="enc_compress" />
           <span>
             {{ i18n.t('encrypt.compress') }}
             <div class="d">{{ i18n.t('encrypt.compress_desc') }}</div>
@@ -278,6 +319,7 @@ function submit() {
         <input
           v-model.number="chunkIndex"
           class="slider"
+          data-sf="enc_chunk"
           type="range"
           min="0"
           :max="CHUNKS.length - 1"

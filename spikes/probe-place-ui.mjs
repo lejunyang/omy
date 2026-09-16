@@ -212,6 +212,68 @@ async function main() {
   // 齿轮，点击会被尚未消失的遮罩吞掉、设置窗不再打开。
   await sleep(1200);
 
+  // ===== 加密默认值驱动对话框（设置 → 加密默认值应成为对话框初始值）=====
+  console.log('\n[加密默认值]');
+  const plainDir = process.argv[7];
+  // 1) 备份配置，写入一组显眼的非默认值后导航到含明文 plain.txt 的目录
+  await cdp.eval(`(async()=>{
+    const cfg = await window.__p.invoke('config_get');
+    window.__savedCfg = JSON.parse(JSON.stringify(cfg));
+    cfg.defaults.kdf_profile='sensitive';
+    cfg.defaults.chunk_size='4M';
+    cfg.defaults.name_mode='plain';
+    cfg.defaults.original_action='delete';
+    cfg.compress.enabled=false;
+    await window.__p.invoke('config_set',{config:cfg});
+    return 'set';
+  })()`);
+  // 点侧栏「打开文件夹…」。原生选择器在自动化下由 OMY_GUI_PICK_FOLDER
+  //  环境变量旁路（见 commands.rs），直接返回明文目录并驱动前端 navigate。
+  const nav = await click(`(()=>{
+    const b=document.querySelector('[data-side="pick-folder"]');
+    if(!b) return 'no-pick';
+    b.click(); return 'clicked';
+  })()`, 1500);
+  console.log('       导航到明文目录 ->', nav);
+  await sleep(1200);
+  // 2) 选中明文文件并打开加密对话框
+  const encDiag = await cdp.eval(`(()=>{
+    const inPlace=!!document.querySelector('[data-pb-enter],[data-pb="add"]');
+    const all=[...document.querySelectorAll('.card,.lrow')];
+    return JSON.stringify({inPlace, n:all.length, names:all.map(x=>x.querySelector('.nm,.cname')?.textContent||'').filter(Boolean).slice(0,12)});
+  })()`);
+  console.log('       加密前诊断 ->', encDiag);
+  const pick = await click(`(()=>{
+    const rows=[...document.querySelectorAll('.content .lrow, .content .card, .lrow, .card')];
+    const r=rows.find(x=>(x.querySelector('.nm,.cname')?.textContent||'').includes('plain.txt'));
+    if(!r) return 'no-plain';
+    r.click(); return 'ok';
+  })()`, 500);
+  console.log('       选中 plain.txt ->', pick);
+  const encBtn = await click(`(()=>{ const b=document.querySelector('.vtoggle button.primary'); if(!b) return 'no-encrypt-btn'; b.click(); return 'ok'; })()`, 1000);
+  const encState = await cdp.eval(`(()=>{
+    const q=s=>document.querySelector('.dlg '+s);
+    return {
+      dlg: !!document.querySelector('.dlg'),
+      btn: ${JSON.stringify(encBtn)},
+      sensitive: !!(q('input[type=radio][value=sensitive]')||{}).checked,
+      plain: !!(q('input[type=radio][value=plain]')||{}).checked,
+      del: !!(q('input[type=radio][value=delete]')||{}).checked,
+      keepExt: !!(q('input[type=radio][value=keep_ext]')||{}).checked,
+      compress: (q('[data-sf=enc_compress]')||{}).checked ?? null,
+      chunk: (q('[data-sf=enc_chunk]')||{}).value ?? null
+    };
+  })()`);
+  console.log('       加密对话框默认值 ->', JSON.stringify(encState));
+  await cdp.shot('e01-encrypt-defaults');
+  // 3) 取消对话框、恢复配置
+  await click(`(()=>{ const b=document.querySelector('.dlg .acts button:not(.primary)'); if(!b) return 'no-cancel'; b.click(); return 'ok'; })()`, 500);
+  await cdp.eval(`(async()=>{ if(window.__savedCfg){ await window.__p.invoke('config_set',{config:window.__savedCfg}); } return 'restored'; })()`);
+  if (!encState.dlg || encState.btn !== 'ok' || !encState.sensitive || !encState.plain
+      || !encState.del || encState.keepExt || encState.compress !== false || String(encState.chunk) !== '6') {
+    throw new Error('加密默认值未驱动对话框初始值: ' + JSON.stringify(encState));
+  }
+
   // 安全页「立即锁定」真实验证：重开设置 → 安全 → 点锁定，
   // 断言会话密码数归零、设置弹窗被关闭（走 App 统一锁定收尾）。
   console.log('\n[立即锁定]');
