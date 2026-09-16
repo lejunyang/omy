@@ -134,18 +134,18 @@ pub async fn remote_browse(
         };
 
         // 目录不必探测；太小的文件不可能是 omy（连头部都装不下）
-        if it.is_dir || it.size.unwrap_or(0) < omy_core::scan::MIN_FILE_SIZE as u64 {
+        let size = it.size.unwrap_or(0);
+        if it.is_dir || size < omy_core::scan::MIN_FILE_SIZE as u64 {
             out.push(e);
             continue;
         }
 
-        // 只读前 480 字节：识别 + 试解锁全靠这一段，载荷完全不碰
-        let probe = place
-            .store
-            .read_range(&it.id, 0, omy_core::scan::MIN_PROBE_SIZE as u64)
-            .await;
-
-        match probe {
+        // 必须读到**完整头部**再试解锁，不能只取 480 字节识别窗：
+        // 文件名等 TLV（带缩略图时还有整张缩略图）会让 header_len 超过
+        // MIN_PROBE_SIZE，只拿识别窗去 open 必然失败，于是明明会话里有密码、
+        // 列表却把文件显示成锁定态且不还原真实名（点开却能播，自相矛盾）。
+        // fetch_full_header 先读识别窗、按 header_len 补读，载荷一字节不碰。
+        match fetch_full_header(place.store.as_ref(), &it.id, size).await {
             Ok(bytes) => {
                 if let Some((unlocked, real, psize)) = probe_omy(&bytes, &state) {
                     e.is_encrypted = true;
