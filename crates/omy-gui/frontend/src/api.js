@@ -356,6 +356,12 @@ export const configSet = (config) => invoke('config_set', { config });
  */
 export const configPaths = () => invoke('config_paths');
 
+/**
+ * 应用版本与 OMYFILE 格式版本，供设置页「关于」显示。
+ * 版本来自后端编译期常量，避免在前端写死后发版漏改。
+ */
+export const appAbout = () => invoke('app_about');
+
 /* ---------------- 远程位置（WebDAV） ---------------- */
 
 /** 添加一个 WebDAV 位置，返回其 id。

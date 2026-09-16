@@ -74,6 +74,32 @@ pub fn config_paths() -> ConfigPaths {
     }
 }
 
+/// 应用与文件格式版本信息，供设置页「关于」显示。
+///
+/// 版本不能在前端写死：前端打包进二进制后，随 Cargo.toml 一起发版，
+/// 写死的字符串很容易在发版时漏掉更新。格式版本直接取 omy-core 的常量，
+/// 保证「关于」页声称的格式与实际加解密用的是同一个来源。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppAbout {
+    /// 应用版本（来自本 crate 的 Cargo.toml）。
+    pub app_version: String,
+    /// OMYFILE 格式主版本。
+    pub format_major: u16,
+    /// OMYFILE 格式次版本。
+    pub format_minor: u16,
+}
+
+#[tauri::command]
+#[must_use]
+pub fn app_about() -> AppAbout {
+    let (major, minor) = omy_core::FORMAT_VERSION;
+    AppAbout {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        format_major: major,
+        format_minor: minor,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

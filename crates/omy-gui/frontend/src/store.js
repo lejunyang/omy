@@ -62,6 +62,8 @@ export const state = reactive({
   selected: [],
   /** 视图模式。 */
   view: 'grid',
+  /** 是否在列表中显示缩略图；由设置页 ui.thumbnails 驱动，App 启动/保存设置时同步。 */
+  showThumbnails: true,
   /** 搜索词。 */
   query: '',
   /** 会话里的凭据数量。0 表示没有任何密码，但**不影响浏览**。 */

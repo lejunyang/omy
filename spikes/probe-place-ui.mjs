@@ -154,6 +154,13 @@ async function main() {
   await cdp.shot('m06-remote');
   await click(`(()=>{ const b=document.querySelector('[data-sf="cache_entry"]'); if(!b) return 'no-cache-entry'; b.click(); return 'ok'; })()`, 700);
   await cdp.shot('m07-cache');
+  // 缓存是「远程位置」下的二级页，back 一次只回到远程详情；
+  // 直接关掉重开设置回到主列表，再进「关于」，回归移动二级页外壳
+  await cdp.eval(`document.querySelector('[data-si="close"]')?.click(); 'closed'`);
+  await sleep(600);
+  await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[3]; if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
+  await click(`(()=>{ const n=document.querySelector('[data-sp="about"]'); if(!n) return 'no-about-nav'; n.click(); return 'ok'; })()`, 500);
+  await cdp.shot('m09-about');
   await cdp.eval(`document.querySelector('[data-si="close"]')?.click(); 'closed'`);
   await sleep(500);
 
@@ -189,8 +196,12 @@ async function main() {
   // PC 设置弹窗
   await click(`(()=>{ const b=document.querySelector('[data-tb="settings"]'); if(!b) return 'no-settings'; b.click(); return 'ok'; })()`, 800);
   await cdp.shot('d03-settings');
+  // 缩略图开关已从「通用」迁到「播放与预览」
+  const geOk = await cdp.eval(`!document.querySelector('[data-pane="general"] [data-sf="thumbnails"]')`);
   await click(`(()=>{ const n=document.querySelector('[data-sp="security"]'); if(!n) return 'no-security-nav'; n.click(); return 'ok'; })()`, 500);
   await cdp.shot('d06-security');
+  // 加密文件「外部程序打开后擦除临时明文」尚未实现，不能放假开关
+  const seOk = await cdp.eval(`!document.querySelector('[data-pane="security"] [data-sf="wipe_temp_plaintext"]')`);
   await click(`(()=>{ const n=document.querySelector('[data-sp="remote"]'); if(!n) return 'no-remote-nav'; n.click(); return 'ok'; })()`, 600);
   await cdp.shot('d04-remote');
   await click(`(()=>{ const b=document.querySelector('[data-sf="cache_entry"]'); if(!b) return 'no-cache-entry'; b.click(); return 'ok'; })()`, 700);
@@ -207,6 +218,26 @@ async function main() {
   }))()`);
   console.log('[PC缓存诊断] ' + JSON.stringify(pcCacheDiag));
   await cdp.shot('d05-cache');
+
+  // 播放与预览 / 设备与共享 / 关于（分类归位回归）。
+  // 注意整个设置只有一个 [data-pane]，其值是「当前」分类，所以必须在
+  // 每一页激活的当下断言该页控件，不能切走后再回头查。
+  await click(`(()=>{ const n=document.querySelector('[data-sp="playback"]'); if(!n) return 'no'; n.click(); return 'ok'; })()`, 400);
+  await cdp.shot('d07-playback');
+  const pbOk = await cdp.eval(`!!document.querySelector('[data-pane="playback"] [data-sf="thumbnails"]')`);
+  await click(`(()=>{ const n=document.querySelector('[data-sp="devices"]'); if(!n) return 'no'; n.click(); return 'ok'; })()`, 400);
+  await cdp.shot('d08-devices');
+  const dvOk = await cdp.eval(`(()=>{ const d=document.querySelector('[data-pane="devices"]'); return d&&!!d.querySelector('[data-sf="device_name"]')&&!!d.querySelector('[data-sf="autostart"]')&&!!d.querySelector('[data-sf="manage_devices"]'); })()`);
+  await click(`(()=>{ const n=document.querySelector('[data-sp="about"]'); if(!n) return 'no'; n.click(); return 'ok'; })()`, 500);
+  await cdp.shot('d09-about');
+  const aboutText = await cdp.eval(`(document.querySelector('[data-pane="about"]')||{textContent:''}).textContent.replace(/\\s+/g,' ').trim()`);
+  console.log('[设置分类诊断] ' + JSON.stringify({ geOk, seOk, pbOk, dvOk, aboutText }));
+  if (geOk !== true || seOk !== true || pbOk !== true || dvOk !== true ||
+      !/omy\s+0\.0\.1/.test(aboutText) ||
+      !/OMYFILE\s+v1\.0/.test(aboutText) || !aboutText.includes('GPL-3.0')) {
+    throw new Error('播放预览/设备/关于页不符合预期: ' + JSON.stringify({ geOk, seOk, pbOk, dvOk, aboutText }));
+  }
+
   await cdp.eval(`document.querySelector('[data-si="close"]')?.click(); 'closed'`);
   // 关闭走 onClose→save（落盘 + 应用缓存设置）是异步的，没等它真正关闭就点
   // 齿轮，点击会被尚未消失的遮罩吞掉、设置窗不再打开。

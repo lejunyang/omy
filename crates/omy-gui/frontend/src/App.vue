@@ -133,6 +133,13 @@ async function onSettingsLock() {
   await applySettings();
 }
 
+/** 设备页「管理」：关掉设置弹窗、打开完整设备面板，并让本页改动即时生效。 */
+function onSettingsDevices() {
+  showSettings.value = false;
+  showDevices.value = true;
+  applySettings();
+}
+
 const showEncrypt = ref(false);
 const showRestore = ref(false);
 /** 密码管理的目标条目；null 表示对话框关着。
@@ -690,6 +697,8 @@ async function applySettings() {
     // 默认视图也在这里应用：它存在配置里，但界面启动时用的是
     // store 的初值，不读一次就永远是网格
     if (c.ui?.view === 'grid' || c.ui?.view === 'list') state.view = c.ui.view;
+    // 缩略图开关：关闭后列表不再渲染缩略图 <img>，也就不发 /thumb 请求
+    state.showThumbnails = c.ui?.thumbnails !== false;
   } catch {
     // 配置读不出来就用内置默认值：这不该阻止应用启动
   }
@@ -862,6 +871,7 @@ onBeforeUnmount(() => {
     @close="onSettingsClose"
     @lang="onSettingsLang"
     @lock="onSettingsLock"
+    @devices="onSettingsDevices"
   />
 
   <RemotePlaceDialog

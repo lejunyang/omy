@@ -26,7 +26,7 @@ import { theme, setTheme } from '../theme.js';
 import * as api from '../api.js';
 import { state, setNotice } from '../store.js';
 
-const emit = defineEmits(['close', 'lang', 'lock']);
+const emit = defineEmits(['close', 'lang', 'lock', 'devices']);
 
 /** 当前分类。`cache` 是「远程位置」的二级页。 */
 const pane = ref('general');
@@ -47,6 +47,17 @@ const clearing = ref(false);
 /** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
 const loadedCount = ref(0);
 
+/** 关于页的版本信息，来自后端编译期常量。 */
+const aboutInfo = ref({ app_version: '', format_major: 1, format_minor: 0 });
+
+/** 跳到完整的设备与共享面板：配对/撤销需要先解锁设备库，
+ *  不在设置弹窗里复制那套流程与计数（库没解锁时计数会失真成 0）。
+ *  跳走前先保存，否则在这一页改的本机名称/自启会丢。 */
+async function openDevices() {
+  await save();
+  emit('devices');
+}
+
 async function loadCacheUsage() {
   try {
     cacheUsage.value = await api.remoteCacheUsage();
@@ -63,6 +74,7 @@ const PANES = [
   { key: 'security', icon: '🔐', label: 'settings.security' },
   { key: 'encrypt', icon: '🔒', label: 'settings.encrypt_defaults' },
   { key: 'playback', icon: '🎬', label: 'settings.playback' },
+  { key: 'devices', icon: '📡', label: 'settings.devices' },
   { key: 'about', icon: 'ℹ️', label: 'settings.about' },
 ];
 
@@ -96,6 +108,12 @@ onMounted(async () => {
     loadedCount.value = Number(await api.credentialCount()) || 0;
   } catch {
     loadedCount.value = 0;
+  }
+  // 版本信息读不出来就保留占位默认值，不挡住整个设置页
+  try {
+    aboutInfo.value = await api.appAbout();
+  } catch {
+    /* 用内置占位 */
   }
 });
 
@@ -329,15 +347,6 @@ async function openCacheDir() {
                 <option value="list">{{ i18n.t('view.list') }}</option>
               </select>
             </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.thumbnails') }}</label>
-              <div class="fld">
-                <label class="chk">
-                  <input type="checkbox" data-sf="thumbnails" v-model="cfg.ui.thumbnails" />
-                  {{ i18n.t('settings.thumbnails_desc') }}
-                </label>
-              </div>
-            </div>
           </template>
 
           <!-- 远程位置 -->
@@ -481,15 +490,6 @@ async function openCacheDir() {
                 <div class="desc">{{ i18n.t('settings.lock_on_background_desc') }}</div>
               </div>
             </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.temp_plaintext') }}</label>
-              <div class="fld">
-                <label class="chk">
-                  <input type="checkbox" data-sf="wipe_temp_plaintext" v-model="cfg.security.wipe_temp_plaintext" />
-                  {{ i18n.t('settings.wipe_temp') }}
-                </label>
-              </div>
-            </div>
             <div class="hint">
               <span aria-hidden="true">ⓘ</span>
               <span>{{ i18n.t('settings.recovery_hint') }}</span>
@@ -551,6 +551,20 @@ async function openCacheDir() {
           <!-- 播放与预览 -->
           <template v-else-if="(isMobile ? mobilePane : pane) === 'playback'">
             <div class="row">
+              <label class="lb">{{ i18n.t('settings.thumbnails') }}</label>
+              <div class="fld">
+                <label class="chk">
+                  <input type="checkbox" data-sf="thumbnails" v-model="cfg.ui.thumbnails" />
+                  {{ i18n.t('settings.thumbnails_desc') }}
+                </label>
+                <div class="desc">{{ i18n.t('settings.thumbnails_hint') }}</div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 设备与共享 -->
+          <template v-else-if="(isMobile ? mobilePane : pane) === 'devices'">
+            <div class="row">
               <label class="lb">{{ i18n.t('settings.device_name') }}</label>
               <input
                 type="text"
@@ -568,10 +582,33 @@ async function openCacheDir() {
                 </label>
               </div>
             </div>
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.paired_devices') }}</label>
+              <div class="fld">
+                <button class="btn small" type="button" data-sf="manage_devices" @click="openDevices">
+                  {{ i18n.t('settings.manage_devices') }}
+                </button>
+                <div class="desc">{{ i18n.t('settings.manage_devices_desc') }}</div>
+              </div>
+            </div>
           </template>
 
           <!-- 关于 -->
           <template v-else>
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.about_version') }}</label>
+              <div class="fld">omy {{ aboutInfo.app_version }}</div>
+            </div>
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.about_format') }}</label>
+              <div class="fld">
+                <code>OMYFILE</code> v{{ aboutInfo.format_major }}.{{ aboutInfo.format_minor }}
+              </div>
+            </div>
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.about_license') }}</label>
+              <div class="fld">{{ i18n.t('settings.about_license_value') }}</div>
+            </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.config_file') }}</label>
               <div class="fld path">{{ paths.config }}</div>

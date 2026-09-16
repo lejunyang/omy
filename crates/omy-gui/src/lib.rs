@@ -186,6 +186,7 @@ pub fn run() {
             settings::config_get,
             settings::config_set,
             settings::config_paths,
+            settings::app_about,
             place_cmds::remote_place_add,
             place_cmds::remote_place_list,
             place_cmds::remote_place_remove,
