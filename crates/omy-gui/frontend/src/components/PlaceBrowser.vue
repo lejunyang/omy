@@ -316,7 +316,7 @@ function capsLabel() {
       <span v-else>☁️ {{ i18n.t('rplace.title') }}</span>
       <span v-if="state.remotePlace">{{ i18n.tn('status.files', visible.length) }}</span>
       <span class="spacer"></span>
-      <span class="readonly">{{ capsLabel() }}</span>
+      <span v-if="state.remotePlace" class="readonly">{{ capsLabel() }}</span>
     </div>
   </div>
 </template>

@@ -184,6 +184,38 @@ const usedText = computed(() => {
 function goMobile(key) {
   mobilePane.value = key;
 }
+
+/** 进入「密文缓存」二级页（PC 与移动共用同一 pane）。 */
+function openCachePane() {
+  if (isMobile) mobilePane.value = 'cache';
+  else pane.value = 'cache';
+  // 进页面前刷一次用量，避免看到上次的旧数字
+  loadCacheUsage();
+}
+
+/** 移动端标题栏返回：缓存页的上级是远程位置，其余二级页回主列表。 */
+function backMobile() {
+  mobilePane.value = mobilePane.value === 'cache' ? 'remote' : null;
+}
+
+/** 移动端二级页标题（cache 不在 PANES 里，单独给名）。 */
+const paneTitle = computed(() => {
+  const key = isMobile ? mobilePane.value : pane.value;
+  if (key === 'cache') return i18n.t('settings.cache_title');
+  return i18n.t(PANES.find((p) => p.key === key)?.label || 'settings.title');
+});
+
+/** 缓存入口摘要：已用 / 上限 · LRU 淘汰。 */
+const cacheSummary = computed(() => `${usedText.value} · ${i18n.t('settings.cache_lru')}`);
+
+/** 在系统文件管理器里打开缓存目录（仅桌面端有此按钮）。 */
+async function openCacheDir() {
+  try {
+    await api.remoteCacheOpenDir();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.cache_open_failed');
+  }
+}
 </script>
 
 <template>
@@ -196,15 +228,11 @@ function goMobile(key) {
           class="iconbtn"
           data-si="back"
           :aria-label="i18n.t('common.back')"
-          @click="mobilePane = null"
+          @click="backMobile"
         >
           ←
         </button>
-        <span class="sethn">
-          {{ isMobile && mobilePane
-            ? i18n.t(PANES.find((p) => p.key === mobilePane)?.label || 'settings.title')
-            : i18n.t('settings.title') }}
-        </span>
+        <span class="sethn">{{ paneTitle }}</span>
         <button class="iconbtn close" data-si="close" :aria-label="i18n.t('common.close')" @click="onClose">
           ✕
         </button>
@@ -317,7 +345,31 @@ function goMobile(key) {
               </div>
             </div>
 
-            <div class="grp">{{ i18n.t('settings.cache') }}</div>
+            <!-- 缓存内容较多，独立成二级页；这里只给一行摘要（对齐原型） -->
+            <button class="subentry" type="button" data-sf="cache_entry" @click="openCachePane">
+              <span class="se-ico" aria-hidden="true">🗄️</span>
+              <span class="se-body">
+                <span class="se-title">{{ i18n.t('settings.cache_title') }}</span>
+                <span class="se-desc">{{ cacheSummary }}</span>
+              </span>
+              <span class="se-arrow" aria-hidden="true">›</span>
+            </button>
+          </template>
+
+          <!-- 密文缓存：「远程位置」的二级页，左列仍高亮远程位置 -->
+          <template v-else-if="(isMobile ? mobilePane : pane) === 'cache'">
+            <div v-if="!isMobile" class="panehead">
+              <button
+                class="iconbtn"
+                type="button"
+                data-si="cache-back"
+                :aria-label="i18n.t('common.back')"
+                @click="pane = 'remote'"
+              >
+                ←
+              </button>
+              <span class="panetitle">{{ i18n.t('settings.cache_title') }}</span>
+            </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.cache_limit') }}</label>
               <select data-sf="cache_limit" v-model.number="cfg.remote.cache_limit">
@@ -345,7 +397,12 @@ function goMobile(key) {
             </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.cache_dir') }}</label>
-              <div class="fld path">{{ cacheRoot }}</div>
+              <div class="fld pathrow">
+                <div class="fld path">{{ cacheRoot }}</div>
+                <button v-if="!isMobile" type="button" class="btn small" data-sf="cache_open" @click="openCacheDir">
+                  {{ i18n.t('settings.cache_open') }}
+                </button>
+              </div>
             </div>
             <div class="row">
               <label class="lb"></label>
@@ -355,8 +412,11 @@ function goMobile(key) {
                   {{ i18n.t('settings.clear_on_exit') }}
                 </label>
                 <label v-if="isMobile" class="chk">
-                  <input type="checkbox" data-sf="cache_wifi_only" v-model="cfg.remote.cache_wifi_only" />
-                  {{ i18n.t('settings.wifi_only') }}
+                  <input type="checkbox" data-sf="cache_wifi_only" v-model="cfg.remote.cache_wifi_only" disabled :title="i18n.t('settings.wifi_only_soon')" />
+                  <span>
+                    {{ i18n.t('settings.wifi_only') }}
+                    <div class="desc">{{ i18n.t('settings.wifi_only_soon') }}</div>
+                  </span>
                 </label>
               </div>
             </div>
@@ -650,6 +710,67 @@ function goMobile(key) {
   color: var(--fg2);
   margin-top: 14px;
   line-height: 1.5;
+}
+/* 二级页入口：整行可点，右侧箭头提示还有下一层 */
+.subentry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: start;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  padding: 12px 14px;
+  margin-top: 18px;
+  cursor: pointer;
+  color: inherit;
+}
+.subentry:hover {
+  border-color: var(--accent);
+}
+.se-ico {
+  font-size: 18px;
+  line-height: 1;
+}
+.se-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.se-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.se-desc {
+  font-size: 12px;
+  color: var(--fg2);
+}
+.se-arrow {
+  color: var(--fg2);
+  font-size: 18px;
+}
+/* 缓存二级页页头（桌面端；移动端用弹窗标题栏的返回） */
+.panehead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.panetitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+.pathrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pathrow .path {
+  flex: 1;
+  min-width: 0;
 }
 .chk {
   display: flex;
