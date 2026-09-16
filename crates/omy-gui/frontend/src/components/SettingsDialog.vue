@@ -187,7 +187,9 @@ function goMobile(key) {
 
 /** 进入「密文缓存」二级页（PC 与移动共用同一 pane）。 */
 function openCachePane() {
-  if (isMobile) mobilePane.value = 'cache';
+  // isMobile 是 readonly(ref)，在 <script> 里必须取 .value，
+  // 直接判断 ref 对象永远为真——那会让桌面端也走移动分支、PC 缓存页进不去
+  if (isMobile.value) mobilePane.value = 'cache';
   else pane.value = 'cache';
   // 进页面前刷一次用量，避免看到上次的旧数字
   loadCacheUsage();
@@ -200,7 +202,8 @@ function backMobile() {
 
 /** 移动端二级页标题（cache 不在 PANES 里，单独给名）。 */
 const paneTitle = computed(() => {
-  const key = isMobile ? mobilePane.value : pane.value;
+  // 同上，isMobile 在 JS 中要取 .value
+  const key = isMobile.value ? mobilePane.value : pane.value;
   if (key === 'cache') return i18n.t('settings.cache_title');
   return i18n.t(PANES.find((p) => p.key === key)?.label || 'settings.title');
 });
