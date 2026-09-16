@@ -76,6 +76,8 @@ max_depth = 5
 [serve]
 device_name = "书房台式机"
 default_expire = "24h"
+# 启动时自动开启局域网共享（仅 GUI）
+autostart = false
 
 [ui]
 # auto | zh-CN | en
@@ -84,17 +86,35 @@ language = "zh-CN"
 theme = "dark"
 # grid | list
 view = "list"
+# 启动时打开：last（上次目录）| home（主目录）；仅 GUI
+startup = "last"
+# 上次浏览目录，startup = "last" 时由应用自动记录，一般不用手写
+# last_dir = "C:/Users/me/Vault"
+# 列表中是否显示缩略图（缩略图存在文件头里）
+thumbnails = true
 
 [security]
 # 闲置多少秒后自动锁定；0 表示从不
 auto_lock_secs = 600
-# 切到后台时立即锁定
-lock_on_background = true
+# 切到后台（移动切应用 / 桌面最小化）时立即锁定；
+# false（默认）时切后台只等于「开始闲置」，仍按 auto_lock_secs 计时，播放中豁免
+lock_on_background = false
+# 用外部程序打开加密文件后，关闭时立即清理临时明文（能力待接入 GUI）
+wipe_temp_plaintext = true
 
 [remote]
 # 密文缓存上限（字节）；0 表示不限制
 cache_limit = 2147483648
+# 缓存目录；留空用默认（桌面为可执行文件旁 omy-data/cache/remote，移动为 app data）
+# cache_dir = ""
+# 退出应用时清空缓存
+clear_cache_on_exit = false
+# 仅在 Wi-Fi 下缓存（移动端，暂未生效）
+cache_wifi_only = false
+# 远程扫描并发请求数，1–32；这是风控边界不是性能调参，调高易被限流
 scan_concurrency = 8
+# 远程扫描是否只看 .omy 扩展名；false 可识别伪装文件但每个文件多一次请求
+scan_omy_only = true
 ```
 
 ::: tip security 与 remote 目前只对图形界面生效
@@ -115,14 +135,23 @@ scan_concurrency = 8
 | `scan.paths` | `[]` | `scan` 的默认扫描路径 |
 | `scan.max_depth` | `8` | 最大递归深度 |
 | `serve.device_name` | 无 | 局域网广播名 |
+| `serve.autostart` | `false` | 是否开机自动开启局域网共享（仅 GUI）|
 | `serve.default_expire` | 无 | 默认授权有效期 |
 | `ui.language` | `"auto"` | 界面语言，`auto` 跟随系统 locale |
 | `ui.theme` | `"auto"` | 界面主题，`auto` 跟随系统（仅 GUI）|
 | `ui.view` | `"grid"` | 默认视图，`grid` 或 `list`（仅 GUI）|
+| `ui.startup` | `"last"` | 启动时打开，`last`（上次目录）或 `home`（主目录）（仅 GUI）|
+| `ui.last_dir` | 无 | 上次浏览目录，应用自动记录（仅 GUI）|
+| `ui.thumbnails` | `true` | 列表中是否显示缩略图（仅 GUI）|
 | `security.auto_lock_secs` | `0` | 闲置多少秒后锁定，`0` 为从不（仅 GUI）|
-| `security.lock_on_background` | `true` | 切到后台时立即锁定（仅 GUI）|
+| `security.lock_on_background` | `false` | 切后台时**立即**锁定；关闭时切后台只按闲置计时、播放中豁免（仅 GUI）|
+| `security.wipe_temp_plaintext` | `true` | 外部程序关闭后清理临时明文（GUI 能力待接入）|
 | `remote.cache_limit` | `2147483648` | 密文缓存上限，2 GiB；`0` 不限制（仅 GUI）|
-| `remote.scan_concurrency` | `8` | 远程扫描的并发请求数（仅 GUI）|
+| `remote.cache_dir` | 无 | 自定义缓存目录，留空用默认便携路径（仅 GUI）|
+| `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI）|
+| `remote.cache_wifi_only` | `false` | 仅 Wi-Fi 下缓存（移动端，暂未生效）|
+| `remote.scan_concurrency` | `8` | 远程扫描并发请求数，1–32（仅 GUI）|
+| `remote.scan_omy_only` | `true` | 远程扫描是否只看 `.omy`（仅 GUI）|
 
 ::: warning original_action 改成 trash 或 delete 要想清楚
 这两个值会让原文件在加密后从原位置消失。写进配置文件意味着**以后每次加密都这样**。仍然会要求确认（除非加 `--yes`），但配置 + `--yes` 的组合在脚本里很容易变成静默删除。

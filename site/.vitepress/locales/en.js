@@ -37,6 +37,7 @@ export const en = {
             { text: 'Media preview and playback', link: '/en/guide/media' },
             { text: 'Sharding', link: '/en/guide/sharding' },
             { text: 'LAN sharing', link: '/en/guide/lan-sharing' },
+            { text: 'Remote locations (cloud / WebDAV)', link: '/en/guide/remote-locations' },
             { text: 'Graphical interface', link: '/en/guide/gui' },
           ],
         },

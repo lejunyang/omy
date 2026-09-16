@@ -76,6 +76,8 @@ max_depth = 5
 [serve]
 device_name = "Study desktop"
 default_expire = "24h"
+# Auto-start LAN sharing on launch (GUI only)
+autostart = false
 
 [ui]
 # auto | zh-CN | en
@@ -84,17 +86,35 @@ language = "en"
 theme = "dark"
 # grid | list
 view = "list"
+# Open at startup: last (last folder) | home (GUI only)
+startup = "last"
+# Last browsed folder, recorded automatically when startup = "last"
+# last_dir = "C:/Users/me/Vault"
+# Show thumbnails in the list (they live in the file header)
+thumbnails = true
 
 [security]
 # Lock after this many idle seconds; 0 means never
 auto_lock_secs = 600
-# Lock immediately when the app is backgrounded
-lock_on_background = true
+# Lock immediately when backgrounded (mobile app switch / desktop minimize).
+# When false (default) backgrounding only starts the idle timer; playback is exempt
+lock_on_background = false
+# Wipe temporary plaintext when the external opener closes (GUI wiring pending)
+wipe_temp_plaintext = true
 
 [remote]
 # Ciphertext cache limit in bytes; 0 means unlimited
 cache_limit = 2147483648
+# Cache directory; empty uses the default portable path (GUI only)
+# cache_dir = ""
+# Clear the cache when the app exits
+clear_cache_on_exit = false
+# Cache on Wi-Fi only (mobile; not yet active)
+cache_wifi_only = false
+# Concurrent requests when scanning, 1–32; a rate-limit boundary, not a perf knob
 scan_concurrency = 8
+# Only look at .omy names when scanning; false detects disguised files but costs a request per file
+scan_omy_only = true
 ```
 
 ::: tip security and remote currently only affect the GUI
@@ -115,14 +135,23 @@ The command line has no use for auto-lock or a remote cache, but both read the s
 | `scan.paths` | `[]` | Default paths for `scan` |
 | `scan.max_depth` | `8` | Maximum recursion depth |
 | `serve.device_name` | none | LAN advertised name |
+| `serve.autostart` | `false` | Auto-start LAN sharing on launch (GUI only) |
 | `serve.default_expire` | none | Default authorization lifetime |
 | `ui.language` | `"auto"` | Interface language; `auto` follows the system locale |
 | `ui.theme` | `"auto"` | Interface theme; `auto` follows the system (GUI only) |
 | `ui.view` | `"grid"` | Default view, `grid` or `list` (GUI only) |
+| `ui.startup` | `"last"` | Open at startup: `last` (last folder) or `home` (GUI only) |
+| `ui.last_dir` | none | Last browsed folder, recorded automatically (GUI only) |
+| `ui.thumbnails` | `true` | Show thumbnails in the list (GUI only) |
 | `security.auto_lock_secs` | `0` | Lock after this many idle seconds; `0` never (GUI only) |
-| `security.lock_on_background` | `true` | Lock immediately when backgrounded (GUI only) |
+| `security.lock_on_background` | `false` | Lock **immediately** when backgrounded; when off, backgrounding only counts as idle and playback is exempt (GUI only) |
+| `security.wipe_temp_plaintext` | `true` | Wipe temporary plaintext when the external opener closes (GUI wiring pending) |
 | `remote.cache_limit` | `2147483648` | Ciphertext cache limit, 2 GiB; `0` unlimited (GUI only) |
-| `remote.scan_concurrency` | `8` | Concurrent requests when scanning a remote location (GUI only) |
+| `remote.cache_dir` | none | Custom cache directory; empty uses the default portable path (GUI only) |
+| `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only) |
+| `remote.cache_wifi_only` | `false` | Cache on Wi-Fi only (mobile; not yet active) |
+| `remote.scan_concurrency` | `8` | Concurrent requests when scanning, 1–32 (GUI only) |
+| `remote.scan_omy_only` | `true` | Whether remote scanning only looks at `.omy` (GUI only) |
 
 ::: warning Think before setting original_action to trash or delete
 Both values make the original disappear from its location after encryption. Putting it in the configuration file means **this happens on every encryption from now on**. Confirmation is still required (unless `--yes`), but configuration plus `--yes` in a script easily becomes silent deletion.
