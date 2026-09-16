@@ -31,6 +31,34 @@ use reqwest::StatusCode;
 use crate::store::{Entry, RemoteStore};
 use crate::{Capabilities, Error, Result};
 
+/// 路径**段**的百分号编码集合（段间的 `/` 在调用前已 split，不参与编码）。
+///
+/// 为什么不能直接用 `NON_ALPHANUMERIC`：它只放行 `A-Za-z0-9`，连
+/// `.` `-` `_` `~` 都编码，于是 `movie.mkv.omy` 会变成 `movie%2Emkv%2Eomy`。
+/// RFC 3986 虽允许服务端把 `%2E` 解回 `.`，但坚果云等部分服务端 / 网关会把
+/// `%2E` 当成文件名字面量直接 404——而扩展名在文件名里无处不在，这个兼容性
+/// 必须在客户端保证。这里以 `CONTROLS`（控制字符，非 ASCII 的 UTF-8 字节由
+/// `utf8_percent_encode` 无条件编码）为底，只追加真正会改变 URL 语义、必须
+/// 转义的 ASCII 标点，保留 unreserved 字符（含 `.` `-` `_` `~`）与 path 子
+/// 分界符（`: @ ! $ & ' ( ) * + , ; =`）。
+const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'%')
+    .add(b'[')
+    .add(b']')
+    .add(b'^')
+    .add(b'|')
+    .add(b'\\');
+
+
 /// 服务端厂商。用于吸收「标准之上」的现实差异。
 ///
 /// 先只区分 `Generic`：我们用到的子集在各家基本一致，预先写八套分支
@@ -134,8 +162,7 @@ impl WebDavStore {
         let encoded = rel
             .split('/')
             .map(|seg| {
-                percent_encoding::utf8_percent_encode(seg, percent_encoding::NON_ALPHANUMERIC)
-                    .to_string()
+                percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string()
             })
             .collect::<Vec<_>>()
             .join("/");
@@ -437,10 +464,11 @@ mod tests {
         assert!(!s.capabilities().any_write(), "能力位图要与行为一致");
     }
 
-    /// 路径要编码，但 `/` 必须保留为分隔符。
+    /// 路径要编码，但 `/` 必须保留为分隔符；扩展名点号不能被编码。
     ///
     /// 不这样会怎样：把 `/` 也编码，整条路径会变成一个文件名，
-    /// 服务端返回 404，而错误信息里看不出是编码问题。
+    /// 服务端返回 404，而错误信息里看不出是编码问题。把 `.` 编码成 `%2E`
+    /// 则会在坚果云等把 `%2E` 当字面量的服务端上直接 404（真实服务器回归）。
     #[test]
     fn url_encodes_segments_but_keeps_slash() {
         let s = store(false);
@@ -449,8 +477,22 @@ mod tests {
         assert!(u.contains('/'), "分隔符要保留");
         assert!(!u.contains(' '), "空格必须编码");
         assert!(!u.contains('影'), "中文必须编码");
+        assert!(u.contains(".mkv"), "扩展名点号必须保留");
+        assert!(!u.contains("%2E"), "点号不能编码成 %2E");
         // 段数不变
         assert_eq!(u.trim_start_matches("https://dav.example.com/dav/").split('/').count(), 2);
+    }
+
+    /// unreserved 字符（`. - _ ~`）原样保留，只有空格这类才编码。
+    ///
+    /// 不这样会怎样：备份类文件名 `Movie-2_backup.tar.omy` 被编码成一串
+    /// `%2D`/`%5F`/`%2E`，部分服务端无法识别，且日志完全不可读。
+    #[test]
+    fn url_keeps_unreserved_punctuation() {
+        let s = store(false);
+        let u = s.url_for("My Movie-2_backup.tar.omy");
+        assert!(u.ends_with("My%20Movie-2_backup.tar.omy"), "实际: {u}");
+        assert!(!u.contains("%2D") && !u.contains("%5F") && !u.contains("%2E"));
     }
 
     /// 根路径要能正确拼出来。
