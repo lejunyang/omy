@@ -39,6 +39,19 @@ const paths = ref({ config: '', cache: '', data: '', portable: false });
 const loading = ref(true);
 const error = ref('');
 
+/** 远程密文缓存的真实用量，来自后端（{used,limit,root}）。
+ *  配置里的 cache_limit 是「将要保存」的值，这里是「磁盘上现在」的值。 */
+const cacheUsage = ref({ used: 0, limit: 0, root: '' });
+const clearing = ref(false);
+
+async function loadCacheUsage() {
+  try {
+    cacheUsage.value = await api.remoteCacheUsage();
+  } catch {
+    // 用量读不出来不应挡住设置页：保留 0，清理按钮会因 used=0 禁用
+  }
+}
+
 /** 分类定义。顺序按使用频率，不按模块划分——「通用」放第一是因为
  *  语言和主题是最常被找的两项。 */
 const PANES = [
@@ -73,6 +86,8 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+  // 用量与配置独立加载：配置失败不该连累用量显示
+  loadCacheUsage();
 });
 
 /** 保存整份配置。
@@ -84,6 +99,17 @@ async function save() {
   if (!cfg.value) return;
   try {
     await api.configSet(cfg.value);
+    // 缓存上限/目录改了要让运行中的后端立刻换缓存实例，否则要等重启；
+    // 失败不阻断关闭——配置已落盘，重启后仍会生效
+    try {
+      await api.remoteCacheApply(
+        cfg.value.remote?.cache_limit,
+        cfg.value.remote?.cache_dir ?? null,
+      );
+      await loadCacheUsage();
+    } catch {
+      /* 重建失败不影响配置已保存 */
+    }
   } catch (e) {
     error.value = i18n.te(api.errCode(e), 'settings.save_failed');
     return false;
@@ -121,8 +147,38 @@ function lockLabel(secs) {
   return i18n.t('settings.lock_hours', { n: Math.round(secs / 3600) });
 }
 
-/** 清空缓存。目前只清目录，实际实现在后端接上缓存后替换。 */
-const clearing = ref(false);
+/** 立即清空远程密文缓存，返回后刷新用量。清的只是密文块，不碰云端文件。 */
+async function clearCache() {
+  if (clearing.value) return;
+  clearing.value = true;
+  try {
+    // 后端 clear 直接返回清空后的已用字节数（u6），不是对象
+    const used = await api.remoteCacheClear();
+    cacheUsage.value = { ...cacheUsage.value, used: Number(used) || 0 };
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.cache_clear_failed');
+  } finally {
+    clearing.value = false;
+  }
+}
+
+/** 实际生效的缓存目录：后端返回的 root 比配置推断更准（自定义可能建不起来）。 */
+const cacheRoot = computed(() => cacheUsage.value.root || paths.value.cache || '');
+
+/** 用量百分比；不限上限时不画填充比例（没有 100% 可言）。 */
+const usedPct = computed(() => {
+  const { used, limit } = cacheUsage.value;
+  if (!limit || limit <= 0) return 0;
+  return Math.min(100, Math.round((used / limit) * 100));
+});
+
+const usedText = computed(() => {
+  const { used, limit } = cacheUsage.value;
+  if (limit && limit > 0) {
+    return `${i18n.formatSize(used)} / ${i18n.formatSize(limit)}`;
+  }
+  return `${i18n.formatSize(used)} · ${i18n.t('settings.cache_unlimited')}`;
+});
 
 /** 移动端进入二级页。 */
 function goMobile(key) {
@@ -271,8 +327,25 @@ function goMobile(key) {
               </select>
             </div>
             <div class="row">
+              <label class="lb">{{ i18n.t('settings.cache_used') }}</label>
+              <div class="fld">
+                <div class="cachebar" :class="{ zero: usedPct === 0 }">
+                  <div class="cachebar-fill" :style="{ width: usedPct + '%' }"></div>
+                </div>
+                <div class="desc">{{ usedText }}</div>
+                <button
+                  class="btn small"
+                  data-sf="cache_clear"
+                  :disabled="clearing || !cacheUsage.used"
+                  @click="clearCache"
+                >
+                  {{ clearing ? i18n.t('settings.clearing') : i18n.t('settings.cache_clear') }}
+                </button>
+              </div>
+            </div>
+            <div class="row">
               <label class="lb">{{ i18n.t('settings.cache_dir') }}</label>
-              <div class="fld path">{{ paths.cache }}</div>
+              <div class="fld path">{{ cacheRoot }}</div>
             </div>
             <div class="row">
               <label class="lb"></label>
@@ -536,6 +609,27 @@ function goMobile(key) {
   color: var(--fg2);
   word-break: break-all;
   padding-top: 6px;
+}
+/* 缓存用量进度条：轨道用中性色，填充用主强调色；零占用时只留一条空轨 */
+.cachebar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin: 4px 0 6px;
+}
+.cachebar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+.cachebar.zero .cachebar-fill {
+  background: transparent;
+}
+.fld .btn.small {
+  margin-top: 8px;
 }
 .grp {
   font-size: 11px;
