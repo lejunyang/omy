@@ -390,7 +390,7 @@ function rowTitle(f) {
           <span class="nm">{{ p.name }}</span>
           <span class="tg">{{ kindLabel(p) }}</span>
           <span class="rowactions">
-            <button class="btn small" data-pb-enter="p.id" @click.stop="open(p)">
+            <button class="btn small" :data-pb-enter="p.id" @click.stop="open(p)">
               {{ i18n.t('rplace.enter') }}
             </button>
             <button

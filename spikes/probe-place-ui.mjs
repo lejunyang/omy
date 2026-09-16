@@ -89,6 +89,18 @@ async function main() {
   await cdp.eval(`window.__p = { invoke: (c,a)=>window.__TAURI_INTERNALS__.invoke(c,a||{}) }; true`);
   await cdp.eval(`(async()=>{ await window.__p.invoke('browse_directory',{dir:${JSON.stringify(guiDir)}});
     await window.__p.invoke('unlock_directory',{dir:${JSON.stringify(guiDir)},password:${JSON.stringify(password)}});
+    // 先清掉别的测试或用户留下的位置。
+    //
+    // 远程位置现在会持久化，机器上很可能还留着上一轮测试的条目（指向
+    // 已经停掉的服务器）。不清的话截图里会混进无关位置，更糟的是
+    // 「进入第一个位置」会进错地方，卡在「正在读取」——看起来像产品
+    // 缺陷，实际只是进了个没人应答的位置。
+    const old = await window.__p.invoke('remote_place_list');
+    for (const p of (Array.isArray(old) ? old : [])) {
+      if (p.name !== '自测NAS') {
+        await window.__p.invoke('remote_place_remove', { id: p.id });
+      }
+    }
     const list = await window.__p.invoke('remote_place_list');
     if (!Array.isArray(list) || !list.some(p=>p.name==='自测NAS')) {
       await window.__p.invoke('remote_place_add',{name:'自测NAS',url:${JSON.stringify(davUrl)},username:'',password:'',vendor:'generic',writable:false});
@@ -103,10 +115,24 @@ async function main() {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await sleep(1000);
 
-  await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[1]; if(!b) return 'no-tab'; b.click(); return 'ok'; })()`);
+  // 这两步的返回值必须检查。原先直接丢弃，于是点击没生效时也照样往下跑，
+  // 最后失败在「找不到骨架」那一步——而真正的原因是上一步压根没进目录，
+  // 两者指向的修法完全不同。
+  const tabR = await click(`(()=>{ const b=document.querySelectorAll('.pnav .pnavi')[1]; if(!b) return 'no-tab'; b.click(); return 'ok'; })()`);
+  if (tabR !== 'ok') throw new Error(`移动端切到远程标签失败: ${tabR}`);
   await cdp.shot('m01-places');
 
-  await click(`(()=>{ const b=document.querySelector('[data-pb-enter]'); if(!b) return 'no-enter'; b.click(); return 'ok'; })()`, 450);
+  const enterR = await click(`(()=>{
+    // 必须按 id 精确定位，不能取「第一个」位置。
+    //
+    // 远程位置现在会持久化，机器上可能留着别的测试或用户自己加的位置，
+    // 取第一个会进错地方——表现为列表空白、卡在「正在读取」，
+    // 看起来像产品缺陷，实际是进了一个指向已停服务器的位置。
+    const b=document.querySelector('[data-pb-enter="'+window.__rp+'"]');
+    if(!b) return 'no-enter:'+window.__rp;
+    b.click(); return 'ok';
+  })()`, 450);
+  if (enterR !== 'ok') throw new Error(`移动端进入云盘目录失败: ${enterR}`);
   await cdp.shot('m02-dir');
 
   // —— 边扫边出：slow.omy 服务端延迟 2.2s，进目录后它必须先停在「识别中」骨架 ——
@@ -126,7 +152,25 @@ async function main() {
   console.log('       [边扫边出] 骨架态', probing);
   const pb = JSON.parse(probing);
   // 不这样会怎样：慢文件会把整屏列表堵到全部识别完才显示，失去边扫边出的意义
-  if (pb.probing !== true || !pb.meta) throw new Error('未出现 slow.omy 的识别中骨架: ' + probing);
+  if (pb.probing !== true || !pb.meta) {
+    // 失败时把真实 DOM 打出来。只报「没找到」无法区分三种情况：
+    // 选择器写错了、条目压根没渲染、还是识别确实太快——
+    // 而这三种的修法完全不同。
+    const dump = await cdp.eval(`(() => {
+      const els = [...document.querySelectorAll('.card, .lrow')];
+      return JSON.stringify({
+        总数: els.length,
+        视口宽: window.innerWidth,
+        条目: els.slice(0, 10).map(e => ({
+          cls: e.className,
+          name: (e.querySelector('.cname,.nm')?.textContent || '').trim(),
+          meta: (e.querySelector('.cmeta,.tg')?.textContent || '').trim(),
+        })),
+      });
+    })()`);
+    console.log('       [诊断] 当前 DOM:', dump);
+    throw new Error('未出现 slow.omy 的识别中骨架: ' + probing);
+  }
   await cdp.shot('m02a-probing');
 
   // —— 失败条目「点击重试」——
