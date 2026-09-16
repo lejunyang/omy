@@ -135,6 +135,15 @@ pub mod flags {
     pub const META_NORMALIZED: u32 = 1 << 8;
     /// 载荷尾部有随机填充以隐藏真实大小。
     pub const SIZE_PADDED: u32 = 1 << 9;
+    /// 槽位可管理模式：TLV 中存有加密的槽位目录（规范 §3.5）。
+    ///
+    /// 用 flag 位而不抬 `version_major`：flags 被头部 MAC 覆盖，篡改必被
+    /// 检出，防降级效果与版本号相同；而抬主版本会让既有实现直接拒绝打开
+    /// 新文件，5 组测试向量也要全部重做，换不来额外安全性。
+    ///
+    /// 老实现读到本位会忽略它，但 `TLV_SLOT_DIRECTORY` 标了 CRITICAL，
+    /// 所以它仍会如实拒绝，不会把可管理模式的文件当普通文件误改。
+    pub const SLOT_DIRECTORY: u32 = 1 << 10;
 
     /// 本实现已知的全部位。其余位保留，写入时必须为 0。
     pub const KNOWN_MASK: u32 = FILENAME_ENCRYPTED
@@ -146,7 +155,8 @@ pub mod flags {
         | DISGUISED
         | TRANSCODED
         | META_NORMALIZED
-        | SIZE_PADDED;
+        | SIZE_PADDED
+        | SLOT_DIRECTORY;
 }
 
 /// Fixed Header（96 字节）。

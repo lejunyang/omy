@@ -170,8 +170,18 @@ fn rebuild_options(
         None
     };
 
+    // 槽位目录同理取原始字节。不带过去的话，轮换会让文件从可管理模式
+    // 静默退回可否认模式——用户收不到任何提示，只会在下次想精确删某个
+    // 协作者时发现这个能力没了
+    let slot_directory = if opened.is_slot_managed() {
+        Some(opened.raw_slot_directory()?)
+    } else {
+        None
+    };
+
     Ok(EncryptOptions {
         filename,
+        slot_directory,
         preserve_extension: header.has_flag(flags::EXT_PRESERVED),
         compress: header.has_flag(flags::COMPRESSED),
         // 压缩级别无法从文件里读出来（格式不记录它，只记录压缩后的块索引）。

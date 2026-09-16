@@ -68,6 +68,15 @@ pub struct EncryptOptions {
     /// `CONTAINER` flag。CRITICAL 是必需的：不认识该 TLV 的实现必须拒绝打开，
     /// 否则会把容器误当作普通文件解出一堆拼接的字节。
     pub folder_index: Option<Vec<u8>>,
+    /// 槽位目录（可管理模式，`SlotDirectory::encode` 的输出，固定 24 字节）。
+    ///
+    /// 置位时写入 CRITICAL+ENCRYPTED 的 `TLV_SLOT_DIRECTORY` 并设置
+    /// `SLOT_DIRECTORY` flag，即规范 §3.5 的「可管理模式」。
+    ///
+    /// 为 `None` 时是默认的可否认模式：槽位不可枚举，连文件的主人也分不清
+    /// 哪个槽是谁的。两种模式在加密时二选一，同一个 vault 内不应混用——
+    /// 同目录下 5 个可否认文件混 1 个可管理文件，那 1 个的存在本身就是信号。
+    pub slot_directory: Option<Vec<u8>>,
 }
 
 impl Default for EncryptOptions {
@@ -85,6 +94,7 @@ impl Default for EncryptOptions {
             media_meta: None,
             moov_cache: None,
             folder_index: None,
+            slot_directory: None,
         }
     }
 }
@@ -218,6 +228,9 @@ pub fn encrypt_with_fek_and_progress(
     if opts.thumbnail.is_some() {
         file_flags |= flags::HAS_THUMBNAIL;
     }
+    if opts.slot_directory.is_some() {
+        file_flags |= flags::SLOT_DIRECTORY;
+    }
     if opts.folder_index.is_some() {
         file_flags |= flags::CONTAINER;
     }
@@ -263,6 +276,22 @@ pub fn encrypt_with_fek_and_progress(
             types::FOLDER_INDEX,
             tlv_flags::CRITICAL,
             idx,
+            fek,
+            opts.cipher,
+        )?);
+    }
+    if let Some(dir) = &opts.slot_directory {
+        // CRITICAL：不认识此 TLV 的实现必须拒绝打开。否则老版本会把可管理
+        // 模式的文件当普通文件改密码，槽位目录与实际 slot 区就此对不上——
+        // 而这种损坏不会立刻显现，等到用户依赖目录去删某个协作者时才暴露，
+        // 那时已无法判断哪份记录是对的。
+        //
+        // ENCRYPTED 由 encrypt_entry 保证：明文目录等于把「谁能打开这个
+        // 文件」白送给任何拿到文件的人。
+        tlvs.push(encrypt_entry(
+            types::SLOT_DIRECTORY,
+            tlv_flags::CRITICAL,
+            dir,
             fek,
             opts.cipher,
         )?);
@@ -536,6 +565,47 @@ impl OpenedFile {
     #[must_use]
     pub const fn is_container(&self) -> bool {
         self.header.has_flag(flags::CONTAINER)
+    }
+
+    /// 是否为槽位可管理模式（规范 §3.5）。
+    #[must_use]
+    pub const fn is_slot_managed(&self) -> bool {
+        self.header.has_flag(flags::SLOT_DIRECTORY)
+    }
+
+    /// 解出槽位目录。
+    ///
+    /// 只有可管理模式的文件有。可否认模式下槽位**设计上**就不可枚举，
+    /// 那不是缺功能——见 [`crate::slotdir`] 模块文档。
+    ///
+    /// # Errors
+    ///
+    /// 可否认模式的文件返回 [`Error::MissingTlv`]；目录长度不对时返回
+    /// [`Error::MalformedTlv`]。
+    pub fn slot_directory(&self) -> Result<crate::slotdir::SlotDirectory> {
+        if !self.is_slot_managed() {
+            return Err(Error::MissingTlv { tlv_type: types::SLOT_DIRECTORY });
+        }
+        let raw = self
+            .tlvs
+            .decrypt_value(types::SLOT_DIRECTORY, &self.fek, self.header.cipher_id)?;
+        crate::slotdir::SlotDirectory::decode(&raw)
+    }
+
+    /// 槽位目录的**原始字节**，用于原样搬运。
+    ///
+    /// 与 [`Self::slot_directory`] 的区别同 `raw_folder_index`：改写 slot 区
+    /// 时要把目录带过去，走 `decode` → `encode` 往返只会引入编码差异的风险。
+    ///
+    /// # Errors
+    ///
+    /// 可否认模式的文件返回 [`Error::MissingTlv`]。
+    pub fn raw_slot_directory(&self) -> Result<Vec<u8>> {
+        if !self.is_slot_managed() {
+            return Err(Error::MissingTlv { tlv_type: types::SLOT_DIRECTORY });
+        }
+        self.tlvs
+            .decrypt_value(types::SLOT_DIRECTORY, &self.fek, self.header.cipher_id)
     }
 
     /// 解密后的容器索引**原始字节**。

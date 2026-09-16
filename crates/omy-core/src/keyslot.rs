@@ -317,6 +317,222 @@ fn build_area(
     Ok((out, carried))
 }
 
+/// 可管理模式下，一个槽位要怎么处理。
+///
+/// 不 derive Clone：`Kek` 刻意没有 Clone（密钥不该被随手复制），调用方
+/// 按引用传这个切片即可。
+#[derive(Debug)]
+pub enum SlotPlan {
+    /// 保留这个槽位的原有字节。
+    ///
+    /// 原样搬运，不需要知道它属于谁——「保住某个槽」与「知道某个槽是
+    /// 什么」是两件事，前者不需要后者。
+    Keep,
+    /// 把这个槽位换成给定的 KEK。
+    Write(Kek),
+    /// 清空这个槽位（填随机，目录里应相应记成 Empty）。
+    Clear,
+}
+
+/// 按槽位目录精确改写 slot 区（可管理模式，规范 §3.5）。
+///
+/// # 与 [`rewrite_slots`] 的区别
+///
+/// 那个是可否认模式的路径：`keep` 里的钥匙依次占 slot 0..n，其余槽位
+/// 只能**无差别**地整体搬运或整体丢弃。它做不到「删掉协作者 B 而保住
+/// 恢复码」，因为它根本分不清哪个槽是谁的。
+///
+/// 这里要求调用方给出**每个下标**的处置方案，所以能精确管理。前提是
+/// 文件处于可管理模式、有一份槽位目录告诉调用方谁在哪个下标上。
+///
+/// # 为什么下标不能重排
+///
+/// 包裹密钥含 `slot_index`，一个槽搬到别的下标上就再也解不开了。所以
+/// `plans[i]` 严格对应 slot i，`Keep` 是原地保留而不是「挪到前面去」。
+/// 这也意味着删除之后会留下空洞——那不是缺陷，`SlotDirectory::first_free`
+/// 正是为了把空洞重新用起来，这也是可管理模式下 `add` 不必再赌下标的原因。
+///
+/// # Errors
+///
+/// - `plans` 长度不是 [`SLOT_COUNT`]
+/// - 改写后一个槽位都不剩（会留下永远打不开的文件）
+/// - `unlock` 打不开这个文件，或头部 MAC 校验失败
+/// - 文件不是可管理模式（没有槽位目录可替换）
+pub fn rewrite_slots_managed(
+    data: &[u8],
+    unlock: &[Kek],
+    plans: &[SlotPlan],
+    new_directory: &crate::slotdir::SlotDirectory,
+) -> Result<RewriteOutcome> {
+    if plans.len() != SLOT_COUNT {
+        return Err(Error::TooManySlots { got: plans.len(), max: SLOT_COUNT });
+    }
+    // 一个都不留等于销毁数据。写出去之后才发现打不开，用户同时失去了
+    // 文件和访问权，所以在这里就拦住
+    if !plans.iter().any(|p| matches!(p, SlotPlan::Keep | SlotPlan::Write(_))) {
+        return Err(Error::MalformedHeader {
+            reason: "refusing to leave a file with zero key slots; it could never be opened again",
+        });
+    }
+
+    // 完整走一遍 open：它会验证头部 MAC。绝不能跳过——若头部已被篡改，
+    // 我们会把篡改后的字段连同新 MAC 一起签进去，等于替攻击者背书
+    let opened = crate::file::open(data, unlock)?;
+    let header = FixedHeader::parse(data)?;
+    if !header.has_flag(crate::header::flags::SLOT_DIRECTORY) {
+        return Err(Error::MissingTlv { tlv_type: crate::tlv::types::SLOT_DIRECTORY });
+    }
+
+    let old_area = data
+        .get(SLOT_AREA_OFFSET..SLOT_AREA_OFFSET.saturating_add(SLOT_AREA_LEN))
+        .ok_or(Error::Truncated {
+            context: "key slot area",
+            need: SLOT_AREA_OFFSET.saturating_add(SLOT_AREA_LEN),
+            got: data.len(),
+        })?;
+
+    let mut w = Writer::with_capacity(SLOT_AREA_LEN);
+    let mut carried = 0usize;
+    let mut used = 0usize;
+    for (i, plan) in plans.iter().enumerate() {
+        match plan {
+            SlotPlan::Keep => {
+                let start = i.saturating_mul(SLOT_LEN);
+                let end = start.saturating_add(SLOT_LEN);
+                match old_area.get(start..end) {
+                    Some(slot) => {
+                        w.bytes(slot);
+                        carried = carried.saturating_add(1);
+                        used = used.saturating_add(1);
+                    }
+                    // 旧区短于预期（理论上不可能）。退回随机而不是报错，
+                    // 理由同可否认路径：宁可多丢一个槽也不要整个操作失败
+                    None => {
+                        w.random(SLOT_LEN);
+                    }
+                }
+            }
+            SlotPlan::Write(kek) => {
+                let idx = u16::try_from(i)
+                    .map_err(|_| Error::TooManySlots { got: i, max: SLOT_COUNT })?;
+                let wrap_key = kek.derive_slot_key(&header.file_uuid, idx);
+                let wrapped = header.cipher_id.encrypt(
+                    &wrap_key,
+                    &ZERO_NONCE,
+                    opened.fek().as_key().as_bytes(),
+                    &[],
+                )?;
+                w.bytes(&wrapped);
+                used = used.saturating_add(1);
+            }
+            // 空槽必须是随机而非零。这一条在可管理模式下同样成立：目录是
+            // 加密的，但 slot 区不是——填零照样能被数出用了几个槽
+            SlotPlan::Clear => {
+                w.random(SLOT_LEN);
+            }
+        }
+    }
+    let slot_area = w.into_vec();
+    debug_assert_eq!(slot_area.len(), SLOT_AREA_LEN, "slot 区必须恰好 384 字节");
+
+    // TLV 区：换掉槽位目录那一条的密文，其余字节原样。
+    //
+    // 直接替换密文段而不是重建整个 TLV 区：后者会重排条目顺序、改变
+    // 长度，而本操作的可验证性质是「文件长度不变」。槽位目录定长 24
+    // 字节，同一 AEAD 下密文长度也固定，所以就地替换是安全的
+    let tlv_end = TLV_AREA_OFFSET.saturating_add(header.tlv_len as usize);
+    let tlv_blob = data.get(TLV_AREA_OFFSET..tlv_end).ok_or(Error::Truncated {
+        context: "tlv area",
+        need: tlv_end,
+        got: data.len(),
+    })?;
+    let new_value = crate::tlv::encrypt_entry(
+        crate::tlv::types::SLOT_DIRECTORY,
+        crate::tlv::tlv_flags::CRITICAL,
+        &new_directory.encode(),
+        opened.fek(),
+        header.cipher_id,
+    )?
+    .value;
+    let new_tlv = replace_tlv_value(tlv_blob, crate::tlv::types::SLOT_DIRECTORY, &new_value)?;
+
+    let fixed = data.get(..FIXED_HEADER_LEN).ok_or(Error::Truncated {
+        context: "fixed header",
+        need: FIXED_HEADER_LEN,
+        got: data.len(),
+    })?;
+    let payload_start = tlv_end.saturating_add(HEADER_MAC_LEN);
+    let payload = data.get(payload_start..).ok_or(Error::Truncated {
+        context: "payload",
+        need: payload_start,
+        got: data.len(),
+    })?;
+
+    let mut covered = Writer::with_capacity(header.header_len as usize);
+    covered.bytes(fixed).bytes(&slot_area).bytes(&new_tlv);
+    let mac_key = opened.fek().derive_header_mac_key(&header.file_uuid);
+    let mac = header_mac(&mac_key, covered.as_slice());
+
+    let mut out =
+        Writer::with_capacity((header.header_len as usize).saturating_add(payload.len()));
+    out.bytes(covered.as_slice()).bytes(&mac).bytes(payload);
+    let bytes = out.into_vec();
+
+    debug_assert_eq!(bytes.len(), data.len(), "slot 改写不得改变文件长度");
+    Ok(RewriteOutcome {
+        bytes,
+        opened_slot: opened.slot_index,
+        slot_used: used,
+        carried_opaque: carried,
+        // 可管理模式不会「可能顶掉」：调用方明确指定了每个下标怎么处理。
+        // 这是这个模式最实在的收益——add 不再需要赌
+        may_have_evicted: false,
+    })
+}
+
+/// 就地替换某个 TLV 条目的 value，其余字节原样保留。
+///
+/// 要求新旧 value 等长——调用方负责保证（槽位目录定长）。不等长时报错
+/// 而不是尽力而为：长度一变，`header_len` 与 `tlv_len` 就都对不上了，
+/// 而那两个字段在固定头里，改它们等于重写整个文件。
+fn replace_tlv_value(blob: &[u8], want_type: u16, new_value: &[u8]) -> Result<Vec<u8>> {
+    let mut out = blob.to_vec();
+    let mut at = 0usize;
+    while at.saturating_add(crate::tlv::TLV_HEADER_LEN) <= blob.len() {
+        let t = u16::from_le_bytes([
+            *blob.get(at).unwrap_or(&0),
+            *blob.get(at.saturating_add(1)).unwrap_or(&0),
+        ]);
+        let len = u32::from_le_bytes([
+            *blob.get(at.saturating_add(4)).unwrap_or(&0),
+            *blob.get(at.saturating_add(5)).unwrap_or(&0),
+            *blob.get(at.saturating_add(6)).unwrap_or(&0),
+            *blob.get(at.saturating_add(7)).unwrap_or(&0),
+        ]) as usize;
+        let vstart = at.saturating_add(crate::tlv::TLV_HEADER_LEN);
+        let vend = vstart.saturating_add(len);
+        if vend > blob.len() {
+            break;
+        }
+        if t == want_type {
+            if len != new_value.len() {
+                return Err(Error::MalformedTlv {
+                    tlv_type: want_type,
+                    reason: "slot directory length changed; header_len would no longer match",
+                });
+            }
+            out.get_mut(vstart..vend)
+                .ok_or(Error::MalformedTlv {
+                    tlv_type: want_type,
+                    reason: "tlv value out of range",
+                })?
+                .copy_from_slice(new_value);
+            return Ok(out);
+        }
+        at = vend;
+    }
+    Err(Error::MissingTlv { tlv_type: want_type })
+}
 /// slot 区在文件中的字节范围，供调用方做「只有这一段变了」的校验。
 #[must_use]
 pub const fn slot_area_range() -> (usize, usize) {

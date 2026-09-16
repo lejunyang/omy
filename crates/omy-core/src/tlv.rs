@@ -51,6 +51,16 @@ pub mod types {
     pub const FOLDER_INDEX: u16 = 0x000E;
     /// 伪装模式的真实 header 偏移。
     pub const DISGUISE_INFO: u16 = 0x000F;
+    /// 槽位目录（可管理模式）。CRITICAL + ENCRYPTED。
+    ///
+    /// CRITICAL 是必须的：不认识此 TLV 的实现必须拒绝打开，否则老版本会
+    /// 把可管理模式的文件当普通文件改密码，槽位目录与实际 slot 区就此
+    /// 对不上——而这种损坏不会立刻显现，等到用户依赖目录去删某个协作者
+    /// 时才暴露，那时已无法判断哪份记录是对的。
+    ///
+    /// ENCRYPTED 同样必须：明文目录等于把「谁能打开这个文件」白送给任何
+    /// 拿到文件的人。
+    pub const SLOT_DIRECTORY: u16 = 0x0010;
 
     /// 私有类型区间下界。官方实现必须忽略此区间的未知类型。
     pub const PRIVATE_RANGE_START: u16 = 0x8000;
@@ -75,6 +85,7 @@ pub mod types {
                 | TRANSCODE_INFO
                 | FOLDER_INDEX
                 | DISGUISE_INFO
+                | SLOT_DIRECTORY
         )
     }
 }

@@ -71,6 +71,7 @@ pub mod scan;
 pub mod session;
 pub mod shard;
 pub mod slot;
+pub mod slotdir;
 pub mod source;
 pub mod unpack;
 pub mod dirname;
