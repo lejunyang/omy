@@ -97,6 +97,7 @@ function iconOf(place) {
       :key="p.path"
       class="sitem"
       :class="{ sel: state.cwd === p.path }"
+      :data-side="'place-' + p.name"
       :title="p.path"
       @click="go(p.path)"
     >

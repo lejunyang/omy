@@ -33,6 +33,7 @@ import {
   reload,
   setNotice,
   loadPlaces,
+  restoreStartupDir,
   loadStorageAccess,
   grantStorageAccess,
   encryptSelected,
@@ -683,6 +684,9 @@ onMounted(async () => {
   // 都是界面首屏需要的，不该为它推迟
   initAutoLock();
   await applySettings();
+  // 起始目录放最后：它依赖 places 已加载（home 模式）且只在启动时跑一次，
+  // 设置保存触发的 applySettings 不应把用户拽回起始目录
+  await restoreStartupDir();
 });
 
 /** 读配置并应用到运行时。

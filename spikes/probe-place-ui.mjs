@@ -305,6 +305,26 @@ async function main() {
     throw new Error('加密默认值未驱动对话框初始值: ' + JSON.stringify(encState));
   }
 
+  // ===== 视图切换持久化 + 上次目录记忆（通用页默认视图/启动位置的真实链路）=====
+  console.log('\n[视图/起始目录]');
+  await click(`(()=>{ const b=document.querySelector('[data-tb="view-list"]'); if(!b) return 'no-list-btn'; b.click(); return 'ok'; })()`, 500);
+  await sleep(300);
+  const vList = await cdp.eval(`window.__p.invoke('config_get').then(c=>c.ui.view)`);
+  await click(`(()=>{ const b=document.querySelector('[data-tb="view-grid"]'); if(!b) return 'no-grid-btn'; b.click(); return 'ok'; })()`, 500);
+  await sleep(300);
+  const vGrid = await cdp.eval(`window.__p.invoke('config_get').then(c=>c.ui.view)`);
+  // 点侧栏「主目录」走真实 store.navigate，去抖 800ms 后 last_dir 应落盘为该路径
+  const homePath = await cdp.eval(`document.querySelector('[data-side="place-home"]')?.getAttribute('title')||''`);
+  await click(`(()=>{ const b=document.querySelector('[data-side="place-home"]'); if(!b) return 'no-home'; b.click(); return 'ok'; })()`, 1200);
+  await sleep(1000);
+  const lastDir = await cdp.eval(`window.__p.invoke('config_get').then(c=>c.ui.last_dir||'')`);
+  console.log('[视图/起始目录诊断] ' + JSON.stringify({ vList, vGrid, homePath, lastDir }));
+  if (vList !== 'list' || vGrid !== 'grid' || !homePath || lastDir !== homePath) {
+    throw new Error('视图持久化/上次目录记忆不符合预期: ' + JSON.stringify({ vList, vGrid, homePath, lastDir }));
+  }
+  // 还原配置（last_dir 被这一步写成主目录，view 虽已点回网格，仍整体还原一次）
+  await cdp.eval(`(async()=>{ if(window.__savedCfg){ await window.__p.invoke('config_set',{config:window.__savedCfg}); } return 'restored'; })()`);
+
   // 安全页「立即锁定」真实验证：重开设置 → 安全 → 点锁定，
   // 断言会话密码数归零、设置弹窗被关闭（走 App 统一锁定收尾）。
   console.log('\n[立即锁定]');

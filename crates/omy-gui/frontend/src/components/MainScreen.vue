@@ -27,6 +27,7 @@ import {
   clearSelection,
   clearNotice,
   enterRemoteDir,
+  setView,
 } from '../store.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
@@ -205,19 +206,21 @@ function onRowMenu(e, ev) {
     <template v-if="!isMobile">
       <button
         class="iconbtn"
+        data-tb="view-grid"
         :aria-pressed="state.view === 'grid'"
         :title="i18n.t('view.grid')"
         :aria-label="i18n.t('view.grid')"
-        @click="state.view = 'grid'"
+        @click="setView('grid')"
       >
         ⊞
       </button>
       <button
         class="iconbtn"
+        data-tb="view-list"
         :aria-pressed="state.view === 'list'"
         :title="i18n.t('view.list')"
         :aria-label="i18n.t('view.list')"
-        @click="state.view = 'list'"
+        @click="setView('list')"
       >
         ☰
       </button>

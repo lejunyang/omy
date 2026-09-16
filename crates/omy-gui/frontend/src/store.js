@@ -806,6 +806,65 @@ const containerEntries = computed(() => {
 /* ---------------- 导航 ---------------- */
 
 /** 打开一个目录。 */
+/** 切换网格/列表视图，并把选择持久化为「默认视图」。
+ *
+ * 界面上的切换若只改内存，重启就回到网格——设置页那个「默认视图」选项
+ * 也就形同虚设。这里在切换后读改写一次配置；保存失败不阻断本次切换。
+ */
+export async function setView(v) {
+  if (v !== 'grid' && v !== 'list') return;
+  state.view = v;
+  try {
+    const c = await api.configGet();
+    if (c.ui) {
+      c.ui.view = v;
+      await api.configSet(c);
+    }
+  } catch {
+    // 偏好存不下时本次切换仍生效，只是不跨重启
+  }
+}
+
+/** 记住最后浏览的本地目录，去抖落盘。
+ *
+ * 连续进入多级目录（双击进入、上级、面包屑）会在短时间内触发多次 navigate，
+ * 每次都读改写配置既浪费也可能乱序，去抖后只记最后停留的目录。
+ */
+let lastDirTimer = null;
+function schedulePersistLastDir(dir) {
+  if (lastDirTimer) clearTimeout(lastDirTimer);
+  lastDirTimer = setTimeout(() => {
+    lastDirTimer = null;
+    api.configGet().then((c) => {
+      if (c.ui && c.ui.last_dir !== dir) {
+        c.ui.last_dir = dir;
+        return api.configSet(c);
+      }
+      return undefined;
+    }).catch(() => { /* 记不住不影响本次浏览 */ });
+  }, 800);
+}
+
+/** 启动时按「启动时打开」配置恢复起始目录。
+ *
+ * last：回到上次最后浏览的目录；home：进主目录；其余（询问/指定）不导航。
+ * 目录已失效或未授权时 navigate 自身会给出可关闭的错误条，不阻断启动。
+ */
+export async function restoreStartupDir() {
+  try {
+    const c = await api.configGet();
+    const mode = c.ui?.startup || 'last';
+    if (mode === 'last' && c.ui?.last_dir) {
+      await navigate(c.ui.last_dir);
+    } else if (mode === 'home') {
+      const home = state.places.find((p) => p && p.name === 'home');
+      if (home && home.path) await navigate(home.path);
+    }
+  } catch {
+    // 配置读不出就停在空白起始页，不影响启动
+  }
+}
+
 export async function navigate(dir) {
   state.busy = true;
   state.busyKey = 'busy.loading';
@@ -818,6 +877,7 @@ export async function navigate(dir) {
     // 磁盘路径和容器层级，点哪个都对不上
     state.container = null;
     await refreshKnown();
+    schedulePersistLastDir(dir);
   } catch (e) {
     state.error = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
   } finally {
