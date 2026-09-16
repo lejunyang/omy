@@ -151,6 +151,7 @@ scan_omy_only = true
 | `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI）|
 | `remote.cache_wifi_only` | `false` | 仅 Wi-Fi 下缓存（移动端，暂未生效）|
 | `remote.scan_concurrency` | `8` | 远程扫描并发请求数，1–32（仅 GUI）|
+| `remote.places` | `[]` | 已保存的远程位置，由界面维护；密码在其中以加密信封形式保存（仅 GUI）|
 | `remote.scan_omy_only` | `true` | 远程扫描是否只看 `.omy`（仅 GUI）|
 
 ::: warning original_action 改成 trash 或 delete 要想清楚

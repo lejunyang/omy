@@ -90,10 +90,57 @@ Portable-first layout:
 
 See [Configuration](configuration) for the full list of keys.
 
+## How passwords are stored
+
+Remote locations are saved along with your configuration and come back after a
+restart. The **password is never written to the configuration file in plain
+text**: it is encrypted with a key, and that key is handed to the operating
+system to keep.
+
+| Platform | Where the key lives |
+|---|---|
+| Windows | Credential Manager |
+| macOS | Keychain |
+| Linux | Secret Service (gnome-keyring / KWallet, etc.) |
+| Android | The app's private directory |
+
+This means **copying the configuration file to another machine gets you
+nothing** — the key is not there. Equally, if you move to a new computer or
+clear your keychain, the locations are still listed but you have to enter the
+password again.
+
+::: warning What it does and does not protect against
+It protects against: the configuration file being copied, the disk being pulled
+and mounted elsewhere, a leaked backup.
+
+It does **not** protect against an attacker who can run programs as you on this
+machine — they can simply ask the system for the key. That is an inherent limit
+of OS credential stores, not something specific to omy. Defending against it
+needs a "verify your fingerprint every time" tier, which does not exist yet.
+:::
+
+::: tip Linux needs a keyring service
+On Linux something implementing Secret Service must be present (installing a
+desktop environment usually brings one). Without it omy does **not** fall back
+to storing the password in plain text — the location is still saved, the
+password is not, and you enter it each time you start. Settings shows which
+state you are in.
+
+The kernel keyring (keyutils) would also work, but it is cleared on reboot,
+which would mean re-entering the password after every restart, so omy does not
+use it.
+:::
+
+The **name, address and username are stored in plain text**; only the password
+is encrypted. This is deliberate: without the key those locations must still be
+listed so you can be told to log in again, rather than showing an empty list
+that looks like lost configuration. The cost is that anyone reading the file can
+tell which server you use.
+
 ## Current limitations (first iteration)
 
-- **Remote locations are kept in memory for the current session only**; after a restart you re-add and re-authenticate. Persisting locations and encrypting credentials is the next problem to solve.
 - **Remote write operations** — encrypted upload, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing, streaming, and decrypt-to-local. Decrypting an encrypted folder (container) from remote to local is not supported yet either.
 - No private (non-WebDAV) cloud drivers yet.
+- No "unlock with fingerprint / face" tier for credential protection yet.
 
 The design and progress notes live in `docs/research/14-remote-locations-cloud.md` in the repository.

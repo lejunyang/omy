@@ -151,6 +151,7 @@ The command line has no use for auto-lock or a remote cache, but both read the s
 | `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only) |
 | `remote.cache_wifi_only` | `false` | Cache on Wi-Fi only (mobile; not yet active) |
 | `remote.scan_concurrency` | `8` | Concurrent requests when scanning, 1–32 (GUI only) |
+| `remote.places` | `[]` | Saved remote locations, managed by the GUI; passwords are stored there as encrypted envelopes (GUI only) |
 | `remote.scan_omy_only` | `true` | Whether remote scanning only looks at `.omy` (GUI only) |
 
 ::: warning Think before setting original_action to trash or delete
