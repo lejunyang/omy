@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use crate::commands::{CmdError, CmdResult, Shared};
-use crate::place_files::{OpenPlaceFile, PlaceFiles, RemoteCache};
+use crate::place_files::{OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
 use omy_core::crypto::Kek;
 use omy_remote::source::RemoteSource;
@@ -47,6 +47,9 @@ pub struct RemoteEntry {
     /// 这个是「根本没读到」。界面必须用不同的图标和文案，
     /// 否则用户会去反复试密码而不是检查网络。
     pub probe_failed: bool,
+    /// 列表缩略图令牌：仅当已解锁且文件头里确实带缩略图时为 `Some`，
+    /// 前端据此请求 `omystream://pthumb/<token>`；否则回退类型图标。
+    pub thumb_token: Option<String>,
 }
 
 /// 把远程错误映射为结构化错误码。
@@ -110,6 +113,7 @@ pub fn remote_place_remove(reg: tauri::State<'_, Arc<PlaceRegistry>>, id: String
 pub async fn remote_browse(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
@@ -176,6 +180,10 @@ pub async fn remote_browse(
         "每个待探测文件都应回收一份头部"
     );
 
+    // 缩略图 token 只服务当前这一屏：开始组装结果前清掉上一屏登记的头部，
+    // 避免反复进出目录让句柄表无限增长，也防止旧 token 串到新列表。
+    thumbs.clear();
+
     let mut out = Vec::with_capacity(items.len());
     for (idx, it) in items.into_iter().enumerate() {
         let mut e = RemoteEntry {
@@ -188,6 +196,7 @@ pub async fn remote_browse(
             real_name: None,
             plaintext_size: None,
             probe_failed: false,
+            thumb_token: None,
         };
 
         if let Some(Some(res)) = heads.get(idx) {
@@ -195,11 +204,16 @@ pub async fn remote_browse(
                 Ok(bytes) => {
                     // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
                     // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
-                    if let Some((unlocked, real, psize)) = probe_omy(bytes, &state) {
+                    if let Some((unlocked, real, psize, has_thumb)) = probe_omy(bytes, &state) {
                         e.is_encrypted = true;
                         e.unlocked = unlocked;
                         e.real_name = real;
                         e.plaintext_size = psize;
+                        // 已解锁且头部带缩略图：头部此刻已在手里，登记一份
+                        // 轻量句柄即可让列表直接显示缩略图，不再多发一次请求。
+                        if unlocked && has_thumb {
+                            e.thumb_token = thumbs.insert(bytes.clone());
+                        }
                     }
                 }
                 // 读不到就如实标记，不要静默当成普通文件——那会让用户
@@ -483,11 +497,12 @@ fn open_in_file_manager(_path: &std::path::Path) -> CmdResult<()> {
 
 /// 用会话里的密钥尝试识别并解开一段文件头。
 ///
-/// 返回 `None` 表示不是 omy 文件。
+/// 返回 `None` 表示不是 omy 文件。元组末项表示文件头里是否带缩略图
+/// （仅在已解锁时才有意义）。
 fn probe_omy(
     bytes: &[u8],
     state: &crate::commands::Shared,
-) -> Option<(bool, Option<String>, Option<u64>)> {
+) -> Option<(bool, Option<String>, Option<u64>, bool)> {
     let header = omy_core::file::peek_header(bytes).ok()?;
 
     // 能解析出头部就说明是 omy 文件，即便打不开
@@ -499,10 +514,10 @@ fn probe_omy(
     });
 
     let Some(keks) = keks else {
-        return Some((false, None, None));
+        return Some((false, None, None, false));
     };
     if keks.is_empty() {
-        return Some((false, None, None));
+        return Some((false, None, None, false));
     }
 
     // open 只访问 data[..header_len]，所以传头部字节就够——
@@ -510,10 +525,11 @@ fn probe_omy(
     match omy_core::file::open(bytes, &keks) {
         Ok(opened) => {
             let name = opened.filename().ok();
-            Some((true, name, Some(opened.header.plaintext_size)))
+            let has_thumb = opened.thumbnail().is_ok();
+            Some((true, name, Some(opened.header.plaintext_size), has_thumb))
         }
         // 解不开是正常情况：文件可能属于另一个密码集
-        Err(_) => Some((false, None, None)),
+        Err(_) => Some((false, None, None, false)),
     }
 }
 
@@ -555,11 +571,12 @@ mod tests {
             real_name: None,
             plaintext_size: None,
             probe_failed: true,
+            thumb_token: None,
         };
         let j = serde_json::to_value(&e).expect("序列化");
         for k in [
             "id", "name", "is_dir", "size", "is_encrypted", "unlocked", "real_name",
-            "plaintext_size", "probe_failed",
+            "plaintext_size", "probe_failed", "thumb_token",
         ] {
             assert!(j.get(k).is_some(), "字段 {k} 不能改名或缺失");
         }

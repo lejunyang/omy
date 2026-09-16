@@ -63,6 +63,22 @@ try {
     Copy-Item $localOmy (Join-Path $cnDir '大片 2.mp4.omy')
     Set-Content -Path (Join-Path $davDir 'plain.txt') -Value 'not encrypted' -NoNewline
 
+    # 额外造一个**带缩略图**的加密视频，专门验证云盘列表缩略图链路
+    # （browse 登记 pthumb token → omystream://pthumb 取文件头里的缩略图）。
+    # 必须先加密进本地 vault 再复制到云盘：它有独立 vault salt，只有解锁
+    # 本地 vault 时该 salt 的 KEK 进了会话，云盘里的同名副本才打得开。
+    # 没有 ffmpeg 抽不了帧就跳过，探针端按文件是否存在决定是否断言。
+    if ($ff) {
+        # 源文件名也要区别于 movie.mp4：加密后列表显示的是解密出的原始名，
+        # 两个源同名会让探针无法按名字定位缩略图样例。
+        $thumbPlain = Join-Path $work 'thumb.mp4'
+        Copy-Item $plain $thumbPlain
+        $thumbLocal = Join-Path $vaultDir 'thumb.mp4.omy'
+        & $omy encrypt $thumbPlain -o $thumbLocal --password-env OMY_CLOUD_PW --kdf-profile mobile --thumbnail auto 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw '带缩略图加密失败' }
+        Copy-Item $thumbLocal (Join-Path $davDir 'thumb.mp4.omy')
+    }
+
     Get-Process dav_server -ErrorAction SilentlyContinue | Stop-Process -Force
     $davProc = Start-Process -FilePath $dav -ArgumentList "`"$davDir`"", "$davPort" -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 800

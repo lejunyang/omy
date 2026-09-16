@@ -130,9 +130,32 @@ async function main() {
       const op=await fetch(url,{method:'OPTIONS',headers:{'Access-Control-Request-Method':'GET','Access-Control-Request-Headers':'range'}});
       out.push({label:'options',status:op.status,am:op.headers.get('Access-Control-Allow-Methods'),ah:op.headers.get('Access-Control-Allow-Headers'),ao:op.headers.get('Access-Control-Allow-Origin')});
     }catch(e){out.push({label:'options',error:String(e)});}
-    return JSON.stringify({kind:r.kind,mime:r.mime,total:r.size,out});
+    // 远程缩略图：browse 已读完整头部，带缩略图的条目应直接给 pthumb token，
+    // 凭它取文件头里的缩略图，不应再有额外网络往返。
+    let thumbDiag=null;
+    const tt=list.find(x=>(x.real_name||x.name||'').includes('thumb.mp4'));
+    if(tt){
+      if(tt.thumb_token){
+        const tr=await fetch(base+'/pthumb/'+tt.thumb_token);
+        thumbDiag={hasToken:true,status:tr.status,ct:tr.headers.get('Content-Type'),
+          bytes:tr.status<400?(await tr.arrayBuffer()).byteLength:0};
+      }else{ thumbDiag={hasToken:false,unlocked:tt.unlocked,is_encrypted:tt.is_encrypted,probe_failed:tt.probe_failed,real_name:tt.real_name,size:tt.size}; }
+    }
+    return JSON.stringify({kind:r.kind,mime:r.mime,total:r.size,out,thumbDiag});
   })()`);
   console.log('       [移动预览诊断]', mdiag);
+  // 缩略图夹具存在（有 ffmpeg 才造）时，pthumb 必须回 200 且是图片字节；
+  // 夹具不存在则 thumbDiag=null，跳过不断言（无 ffmpeg 环境本就抽不了帧）。
+  const md=JSON.parse(mdiag);
+  if(md.thumbDiag!==null){
+    const t=md.thumbDiag;
+    if(!t.hasToken || t.status!==200 || !(t.ct||'').startsWith('image/') || !(t.bytes>0)){
+      throw new Error('远程缩略图链路失败: '+JSON.stringify(t));
+    }
+    console.log('       [远程缩略图] pthumb 200', t.ct, t.bytes+'B');
+  }else{
+    console.log('       [远程缩略图] 夹具无 thumb.mp4.omy（可能无 ffmpeg），跳过');
+  }
   await cdp.shot('m03-preview');
 
   await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 'esc'`);
@@ -178,6 +201,25 @@ async function main() {
   })()`, 2000);
   console.log('       侧栏进入 ->', entered);
   await cdp.shot('d01-dir');
+
+  // 桌面网格：带缩略图的远程卡片应真正渲染出 pthumb 图片（naturalWidth>0），
+  // 而不只是有个 img 标签。仅有缩略图夹具时断言。
+  if (md.thumbDiag) {
+    const dthumb = await cdp.eval(`(async()=>{
+      const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+      for(let i=0;i<30;i++){
+        const c=[...document.querySelectorAll('.content .card')].find(x=>(x.querySelector('.cname')?.textContent||'').includes('thumb.mp4'));
+        if(c){ const img=c.querySelector('.thumb img');
+          if(img && img.src.includes('/pthumb/') && img.naturalWidth>0) return {ok:true,w:img.naturalWidth,h:img.naturalHeight};
+          if(i>4 && !img) return {ok:false,reason:'grid-card-has-no-pthumb-img'};
+        }
+        await sleep(150);
+      }
+      return {ok:false,reason:'timeout'};
+    })()`);
+    console.log('       [桌面网格缩略图]', JSON.stringify(dthumb));
+    if (!dthumb.ok) throw new Error('桌面网格未渲染远程缩略图: ' + JSON.stringify(dthumb));
+  }
 
   // 桌面双击打开（桌面默认网格视图，条目是 .card；同时兼容列表 .lrow）
   await click(`(()=>{
@@ -339,7 +381,9 @@ async function main() {
   const dlgGone = await cdp.eval(`String(!document.querySelector('.setdlg'))`);
   const lockAssert = { before, clicked, after, dlgGone };
   console.log('[立即锁定诊断] ' + JSON.stringify(lockAssert));
-  if (before !== '1' || clicked !== 'clicked' || after !== '0' || dlgGone !== 'true') {
+  // 夹具本地 vault 可能含多个不同 salt 的库（如额外的缩略图样例），
+  // 锁定前凭据数只要求 >0，关键是锁定后必须全部归零、弹窗关闭。
+  if (!(Number(before) > 0) || clicked !== 'clicked' || after !== '0' || dlgGone !== 'true') {
     throw new Error('立即锁定未生效: ' + JSON.stringify(lockAssert));
   }
 

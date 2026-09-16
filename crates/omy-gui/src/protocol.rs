@@ -47,7 +47,7 @@
 //! 结果是：远端 1 GB 的视频拖动进度条时，只取那附近的几十 KB，
 //! 既不用先下完整个文件，也没有任何明文落盘。
 
-use crate::place_files::PlaceFiles;
+use crate::place_files::{PlaceFiles, PlaceThumbs};
 use crate::remote::RemoteSession;
 use crate::state::AppState;
 use omy_core::crypto::Kek;
@@ -228,6 +228,7 @@ pub fn handle(
     state: &Arc<AppState>,
     remote: &Arc<RemoteSession>,
     place_files: &PlaceFiles,
+    place_thumbs: &crate::place_files::PlaceThumbs,
     request: &Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {
     // CORS 预检必须在任何解密之前短路。
@@ -266,7 +267,7 @@ pub fn handle(
         Target::RemoteFile(id) => serve_remote_file(state, remote, request, &id),
         Target::RemoteThumb(id) => serve_remote_thumb(state, remote, &id),
         Target::PlaceFile(token) => serve_place_file(state, place_files, request, &token),
-        Target::PlaceThumb(token) => serve_place_thumb(state, place_files, &token),
+        Target::PlaceThumb(token) => serve_place_thumb(state, place_thumbs, &token),
         Target::Plain(token) => serve_plain(state, request, &token),
         Target::ContainerItem(token) => serve_container_item(state, request, &token),
     }
@@ -984,13 +985,14 @@ fn serve_place_file(
 /// 缩略图在头部 TLV 里，打开时头部已完整读入，所以这里不产生额外网络往返。
 fn serve_place_thumb(
     state: &Arc<AppState>,
-    files: &PlaceFiles,
+    thumbs: &PlaceThumbs,
     token: &str,
 ) -> Response<Vec<u8>> {
-    let Some(f) = files.get(token) else {
+    // 缩略图表只登记文件头：列表浏览时已取回完整头部，这里不再发任何网络请求。
+    let Some(header) = thumbs.get(token) else {
         return bare(StatusCode::NOT_FOUND);
     };
-    let Some(opened) = open_place(state, &f) else {
+    let Some(opened) = open_place_header(state, &header) else {
         return bare(StatusCode::FORBIDDEN);
     };
     let Ok(bytes) = opened.thumbnail() else {
@@ -1016,14 +1018,19 @@ fn open_place(
     state: &Arc<AppState>,
     f: &crate::place_files::OpenPlaceFile,
 ) -> Option<OpenedFile> {
-    let h = omy_core::file::peek_header(&f.header).ok()?;
+    open_place_header(state, &f.header)
+}
+
+/// 用会话密钥打开一段远程文件头（播放句柄与缩略图句柄共用）。
+fn open_place_header(state: &Arc<AppState>, header: &[u8]) -> Option<OpenedFile> {
+    let h = omy_core::file::peek_header(header).ok()?;
     let keks: Vec<Kek> = state.with_session(|s| {
         s.all_for(&h.vault_salt)
             .into_iter()
             .map(|c| c.kek)
             .collect()
     })?;
-    omy_core::file::open(&f.header, &keks).ok()
+    omy_core::file::open(header, &keks).ok()
 }
 
 #[cfg(test)]

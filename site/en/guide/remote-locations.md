@@ -29,6 +29,7 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 
 - Recognition reads the file header rather than relying on the name, so renamed or moved files are classified correctly;
 - Video, audio, and images use the same preview/playback pipeline as local files. Seeking fetches ciphertext blocks on demand via HTTP `Range` — the whole file is **never** downloaded first;
+- In grid view, unlocked entries whose header carries a thumbnail show it directly. The thumbnail lives in the header TLV and is obtained while listing the directory, so **no body download is involved**; on failure it falls back to a type icon;
 - Decryption happens locally. The server and the wire only ever see ciphertext, just like the [LAN sharing](lan-sharing) model: you must know the password yourself.
 
 ## Read-only vs writable
@@ -39,6 +40,7 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 |---|---|---|
 | List, recognize `.omy` | ✅ | ✅ |
 | Preview / stream (read ciphertext on demand) | ✅ | ✅ |
+| Listing thumbnails (read header, not body) | ✅ | ✅ |
 | Ciphertext block cache | ✅ | ✅ |
 | Encrypted upload, new folder, rename, delete | ✅ (planned) | ❌ rejected before any request is sent |
 
@@ -75,6 +77,5 @@ See [Configuration](configuration) for the full list of keys.
 - **Remote locations are kept in memory for the current session only**; after a restart you re-add and re-authenticate. Persisting locations and encrypting credentials is the next problem to solve.
 - **Write operations** — encrypted upload, decrypt-to-local, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing and streaming.
 - No private (non-WebDAV) cloud drivers yet.
-- Remote thumbnails are not wired up separately yet.
 
 The design and progress notes live in `docs/research/14-remote-locations-cloud.md` in the repository.

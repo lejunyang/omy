@@ -19,7 +19,7 @@
  * 写链路在只读浏览稳定后再开，避免放出点了却报错的按钮。
  */
 
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
 import {
@@ -31,6 +31,7 @@ import {
   enterRemoteDir,
   remoteGoUp,
   removeRemotePlace,
+  placeThumbUrl,
 } from '../store.js';
 
 const emit = defineEmits(['open', 'add']);
@@ -137,6 +138,16 @@ function icon(f) {
 /** 条目能否被激活（决定可点击观感）。 */
 function activatable(f) {
   return f.is_dir || (f.is_encrypted && f.unlocked && !f.probe_failed);
+}
+
+// 加载失败的缩略图 token：回退到类型图标，不留一块破图。
+// 用 token 而非文件 id 做键——刷新目录后 token 会换，失败状态不该带到新句柄。
+const brokenThumbs = ref(new Set());
+function onThumbError(token) {
+  if (!token || brokenThumbs.value.has(token)) return;
+  const next = new Set(brokenThumbs.value);
+  next.add(token);
+  brokenThumbs.value = next;
 }
 
 function kindLabel(p) {
@@ -272,7 +283,14 @@ function capsLabel() {
             @keydown.enter.prevent="onEntryDbl(f)"
           >
             <div class="thumb">
-              <span aria-hidden="true">{{ icon(f) }}</span>
+              <img
+                v-if="state.showThumbnails && f.thumb_token && !brokenThumbs.has(f.thumb_token)"
+                :src="placeThumbUrl(f.thumb_token)"
+                alt=""
+                loading="lazy"
+                @error="onThumbError(f.thumb_token)"
+              />
+              <span v-else aria-hidden="true">{{ icon(f) }}</span>
             </div>
             <div class="cname">{{ displayName(f) }}</div>
             <div class="cmeta">

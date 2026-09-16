@@ -152,9 +152,7 @@ pub struct OpenPlaceFile {
 pub struct PlaceFiles {
     files: Mutex<HashMap<String, Arc<OpenPlaceFile>>>,
     seq: Mutex<u64>,
-}
-
-impl PlaceFiles {
+}impl PlaceFiles {
     /// 空表。
     #[must_use]
     pub fn new() -> Self {
@@ -194,6 +192,52 @@ impl PlaceFiles {
     /// 锁定前后的两个文件复用同一 token。
     pub fn clear(&self) {
         if let Ok(mut m) = self.files.lock() {
+            m.clear();
+        }
+    }
+}
+
+/// 远程缩略图句柄表（只存文件头，不存正文来源）。
+///
+/// 列表里每个媒体文件都要显示缩略图，但为每张图都构造一个带网络来源的
+/// [`OpenPlaceFile`] 既浪费也无必要——缩略图 TLV 就在**文件头**里，
+/// `browse` 列目录时已经把完整头部取回来了。这里登记「token → 完整头部」，
+/// `omystream://pthumb/<token>` 凭头部当场 `open` 出缩略图，零额外网络请求。
+///
+/// 与 [`PlaceFiles`] 分开：缩略图只服务当前这一屏列表，刷新目录即清空，
+/// 不与播放句柄（要跨多次 Range 请求、锁定才清）混在同一张表里。
+#[derive(Default)]
+pub struct PlaceThumbs {
+    thumbs: Mutex<HashMap<String, Vec<u8>>>,
+    seq: Mutex<u64>,
+}
+
+impl PlaceThumbs {
+    /// 空表。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记一份完整文件头用于取缩略图，返回不透明 token。
+    pub fn insert(&self, header: Vec<u8>) -> Option<String> {
+        let mut seq = self.seq.lock().ok()?;
+        *seq += 1;
+        let token = format!("pt{seq}");
+        let mut thumbs = self.thumbs.lock().ok()?;
+        thumbs.insert(token.clone(), header);
+        Some(token)
+    }
+
+    /// 按 token 取文件头字节。
+    #[must_use]
+    pub fn get(&self, token: &str) -> Option<Vec<u8>> {
+        self.thumbs.lock().ok()?.get(token).cloned()
+    }
+
+    /// 刷新目录或锁定时清空：上一屏的缩略图 token 全部失效。
+    pub fn clear(&self) {
+        if let Ok(mut m) = self.thumbs.lock() {
             m.clear();
         }
     }
@@ -254,6 +298,25 @@ mod tests {
         // 清空后再打开不复用旧 token
         let t3 = files.insert(make_holder(30)).expect("token3");
         assert_ne!(t3, t2, "清空后 token 也不能复用");
+    }
+
+    /// 缩略图表：token 唯一可取，刷新 / 锁定清空后旧 token 全失效。
+    ///
+    /// 不这样会怎样：列表反复进出目录，文件头在句柄表里只增不减，且上一屏
+    /// 的 pthumb token 还能取到内容——与「锁定后什么都读不到」相悖。
+    #[test]
+    fn place_thumbs_register_and_clear() {
+        let t = PlaceThumbs::new();
+        let a = t.insert(vec![1u8, 2, 3]).expect("token a");
+        let b = t.insert(vec![4u8]).expect("token b");
+        assert_ne!(a, b, "两次登记的 token 不能相同");
+        assert_eq!(t.get(&a).as_deref(), Some(&[1u8, 2, 3][..]));
+        assert_eq!(t.get(&b).as_deref(), Some(&[4u8][..]));
+        t.clear();
+        assert!(
+            t.get(&a).is_none() && t.get(&b).is_none(),
+            "刷新/锁定后旧缩略图 token 必须全失效"
+        );
     }
 
     /// 造一个 holder。`RemoteSource::new` 只 `peek_header`、不发网络，

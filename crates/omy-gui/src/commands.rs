@@ -295,6 +295,7 @@ pub async fn lock(
     devices: State<'_, crate::device_cmds::SharedDevices>,
     remote: State<'_, std::sync::Arc<crate::remote::RemoteSession>>,
     place_files: State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
+    place_thumbs: State<'_, std::sync::Arc<crate::place_files::PlaceThumbs>>,
 ) -> CmdResult<()> {
     state.lock();
     devices.close();
@@ -312,6 +313,8 @@ pub async fn lock(
     // Range 取明文，必须在后端随锁定一并关闭。密文磁盘缓存不删——
     // 它本就是密文，删不删不影响「锁定后读不到明文」这条保证。
     place_files.clear();
+    // 列表缩略图句柄（文件头）同样随锁定失效，否则锁定后 pthumb token 仍在。
+    place_thumbs.clear();
     Ok(())
 }
 

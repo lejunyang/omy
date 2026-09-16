@@ -91,6 +91,9 @@ pub fn run() {
         Arc::new(place_files::RemoteCache::from_config());
     let place_files: Arc<place_files::PlaceFiles> = Arc::new(place_files::PlaceFiles::new());
     let for_protocol_places = Arc::clone(&place_files);
+    // 远程列表缩略图句柄表：只存文件头，刷新目录 / 锁定即清空。
+    let place_thumbs: Arc<place_files::PlaceThumbs> = Arc::new(place_files::PlaceThumbs::new());
+    let for_protocol_thumbs = Arc::clone(&place_thumbs);
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -114,15 +117,17 @@ pub fn run() {
         .manage(Arc::clone(&place_registry))
         .manage(Arc::clone(&remote_cache))
         .manage(Arc::clone(&place_files))
+        .manage(Arc::clone(&place_thumbs))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
             let st = Arc::clone(&for_protocol);
             let rm = Arc::clone(&for_protocol_remote);
             let pf = Arc::clone(&for_protocol_places);
+            let pt = Arc::clone(&for_protocol_thumbs);
             // 解密可能耗时，必须离开 WebView 线程
             std::thread::spawn(move || {
-                responder.respond(protocol::handle(&st, &rm, &pf, &request));
+                responder.respond(protocol::handle(&st, &rm, &pf, &pt, &request));
             });
         })
         .invoke_handler(tauri::generate_handler![
