@@ -6,11 +6,12 @@
  * 播放中必须算活跃，否则会把正在看的片子锁掉，而用户完全不知道
  * 为什么画面突然没了。
  *
- * # 切到后台按用户配置立即锁定
+ * # 切到后台怎么算
  *
- * 与按时间的闲置分开配置。切后台时应用截图会进入系统任务切换器，
- * 锁屏后他人拿到设备就能看到内容——这比「人离开了电脑」紧急得多，
- * 不该共用一个超时值。
+ * 默认「切后台 = 开始闲置」，不单独立即锁：切出去回消息时，计时照常走，
+ * 而播放中（见上）仍算活跃不会被锁。只有用户显式打开「切后台立即锁定」
+ * （lock_on_background）时，才在页面 hidden 的瞬间锁——那是给担心任务
+ * 切换器截图泄露内容的强安全场景，代价是回到前台总要重新解锁。
  *
  * # 为什么计时器放前端
  *
@@ -28,8 +29,8 @@ let lastActive = Date.now();
 let timer = null;
 /** 闲置多少毫秒后锁定；0 表示从不。 */
 let idleMs = 0;
-/** 切后台是否立即锁定。 */
-let lockOnBackground = true;
+/** 切后台是否立即锁定（显式强安全选项，默认关：默认切后台只算闲置）。 */
+let lockOnBackground = false;
 
 /** 当前是否有媒体正在播放。
  *
@@ -76,11 +77,14 @@ function tick() {
   }
 }
 
-/** 页面切到后台。
+/**
+ * 页面切到后台。
  *
- * 移动端切后台等于闲置：截图会进任务切换器，风险比离开电脑更直接。
- * 播放中同样锁——后台播放时屏幕上没有内容，锁掉不影响观看，
- * 而不锁的话手机放在桌上任何人都能划出来看。
+ * 只有显式开启「切后台立即锁定」才在这里立刻锁。默认开关关闭时什么都不
+ * 做——切后台等同于开始闲置，由上面的 tick 按 auto_lock_secs 结算，播放中
+ * 同样受豁免。后台定时器会被系统节流甚至挂起，所以默认路径下真正的锁定
+ * 往往发生在回到前台、tick 补发发现已超时的那一刻：回前台先锁、再要密码，
+ * 不会把内容直接亮出来。
  */
 function onVisibility() {
   if (document.visibilityState === 'hidden' && lockOnBackground) {
@@ -94,7 +98,8 @@ function onVisibility() {
  */
 export function configureAutoLock(security) {
   idleMs = Math.max(0, Number(security?.auto_lock_secs || 0)) * 1000;
-  lockOnBackground = security?.lock_on_background !== false;
+  // 只有显式 true 才立即锁；缺省/旧配置缺字段时按默认（切后台只算闲置）
+  lockOnBackground = security?.lock_on_background === true;
 
   if (timer) {
     clearInterval(timer);

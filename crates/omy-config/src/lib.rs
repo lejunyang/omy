@@ -206,11 +206,13 @@ pub struct Security {
     /// 「闲置」的判定不能只看输入设备：用户看两小时加密电影时全程不碰
     /// 鼠标键盘，那不是闲置。播放中必须算活跃，否则会把正在看的片子锁掉。
     pub auto_lock_secs: u64,
-    /// 移动端切到后台时立即锁定。
+    /// 切到后台（移动端切应用 / 桌面最小化）时**立即**锁定。
     ///
-    /// 与 `auto_lock_secs` 分开，因为两者的风险完全不同：切后台时应用
-    /// 截图会进系统任务切换器，锁屏后他人拿到手机就能看到内容——
-    /// 这比「人离开了电脑」紧急得多，不能共用一个超时值。
+    /// 与 `auto_lock_secs` 是两条独立的策略：
+    /// - 关闭（默认）时，切后台只等于「开始闲置」，回到闲置计时里结算，
+    ///   **播放中不算闲置**——看片时切出去回消息不会被锁；
+    /// - 开启时，切后台的瞬间就锁（播放中也锁）。这面向任务切换器截图会
+    ///   暴露内容的强安全诉求，代价是回到前台总要重新解锁一次。
     pub lock_on_background: bool,
     /// 用外部程序打开后，关闭时立即清理临时明文。
     pub wipe_temp_plaintext: bool,
@@ -223,9 +225,9 @@ impl Default for Security {
             // 起，高档位更久），默认开启会让「看两个文件就要重输一次密码」
             // 成为常态。让用户按自己的场景选。
             auto_lock_secs: 0,
-            // 移动端默认开启：切后台的泄露面是具体的（任务切换器截图），
-            // 而代价只是回到前台重新解锁一次。
-            lock_on_background: true,
+            // 默认关闭：切后台按「闲置」处理，交给 auto_lock_secs 计时，
+            // 播放中还会豁免；只有显式开启才在切后台瞬间立即锁定。
+            lock_on_background: false,
             wipe_temp_plaintext: true,
         }
     }
@@ -536,14 +538,15 @@ mod tests {
         assert!(Config::load_from(&p).is_err(), "显式指定的缺失文件应报错");
     }
 
-    /// 安全默认值：自动锁定默认关闭，切后台锁定默认开启。
+    /// 安全默认值：不主动自动锁定。
     ///
-    /// 两者默认值相反是有意的，理由见 Security 的字段文档。
+    /// 自动锁定（按闲置时间）与切后台立即锁定默认都关闭，让用户按场景显式
+    /// 开启；切后台默认只是「开始闲置」，仍受播放豁免保护。
     #[test]
     fn security_defaults_are_intentional() {
         let s = Security::default();
         assert_eq!(s.auto_lock_secs, 0, "默认不按时间自动锁定");
-        assert!(s.lock_on_background, "切后台默认锁定");
+        assert!(!s.lock_on_background, "切后台默认按闲置处理，不立即锁");
         assert!(s.wipe_temp_plaintext);
     }
 

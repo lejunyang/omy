@@ -519,7 +519,7 @@
     "lock_hours": "After {{n}} h idle",
     "background": "Backgrounding",
     "lock_on_background": "Lock immediately when backgrounded",
-    "lock_on_background_desc": "A snapshot of the app enters the system task switcher, which others may see.",
+    "lock_on_background_desc": "When on, locks the instant you background the app (even during playback) to prevent task-switcher snapshots; when off, backgrounding only counts as idle and playback is not locked.",
     "temp_plaintext": "Temporary plaintext",
     "wipe_temp": "Delete as soon as the external app closes",
     "encrypt_defaults_note": "These are only the initial values of the encrypt dialog; already-encrypted files are unaffected.",

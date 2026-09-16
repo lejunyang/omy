@@ -519,7 +519,7 @@
     "lock_hours": "闲置 {{n}} 小时后",
     "background": "切到后台",
     "lock_on_background": "切到后台时立即锁定",
-    "lock_on_background_desc": "切后台时应用截图会进入系统任务切换器，锁屏后他人可能看到内容。",
+    "lock_on_background_desc": "开启后切到后台的瞬间立即锁定（播放中也锁），可防任务切换器截图泄露；关闭时切后台只按闲置计时，播放中不会被锁。",
     "temp_plaintext": "临时明文",
     "wipe_temp": "外部程序关闭后立即删除",
     "encrypt_defaults_note": "这些只是加密对话框的初始值，不影响已经加密好的文件。",
