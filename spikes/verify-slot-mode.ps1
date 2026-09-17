@@ -167,6 +167,26 @@ $rAgain = Join-Path $work 'r-again.txt'
 & $cli decrypt $man3 -o $rAgain --password-env PW_R3 --yes *> $null 2>&1
 Check '同一份恢复码可以再用一次' (Test-Path $rAgain)
 
+Write-Output ''
+Write-Output '--- 八、reencrypt 后目录必须与实际相符 ---'
+# 曾经的缺陷：轮换换掉 FEK、旧槽全废，但目录被原样搬了过去，
+# 仍说「3 个槽在用、slot 2 是恢复码」。这一处最危险——用户看着
+# 「恢复码仍在」而不再另存，等真忘密码那天才发现兜底早没了。
+$man4 = Join-Path $work 'managed4.omy'
+& $cli encrypt $src -o $man4 --slot-mode managed --password-env PW_OWNER --kdf-profile mobile --yes *> $null
+& $cli key add $man4 --password-env PW_OWNER --new-password-env PW_MATE --yes *> $null
+& $cli key recovery $man4 --password-env PW_OWNER --out (Join-Path $work 'code4.txt') --yes *> $null
+& $cli key reencrypt $man4 --password-env PW_OWNER --yes *> $null 2>&1
+
+$reList = & $cli key list $man4 --password-env PW_OWNER 2>&1 | Out-String
+Check 'reencrypt 后目录只剩 1 个槽' ($reList -match 'Slot 占用\s+1') $reList.Trim()
+Check 'reencrypt 后目录不再谎称有恢复码' ($reList -notmatch '恢复码') $reList.Trim()
+Check 'reencrypt 后仍是可管理模式' ($reList -match 'managed|可管理') $reList.Trim()
+
+$reMate = Join-Path $work 're-mate.txt'
+& $cli decrypt $man4 -o $reMate --password-env PW_MATE --yes *> $null 2>&1
+Check 'reencrypt 后协作者确实已失效' (-not (Test-Path $reMate))
+
 Remove-Item $work -Recurse -Force -EA SilentlyContinue
 Remove-Item Env:\PW_OWNER, Env:\PW_MATE, Env:\PW_NEW, Env:\PW_4TH, Env:\PW_R, Env:\PW_R2, Env:\PW_R3 -EA SilentlyContinue
 

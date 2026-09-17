@@ -111,7 +111,7 @@ pub fn rotate_fek_with_progress(
     // 而且旧密文被覆盖后再也无从追查。
     let plain = opened.decrypt_all_with_progress(data, decrypting)?;
 
-    let opts = rebuild_options(&opened, &header)?;
+    let opts = rebuild_options(&opened, &header, keep.len())?;
 
     // 新 FEK。file_uuid 与 base_nonce 由调用方通过 rnd 传入新值——
     // 载荷密钥是 HKDF(FEK, file_uuid)，两者都换才能保证新旧密文之间
@@ -150,6 +150,7 @@ pub fn rotate_fek_with_progress(
 fn rebuild_options(
     opened: &crate::file::OpenedFile,
     header: &FixedHeader,
+    kept: usize,
 ) -> Result<EncryptOptions> {
     // 文件名：有 FILENAME TLV 才取。注意不能用「解不出来就算没有」——
     // 解不出来说明文件坏了或密钥不对，那时应该报错而不是悄悄丢掉文件名
@@ -170,11 +171,25 @@ fn rebuild_options(
         None
     };
 
-    // 槽位目录同理取原始字节。不带过去的话，轮换会让文件从可管理模式
-    // 静默退回可否认模式——用户收不到任何提示，只会在下次想精确删某个
-    // 协作者时发现这个能力没了
+    // 槽位目录要**按 keep 重建**，不能原样搬。
+    //
+    // 轮换换掉了 FEK，旧槽全部作废，能打开新文件的只有 keep 里那些。
+    // 原样搬过去会让目录说「恢复码还在 slot 2」，而它其实已经废了——
+    // 用户据此不再另存恢复码，等真忘密码那天才发现兜底早没了。实测过。
+    //
+    // 不带目录也不行：那会让文件从可管理模式静默退回可否认模式，
+    // 用户收不到提示，只在下次想精确删协作者时发现能力没了。
+    //
+    // 顺序与 build_area 一致：前 n 个槽对应 keep[0..n]。类型一律记成
+    // Vault——这一层拿不到「哪个是恢复码」的信息，调用方（key recovery
+    // 等）若需要更准的类型，应在轮换后自己改写目录。宁可少说一点，
+    // 也不能凭猜写一个可能是错的类型
     let slot_directory = if opened.is_slot_managed() {
-        Some(opened.raw_slot_directory()?)
+        let mut dir = crate::slotdir::SlotDirectory::new();
+        for i in 0..kept.min(crate::header::SLOT_COUNT) {
+            dir.set(i, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))?;
+        }
+        Some(dir.encode())
     } else {
         None
     };
