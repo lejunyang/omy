@@ -96,11 +96,31 @@ pub const SIDECAR_SLOTS: usize = 8;
 /// 槽位区总长。
 pub const SIDECAR_SLOT_AREA: usize = SIDECAR_SLOTS * WRAP_LEN;
 
-/// 边车文件总长：magic(8) + version(1) + reserved(3) + nonce(24) + 槽位区(384)。
+/// 边车文件总长：magic(8) + version(1) + flags(1) + reserved(2) + nonce(24)
+/// + 槽位区(384)。
 ///
-/// reserved 那 3 字节是为了让 nonce 从 12 字节偏移开始——对齐不是强需求，
-/// 但让十六进制 dump 读起来容易得多，排查问题时值这 3 个字节。
-pub const SIDECAR_LEN: usize = 8 + 1 + 3 + NONCE_LEN + SIDECAR_SLOT_AREA;
+/// reserved 那几个字节是为了让 nonce 从 12 字节偏移开始——对齐不是强需求，
+/// 但让十六进制 dump 读起来容易得多，排查问题时值这几个字节。
+pub const SIDECAR_LEN: usize = 8 + 1 + 1 + 2 + NONCE_LEN + SIDECAR_SLOT_AREA;
+
+/// 可管理模式下的边车总长：在基础长度之后追加加密的槽位目录。
+///
+/// 目录 24 字节 + AEAD tag 16 字节 = 40。与文件那边同理，定长是刻意的：
+/// 变长会让边车长度泄露这棵树配了几把钥匙。
+pub const SIDECAR_LEN_MANAGED: usize = SIDECAR_LEN + crate::slotdir::DIRECTORY_LEN + 16;
+
+/// 边车 flags 位：这棵树带槽位目录（可管理模式）。
+///
+/// 放在明文的第 9 字节。与文件头的 `flags::SLOT_DIRECTORY` 同一个判据：
+/// 「omy 支持两种模式」是产品事实，如实公开它不泄露属于这个用户的东西；
+/// 目录**内容**才是用户秘密，所以那部分用 DK 加密。
+pub const SIDECAR_FLAG_MANAGED: u8 = 1 << 0;
+
+/// HKDF info：把 DK 派生成槽位目录的加密密钥。
+///
+/// 不直接拿 DK 当密钥用：DK 已经在给目录名做 AEAD，同一个密钥用于两处
+/// 不同用途时，一处的 nonce 复用会波及另一处。
+const INFO_SIDECAR_DIR: &[u8] = b"omy/v1/sidecar-slotdir";
 
 /// HKDF info：把 KEK 派生成边车的包裹密钥。
 ///
@@ -141,6 +161,84 @@ impl DirKey {
     pub fn duplicate(&self) -> Self {
         Self(SecretKey::from_bytes(*self.0.as_bytes()))
     }
+
+    /// 派生槽位目录的加密密钥。
+    ///
+    /// 不直接拿 DK 本身当密钥：它已经在给目录名做 AEAD，同一个密钥用于
+    /// 两处不同用途时，一处的 nonce 复用会波及另一处。
+    #[must_use]
+    fn slotdir_key(&self, vault_salt: &[u8; 16]) -> SecretKey {
+        crate::crypto::derive_from_secret(&self.0, vault_salt, INFO_SIDECAR_DIR)
+    }
+}
+
+/// 这份边车是不是可管理模式。
+///
+/// 只看明文的 flags 位，不需要密钥——与文件头的 `SLOT_DIRECTORY` 同理，
+/// 「用了哪种模式」是产品事实而非用户秘密。
+#[must_use]
+pub fn is_managed(blob: &[u8]) -> bool {
+    blob.get(..8) == Some(SIDECAR_MAGIC.as_slice())
+        && blob.get(9).is_some_and(|f| f & SIDECAR_FLAG_MANAGED != 0)
+}
+
+/// 从可管理模式的边车里解出槽位目录。
+///
+/// # Errors
+///
+/// 边车不是可管理模式、长度不对、或目录密文解不开时返回错误。
+/// **不返回空目录**：那会让界面显示「一把钥匙都没有」，而它明明打得开。
+pub fn read_slot_directory(
+    blob: &[u8],
+    dk: &DirKey,
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<crate::slotdir::SlotDirectory> {
+    if !is_managed(blob) {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "this sidecar has no slot directory (deniable mode)",
+        });
+    }
+    if blob.len() != SIDECAR_LEN_MANAGED {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "managed sidecar has wrong length",
+        });
+    }
+    let ct = blob.get(SIDECAR_LEN..).ok_or(Error::MalformedTlv {
+        tlv_type: 0,
+        reason: "managed sidecar truncated before slot directory",
+    })?;
+    let key = dk.slotdir_key(vault_salt);
+    // 用 ZERO_NONCE：这个密钥只加密这一条消息，且 DK 每棵树各不相同
+    let plain = cipher
+        .decrypt(&key, &ZERO_NONCE, ct, &[])?
+        .ok_or(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "slot directory failed authentication",
+        })?;
+    crate::slotdir::SlotDirectory::decode(&plain)
+}
+
+/// 把槽位目录加密后追加到边车末尾。
+fn append_slot_directory(
+    base: Vec<u8>,
+    dir: &crate::slotdir::SlotDirectory,
+    dk: &DirKey,
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<Vec<u8>> {
+    let key = dk.slotdir_key(vault_salt);
+    let ct = cipher.encrypt(&key, &ZERO_NONCE, &dir.encode(), &[])?;
+    let mut out = base;
+    // flags 位要在明文里置上，否则读取侧不会去找目录
+    if let Some(f) = out.get_mut(9) {
+        *f |= SIDECAR_FLAG_MANAGED;
+    }
+    out.extend_from_slice(&ct);
+    debug_assert_eq!(out.len(), SIDECAR_LEN_MANAGED, "可管理边车必须恰好 {SIDECAR_LEN_MANAGED} 字节");
+    Ok(out)
 }
 
 /// 把一把 KEK 派生成边车的包裹密钥。
@@ -256,7 +354,11 @@ pub fn rebuild_sidecar_carrying(
     // 那边的包裹密钥绑定 slot_index，搬运时下标必须对得上
     let mut written = keep.len();
     if let Some(prev) = old {
-        if prev.len() == SIDECAR_LEN && prev.get(..8) == Some(SIDECAR_MAGIC.as_slice()) {
+        // 两种长度都接受：可管理模式的边车在基础长度之后还追加了
+        // 加密目录，只认 SIDECAR_LEN 的话它的旧包裹一个都搬不过来——
+        // 表现为「换密码后恢复码打不开目录名了」
+        let known_len = prev.len() == SIDECAR_LEN || prev.len() == SIDECAR_LEN_MANAGED;
+        if known_len && prev.get(..8) == Some(SIDECAR_MAGIC.as_slice()) {
             let slots_start = 12 + NONCE_LEN;
             for i in 0..SIDECAR_SLOTS {
                 if written >= SIDECAR_SLOTS {
@@ -288,6 +390,121 @@ pub fn rebuild_sidecar_carrying(
     Ok(out)
 }
 
+/// 构建带槽位目录的边车（可管理模式）。
+///
+/// `keks[i]` 占第 `i` 个槽，`dir` 必须与之对应——目录说 slot 2 是恢复码，
+/// 那么 `keks[2]` 就得真是那把恢复码派生出来的 KEK。对不上的话用户会
+///照着目录去删错东西。
+///
+/// # Errors
+///
+/// 同 [`build_sidecar`]。
+pub fn build_sidecar_managed(
+    keks: &[Kek],
+    dir: &crate::slotdir::SlotDirectory,
+    dk: &DirKey,
+    vault_salt: &[u8; 16],
+    nonce: &[u8; NONCE_LEN],
+    cipher: CipherId,
+) -> Result<Vec<u8>> {
+    let base = build_sidecar(keks, dk, vault_salt, nonce, cipher)?;
+    append_slot_directory(base, dir, dk, vault_salt, cipher)
+}
+
+/// 按计划精确改写边车的槽位（可管理模式）。
+///
+/// `plans[i]` 严格对应第 `i` 个槽。与文件那边的
+/// [`crate::keyslot::rewrite_slots_managed`] 语义一致，但有一处关键差异：
+/// 边车的包裹密钥只依赖 `(KEK, vault_salt)`、**与槽位下标无关**，所以
+/// `Keep` 在这里是真正的「原样搬那 48 字节」，不像文件那边还要求下标对齐。
+///
+/// # Errors
+///
+/// - 旧边车格式不对、或不是可管理模式
+/// - 计划会让一个槽都不剩（写出去就再也解不开目录名了）
+pub fn rewrite_sidecar_managed(
+    old: &[u8],
+    plans: &[SidecarPlan],
+    dir: &crate::slotdir::SlotDirectory,
+    dk: &DirKey,
+    vault_salt: &[u8; 16],
+    nonce: &[u8; NONCE_LEN],
+    cipher: CipherId,
+) -> Result<Vec<u8>> {
+    if !is_managed(old) {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "refusing precise rewrite on a deniable-mode sidecar",
+        });
+    }
+    if old.len() != SIDECAR_LEN_MANAGED {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "managed sidecar has wrong length",
+        });
+    }
+    // 一个都不留会写出谁也解不开目录名的边车。必须在写盘前拦住：
+    // 写完才发现解不开，用户同时失去目录名和访问它的办法
+    if !plans.iter().any(|p| matches!(p, SidecarPlan::Keep | SidecarPlan::Write(_))) {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "refusing to leave the sidecar with zero usable keys",
+        });
+    }
+
+    let mut w = Writer::with_capacity(SIDECAR_LEN);
+    w.bytes(SIDECAR_MAGIC);
+    w.u8(SIDECAR_VERSION);
+    w.u8(SIDECAR_FLAG_MANAGED);
+    w.bytes(&[0u8; 2]);
+    w.bytes(nonce);
+
+    let slots_start = 12 + NONCE_LEN;
+    for (i, plan) in plans.iter().enumerate().take(SIDECAR_SLOTS) {
+        match plan {
+            SidecarPlan::Keep => {
+                let from = slots_start.saturating_add(i.saturating_mul(WRAP_LEN));
+                let to = from.saturating_add(WRAP_LEN);
+                match old.get(from..to) {
+                    Some(slot) => {
+                        w.bytes(slot);
+                    }
+                    None => {
+                        w.random(WRAP_LEN);
+                    }
+                }
+            }
+            SidecarPlan::Write(kek) => {
+                let wk = wrap_key(kek, vault_salt);
+                let wrapped = cipher.encrypt(&wk, &ZERO_NONCE, dk.as_key().as_bytes(), &[])?;
+                w.bytes(&wrapped);
+            }
+            // 空槽填随机而非填零：填零的话「哪些槽在用」直接可见，
+            // 而边车的可否认性正建立在这条上
+            SidecarPlan::Clear => {
+                w.random(WRAP_LEN);
+            }
+        }
+    }
+    // 计划不足 8 条时补满
+    let written = plans.len().min(SIDECAR_SLOTS);
+    w.random(SIDECAR_SLOT_AREA.saturating_sub(written.saturating_mul(WRAP_LEN)));
+
+    append_slot_directory(w.into_vec(), dir, dk, vault_salt, cipher)
+}
+
+/// 可管理模式下，一个边车槽位要怎么处理。
+///
+/// 不 derive Clone：`Kek` 刻意没有 Clone（密钥不该被随手复制）。
+#[derive(Debug)]
+pub enum SidecarPlan {
+    /// 原样搬运这一槽。
+    Keep,
+    /// 用这把钥匙重新包裹 DK。
+    Write(Kek),
+    /// 清成随机字节。
+    Clear,
+}
 /// 从边车里解出目录密钥。
 ///
 /// 对每把候选钥匙尝试每个槽，返回 `(DirKey, nonce)`。
@@ -305,7 +522,26 @@ pub fn open_sidecar(
     vault_salt: &[u8; 16],
     cipher: CipherId,
 ) -> Result<(DirKey, [u8; NONCE_LEN])> {
-    if blob.len() != SIDECAR_LEN {
+    open_sidecar_at(blob, keks, vault_salt, cipher).map(|(dk, nonce, _)| (dk, nonce))
+}
+
+/// 同 [`open_sidecar`]，另外返回命中的**槽位下标**。
+///
+/// 精确管理需要这个下标：remove 要避免删掉当前正在用的那把钥匙，
+/// change 要就地替换它。`open_sidecar` 不返回它是因为绝大多数调用方
+/// 只关心能不能解开。
+///
+/// # Errors
+///
+/// 同 [`open_sidecar`]。
+pub fn open_sidecar_at(
+    blob: &[u8],
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<(DirKey, [u8; NONCE_LEN], usize)> {
+    // 可管理模式的边车更长，两种都要接受
+    if blob.len() != SIDECAR_LEN && blob.len() != SIDECAR_LEN_MANAGED {
         return Err(Error::MalformedTlv {
             tlv_type: 0,
             reason: "dirname sidecar has wrong length",
@@ -351,7 +587,7 @@ pub fn open_sidecar(
             }
             let mut raw = [0u8; DK_LEN];
             raw.copy_from_slice(&plain);
-            return Ok((DirKey::from_bytes(raw), nonce));
+            return Ok((DirKey::from_bytes(raw), nonce, i));
         }
     }
     Err(Error::NoMatchingSlot)
@@ -593,5 +829,305 @@ mod tests {
         let short = good.get(..SIDECAR_LEN - 1).unwrap_or(&good).to_vec();
         assert!(open_sidecar(&short, &[kek("k", &salt)], &salt, CipherId::ChaCha20Poly1305)
             .is_err());
+    }
+    // ---------- 可管理模式（树形槽位目录） ----------
+
+    #[test]
+    fn managed_sidecar_roundtrips_the_directory() {
+        // 最基础的一条：写进去的目录要能原样读出来，flags 位也要置上。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let dk = DirKey::generate();
+        let mut dir = crate::slotdir::SlotDirectory::new();
+        dir.set(0, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("set 0");
+
+        let blob = build_sidecar_managed(
+            &[owner.duplicate()],
+            &dir,
+            &dk,
+            &salt,
+            &nonce_of(1),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        assert!(is_managed(&blob), "flags 位没置上");
+        assert_eq!(blob.len(), SIDECAR_LEN_MANAGED);
+
+        let (got_dk, _, idx) =
+            open_sidecar_at(&blob, &[owner], &salt, CipherId::ChaCha20Poly1305).expect("解开");
+        assert_eq!(idx, 0, "命中的应当是 slot 0");
+        let got = read_slot_directory(&blob, &got_dk, &salt, CipherId::ChaCha20Poly1305)
+            .expect("读目录");
+        assert_eq!(got, dir, "目录内容对不上");
+    }
+
+    #[test]
+    fn deniable_sidecar_refuses_to_give_a_directory() {
+        // 反证：可否认模式必须报错，而不是返回一个空目录。
+        //
+        // 不这样会怎样：返回空目录会让界面显示「这棵树一把钥匙都没有」，
+        // 而它明明打得开——用户会以为目录坏了。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let dk = DirKey::generate();
+        let blob = build_sidecar(
+            &[owner.duplicate()],
+            &dk,
+            &salt,
+            &nonce_of(2),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        assert!(!is_managed(&blob));
+        assert!(
+            read_slot_directory(&blob, &dk, &salt, CipherId::ChaCha20Poly1305).is_err(),
+            "可否认模式不该给出目录"
+        );
+    }
+
+    #[test]
+    fn managed_length_is_constant_regardless_of_key_count() {
+        // 长度恒定是可否认性的基础：变长会让边车大小泄露这棵树配了
+        // 几把钥匙，而那正是这个格式想保住的东西。
+        let salt = [9u8; 16];
+        let dk = DirKey::generate();
+        let dir = crate::slotdir::SlotDirectory::new();
+        let mut lens = Vec::new();
+        for n in 1..=4usize {
+            let keks: Vec<Kek> = (0..n).map(|i| kek(&format!("pw{i}"), &salt)).collect();
+            let blob = build_sidecar_managed(
+                &keks,
+                &dir,
+                &dk,
+                &salt,
+                &nonce_of(3),
+                CipherId::ChaCha20Poly1305,
+            )
+            .expect("构建");
+            lens.push(blob.len());
+        }
+        assert!(
+            lens.iter().all(|&l| l == SIDECAR_LEN_MANAGED),
+            "长度随钥匙数变化了：{lens:?}"
+        );
+    }
+
+    #[test]
+    fn precise_rewrite_removes_one_key_and_keeps_the_rest() {
+        // 这是树形可管理模式存在的理由：精确踢掉一把钥匙而保住其它的。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let mate = kek("mate", &salt);
+        let reco = kek("reco", &salt);
+        let dk = DirKey::generate();
+
+        let mut dir = crate::slotdir::SlotDirectory::new();
+        dir.set(0, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("0");
+        dir.set(1, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("1");
+        dir.set(2, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Recovery))
+            .expect("2");
+
+        let blob = build_sidecar_managed(
+            &[owner.duplicate(), mate.duplicate(), reco.duplicate()],
+            &dir,
+            &dk,
+            &salt,
+            &nonce_of(4),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        // 前提自证：三把钥匙一开始都能解开
+        for (name, k) in [("owner", &owner), ("mate", &mate), ("reco", &reco)] {
+            assert!(
+                open_sidecar(&blob, &[k.duplicate()], &salt, CipherId::ChaCha20Poly1305).is_ok(),
+                "{name} 一开始就该能解开"
+            );
+        }
+
+        // 只踢掉 slot 1 的协作者
+        let mut after = dir;
+        after.set(1, crate::slotdir::SlotEntry::empty()).expect("清空");
+        let mut plans = vec![SidecarPlan::Keep, SidecarPlan::Clear, SidecarPlan::Keep];
+        plans.resize_with(SIDECAR_SLOTS, || SidecarPlan::Clear);
+
+        let out = rewrite_sidecar_managed(
+            &blob,
+            &plans,
+            &after,
+            &dk,
+            &salt,
+            &nonce_of(4),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("改写");
+
+        assert!(
+            open_sidecar(&out, &[owner], &salt, CipherId::ChaCha20Poly1305).is_ok(),
+            "主密码不该受影响"
+        );
+        assert!(
+            open_sidecar(&out, &[reco], &salt, CipherId::ChaCha20Poly1305).is_ok(),
+            "恢复码必须保住——这正是可管理模式的全部意义"
+        );
+        assert!(
+            open_sidecar(&out, &[mate], &salt, CipherId::ChaCha20Poly1305).is_err(),
+            "被踢掉的协作者必须再也解不开"
+        );
+    }
+
+    #[test]
+    fn precise_rewrite_refuses_to_orphan_the_directory_name() {
+        // 全 Clear 会写出一份谁也解不开的边车，目录名就此永远丢失。
+        // 必须在写盘前拦住。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let dk = DirKey::generate();
+        let dir = crate::slotdir::SlotDirectory::new();
+        let blob = build_sidecar_managed(
+            &[owner],
+            &dir,
+            &dk,
+            &salt,
+            &nonce_of(5),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        let plans: Vec<SidecarPlan> = (0..SIDECAR_SLOTS).map(|_| SidecarPlan::Clear).collect();
+        assert!(
+            rewrite_sidecar_managed(
+                &blob,
+                &plans,
+                &dir,
+                &dk,
+                &salt,
+                &nonce_of(5),
+                CipherId::ChaCha20Poly1305,
+            )
+            .is_err(),
+            "一个槽都不留必须报错"
+        );
+    }
+
+    #[test]
+    fn precise_rewrite_rejects_a_deniable_sidecar() {
+        // 走错路径要明确报错，而不是写出一份 flags 与实际不一致的边车——
+        // 那种损坏不会立刻显现。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let dk = DirKey::generate();
+        let blob = build_sidecar(
+            &[owner.duplicate()],
+            &dk,
+            &salt,
+            &nonce_of(6),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        let mut plans = vec![SidecarPlan::Keep];
+        plans.resize_with(SIDECAR_SLOTS, || SidecarPlan::Clear);
+        assert!(
+            rewrite_sidecar_managed(
+                &blob,
+                &plans,
+                &crate::slotdir::SlotDirectory::new(),
+                &dk,
+                &salt,
+                &nonce_of(6),
+                CipherId::ChaCha20Poly1305,
+            )
+            .is_err(),
+            "对可否认模式的边车应当拒绝"
+        );
+    }
+
+    #[test]
+    fn precise_rewrite_fills_cleared_slots_with_random() {
+        // 已有的 unused_slots_are_not_zero_filled 只覆盖 build_sidecar，
+        // 不覆盖精确改写的 Clear 分支——变异测试把这个缺口抓了出来。
+        //
+        // 不这样会怎样：被删掉的那个槽填零，「这里原来有人、现在删了」
+        // 直接可见，而边车的可否认性正建立在「看不出哪些槽在用」上。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let mate = kek("mate", &salt);
+        let dk = DirKey::generate();
+        let mut dir = crate::slotdir::SlotDirectory::new();
+        dir.set(0, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("0");
+        dir.set(1, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("1");
+
+        let blob = build_sidecar_managed(
+            &[owner, mate],
+            &dir,
+            &dk,
+            &salt,
+            &nonce_of(8),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        let mut after = dir;
+        after.set(1, crate::slotdir::SlotEntry::empty()).expect("清空");
+        let mut plans = vec![SidecarPlan::Keep, SidecarPlan::Clear];
+        plans.resize_with(SIDECAR_SLOTS, || SidecarPlan::Clear);
+        let out = rewrite_sidecar_managed(
+            &blob,
+            &plans,
+            &after,
+            &dk,
+            &salt,
+            &nonce_of(8),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("改写");
+
+        // 整个槽位区（含被清掉的那些）都不该出现整段零
+        let slots_start = 12 + NONCE_LEN;
+        let area = out
+            .get(slots_start..slots_start + SIDECAR_SLOT_AREA)
+            .expect("槽位区");
+        let zeros = vec![0u8; WRAP_LEN];
+        for i in 0..SIDECAR_SLOTS {
+            let from = i * WRAP_LEN;
+            let slot = area.get(from..from + WRAP_LEN).expect("槽");
+            assert_ne!(slot, zeros.as_slice(), "slot {i} 被填成了零");
+        }
+    }
+
+    #[test]
+    fn wrong_key_cannot_read_the_directory() {
+        // 目录是加密的：拿不到 DK 就读不到它。这条守的是
+        // 「对解不开这棵树的人，两种模式一样什么都看不出来」。
+        let salt = [9u8; 16];
+        let owner = kek("owner", &salt);
+        let outsider = DirKey::generate();
+        let dk = DirKey::generate();
+        let mut dir = crate::slotdir::SlotDirectory::new();
+        dir.set(0, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))
+            .expect("set");
+
+        let blob = build_sidecar_managed(
+            &[owner],
+            &dir,
+            &dk,
+            &salt,
+            &nonce_of(7),
+            CipherId::ChaCha20Poly1305,
+        )
+        .expect("构建");
+
+        assert!(
+            read_slot_directory(&blob, &outsider, &salt, CipherId::ChaCha20Poly1305).is_err(),
+            "用别的 DK 不该读出目录"
+        );
     }
 }

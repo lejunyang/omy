@@ -265,6 +265,17 @@ impl Fek {
     }
 }
 
+/// 从任意一把已有密钥再派生一把，用于给同一份秘密划分用途域。
+///
+/// 存在的理由：一个密钥只该服务一个用途。`DirKey` 既要给目录名做 AEAD，
+/// 又要加密槽位目录，直接两处复用时一处的 nonce 复用会波及另一处。
+///
+/// `info` 必须在全局唯一，否则两个用途会派生出同一把密钥，等于没分。
+#[must_use]
+pub fn derive_from_secret(key: &SecretKey, salt: &[u8; 16], info: &[u8]) -> SecretKey {
+    hkdf_expand(key.as_bytes(), salt, info)
+}
+
 /// HKDF-SHA256 提取加扩展，输出 32 字节。
 fn hkdf_expand(ikm: &[u8], salt: &[u8], info: &[u8]) -> SecretKey {
     let hk = Hkdf::<Sha256>::new(Some(salt), ikm);

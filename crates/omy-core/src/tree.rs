@@ -170,7 +170,13 @@ pub fn encrypt_tree_with_media(
         crate::dirname::encrypt_dirname_with(&root_name, &dk, &random_nonce(), opts.cipher)?;
     let out_root = out_parent.join(&enc_root.disk_name);
     create_encrypted_dir(&out_root, &enc_root, &mut rep)?;
-    write_keys_sidecar(&out_root, keks, &dk, vault_salt, opts.cipher)?;
+    // 槽位目录只在加密时确定一次，整棵树共用。每个密文目录各写一份，
+    // 与 DK 包裹同理——任一子目录被单独拷走仍要能自洽
+    let tree_slot_dir = match &opts.slot_directory {
+        Some(raw) => Some(crate::slotdir::SlotDirectory::decode(raw)?),
+        None => None,
+    };
+    write_keys_sidecar(&out_root, keks, &dk, vault_salt, opts.cipher, tree_slot_dir.as_ref())?;
     rep.root = out_root.clone();
 
     // 明文相对路径 → 密文磁盘路径。目录必须先建好，子项才知道该往哪写；
@@ -221,7 +227,14 @@ pub fn encrypt_tree_with_media(
                 crate::dirname::encrypt_dirname_with(name, &dk, &random_nonce(), opts.cipher)?;
             let dir_out = parent_out.join(&enc.disk_name);
             create_encrypted_dir(&dir_out, &enc, &mut rep)?;
-            write_keys_sidecar(&dir_out, keks, &dk, vault_salt, opts.cipher)?;
+            write_keys_sidecar(
+                &dir_out,
+                keks,
+                &dk,
+                vault_salt,
+                opts.cipher,
+                tree_slot_dir.as_ref(),
+            )?;
             mapping.insert(item.comps.clone(), dir_out);
         } else {
             let Ok(data) = std::fs::read(&item.path) else {
@@ -279,8 +292,22 @@ fn write_keys_sidecar(
     dk: &crate::dirsidecar::DirKey,
     vault_salt: &[u8; 16],
     cipher: CipherId,
+    slot_dir: Option<&crate::slotdir::SlotDirectory>,
 ) -> Result<()> {
-    let blob = crate::dirsidecar::build_sidecar(keks, dk, vault_salt, &random_nonce(), cipher)?;
+    // 可管理模式：边车里多带一份加密的槽位目录。与单文件同一个判据——
+    // 「用了哪种模式」是产品事实，写在明文 flags 里；目录内容是用户
+    // 秘密，用 DK 加密
+    let blob = match slot_dir {
+        Some(sd) => crate::dirsidecar::build_sidecar_managed(
+            keks,
+            sd,
+            dk,
+            vault_salt,
+            &random_nonce(),
+            cipher,
+        )?,
+        None => crate::dirsidecar::build_sidecar(keks, dk, vault_salt, &random_nonce(), cipher)?,
+    };
     crate::fsatomic::write_atomic(&dir.join(crate::dirsidecar::KEYS_SIDECAR), &blob)?;
     Ok(())
 }
@@ -299,19 +326,44 @@ fn rewrite_keys_sidecar(
     others: crate::keyslot::OtherSlots,
 ) -> Result<()> {
     let path = dir.join(crate::dirsidecar::KEYS_SIDECAR);
-    // Discard 时连读都不用读：remove 的语义就是不要旧的那些
+    // 无论 Carry 还是 Discard 都要读一次：**判断模式需要它**。
+    // 只在 Carry 时读的话，remove 会让整棵树静默退回可否认模式——
+    // 用户只是想踢掉一个人，却连带丢了「能看清有几把钥匙」这个能力
+    let raw = std::fs::read(&path).ok();
+    let was_managed = raw.as_deref().is_some_and(crate::dirsidecar::is_managed);
+    // Discard 时不搬旧包裹：remove 的语义就是不要旧的那些
     let old = match others {
-        crate::keyslot::OtherSlots::Carry => std::fs::read(&path).ok(),
+        crate::keyslot::OtherSlots::Carry => raw,
         crate::keyslot::OtherSlots::Discard => None,
     };
-    let blob = crate::dirsidecar::rebuild_sidecar_carrying(
-        old.as_deref(),
-        keep,
-        dk,
-        vault_salt,
-        &random_nonce(),
-        cipher,
-    )?;
+    // 原边车是可管理模式的话，新的也必须是——否则换一次密码整棵树就
+    // 静默退回可否认模式，用户收不到任何提示，只会在下次想精确删某个
+    // 协作者时发现能力没了。单文件的 reencrypt 犯过同样的错
+    let blob = if was_managed {
+        // 目录按 keep 重建，不能搬旧的：rekey 之后能解开边车的只有 keep
+        // 里那些，搬旧目录会让它谎称「恢复码还在」而其实已经废了
+        let mut sd = crate::slotdir::SlotDirectory::new();
+        for i in 0..keep.len().min(crate::header::SLOT_COUNT) {
+            sd.set(i, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))?;
+        }
+        crate::dirsidecar::build_sidecar_managed(
+            keep,
+            &sd,
+            dk,
+            vault_salt,
+            &random_nonce(),
+            cipher,
+        )?
+    } else {
+        crate::dirsidecar::rebuild_sidecar_carrying(
+            old.as_deref(),
+            keep,
+            dk,
+            vault_salt,
+            &random_nonce(),
+            cipher,
+        )?
+    };
     crate::fsatomic::write_atomic(&path, &blob)?;
     Ok(())
 }
@@ -331,6 +383,118 @@ fn read_keys_sidecar(
     let blob = std::fs::read(dir.join(crate::dirsidecar::KEYS_SIDECAR))?;
     let (dk, _nonce) = crate::dirsidecar::open_sidecar(&blob, keks, vault_salt, cipher)?;
     Ok(dk)
+}
+
+/// 一棵树的槽位清单。
+#[derive(Debug)]
+pub struct TreeSlots {
+    /// 是不是可管理模式。false 时 `directory` 为 `None`。
+    pub managed: bool,
+    /// 槽位目录。可否认模式下为 `None`——那不是「读取失败」，是设计如此。
+    pub directory: Option<crate::slotdir::SlotDirectory>,
+    /// 手头这把钥匙占的槽位下标。
+    pub current: usize,
+}
+
+/// 读取一棵树的槽位清单。
+///
+/// 与单文件的 `OpenedFile::slot_directory` 对应。需要能解开边车的钥匙：
+/// 槽位目录是用 DK 加密的，而 DK 本身要靠钥匙才能解出来。
+///
+/// # Errors
+///
+/// 边车不存在、读不了、或所有钥匙都解不开时返回错误。
+pub fn tree_slots(
+    root: &Path,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<TreeSlots> {
+    let blob = std::fs::read(root.join(crate::dirsidecar::KEYS_SIDECAR))?;
+    let (dk, _nonce, at) =
+        crate::dirsidecar::open_sidecar_at(&blob, keks, vault_salt, cipher)?;
+    if !crate::dirsidecar::is_managed(&blob) {
+        return Ok(TreeSlots { managed: false, directory: None, current: at });
+    }
+    let dir = crate::dirsidecar::read_slot_directory(&blob, &dk, vault_salt, cipher)?;
+    Ok(TreeSlots { managed: true, directory: Some(dir), current: at })
+}
+
+/// 在可管理模式下精确清掉某一个槽位。
+///
+/// 整棵树的每个密文目录都有一份边车，所以要逐个改写——漏掉一个，那个
+/// 子目录被单独拷走时被删的钥匙仍然能解开它的名字。
+///
+/// # Errors
+///
+/// - 不是可管理模式、或手头钥匙解不开边车
+/// - `slot` 正是当前这把钥匙所在的槽（删掉自己之后就没法继续操作了）
+/// - 目标槽本来就是空的
+pub fn tree_remove_slot(
+    root: &Path,
+    keks: &[Kek],
+    slot: usize,
+    vault_salt: &[u8; 16],
+    cipher: CipherId,
+) -> Result<usize> {
+    let info = tree_slots(root, keks, vault_salt, cipher)?;
+    let Some(dir) = info.directory else {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "this tree is in deniable mode; slots cannot be removed individually",
+        });
+    };
+    if slot == info.current {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "refusing to remove the key currently in use",
+        });
+    }
+    if !dir.get(slot).is_some_and(|e| e.kind.is_occupied()) {
+        return Err(Error::MalformedTlv {
+            tlv_type: 0,
+            reason: "that slot is already empty",
+        });
+    }
+
+    let mut after = dir;
+    after.set(slot, crate::slotdir::SlotEntry::empty())?;
+
+    // 每个密文目录各改一份。逐个而不是只改根：任一子目录被单独拷走时
+    // 也要拒绝那把被删的钥匙，否则「删掉了」只在根目录成立
+    let mut changed = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+        let path = cur.join(crate::dirsidecar::KEYS_SIDECAR);
+        if let Ok(blob) = std::fs::read(&path) {
+            if crate::dirsidecar::is_managed(&blob) {
+                if let Ok((dk, nonce, _)) =
+                    crate::dirsidecar::open_sidecar_at(&blob, keks, vault_salt, cipher)
+                {
+                    let mut plans: Vec<crate::dirsidecar::SidecarPlan> =
+                        (0..crate::dirsidecar::SIDECAR_SLOTS)
+                            .map(|_| crate::dirsidecar::SidecarPlan::Keep)
+                            .collect();
+                    if let Some(p) = plans.get_mut(slot) {
+                        *p = crate::dirsidecar::SidecarPlan::Clear;
+                    }
+                    let out = crate::dirsidecar::rewrite_sidecar_managed(
+                        &blob, &plans, &after, &dk, vault_salt, &nonce, cipher,
+                    )?;
+                    crate::fsatomic::write_atomic(&path, &out)?;
+                    changed = changed.saturating_add(1);
+                }
+            }
+        }
+        let Ok(rd) = std::fs::read_dir(&cur) else { continue };
+        for ent in rd.flatten() {
+            let sub = ent.path();
+            if sub.is_dir() {
+                stack.push(sub);
+            }
+        }
+    }
+    Ok(changed)
 }
 
 /// 建目录并在需要时写入边车文件。
