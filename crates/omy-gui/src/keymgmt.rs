@@ -1074,21 +1074,52 @@ fn run_restore(state: &Shared, req: &RestoreRequest) -> CmdResult<RestoreOutcome
     // 校验和过了只证明「没抄错」，不证明「属于这个文件」。必须真去解一次，
     // 否则用户会拿着另一个库的恢复码反复困惑。两种处境的处置方式相反，
     // 所以用不同的错误码
-    omy_core::file::open(&data, &[reco_kek.duplicate()])
+    let opened = omy_core::file::open(&data, &[reco_kek.duplicate()])
         .map_err(|_| CmdError::code("recovery_mismatch"))?;
 
     let params = header.argon2_params();
     let new_kek = derive(&req.next, &header.vault_salt, params)?;
 
     // keep 同时保留新密码与恢复码
-    let keep = vec![new_kek, reco_kek.duplicate()];
-    let out = omy_core::keyslot::rewrite_slots(
-        &data,
-        &[reco_kek],
-        &keep,
-        omy_core::keyslot::OtherSlots::Carry,
-    )
-    .map_err(map_core_err)?;
+    let keep = vec![new_kek.duplicate(), reco_kek.duplicate()];
+    let out = if opened.is_slot_managed() {
+        // 语义与可否认模式一致——作废其它日常密码、保住恢复码——
+        // 但精确到槽。走 rewrite_slots 会把 keep 盲写到 slot 0、1，
+        // 盖掉恰好在那儿的恢复码而目录还显示它在。
+        //
+        // 反过来「只往空槽塞新密码」也不行：那样旧密码原封不动还能用，
+        // 而可否认模式下它会失效——同一个命令两种模式语义相反更糟
+        use omy_core::keyslot::SlotPlan;
+        use omy_core::slotdir::{SlotEntry, SlotKind};
+        let mut dir = opened.slot_directory().map_err(|_| CmdError::code("bad_slot_directory"))?;
+        let mut plans: Vec<SlotPlan> =
+            (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+        for i in 0..omy_core::header::SLOT_COUNT {
+            // 恢复码一律留着：用户刚经历过一次「忘了密码」，
+            // 这时抽掉唯一的兜底是最坏的时机
+            if dir.get(i).is_some_and(|e| e.kind == SlotKind::Recovery) {
+                continue;
+            }
+            *plans.get_mut(i).ok_or_else(|| CmdError::code("internal"))? = SlotPlan::Clear;
+            dir.set(i, SlotEntry::empty()).map_err(|_| CmdError::code("internal"))?;
+        }
+        // 清完再找空位，新密码优先落在刚腾出来的槽上
+        let free = dir.first_free().ok_or_else(|| CmdError::code("slots_full"))?;
+        *plans.get_mut(free).ok_or_else(|| CmdError::code("internal"))? =
+            SlotPlan::Write(new_kek.duplicate());
+        dir.set(free, SlotEntry::of(SlotKind::Vault))
+            .map_err(|_| CmdError::code("internal"))?;
+        omy_core::keyslot::rewrite_slots_managed(&data, &[reco_kek.duplicate()], &plans, &dir)
+            .map_err(map_core_err)?
+    } else {
+        omy_core::keyslot::rewrite_slots(
+            &data,
+            &[reco_kek.duplicate()],
+            &keep,
+            omy_core::keyslot::OtherSlots::Carry,
+        )
+        .map_err(map_core_err)?
+    };
 
     for k in &keep {
         omy_core::file::open(&out.bytes, &[k.duplicate()])

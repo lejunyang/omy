@@ -328,10 +328,13 @@ fn restore(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
 
     // 校验和过了不代表这份恢复码属于这个文件——它只证明「没抄错」。
     // 必须真去解一次，否则用户会拿着另一个库的恢复码反复困惑
-    omy_core::file::open(&data, &[reco_kek.duplicate()]).context(
+    let opened = omy_core::file::open(&data, &[reco_kek.duplicate()]).context(
         "这份恢复码打不开该文件。校验和是对的，说明没抄错，\
          但它可能属于另一个库",
     )?;
+    let managed = opened.is_slot_managed();
+    let reco_slot = usize::from(opened.slot_index);
+    let slot_dir = if managed { opened.slot_directory().ok() } else { None };
     ctx.out.detail("恢复码有效，已解开文件");
 
     let nsrc = PasswordSource {
@@ -344,13 +347,55 @@ fn restore(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
 
     // keep 同时保留新密码与恢复码：用户刚经历过一次「忘了密码」，
     // 这时把他唯一的兜底抽掉是最坏的时机
-    let keep = vec![new_kek, reco_kek.duplicate()];
-    let out = omy_core::keyslot::rewrite_slots(
-        &data,
-        &[reco_kek],
-        &keep,
-        omy_core::keyslot::OtherSlots::Carry,
-    )?;
+    let keep = vec![new_kek.duplicate(), reco_kek.duplicate()];
+    let out = if let Some(mut dir) = slot_dir {
+        // 可管理模式：语义与可否认模式一致——作废其它日常密码、保住
+        // 恢复码——但精确到槽。
+        //
+        // 不能直接走 rewrite_slots：它把 keep 顺序写到 slot 0、1，会盖掉
+        // 恰好在那儿的恢复码，而目录还显示它在。也不能只往空槽塞新密码：
+        // 那样旧密码原封不动还能用，而可否认模式下它是会失效的——同一个
+        // 命令在两种模式下语义相反，比原缺陷更糟。用户用 restore 正是
+        // 因为旧密码忘了或可能已泄露。
+        use omy_core::keyslot::SlotPlan;
+        use omy_core::slotdir::{SlotEntry, SlotKind};
+        let mut plans: Vec<SlotPlan> =
+            (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+        let mut cleared = 0usize;
+        for i in 0..omy_core::header::SLOT_COUNT {
+            // 恢复码一律留着：用户刚经历过一次「忘了密码」，
+            // 这时抽掉他唯一的兜底是最坏的时机
+            if dir.get(i).is_some_and(|e| e.kind == SlotKind::Recovery) {
+                continue;
+            }
+            if dir.get(i).is_some_and(|e| e.kind.is_occupied()) {
+                cleared = cleared.saturating_add(1);
+            }
+            *plans.get_mut(i).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? = SlotPlan::Clear;
+            dir.set(i, SlotEntry::empty())?;
+        }
+        // 清完再找空位，这样新密码优先落在刚腾出来的槽上
+        let free = dir.first_free().ok_or_else(|| {
+            anyhow::anyhow!("8 个槽位都被恢复码占着，放不下新密码")
+        })?;
+        *plans.get_mut(free).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+            SlotPlan::Write(new_kek.duplicate());
+        dir.set(free, SlotEntry::of(SlotKind::Vault))?;
+        if cleared > 0 {
+            ctx.out
+                .warn(&format!("该文件上原有的 {cleared} 个日常密码已作废（恢复码保留）"));
+        }
+        ctx.out
+            .detail(&format!("新密码写入 slot {free}，恢复码仍在 slot {reco_slot}"));
+        omy_core::keyslot::rewrite_slots_managed(&data, &[reco_kek.duplicate()], &plans, &dir)?
+    } else {
+        omy_core::keyslot::rewrite_slots(
+            &data,
+            &[reco_kek],
+            &keep,
+            omy_core::keyslot::OtherSlots::Carry,
+        )?
+    };
     verify_reopenable(&out.bytes, &keep)?;
     omy_core::fsatomic::write_atomic(&a.file, &out.bytes)
         .with_context(|| format!("写回 {} 失败", a.file.display()))?;

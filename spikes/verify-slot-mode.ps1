@@ -128,8 +128,47 @@ $denListed = & $cli key list $den --password-env PW_OWNER 2>&1 | Out-String
 Check '可否认模式给密码也不列槽位' ($denListed -notmatch 'slot 0') $denListed.Trim()
 Check '可否认模式仍说明不可探测' ($denListed -match '无法区分|不可探测|无法判断') $denListed.Trim()
 
+Write-Output ''
+Write-Output '--- 七、restore 的语义必须与可否认模式一致 ---'
+# 曾经错过两次：先是 rewrite_slots 盲写前两个槽，盖掉协作者而目录
+# 还显示他在；改成「写进空槽」后又走向另一个极端——旧密码原封不动
+# 还能用，而可否认模式下它是会失效的。同一个命令两种模式语义相反，
+# 比原缺陷更糟：用户用 restore 正是因为旧密码忘了或可能已泄露。
+$man3 = Join-Path $work 'managed3.omy'
+& $cli encrypt $src -o $man3 --slot-mode managed --password-env PW_OWNER --kdf-profile mobile --yes *> $null
+& $cli key add $man3 --password-env PW_OWNER --new-password-env PW_MATE --yes *> $null
+$code3 = Join-Path $work 'code3.txt'
+& $cli key recovery $man3 --password-env PW_OWNER --out $code3 --yes *> $null
+
+$env:PW_R2 = 'pw-restored'
+& $cli key restore $man3 --code-file $code3 --new-password-env PW_R2 --yes *> $null
+
+$rOut = Join-Path $work 'r-new.txt'
+& $cli decrypt $man3 -o $rOut --password-env PW_R2 --yes *> $null 2>&1
+Check 'restore 后新密码能打开' (Test-Path $rOut)
+
+$rOld = Join-Path $work 'r-old.txt'
+& $cli decrypt $man3 -o $rOld --password-env PW_OWNER --yes *> $null 2>&1
+Check 'restore 后旧密码已失效' (-not (Test-Path $rOld)) '旧密码还能开——与可否认模式语义相反'
+
+$rMate = Join-Path $work 'r-mate.txt'
+& $cli decrypt $man3 -o $rMate --password-env PW_MATE --yes *> $null 2>&1
+Check 'restore 后协作者也已失效' (-not (Test-Path $rMate))
+
+# 目录必须与实际相符：新密码 + 恢复码 = 2
+$rList = & $cli key list $man3 --password-env PW_R2 2>&1 | Out-String
+Check 'restore 后目录与实际相符（2 个槽）' ($rList -match 'Slot 占用\s+2') $rList.Trim()
+Check 'restore 后恢复码仍在目录里' ($rList -match '恢复码') $rList.Trim()
+
+# 恢复码必须还能用——用户刚忘过一次密码，这时抽掉兜底是最坏的时机
+$env:PW_R3 = 'pw-again'
+& $cli key restore $man3 --code-file $code3 --new-password-env PW_R3 --yes *> $null 2>&1
+$rAgain = Join-Path $work 'r-again.txt'
+& $cli decrypt $man3 -o $rAgain --password-env PW_R3 --yes *> $null 2>&1
+Check '同一份恢复码可以再用一次' (Test-Path $rAgain)
+
 Remove-Item $work -Recurse -Force -EA SilentlyContinue
-Remove-Item Env:\PW_OWNER, Env:\PW_MATE, Env:\PW_NEW, Env:\PW_4TH, Env:\PW_R -EA SilentlyContinue
+Remove-Item Env:\PW_OWNER, Env:\PW_MATE, Env:\PW_NEW, Env:\PW_4TH, Env:\PW_R, Env:\PW_R2, Env:\PW_R3 -EA SilentlyContinue
 
 Write-Output ''
 Write-Output "通过 $pass 项，失败 $fail 项"
