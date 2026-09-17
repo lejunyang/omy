@@ -223,6 +223,15 @@ Whatever `--out` writes is plaintext; move it somewhere safe immediately. The re
 code never appears in `--json` output — that output is routinely redirected into files
 or piped into logs.
 
+`restore` invalidates **every other everyday password** on the file, keeping only the
+new one and the recovery code itself. This is deliberate: reaching for the recovery
+code usually means the old password was forgotten or may have leaked, so keeping the
+others serves no purpose. The recovery code is always kept — you have just been locked
+out once, and removing your only fallback at that moment is the worst possible timing;
+the same code can be used again later.
+
+In manageable mode it also reports how many were invalidated.
+
 See [recovery codes](../guide/passwords.md#recovery-codes-the-only-way-back-in).
 
 ## shard
