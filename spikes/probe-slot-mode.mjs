@@ -331,6 +331,41 @@ async function fill(c, id, value) {
     String(recoDir).includes('recovery'), String(recoDir));
 
   console.log('');
+  console.log('--- 五、树形文件夹也能列出槽位 ---');
+  // 本轮补的缺口：树的槽位在 .omy-keys 边车里而不是文件头，此前
+  // list_slots 对目录一律返回 managed=false，界面显示「查不出来」——
+  // 同一个对话框对文件夹和文件给出不同答案。
+  //
+  // 树由外层脚本用 CLI 预先造好（GUI 逐步操作太脆弱，且那部分由
+  // verify-slot-mode.ps1 覆盖）。这里只验界面读不读得到。
+  const treeDir = `${workDir}\\tree-managed`;
+  const treeRes = await c.eval(`(async () => {
+    const inv = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+    if (!inv) return 'no-invoke';
+    let root = null;
+    try {
+      const items = await inv('browse_directory', { dir: ${JSON.stringify(treeDir)} });
+      const hit = (items || []).find(e => e.is_dir);
+      if (!hit) return 'no-tree-dir';
+      root = hit.path;
+    } catch (e) {
+      return 'LS-ERR: ' + JSON.stringify(e);
+    }
+    try {
+      const out = await inv('list_slots', { req: { path: root, password: 'pw-owner' } });
+      if (!out.managed) return 'not-managed';
+      const used = out.slots.filter(s => s.kind !== 'empty');
+      const cur = out.slots.filter(s => s.current).length;
+      return 'used=' + used.length + ',current=' + cur;
+    } catch (e) {
+      return 'LIST-ERR: ' + JSON.stringify(e);
+    }
+  })()`);
+  check('树形目录能列出槽位清单', String(treeRes).startsWith('used='), String(treeRes));
+  check('树形有两把钥匙且标出了当前那把',
+    String(treeRes) === 'used=2,current=1', String(treeRes));
+
+  console.log('');
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);
   ws.close();
   process.exit(fail === 0 ? 0 : 1);

@@ -187,8 +187,64 @@ $reMate = Join-Path $work 're-mate.txt'
 & $cli decrypt $man4 -o $reMate --password-env PW_MATE --yes *> $null 2>&1
 Check 'reencrypt 后协作者确实已失效' (-not (Test-Path $reMate))
 
+Write-Output ''
+Write-Output '--- 九、树形目录也支持可管理模式 ---'
+# 曾经的空白：树形只能显示「查不出来」，而同一个界面上单文件能列出
+# 清单——同一个功能在两种对象上表现不一致。树的槽位在 .omy-keys 边车
+# 里而不是文件头，但对用户来说这个区别不该存在。
+$treeSrc = Join-Path $work '机密项目'
+New-Item -ItemType Directory -Force -Path (Join-Path $treeSrc '子目录') | Out-Null
+Set-Content -LiteralPath (Join-Path $treeSrc '甲.txt') -Value 'alpha' -Encoding UTF8 -NoNewline
+Set-Content -LiteralPath (Join-Path $treeSrc '子目录\乙.txt') -Value 'beta' -Encoding UTF8 -NoNewline
+$treeOut = Join-Path $work 'tree-out'
+New-Item -ItemType Directory -Force -Path $treeOut | Out-Null
+
+& $cli encrypt $treeSrc --output-dir $treeOut --mode tree --slot-mode managed `
+    --password-env PW_OWNER --kdf-profile mobile --yes *> $null
+$encRoot = Get-ChildItem $treeOut -Directory | Select-Object -First 1
+Check '树形可管理模式加密成功' ($null -ne $encRoot)
+
+if ($encRoot) {
+    $noPw = & $cli key list $encRoot.FullName 2>&1 | Out-String
+    Check '不给密码时不列出树的槽位' ($noPw -notmatch 'slot 0') $noPw.Trim()
+    Check '并告知需要密码' ($noPw -match '需要') $noPw.Trim()
+
+    $withPw = & $cli key list $encRoot.FullName --password-env PW_OWNER 2>&1 | Out-String
+    Check '给密码就能列出树的槽位' ($withPw -match 'slot 0') $withPw.Trim()
+    Check '标出了当前使用的那把' ($withPw -match '当前使用') $withPw.Trim()
+
+    # 加协作者，目录要跟着变
+    & $cli key add $encRoot.FullName --password-env PW_OWNER --new-password-env PW_MATE --yes *> $null 2>&1
+    $two = & $cli key list $encRoot.FullName --password-env PW_OWNER 2>&1 | Out-String
+    Check '加协作者后树有 2 个槽' ($two -match 'Slot 占用\s+2') $two.Trim()
+
+    # 协作者要能真正解开整棵树，不只是边车
+    $decMate = Join-Path $work 'dec-mate'
+    & $cli decrypt $encRoot.FullName --output-dir $decMate --password-env PW_MATE --yes *> $null 2>&1
+    Check '协作者能解开整棵树' (Test-Path (Join-Path $decMate '机密项目\子目录\乙.txt'))
+
+    # 换密码不该让树退回可否认模式
+    $env:PW_T2 = 'pw-tree-new'
+    & $cli key change $encRoot.FullName --password-env PW_OWNER --new-password-env PW_T2 --yes *> $null 2>&1
+    $afterChange = & $cli key list $encRoot.FullName --password-env PW_T2 2>&1 | Out-String
+    Check '换密码后树仍是可管理模式' ($afterChange -match 'managed|可管理') $afterChange.Trim()
+}
+
+# 可否认模式的树要如实说查不出来
+$denSrc = Join-Path $work '普通项目'
+New-Item -ItemType Directory -Force -Path $denSrc | Out-Null
+Set-Content -LiteralPath (Join-Path $denSrc '丙.txt') -Value 'gamma' -Encoding UTF8 -NoNewline
+$denOut = Join-Path $work 'den-out'
+New-Item -ItemType Directory -Force -Path $denOut | Out-Null
+& $cli encrypt $denSrc --output-dir $denOut --mode tree --password-env PW_OWNER --kdf-profile mobile --yes *> $null
+$denRoot = Get-ChildItem $denOut -Directory | Select-Object -First 1
+if ($denRoot) {
+    $denList = & $cli key list $denRoot.FullName --password-env PW_OWNER 2>&1 | Out-String
+    Check '可否认模式的树如实说查不出来' ($denList -notmatch 'slot 0') $denList.Trim()
+}
+
 Remove-Item $work -Recurse -Force -EA SilentlyContinue
-Remove-Item Env:\PW_OWNER, Env:\PW_MATE, Env:\PW_NEW, Env:\PW_4TH, Env:\PW_R, Env:\PW_R2, Env:\PW_R3 -EA SilentlyContinue
+Remove-Item Env:\PW_OWNER, Env:\PW_MATE, Env:\PW_NEW, Env:\PW_4TH, Env:\PW_R, Env:\PW_R2, Env:\PW_R3, Env:\PW_T2 -EA SilentlyContinue
 
 Write-Output ''
 Write-Output "通过 $pass 项，失败 $fail 项"

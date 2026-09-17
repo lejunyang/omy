@@ -44,6 +44,28 @@ Remove-Item $work -Recurse -Force -EA SilentlyContinue
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 Set-Content -LiteralPath (Join-Path $work '合同.txt') -Value 'contract body' -Encoding UTF8 -NoNewline
 
+# 预先用 CLI 造一棵可管理模式的树。
+#
+# 走 CLI 而不是在 GUI 里一步步点：树的加密流程本身由
+# verify-slot-mode.ps1 覆盖，这里要验的只是「界面读不读得到它的槽位」。
+# 用 GUI 造会把两件事绑在一起，任何一环出问题都归因不清。
+$cliExe = Join-Path $root 'target\debug\omy.exe'
+$treeWork = Join-Path $work 'tree-managed'
+$treeSrc = Join-Path $treeWork '树项目'
+New-Item -ItemType Directory -Force -Path (Join-Path $treeSrc '子目录') | Out-Null
+Set-Content -LiteralPath (Join-Path $treeSrc '甲.txt') -Value 'alpha' -Encoding UTF8 -NoNewline
+Set-Content -LiteralPath (Join-Path $treeSrc '子目录\乙.txt') -Value 'beta' -Encoding UTF8 -NoNewline
+$env:PW_OWNER = 'pw-owner'
+$env:PW_MATE = 'pw-mate'
+& $cliExe encrypt $treeSrc --output-dir $treeWork --mode tree --slot-mode managed `
+    --password-env PW_OWNER --kdf-profile mobile --yes *> $null
+Remove-Item $treeSrc -Recurse -Force -EA SilentlyContinue
+$treeRoot = Get-ChildItem $treeWork -Directory | Select-Object -First 1
+if ($treeRoot) {
+    & $cliExe key add $treeRoot.FullName --password-env PW_OWNER --new-password-env PW_MATE --yes *> $null 2>&1
+}
+Remove-Item Env:\PW_OWNER, Env:\PW_MATE -EA SilentlyContinue
+
 $shots = Join-Path $root 'docs\screenshots\slot-mode'
 New-Item -ItemType Directory -Force -Path $shots | Out-Null
 
