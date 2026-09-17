@@ -702,6 +702,11 @@ impl Op {
 }
 
 fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
+    // 目录走树形分支。不先判断的话 read_prefix 会返回一个含糊的 IO
+    // 错误，用户看不出这是「该用树形方式」
+    if a.file.is_dir() {
+        return list_tree(ctx, a);
+    }
     let head = read_prefix(&a.file, omy_core::scan::MIN_PROBE_SIZE)?;
     let h = omy_core::file::peek_header(&head)?;
     let managed = h.has_flag(omy_core::header::flags::SLOT_DIRECTORY);
@@ -747,6 +752,109 @@ fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
             // 可否认模式下恒为 null：设计上不可探测。
             // 可管理模式下没给密码也是 null，加上密码才有值
             "slot_used": serde_json::Value::Null,
+        }),
+    );
+    Ok(())
+}
+
+/// 列出一棵树的槽位。
+///
+/// 与单文件的差别：树的钥匙包裹在 `.omy-keys` 边车里，槽位目录也在那儿，
+/// 不在文件头。但对用户来说这个区别不该存在——同一个命令对文件夹和
+/// 文件应当给出同样形态的答案。
+fn list_tree(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
+    // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数。
+    // 与 recovery_tree 同一个范式
+    let Some(sample) = omy_core::tree::find_any_file(&a.file) else {
+        bail!(
+            "{} 看起来不是树形加密的目录（里面找不到任何 .omy 文件）",
+            a.file.display()
+        );
+    };
+    let head = read_prefix(&sample, omy_core::scan::MIN_PROBE_SIZE)?;
+    let h = omy_core::file::peek_header(&head)?;
+
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    if src.env.is_none() && src.file.is_none() && !src.stdin {
+        let human = format!(
+            "文件夹      {}\nSlot 总数   {}\n\n\
+             这是一个加密文件夹。要列出它的密码需要提供一个能打开它的密码——\n\
+             槽位目录是加密的。加上 --password-env / --password-file 再试一次。",
+            a.file.display(),
+            h.slot_count,
+        );
+        ctx.out.result(
+            &human,
+            &json!({
+                "path": a.file.display().to_string(),
+                "kind": "tree",
+                "slot_total": h.slot_count,
+                "slot_used": serde_json::Value::Null,
+            }),
+        );
+        return Ok(());
+    }
+
+    let pw = read_password(&src, t("prompt.password"), false)?;
+    let kek = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+    let info = omy_core::tree::tree_slots(&a.file, &[kek], &h.vault_salt, h.cipher_id)?;
+
+    let Some(dir) = info.directory else {
+        let human = format!(
+            "文件夹      {}\n槽位模式    可否认（deniable）\nSlot 总数   {}\nSlot 占用   {}\n\n\
+             这棵树用的是可否认模式，看不出配了几个密码——这正是它要的效果。\n\
+             想要能看清槽位，需要在加密时选可管理模式。",
+            a.file.display(),
+            h.slot_count,
+            t("info.slots_unknown"),
+        );
+        ctx.out.result(
+            &human,
+            &json!({
+                "path": a.file.display().to_string(),
+                "kind": "tree",
+                "slot_mode": "deniable",
+                "slot_total": h.slot_count,
+                "slot_used": serde_json::Value::Null,
+            }),
+        );
+        return Ok(());
+    };
+
+    let mut lines = Vec::new();
+    let mut rows = Vec::new();
+    for (i, e) in dir.entries().iter().enumerate() {
+        let mark = if i == info.current { "  ← 当前使用" } else { "" };
+        lines.push(format!("  slot {i}  {}{mark}", kind_label(e.kind)));
+        rows.push(json!({
+            "index": i,
+            "kind": e.kind.name(),
+            "current": i == info.current,
+        }));
+    }
+
+    let human = format!(
+        "文件夹      {}\n槽位模式    可管理（managed）\nSlot 总数   {}\nSlot 占用   {}\n\n{}\n\n\
+         整棵树共用这一份槽位表，每个密文子目录里都存了一份。",
+        a.file.display(),
+        h.slot_count,
+        dir.used(),
+        lines.join("\n"),
+    );
+    ctx.out.result(
+        &human,
+        &json!({
+            "path": a.file.display().to_string(),
+            "kind": "tree",
+            "slot_mode": "managed",
+            "slot_total": h.slot_count,
+            "slot_used": dir.used(),
+            "current": info.current,
+            "slots": rows,
         }),
     );
     Ok(())

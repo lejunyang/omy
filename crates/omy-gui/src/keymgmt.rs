@@ -187,13 +187,41 @@ pub struct SlotQuery {
     pub password: String,
 }
 
+/// 读取一棵树的槽位清单。
+///
+/// 目录没有文件头，vault_salt 与 KDF 参数要从树里任意一个密文文件取。
+fn read_tree_slots(root: &Path, password: &str) -> CmdResult<SlotList> {
+    let Some(sample) = omy_core::tree::find_any_file(root) else {
+        return Err(CmdError::code("not_encrypted_tree"));
+    };
+    let data = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let header = omy_core::file::peek_header(&data).map_err(|_| CmdError::code("not_omy_file"))?;
+    let kek = derive(password, &header.vault_salt, header.argon2_params())?;
+
+    let info = omy_core::tree::tree_slots(root, &[kek], &header.vault_salt, header.cipher_id)
+        .map_err(|_| CmdError::code("wrong_password"))?;
+
+    let Some(dir) = info.directory else {
+        return Ok(SlotList { managed: false, slots: Vec::new() });
+    };
+    let slots = dir
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(i, e)| SlotInfo {
+            index: i,
+            kind: e.kind.name().to_string(),
+            current: i == info.current,
+        })
+        .collect();
+    Ok(SlotList { managed: true, slots })
+}
 fn read_slots(_state: &Shared, req: &SlotQuery) -> CmdResult<SlotList> {
     let path = Path::new(&req.path);
-    // 树形目录还没有槽位目录这个概念：整棵树共用一份 .omy-keys，
-    // 那里的槽位语义要单独设计。如实说「不支持」而不是报一个含糊的
-    // IO 错误——后者会让用户以为文件坏了
+    // 树形目录的槽位在 .omy-keys 边车里，不在文件头。对用户来说这个
+    // 区别不该存在——同一个对话框对文件夹和文件应当给出同样的清单
     if path.is_dir() {
-        return Ok(SlotList { managed: false, slots: Vec::new() });
+        return read_tree_slots(path, &req.password);
     }
     let data = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
@@ -546,9 +574,10 @@ fn run_tree(
     req: &KeyRequest,
     action: Action,
 ) -> CmdResult<KeyOutcome> {
-    if !matches!(action, Action::Change | Action::Reencrypt) {
-        return Err(CmdError::code("tree_only_change"));
-    }
+    // add / remove 对目录同样成立。以前禁掉是因为目录名由 keks[0] 派生、
+    // 多出来的密码解不开它；改用两层结构（随机 DK + 每把钥匙包一份放
+    // 边车）之后这个限制不存在了。CLI 与前端上一轮就解禁了，这里漏了，
+    // 于是用户在界面上选得到却报 tree_only_change
 
     // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数。
     // 同一个 vault 内它们本就一致，所以 Argon2 只需派生一次
@@ -560,6 +589,43 @@ fn run_tree(
     let current = derive(&req.current, &header.vault_salt, params)?;
     // 尽早验密码：让用户等完整棵树才被告知「密码不对」是很糟的体验
     omy_core::file::open(&head, &[current.duplicate()]).map_err(map_core_err)?;
+
+    // 可管理模式下的精确删除：只清掉指定那一个槽，不动其它。
+    //
+    // 走的是边车而不是 rekey——被删的钥匙本来就打不开新边车，文件的
+    // slot 区不必动。这也意味着它是秒级的，与树的大小无关
+    if let Some(slot) = req.slot_index {
+        if action != Action::Remove {
+            return Err(CmdError::code("slot_index_only_for_remove"));
+        }
+        let changed = omy_core::tree::tree_remove_slot(
+            path,
+            &[current.duplicate()],
+            slot,
+            &header.vault_salt,
+            header.cipher_id,
+        )
+        .map_err(map_core_err)?;
+        return Ok(KeyOutcome {
+            action: action.name().to_string(),
+            // 删完还剩几把钥匙，重新读一次目录拿准数，而不是算出来——
+            // 算错的话界面会显示一个与实际不符的数字
+            slots_in_use: omy_core::tree::tree_slots(
+                path,
+                &[current.duplicate()],
+                &header.vault_salt,
+                header.cipher_id,
+            )
+            .ok()
+            .and_then(|s| s.directory)
+            .map_or(0, |d| d.used()),
+            payload_rewritten: false,
+            is_tree: true,
+            // 精确删除不改目录名：它由随机 DK 加密，与密码无关
+            new_path: path.display().to_string(),
+            files_changed: changed,
+        });
+    }
 
     // 轮换可以不换密码：「让旧副本作废、密码不变」是它的正当用法。
     // 这时 keep 就是当前密码本身
