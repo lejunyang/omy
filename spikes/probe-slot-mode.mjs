@@ -294,6 +294,43 @@ async function fill(c, id, value) {
   await c.shot('03-two-slots');
 
   console.log('');
+  console.log('--- 四、GUI 生成的恢复码要如实记进目录 ---');
+  // 这条曾经是真缺陷：GUI 的 generate_recovery 走老路径，恢复码挂上了
+  // 但目录里那个槽写着「空」。后果是 add 会拿它去放新密码，恢复码静默
+  // 消失。CLI 那边当时是对的，两条路径不一致，只测一边就会漏掉。
+  //
+  // 加密后的磁盘名是随机的，不能硬编——从界面拿当前选中项的真实路径
+  const recoDir = await c.eval(`(async () => {
+    const inv = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+    if (!inv) return 'no-invoke';
+    const dir = ${JSON.stringify(workDir)};
+    let target = null;
+    try {
+      const items = await inv('browse_directory', { dir });
+      // 按 is_encrypted 而不是 .omy 后缀找：那个字段是读文件头判断的，
+      // 后缀在「加密但保留后缀」模式下根本不是 .omy
+      const hit = (items || []).find(e => e.is_encrypted);
+      if (!hit) return 'no-omy-file:' + (items || []).map(e => e.name).join(',');
+      target = hit.path;
+    } catch (e) {
+      return 'LS-ERR: ' + JSON.stringify(e);
+    }
+    try {
+      await inv('generate_recovery', { req: { path: target, current: 'pw-owner' } });
+    } catch (e) {
+      return 'GEN-ERR: ' + JSON.stringify(e);
+    }
+    try {
+      const out = await inv('list_slots', { req: { path: target, password: 'pw-owner' } });
+      return out.slots.filter(s => s.kind !== 'empty').map(s => s.kind).join(',');
+    } catch (e) {
+      return 'LIST-ERR: ' + JSON.stringify(e);
+    }
+  })()`);
+  check('恢复码在目录里记成 recovery 而非空',
+    String(recoDir).includes('recovery'), String(recoDir));
+
+  console.log('');
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);
   ws.close();
   process.exit(fail === 0 ? 0 : 1);

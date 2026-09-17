@@ -945,16 +945,37 @@ fn run_recovery(state: &Shared, req: &RecoveryRequest) -> CmdResult<RecoveryOutc
 
     // keep 里必须同时有当前密码与恢复码。只放恢复码的话这就成了
     // 「把密码换成恢复码」，用户的日常密码会当场失效
-    let keep = vec![current.duplicate(), reco_kek];
-    let out = omy_core::keyslot::rewrite_slots(
-        &data,
-        &[current],
-        &keep,
-        // 搬运而非清场：这个文件上可能还挂着别人的密码，
-        // 「加一个恢复码」不该顺手把它们抹了
-        omy_core::keyslot::OtherSlots::Carry,
-    )
-    .map_err(map_core_err)?;
+    let keep = vec![current.duplicate(), reco_kek.duplicate()];
+
+    let opened = omy_core::file::open(&data, &[current.duplicate()])
+        .map_err(|_| CmdError::code("wrong_password"))?;
+    let out = if opened.is_slot_managed() {
+        // 可管理模式要把类型如实记成 recovery。不记的话目录会说那个槽
+        // 是空的，下次 add 就拿它去放新密码，恢复码静默消失——实测过
+        // GUI 这条路径原本就漏了，而 CLI 那边是对的
+        use omy_core::keyslot::SlotPlan;
+        use omy_core::slotdir::{SlotEntry, SlotKind};
+        let mut dir = opened.slot_directory().map_err(|_| CmdError::code("bad_slot_directory"))?;
+        let free = dir.first_free().ok_or_else(|| CmdError::code("slots_full"))?;
+        let mut plans: Vec<SlotPlan> =
+            (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+        *plans.get_mut(free).ok_or_else(|| CmdError::code("internal"))? =
+            SlotPlan::Write(reco_kek.duplicate());
+        dir.set(free, SlotEntry::of(SlotKind::Recovery))
+            .map_err(|_| CmdError::code("internal"))?;
+        omy_core::keyslot::rewrite_slots_managed(&data, &[current.duplicate()], &plans, &dir)
+            .map_err(map_core_err)?
+    } else {
+        omy_core::keyslot::rewrite_slots(
+            &data,
+            &[current.duplicate()],
+            &keep,
+            // 搬运而非清场：这个文件上可能还挂着别人的密码，
+            // 「加一个恢复码」不该顺手把它们抹了
+            omy_core::keyslot::OtherSlots::Carry,
+        )
+        .map_err(map_core_err)?
+    };
 
     // 写回前自证：恢复码真的能打开新文件。顺序不能反——先写回再发现
     // 恢复码无效，用户会拿着一张废纸以为自己有了兜底
