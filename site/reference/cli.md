@@ -186,6 +186,7 @@ omy key <COMMAND> <FILE>
 
 ```bash
 omy key list file.omy --password-env PW
+omy key list 加密后的文件夹 --password-env PW   # 文件夹同样可以
 ```
 
 | 选项 | 说明 |

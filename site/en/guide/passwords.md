@@ -105,6 +105,19 @@ the file header, so switching means re-encrypting.
 Avoid mixing both modes within one vault: the same command would behave differently on
 different files.
 
+### Folders too
+
+Folders encrypted file-by-file (`--mode tree`) support this as well:
+
+```bash
+omy encrypt project/ --mode tree --slot-mode managed
+omy key list <encrypted folder> --password-env PW
+```
+
+The whole tree shares one slot table, and every encrypted subdirectory keeps a copy of
+it (inside `.omy-keys`). Removing a key updates every copy — miss one and that
+subdirectory, if copied out on its own, would still open with the key you removed.
+
 ## Changing passwords
 
 ```bash

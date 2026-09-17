@@ -187,6 +187,7 @@ For a file in manageable mode you can supply one, and it lists what each slot ho
 
 ```bash
 omy key list file.omy --password-env PW
+omy key list <encrypted folder> --password-env PW   # folders work too
 ```
 
 | Option | Description |
