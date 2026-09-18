@@ -94,6 +94,14 @@ impl Protector for HelloProtector {
         imp::remove_blob(&self.service, id)
     }
 
+    /// 只看密文在不在，不去解封——解封会弹 Hello。
+    ///
+    /// 界面上「挂没挂」是个状态展示，为它弹一次指纹很突兀。代价是清除
+    /// TPM 之后这里仍报 true，直到真解锁才失败；那条路径有明确提示。
+    fn has(&self, id: &str) -> bool {
+        imp::read_blob(&self.service, id).is_ok()
+    }
+
     fn requires_user_presence(&self) -> bool {
         true
     }

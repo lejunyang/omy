@@ -305,6 +305,47 @@ impl SessionKeys {
         Ok(true)
     }
 
+    /// 追加一把已有的 KEK，**不挤掉已装入的其它凭据**。
+    ///
+    /// # 与 [`SessionKeys::insert_kek`] 的分工
+    ///
+    /// 那个是**替换**语义：同一个 `(salt, kind, label)` 再插一次就覆盖。
+    /// 本方法是**累加**语义，并按 KEK 指纹去重——与
+    /// [`SessionKeys::add_password`] 一致。
+    ///
+    /// 设备密钥必须走这条：用户按了指纹之后，之前手动输入的密码不该消失。
+    /// 走 `insert_kek` 的话只要 label 撞上就会静默挤掉一条，而那条可能
+    /// 正是他刚输的另一个库的密码。
+    ///
+    /// # 返回值
+    ///
+    /// `true` 表示这是一把新凭据，`false` 表示它与已装入的某条相同。
+    /// 调用方**不应**把 `false` 当失败：重复装入同一把钥匙是正常操作
+    /// （比如又按了一次指纹），只是没有新增条目。
+    pub fn add_kek(
+        &mut self,
+        label: &str,
+        kind: CredentialKind,
+        vault_salt: &[u8; 16],
+        kek: Kek,
+    ) -> bool {
+        self.touch();
+        let fp = kek.fingerprint(vault_salt);
+        // 只在同一个 vault、同一种类型内比对。跨 vault 的同一把硬件密钥
+        // 派生出的 KEK 本就不同（HKDF 的 salt 是 vault_salt），让它们各占
+        // 一条是对的——那是两个库
+        let dup = self.cache.iter().any(|(k, v)| {
+            &k.vault_salt == vault_salt && k.kind == kind && v.fingerprint(vault_salt) == fp
+        });
+        if dup {
+            return false;
+        }
+        let label = self.unique_label(vault_salt, kind, label);
+        let key = CacheKey { vault_salt: *vault_salt, kind, label };
+        self.cache.insert(key, kek);
+        true
+    }
+
     /// 造一个在该 `(vault_salt, kind)` 下尚未被占用的显示名。
     ///
     /// 重名时加 `#2` / `#3` 后缀。这纯粹是为了让缓存键唯一，用户看到的

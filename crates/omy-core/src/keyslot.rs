@@ -375,6 +375,41 @@ pub fn rewrite_slots_managed(
         });
     }
 
+    // 只剩设备密钥也等于销毁数据，只是代价延迟到换机器那天。
+    //
+    // 设备密钥绑在这台机器的硬件上：换机器、重装系统、清除 TPM、重置
+    // Windows Hello——任一发生它就永久解不开，而且**无法恢复**。那时若
+    // 没有密码或恢复码，数据彻底拿不回来。
+    //
+    // 用户很容易走到这一步：按指纹进来、看着清单觉得「密码反正记不住，
+    // 删了吧」。删的那一刻什么都正常，代价几个月后才显现。
+    //
+    // 这一层拦得住，是因为可管理模式的目录记着每个槽是什么类型。可否认
+    // 模式拦不住（那里分不清谁是谁），所以那条路径上只能靠 UI 警示。
+    {
+        let surviving: Vec<crate::slotdir::SlotKind> = (0..SLOT_COUNT)
+            .filter(|i| {
+                plans
+                    .get(*i)
+                    .is_some_and(|p| matches!(p, SlotPlan::Keep | SlotPlan::Write(_)))
+            })
+            .filter_map(|i| new_directory.get(i).map(|e| e.kind))
+            .filter(|k| k.is_occupied())
+            .collect();
+        // 全是设备密钥才拦。留着一个密码、一个恢复码或任何其它类型都放行——
+        // 那些都能在换机器之后重新用上
+        if !surviving.is_empty()
+            && surviving
+                .iter()
+                .all(|k| *k == crate::slotdir::SlotKind::Device)
+        {
+            return Err(Error::MalformedHeader {
+                reason: "refusing to leave only device keys; they stop working when the machine, \
+                         OS or TPM changes, and there would be no way back in",
+            });
+        }
+    }
+
     // 完整走一遍 open：它会验证头部 MAC。绝不能跳过——若头部已被篡改，
     // 我们会把篡改后的字段连同新 MAC 一起签进去，等于替攻击者背书
     let opened = crate::file::open(data, unlock)?;
