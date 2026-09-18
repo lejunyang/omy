@@ -229,6 +229,41 @@ omy key restore secret.omy --code-file code.txt
 
 详见[恢复码](../guide/passwords.md#恢复码：忘记密码时的唯一退路)。
 
+### device（设备密钥）
+
+用 Windows Hello 免密解锁，不必每次输密码。
+
+```bash
+omy key device secret.omy add        # 挂上（需要先输一次密码）
+omy key device secret.omy status     # 查看这台机器上有没有挂
+omy key device secret.omy remove     # 移除
+omy decrypt secret.omy --device      # 用它解锁
+```
+
+它就是一个普通的密码槽，区别只在这把钥匙从哪来：密码槽的钥匙由密码算出来，
+设备密钥的钥匙是**随机生成**的，密文交给这台机器的 TPM 保管。取用时 TPM 会
+要求 Windows Hello 确认。
+
+::: warning 它不会让文件更安全，只是更方便
+TPM 挡得住硬盘被偷和换机器解密，**挡不住正在这台机器上以你的身份运行的恶意
+程序**——它可以在你按下指纹之后的那个窗口里发起解封。
+
+所以不要因为开了它就把密码设弱。设备密钥省的是打字，不是防护。
+:::
+
+::: danger 它随时可能永久失效
+换机器、重装系统、清除 TPM、重置 Windows Hello——任一发生，设备密钥就再也
+解不开了，而且**无法恢复**。
+
+所以它不是备份手段，务必继续记住密码。
+:::
+
+一把设备密钥覆盖整个库（同一个 `vault_salt` 下的所有文件），不同库之间自动
+隔离。文件夹也可以：`omy key device <加密后的文件夹> add`。
+
+目前只支持 Windows，需要 TPM 2.0 与已配置的 Windows Hello。其它平台会如实
+报告不支持，而不是退回一个没有硬件保护的实现。
+
 ## shard
 
 ```

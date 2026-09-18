@@ -936,7 +936,10 @@ GUI 是唯一无法靠 `cargo test` 验证的部分：协议注册、WebView 的
 - [x] `omy-gui`：响应式 UI（≤768px 走移动端布局：抽屉侧栏 + 2 列网格 + 底部导航）
 - [x] Android 打包与实机验证（API 35 x86_64 模拟器上跑通构建 / 安装 / 全盘访问授权 / 撤销后报错，见「Android 现状」）
 - [x] `omy-gui`：会话同时持有多个密码（`add_password` 按 KEK 指纹判重；21 项端到端实测）
-- [ ] 生物识别：桌面需自研原生插件，Windows 那条凭据隔离缺陷必须先 spike
+- [x] 设备密钥（Windows）：TPM 2.0 封装 + Hello 门禁，挂成 `SlotKind::Device` 槽。`omy-secret` 的 `HelloProtector`、`omy-core::devicekey`、CLI 的 `key device` 与 `decrypt --device`。4 项单测 + 10 项保管层验证 + 22 项 CLI 端到端（均需真人确认 Hello，故不进 CI）
+- [ ] 设备密钥的 GUI 侧：解锁对话框的「用 Windows Hello」按钮、设置页管理入口
+- [ ] 设备密钥的 macOS / Linux / Android 实现：`Protector` trait 已就位，缺的是各平台后端（macOS Secure Enclave、Linux TPM/keyring、Android Keystore 需过 JNI）
+- [ ] 拦住「只剩设备密钥」的状态：换机器、重装、清 TPM 之后设备密钥永久失效，那时若没有密码槽数据就拿不回来了。CLI 目前构造不出这个状态（没有「用设备密钥改密码」的入口），但 GUI 加了免密解锁之后就会可达
 - [ ] Spike S2/S3/S4/S6/S7/S8（S1、S5 已通过，见上文「Spike 结论」）
 
 ## 已定决定
@@ -3688,3 +3691,102 @@ Clear 分支。** 被删掉的槽填零的话「这里原来有人、现在删�
 GUI 探针里的树由外层脚本用 CLI 预先造好，不在界面里一步步点：树的
 加密流程本身由 CLI 脚本覆盖，这里只验界面读不读得到。用 GUI 造会把
 两件事绑在一起，任何一环出问题都归因不清。
+
+## 2026-09-18　设备密钥（Windows：TPM + Hello）
+
+### 先推翻一条旧结论
+
+早先的 spike 记录写着「Windows Hello 只能签名、没有解封装 API，只能走
+sign-then-derive（固定 challenge 签名 → 哈希成密钥）」，还因此得出
+「必须与本机随机熵混合，否则用户按一次 Hello 同机任何程序都能解开整个库」。
+
+实测确认：**那条只对 `KeyCredentialManager` 成立**。走
+`Microsoft Platform Crypto Provider`（就是 TPM）可以直接 OAEP 封装/解封：
+
+```
+provider = Microsoft Platform Crypto Provider
+加解密往返成功 = True
+私钥不可导出 = 是
+```
+
+对照组用软件 KSP 造同样的密钥，私钥能导出——证明上面那条「不可导出」
+确实来自硬件，而不是 API 本身不支持导出。
+
+这个差别很实在：直接封装比 sign-then-derive 干净得多，不需要额外混熵
+来绕开「Hello 凭据只按用户隔离」那条缺陷。
+
+**教训：一个 API 不支持某件事，不等于整个平台不支持。** 当初那条结论
+没写清适用范围，差点让实现绕一个大弯。
+
+### 门禁必须由系统强制
+
+`NCRYPT_UI_POLICY` 挂在密钥上，CNG 在每次私钥操作时强制。证据是带
+`NCRYPT_SILENT_FLAG` 解封被拒，错误码 `0x80090022`（`NTE_UI_REQUIRED`）。
+
+这一条不能改成「我们自己弹个框问一下，用户点确定再调解密」——攻击者
+直接调 `NCryptDecrypt` 就绕过去了，那种门禁形同虚设。
+
+UI Policy 要在 `NCryptFinalizeKey` **之前**设。之后再设不报错但也不
+生效——门禁静默失效是最糟的失败方式。
+
+弹窗时机实测：创建密钥时一次（finalize 那一步），之后每次解封各一次；
+封装不弹，因为公钥操作本来就不需要门禁。
+
+### 复用已有的 Protector trait，不新设计
+
+`omy-secret` 当初就把生物识别列为「同一套机制的另一档」，
+`requires_user_presence()` 也是为它预留的。所以只是加了第二个实现，
+与 `MachineProtector` 并列：
+
+| | 后端 | 私钥在哪 | SYSTEM 能拿到吗 |
+|---|---|---|---|
+| `MachineProtector` | 凭据管理器（DPAPI） | 软件 | 能 |
+| `HelloProtector` | TPM 2.0 | 芯片里 | 不能 |
+
+关键差别不在「能不能解开」，而在攻击者拿到系统级权限之后。
+
+### 保管 id 绑 vault_salt
+
+`vault_salt` 同一个库内相同，所以一把设备密钥覆盖整个库，换库自动隔离。
+绑文件路径就不成立了：文件改名、移动之后 id 就变了，密钥还在 TPM 里但
+再也对不上——表现为「明明开过一次，第二天打不开了」。
+
+硬件那把密钥不直接当 KEK，中间过一次 `HKDF(salt=vault_salt)`。这层隔离
+几乎免费，换来的是同一台机器上两个库即使拿到同一把硬件密钥也派生不出
+相同的 KEK。
+
+### 两个实测才暴露的缺陷
+
+**一、密码验证形同虚设。** `device add` 的注释写着「先验密码」，但
+`Kek::from_password` 只做派生、不校验，真正的验证在后面 rewrite 才发生。
+于是拿错密码去 add 会先造好硬件密钥、白弹一次 Hello，TPM 里还留下一把
+永远用不到的密钥。发现方式是看弹窗时序：那一步本该静默失败却弹了窗。
+
+**二、挂上去只是装饰。** 挂载、状态查询、移除全都有，唯独没有任何地方
+**用**设备密钥解锁。是核查「只剩设备密钥这个状态拦没拦住」时顺带发现的：
+搜遍 CLI 只有 `key.rs` 三处引用 `devicekey`，`decrypt` 一处没有。补了
+`decrypt --device`。
+
+### 界面上必须说清的两件事
+
+**它不会更安全，只是更方便。** TPM 挡得住硬盘被偷和换机器解密，挡不住
+正在这台机器上以你的身份运行的恶意程序——它可以在你按下指纹之后的窗口
+里发起解封。如果用户以为开了它就能把密码设弱，那是净损失。
+
+**它随时可能失效。** 换机器、重装系统、清除 TPM、重置 Hello，任一发生
+就永久解不开。所以必须始终保留至少一个密码槽。
+
+### 验证
+
+| 层 | 项数 | 结果 |
+|---|---|---|
+| 全工作区 | 896 | 全过，clippy 零告警 |
+| devicekey 单测 | 4 | 全过 |
+| 保管层（走 Protector 接口） | 10 | 全过 |
+| CLI 端到端 | 22 | 全过 |
+
+后两项都需要真人确认 Hello，所以不能进 CI。这是这个功能固有的代价：
+门禁的意义就在于必须有人在场，能自动化的门禁不成为门禁。
+
+顺带留了 `spikes/front-hello.ps1`：Hello 弹窗常被别的窗口挡住，用户
+看不到就以为程序卡死了。GUI 侧将来会遇到同一个问题。

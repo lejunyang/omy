@@ -235,6 +235,46 @@ In manageable mode it also reports how many were invalidated.
 
 See [recovery codes](../guide/passwords.md#recovery-codes-the-only-way-back-in).
 
+### device (device key)
+
+Unlock with Windows Hello instead of typing the password every time.
+
+```bash
+omy key device secret.omy add        # enroll (asks for the password once)
+omy key device secret.omy status     # check whether this machine has one
+omy key device secret.omy remove     # remove it
+omy decrypt secret.omy --device      # unlock with it
+```
+
+It is an ordinary password slot; the only difference is where the key comes from.
+A password slot's key is derived from the password; a device key is **randomly
+generated** and its ciphertext is kept by this machine's TPM. Retrieving it requires
+Windows Hello confirmation.
+
+::: warning It does not make the file safer, only more convenient
+The TPM protects against a stolen disk and against decryption on another machine. It
+does **not** protect against malware running as you on this machine — that can request
+a decryption in the window right after you touch the sensor.
+
+So do not weaken your password because this is enabled. A device key saves typing,
+not protection.
+:::
+
+::: danger It can be lost permanently at any time
+Replacing the machine, reinstalling the OS, clearing the TPM, resetting Windows
+Hello — any of these makes the device key **unrecoverable**.
+
+It is not a backup. Keep remembering your password.
+:::
+
+One device key covers a whole vault (every file sharing the same `vault_salt`), and
+different vaults are isolated automatically. Folders work too:
+`omy key device <encrypted folder> add`.
+
+Windows only for now, and it needs TPM 2.0 plus a configured Windows Hello. Other
+platforms report that it is unsupported rather than silently falling back to something
+without hardware backing.
+
 ## shard
 
 ```
