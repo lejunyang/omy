@@ -26,6 +26,15 @@ hex = { workspace = true }
 # 所以显式要 Secret Service。
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+# TPM 后端（设备密钥）要直接调 CNG。
+#
+# 不用 keyring：它在 Windows 上走 Credential Manager / DPAPI，那是**软件**
+# 保护，私钥能被同机进程读走。设备密钥要的是硬件绑定——私钥物理上出不了
+# TPM 芯片，且能挂系统强制的 Hello 门禁。两者是并列的两档，不是一回事。
+windows = { version = "0.61", features = [
+  "Win32_Security_Cryptography",
+  "Win32_Foundation",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["apple-native"] }

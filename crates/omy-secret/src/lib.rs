@@ -35,14 +35,20 @@
 //! 所以这一层的定位是**把「明文密码躺在磁盘上」提升到「需要这台机器」**，
 //! 不是万能保险箱。不要在文档或界面里把它说成后者。
 
-#![forbid(unsafe_code)]
+// 不用 forbid：设备密钥要调 Windows CNG，那套 API 全是 unsafe。
+// 改成 deny + 在 hello 模块里局部 allow，其余模块照旧一行 unsafe 都不许有。
+// forbid 的问题是它连模块级 allow 都挡掉，等于逼人把 CNG 挪进独立 crate，
+// 换不来任何实际安全性
+#![deny(unsafe_code)]
 
 use zeroize::Zeroizing;
 
 mod envelope;
+mod hello;
 mod machine;
 
 pub use envelope::{seal, unseal, Envelope};
+pub use hello::HelloProtector;
 pub use machine::MachineProtector;
 
 /// 密钥长度，与 `omy-core` 的对称密钥一致。
