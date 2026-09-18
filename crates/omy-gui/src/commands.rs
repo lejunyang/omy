@@ -267,7 +267,7 @@ pub fn vault_params_of(dir: String) -> CmdResult<Vec<VaultParams>> {
 }
 
 /// 把十六进制盐解析成 16 字节。
-fn parse_salt(hex: &str) -> Option<[u8; 16]> {
+pub(crate) fn parse_salt(hex: &str) -> Option<[u8; 16]> {
     if hex.len() != 32 {
         return None;
     }

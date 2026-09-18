@@ -77,7 +77,8 @@
     "connecting": "Connecting…",
     "file_of": "File {{i}} of {{n}}",
     "reencrypting": "Re-encrypting...",
-    "restoring": "Restoring…"
+    "restoring": "Restoring…",
+    "waiting_hello": "Waiting for confirmation…"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -625,5 +626,23 @@
     "close": "Close",
     "save": "Save",
     "cancel": "Cancel"
+  },
+  "devicekey": {
+    "unlock_with_hello": "Unlock with Windows Hello",
+    "unlocking": "Waiting for confirmation…",
+    "enroll_title": "Set up passwordless unlock",
+    "enroll_hint": "After this, opening this location only needs Windows Hello.",
+    "enroll_password": "Enter the current password once",
+    "enroll_submit": "Enable",
+    "enrolled": "Passwordless unlock is on",
+    "enroll_done": "Enabled. Next time, Windows Hello is enough.",
+    "forget": "Turn off passwordless unlock",
+    "forget_done": "Turned off. A password is needed from now on.",
+    "not_available": "This PC cannot use passwordless unlock",
+    "not_available_hint": "It needs TPM 2.0 and a configured Windows Hello; Windows only for now.",
+    "not_enrolled_hint": "This location has no passwordless unlock yet. Open it with a password first, then enable it in Settings.",
+    "warn_not_safer": "It saves typing, not protection. Passwordless unlock stops a stolen disk and another PC, but not malware running on this one — so do not weaken your password because of it.",
+    "warn_can_be_lost": "Replacing the PC, reinstalling the OS, clearing the TPM or resetting Windows Hello makes it permanently unrecoverable. Keep remembering your password; this is not a backup.",
+    "cancelled": "Cancelled"
   }
 }

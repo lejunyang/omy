@@ -39,6 +39,7 @@ import {
   grantStorageAccess,
   encryptSelected,
   restoreSelected,
+  tryDeviceUnlock,
   tryUnlock,
   lock,
   switchLanguage,
@@ -293,6 +294,7 @@ async function onOpen(entry) {
     return;
   }
   unlockError.value = '';
+  refreshDeviceKey();
   showUnlock.value = true;
 }
 
@@ -651,6 +653,7 @@ function onOpenRemote(f) {
 function onRemoteUnlock() {
   unlockForRemote.value = true;
   unlockError.value = '';
+  refreshDeviceKey();
   showUnlock.value = true;
 }
 
@@ -665,6 +668,45 @@ async function onPlainExternal() {
   const cur = state.entries.find((e) => e.token === plainPreview.value?.id);
   plainPreview.value = null;
   if (cur) await openWithSystem(cur);
+}
+
+/**
+ * 当前位置能不能用 Windows Hello 免密解锁。
+ *
+ * 两个条件同时成立才为 true：这台电脑支持、这个库已启用。缺一个就不显示
+ * 按钮——摆一个点了就报错的按钮比没有更糟。
+ */
+const deviceKeyReady = ref(false);
+
+/**
+ * 刷新免密解锁的可用状态。
+ *
+ * 在弹出解锁对话框之前查，而不是进目录就查：后者会在每次切目录时多一次
+ * 无用的 IO，而这个状态只在要解锁的那一刻才有意义。
+ */
+async function refreshDeviceKey() {
+  deviceKeyReady.value = false;
+  if (!state.cwd) return;
+  try {
+    const s = await api.deviceKeyStatus(state.cwd);
+    deviceKeyReady.value = s.available && s.enrolled;
+  } catch {
+    // 查不到就当不可用。不弹错：用户只是想解锁，
+    // 「免密解锁状态查询失败」这种话对他没有意义
+    deviceKeyReady.value = false;
+  }
+}
+
+async function onDeviceUnlock() {
+  const ok = await tryDeviceUnlock();
+  if (ok) {
+    showUnlock.value = false;
+    unlockError.value = '';
+  } else {
+    unlockError.value = state.error;
+    // 错误已在对话框里显示，不用再占用底部提示条
+    state.error = '';
+  }
 }
 
 function onUnlockCancel() {
@@ -856,8 +898,10 @@ onBeforeUnmount(() => {
     :busy="state.busy"
     :error="unlockError"
     :loaded="state.credentials"
+    :device-key="deviceKeyReady"
     @cancel="onUnlockCancel"
     @submit="onUnlockSubmit"
+    @device-unlock="onDeviceUnlock"
   />
 
   <PreviewOverlay

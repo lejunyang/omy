@@ -159,6 +159,24 @@ export const listSlots = (path, password) =>
   invoke('list_slots', { req: { path, password } });
 
 /**
+ * 这个位置能不能用 Windows Hello 免密解锁。
+ *
+ * 不会弹 Hello——用户只是打开界面，为此弹指纹很突兀。代价是它只回答
+ * 「密文在不在」，不保证还解得开（清除 TPM 之后仍报 true）。
+ */
+export const deviceKeyStatus = (dir) => invoke('device_key_status', { dir });
+
+/** 用设备密钥解锁。会弹 Hello。 */
+export const deviceKeyUnlock = (dir) => invoke('device_key_unlock', { dir });
+
+/** 给这个位置启用免密解锁。需要先验一次密码，之后会弹 Hello。 */
+export const deviceKeyEnroll = (path, password) =>
+  invoke('device_key_enroll', { path, password });
+
+/** 关闭免密解锁。只清这台机器上保管的密钥，文件不动。 */
+export const deviceKeyForget = (dir) => invoke('device_key_forget', { dir });
+
+/**
  * 只重试上次失败的那些文件。
  *
  * `paths` 取自 `tree_partial` 错误里的 `paths`（完整路径，不是展示用的短名）。

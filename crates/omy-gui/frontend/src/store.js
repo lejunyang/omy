@@ -1403,6 +1403,47 @@ export async function manageKey(req) {
 }
 
 /** 用一个密码试解锁当前目录。 */
+/**
+ * 用设备密钥解锁当前目录。
+ *
+ * 与 tryUnlock 并列而不是替代：会话里的凭据是累加的，按指纹不会挤掉
+ * 之前手动输入的密码。
+ */
+export async function tryDeviceUnlock() {
+  if (!state.cwd) return false;
+  state.busy = true;
+  // 文案是「正在等待确认」而不是「正在派生」：这一步在等用户按指纹，
+  // 说「派生中」会让人以为该干等
+  state.busyKey = 'busy.waiting_hello';
+  state.error = '';
+  state.notice = '';
+  try {
+    const r = await api.deviceKeyUnlock(state.cwd);
+    state.credentials = r.credentials;
+    await reload();
+    // 与 tryUnlock 同一个判据：加密目录的 is_encrypted 故意是 false
+    // （那个字段指「内容是密文」，而目录只有名字是密文），只按它过滤
+    // 会把「只含树形加密目录」的文件夹误判成解锁失败
+    const opened = state.entries.filter(
+      (e) => (e.is_encrypted || e.is_encrypted_dir) && e.unlocked,
+    ).length;
+    if (opened > 0) {
+      setNotice(i18n.tn('notice.unlocked', opened));
+    } else {
+      // 设备密钥能解封说明硬件那边没问题，打不开文件就是另一回事了：
+      // 这把钥匙不属于这个位置的文件
+      state.error = i18n.te('device_key_not_enrolled');
+    }
+    return opened > 0;
+  } catch (e) {
+    state.error = i18n.te(e);
+    return false;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
 export async function tryUnlock(password) {
   if (!state.cwd) return false;
   state.busy = true;

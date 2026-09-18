@@ -40,6 +40,7 @@ mod browse;
 mod citem;
 mod commands;
 mod device_cmds;
+mod device_key;
 mod devices;
 mod decrypt;
 mod encrypt;
@@ -178,6 +179,10 @@ pub fn run() {
             fileops::create_folder,
             keymgmt::manage_key,
             keymgmt::list_slots,
+            device_key::device_key_status,
+            device_key::device_key_unlock,
+            device_key::device_key_enroll,
+            device_key::device_key_forget,
             keymgmt::retry_key_files,
             keymgmt::generate_recovery,
             keymgmt::restore_with_recovery,

@@ -107,6 +107,7 @@ onMounted(async () => {
     const [c, p] = await Promise.all([api.configGet(), api.configPaths()]);
     cfg.value = c;
     paths.value = p;
+    await dkRefresh();
   } catch (e) {
     error.value = i18n.te(api.errCode(e), 'settings.load_failed');
   } finally {
@@ -259,6 +260,56 @@ const paneTitle = computed(() => {
   if (key === 'cache') return i18n.t('settings.cache_title');
   return i18n.t(PANES.find((p) => p.key === key)?.label || 'settings.title');
 });
+
+// ── 免密解锁（Windows Hello + TPM）─────────────────────────────
+
+/** 这台电脑支持吗、当前位置启用了吗。 */
+const dk = ref({ available: false, enrolled: false });
+const dkPassword = ref('');
+const dkBusy = ref(false);
+const dkNotice = ref('');
+
+async function dkRefresh() {
+  try {
+    dk.value = await api.deviceKeyStatus(state.cwd);
+  } catch {
+    // 查不到就当不可用，整行不显示。这里不弹错：用户是来看设置的，
+    // 「免密解锁状态查询失败」对他没有意义
+    dk.value = { available: false, enrolled: false };
+  }
+}
+
+async function dkEnroll() {
+  dkBusy.value = true;
+  dkNotice.value = '';
+  error.value = '';
+  try {
+    await api.deviceKeyEnroll(state.cwd, dkPassword.value);
+    // 成功后立刻清掉密码：它没有必要在内存里多留一秒
+    dkPassword.value = '';
+    dkNotice.value = i18n.t('devicekey.enroll_done');
+    await dkRefresh();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'devicekey.enroll_title');
+  } finally {
+    dkBusy.value = false;
+  }
+}
+
+async function dkForget() {
+  dkBusy.value = true;
+  dkNotice.value = '';
+  error.value = '';
+  try {
+    await api.deviceKeyForget(state.cwd);
+    dkNotice.value = i18n.t('devicekey.forget_done');
+    await dkRefresh();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'devicekey.forget');
+  } finally {
+    dkBusy.value = false;
+  }
+}
 
 /** 缓存入口摘要：已用 / 上限 · LRU 淘汰。 */
 const cacheSummary = computed(() => `${usedText.value} · ${i18n.t('settings.cache_lru')}`);
@@ -582,6 +633,49 @@ async function openCacheDir() {
                   {{ i18n.t('settings.lock_on_background') }}
                 </label>
                 <div class="desc">{{ i18n.t('settings.lock_on_background_desc') }}</div>
+              </div>
+            </div>
+            <!-- 免密解锁。只在这台电脑支持时出现——不支持时摆一个
+                 灰按钮只会让人反复去点 -->
+            <div class="row" v-if="dk.available">
+              <label class="lb">{{ i18n.t('devicekey.enroll_title') }}</label>
+              <div class="fld">
+                <div v-if="dk.enrolled">
+                  <div>{{ i18n.t('devicekey.enrolled') }}</div>
+                  <button
+                    type="button"
+                    class="btn small"
+                    data-sf="dk_forget"
+                    :disabled="dkBusy"
+                    @click="dkForget"
+                  >
+                    {{ i18n.t('devicekey.forget') }}
+                  </button>
+                </div>
+                <div v-else>
+                  <div class="desc">{{ i18n.t('devicekey.enroll_hint') }}</div>
+                  <input
+                    type="password"
+                    data-sf="dk_password"
+                    v-model="dkPassword"
+                    autocomplete="current-password"
+                    :placeholder="i18n.t('devicekey.enroll_password')"
+                  />
+                  <button
+                    type="button"
+                    class="btn small"
+                    data-sf="dk_enroll"
+                    :disabled="!dkPassword || dkBusy"
+                    @click="dkEnroll"
+                  >
+                    {{ i18n.t('devicekey.enroll_submit') }}
+                  </button>
+                </div>
+                <!-- 这两句必须都在。说错的后果不对称：第一句理解错会让
+                     用户把密码设弱，第二句会让他丢数据 -->
+                <div class="desc">{{ i18n.t('devicekey.warn_not_safer') }}</div>
+                <div class="desc">{{ i18n.t('devicekey.warn_can_be_lost') }}</div>
+                <div v-if="dkNotice" class="desc">{{ dkNotice }}</div>
               </div>
             </div>
             <div class="hint">
