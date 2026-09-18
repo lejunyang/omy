@@ -75,6 +75,7 @@ pub mod slotdir;
 pub mod source;
 pub mod unpack;
 pub mod dirname;
+pub mod devicekey;
 pub mod dirsidecar;
 pub mod tlv;
 pub mod tree;

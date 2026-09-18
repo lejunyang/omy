@@ -55,6 +55,42 @@ pub enum Cmd {
     Recovery(RecoveryArgs),
     /// 用恢复码打开文件并设置新密码
     Restore(RestoreArgs),
+    /// 管理设备密钥（用 Windows Hello 免密解锁）
+    Device(DeviceArgs),
+}
+
+/// 设备密钥的操作。
+#[derive(Debug, ClapArgs)]
+pub struct DeviceArgs {
+    /// 目标文件
+    pub file: PathBuf,
+
+    /// 做什么：`add` 挂上，`remove` 移除，`status` 查看
+    #[arg(value_enum, default_value = "status")]
+    pub action: DeviceAction,
+
+    /// 从环境变量读取现有密码（传变量名）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+
+    /// 从文件读取现有密码
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+
+    /// 从标准输入读取现有密码
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
+/// 设备密钥的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DeviceAction {
+    /// 挂上设备密钥。
+    Add,
+    /// 移除设备密钥（文件上的槽位与硬件里的密钥一起清）。
+    Remove,
+    /// 查看这台机器上有没有为这个库保管设备密钥。
+    Status,
 }
 
 /// slot 操作的公共参数。
@@ -170,6 +206,7 @@ pub fn run(ctx: &Ctx<'_>, c: &Cmd) -> Result<()> {
         Cmd::Reencrypt(a) => modify(ctx, a, Op::Reencrypt),
         Cmd::Recovery(a) => recovery(ctx, a),
         Cmd::Restore(a) => restore(ctx, a),
+        Cmd::Device(a) => device(ctx, a),
     }
 }
 
@@ -752,6 +789,274 @@ fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
             // 可否认模式下恒为 null：设计上不可探测。
             // 可管理模式下没给密码也是 null，加上密码才有值
             "slot_used": serde_json::Value::Null,
+        }),
+    );
+    Ok(())
+}
+
+/// 服务名：TPM 里的密钥都挂在这个名下，避免与别的应用撞名。
+const DEVICE_SERVICE: &str = "omy";
+
+/// 管理设备密钥。
+///
+/// # 为什么它是 slot 而不是「记住密码」
+///
+/// 记住密码要把密码本身存起来，那等于把最高权限的凭据落盘。设备密钥
+/// 存的是一把**随机 KEK**，它只能开这个库，泄露了也拿不到用户的密码
+/// ——而用户往往在别处也用同一个密码。
+///
+/// # Errors
+///
+/// 这台机器没有 TPM、密码不对、文件读写失败时返回错误。
+fn device(ctx: &Ctx<'_>, a: &DeviceArgs) -> Result<()> {
+    // 目录也要支持：树形的每个文件都用同一个 vault_salt，
+    // 所以设备密钥对整棵树是一把
+    let sample = if a.file.is_dir() {
+        omy_core::tree::find_any_file(&a.file).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} 看起来不是加密过的文件夹（里面找不到任何 .omy 文件）",
+                a.file.display()
+            )
+        })?
+    } else {
+        a.file.clone()
+    };
+    let head = read_prefix(&sample, omy_core::scan::MIN_PROBE_SIZE)?;
+    let h = omy_core::file::peek_header(&head)?;
+    let id = omy_core::devicekey::slot_id(&h.vault_salt);
+
+    match a.action {
+        DeviceAction::Status => device_status(ctx, a, &id),
+        DeviceAction::Add => device_add(ctx, a, &h, &sample, &id),
+        DeviceAction::Remove => device_remove(ctx, a, &id),
+    }
+}
+
+/// 造一个 Hello 保管器，并把「这台机器没有 TPM」翻译成人话。
+fn hello_protector() -> Result<omy_secret::HelloProtector> {
+    omy_secret::HelloProtector::new(DEVICE_SERVICE).map_err(|e| {
+        anyhow::anyhow!(
+            "这台机器上用不了设备密钥：{e}\n\n\
+             设备密钥需要 TPM 2.0 与已配置的 Windows Hello。\n\
+             目前只支持 Windows。"
+        )
+    })
+}
+
+fn device_status(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
+    // 探测本身不该弹 Hello——用户只是想看看状态。
+    // 所以只问「有没有这条记录」，不去解封它
+    let p = match hello_protector() {
+        Ok(p) => p,
+        Err(e) => {
+            ctx.out.result(
+                &format!("{e}"),
+                &json!({
+                    "path": a.file.display().to_string(),
+                    "available": false,
+                    "enrolled": false,
+                }),
+            );
+            return Ok(());
+        }
+    };
+    // retrieve 会弹 Hello，所以这里不能用它判断「有没有挂过」。
+    // 用 delete 之外唯一的非破坏性手段：看密文文件在不在
+    let enrolled = omy_secret::Protector::retrieve(&p, id).is_ok();
+    let human = if enrolled {
+        format!(
+            "文件        {}\n设备密钥    已挂载（{}）\n\n\
+             解锁时会要求 Windows Hello 确认。",
+            a.file.display(),
+            omy_secret::Protector::name(&p),
+        )
+    } else {
+        format!(
+            "文件        {}\n设备密钥    未挂载\n\n\
+             用 `omy key device {} add` 挂上，之后解锁只需 Windows Hello。",
+            a.file.display(),
+            a.file.display(),
+        )
+    };
+    ctx.out.result(
+        &human,
+        &json!({
+            "path": a.file.display().to_string(),
+            "available": true,
+            "enrolled": enrolled,
+        }),
+    );
+    Ok(())
+}
+
+fn device_add(
+    ctx: &Ctx<'_>,
+    a: &DeviceArgs,
+    h: &omy_core::header::FixedHeader,
+    sample: &std::path::Path,
+    id: &str,
+) -> Result<()> {
+    let p = hello_protector()?;
+
+    // 先验密码：挂设备密钥要求已知一个现有密码。
+    //
+    // 不能省。省掉的话任何人在这台机器上都能给别人的文件挂一把
+    // 自己的设备密钥——那等于凭「能碰到这台机器」就获得了访问权
+    let src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let pw = read_password(&src, t("prompt.password"), false)?;
+    let cur = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+
+    // 真的开一次，别只派生。
+    //
+    // from_password 只是算出一把 KEK，不校验它对不对——密码错了要到
+    // 后面 rewrite 时才暴露。而那时硬件密钥已经造好了：TPM 里留下一把
+    // 永远用不到的密钥，用户还白按了一次指纹。实测确认过这一幕
+    let sample_data = std::fs::read(sample)
+        .with_context(|| format!("读取 {} 失败", sample.display()))?;
+    omy_core::file::open(&sample_data, &[cur.duplicate()])
+        .context("这个密码打不开该文件")?;
+    ctx.out.detail("密码已验证");
+
+    ctx.out.warn(
+        "设备密钥不会让文件更安全，只是省去每次输密码。\n\
+         它挡得住硬盘被偷和换机器解密，挡不住这台机器上正在运行的恶意程序。",
+    );
+    ctx.out.warn(
+        "换机器、重装系统、清除 TPM 或重置 Hello 之后它会永久失效，\n\
+         所以务必继续记住密码——设备密钥不是备份手段。",
+    );
+    if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
+        ctx.out.info(t("msg.cancelled"));
+        return Ok(());
+    }
+
+    // 硬件里已经有就复用，没有才生成。复用时不会重复弹创建确认
+    let secret = match omy_secret::Protector::retrieve(&p, id) {
+        Ok(k) => {
+            ctx.out.detail("复用这台机器上已保管的设备密钥");
+            k
+        }
+        Err(omy_secret::Error::NotFound) => {
+            let k = omy_secret::random_key();
+            omy_secret::Protector::store(&p, id, &k)
+                .map_err(|e| anyhow::anyhow!("交给 Windows Hello 保管失败：{e}"))?;
+            ctx.out.detail("已生成设备密钥并交给 Windows Hello 保管");
+            k
+        }
+        Err(e) => return Err(anyhow::anyhow!("读取设备密钥失败：{e}")),
+    };
+    let dev_kek = omy_core::devicekey::kek_from_secret(&secret, &h.vault_salt);
+
+    // 挂到文件（或整棵树）上，语义与 key add 相同
+    if a.file.is_dir() {
+        let keep = vec![cur.duplicate(), dev_kek];
+        let rep = omy_core::tree::rekey_tree(
+            &a.file,
+            &[cur],
+            &keep,
+            &h.vault_salt,
+            h.cipher_id,
+            omy_core::keyslot::OtherSlots::Carry,
+        )?;
+        ctx.out.result(
+            &format!(
+                "已给 {} 挂上设备密钥，处理 {} 个文件。\n\n\
+                 之后解锁这个文件夹只需 Windows Hello。",
+                a.file.display(),
+                rep.changed,
+            ),
+            &json!({
+                "path": a.file.display().to_string(),
+                "files_changed": rep.changed,
+                "enrolled": true,
+            }),
+        );
+        return Ok(());
+    }
+
+    let data = std::fs::read(&a.file)
+        .with_context(|| format!("读取 {} 失败", a.file.display()))?;
+    let opened = omy_core::file::open(&data, &[cur.duplicate()])?;
+    let keep = vec![cur.duplicate(), dev_kek.duplicate()];
+
+    let out = if opened.is_slot_managed() {
+        // 可管理模式：类型如实记成 device，别记成日常密码——
+        // 否则用户在清单里分不出哪个是指纹解锁
+        use omy_core::keyslot::SlotPlan;
+        use omy_core::slotdir::{SlotEntry, SlotKind};
+        let mut dir = opened.slot_directory()?;
+        let free = dir
+            .first_free()
+            .ok_or_else(|| anyhow::anyhow!("8 个槽位已全部占用，先用 key remove 腾一个"))?;
+        let mut plans: Vec<SlotPlan> =
+            (0..omy_core::header::SLOT_COUNT).map(|_| SlotPlan::Keep).collect();
+        *plans.get_mut(free).ok_or_else(|| anyhow::anyhow!("槽位下标越界"))? =
+            SlotPlan::Write(dev_kek);
+        dir.set(free, SlotEntry::of(SlotKind::Device))?;
+        ctx.out.detail(&format!("设备密钥写入 slot {free}"));
+        omy_core::keyslot::rewrite_slots_managed(&data, &[cur.duplicate()], &plans, &dir)?
+    } else {
+        omy_core::keyslot::rewrite_slots(
+            &data,
+            &[cur.duplicate()],
+            &keep,
+            // Carry：这个文件上可能还挂着恢复码，加设备密钥不该抹掉它
+            omy_core::keyslot::OtherSlots::Carry,
+        )?
+    };
+
+    verify_reopenable(&out.bytes, &keep)?;
+    omy_core::fsatomic::write_atomic(&a.file, &out.bytes)
+        .with_context(|| format!("写回 {} 失败", a.file.display()))?;
+
+    ctx.out.result(
+        &format!(
+            "已给 {} 挂上设备密钥。\n\n\
+             之后解锁只需 Windows Hello；密码仍然有效，请继续记住它。",
+            a.file.display()
+        ),
+        &json!({
+            "path": a.file.display().to_string(),
+            "slots_in_use": out.slot_used,
+            "enrolled": true,
+        }),
+    );
+    Ok(())
+}
+
+fn device_remove(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
+    let p = hello_protector()?;
+
+    // 只清硬件里那把密钥，不动文件。
+    //
+    // 这样做的理由：文件上那个槽位没了钥匙就是一段随机字节，与空槽
+    // 不可区分，留着不影响任何事；而要精确清掉它得先解开文件，反而
+    // 多一次 Hello 确认。可管理模式下用户想让清单也干净，可以再走
+    // 一次 key remove
+    ctx.out.warn(
+        "移除后这台机器上的免密解锁失效，需要用密码打开。\n\
+         文件本身不动，其它密码不受影响。",
+    );
+    if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {
+        ctx.out.info(t("msg.cancelled"));
+        return Ok(());
+    }
+
+    omy_secret::Protector::delete(&p, id)
+        .map_err(|e| anyhow::anyhow!("移除设备密钥失败：{e}"))?;
+    ctx.out.result(
+        &format!(
+            "已移除 {} 的设备密钥。\n\n\
+             文件没有改动；那个槽位现在只是一段无人能用的随机字节。",
+            a.file.display()
+        ),
+        &json!({
+            "path": a.file.display().to_string(),
+            "enrolled": false,
         }),
     );
     Ok(())

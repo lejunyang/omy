@@ -3072,6 +3072,7 @@ dependencies = [
  "omy-core",
  "omy-media",
  "omy-net",
+ "omy-secret",
  "rpassword",
  "serde",
  "serde_json",

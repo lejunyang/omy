@@ -27,6 +27,10 @@ omy-media = { path = "../omy-media", version = "0.0.1" }
 # 局域网共享。omy-net 是 MIT OR Apache-2.0，被 GPL-3.0 的 CLI 依赖，
 # 方向正确（宽松许可可被 GPL 吸收，反过来不行）
 omy-net = { path = "../omy-net", version = "0.0.1" }
+# 设备密钥：把一把 KEK 封进 TPM，由 Windows Hello 把守。
+# CLI 也要能管理它——否则「用 GUI 加的设备密钥，命令行看不见」，
+# 而 key list 恰恰是排查密码问题时最常用的入口
+omy-secret = { path = "../omy-secret", version = "0.0.1" }
 tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
