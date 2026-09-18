@@ -86,6 +86,21 @@ if (Test-Path $out1) {
 }
 
 Write-Output ''
+Write-Output '--- 五点五、用设备密钥解锁（会弹 Hello）---'
+# 这是整个功能的落脚点。没有这一步，设备密钥挂上去只是装饰——
+# 我第一版就漏了它：挂载、状态、移除全都有，唯独没人用它解锁
+$outDev = Join-Path $work 'dec-device.txt'
+$dec = & $cli decrypt $enc -o $outDev --device --yes 2>&1 | Out-String
+Check '用设备密钥能解密' (Test-Path $outDev) $dec.Trim()
+if (Test-Path $outDev) {
+    Check '设备密钥解出的内容正确' ((Get-Content $outDev -Raw) -eq $plain)
+}
+# --device 与密码参数互斥：同时给两个说明用户没想清楚用哪条路径，
+# 静默选一个会让另一个悄悄失效
+$both = & $cli decrypt $enc -o (Join-Path $work 'x.txt') --device --password-env PW --yes 2>&1 | Out-String
+Check '--device 与密码参数互斥' ($both -match 'cannot be used with|不能同时') $both.Trim()
+
+Write-Output ''
 Write-Output '--- 六、移除设备密钥（不需要 Hello）---'
 $rm = & $cli key device $enc remove --yes 2>&1 | Out-String
 Check 'remove 成功' ($rm -match '已移除') $rm.Trim()
@@ -96,6 +111,12 @@ Check '移除后状态变回未挂载' ($st3 -match '未挂载') $st3.Trim()
 $out2 = Join-Path $work 'dec-after-rm.txt'
 & $cli decrypt $enc -o $out2 --password-env PW --yes *> $null 2>&1
 Check '移除设备密钥后原密码仍能开' (Test-Path $out2)
+
+# 移除后 --device 必须失败，且要说清怎么办——「解锁失败」这种话
+# 让用户无从下手
+$gone = & $cli decrypt $enc -o (Join-Path $work 'y.txt') --device --yes 2>&1 | Out-String
+Check '移除后 --device 失败' (-not (Test-Path (Join-Path $work 'y.txt'))) $gone.Trim()
+Check '并告知先 add 或改用密码' ($gone -match 'device .* add|改用密码') $gone.Trim()
 
 Remove-Item $work -Recurse -Force -EA SilentlyContinue
 Remove-Item Env:\PW, Env:\PW_WRONG -EA SilentlyContinue

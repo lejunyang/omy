@@ -49,6 +49,12 @@ pub struct Args {
     /// 从标准输入读取密码
     #[arg(long)]
     pub password_stdin: bool,
+
+    /// 用这台机器上的设备密钥解锁，不输密码（需要 Windows Hello 确认）
+    ///
+    /// 要求先用 `omy key device <文件> add` 挂过。
+    #[arg(long, conflicts_with_all = ["password_env", "password_file", "password_stdin"])]
+    pub device: bool,
 }
 
 /// 执行 `decrypt`。
@@ -56,17 +62,49 @@ pub struct Args {
 /// # Errors
 ///
 /// 读取失败、密码不匹配、认证失败或写出失败时返回错误。
+/// 从这台机器的安全硬件取出设备密钥，派生成 KEK。
+///
+/// 会弹 Windows Hello。失败原因要分清：没挂过、这台机器没 TPM、
+/// 用户取消——三者的处置方式完全不同，混成一句「解锁失败」会让用户
+/// 无从下手。
+fn device_kek(vault_salt: &[u8; 16]) -> Result<Kek> {
+    let p = omy_secret::HelloProtector::new("omy").map_err(|e| {
+        anyhow::anyhow!(
+            "这台机器上用不了设备密钥：{e}\n\n\
+             设备密钥需要 TPM 2.0 与已配置的 Windows Hello，目前只支持 Windows。"
+        )
+    })?;
+    let id = omy_core::devicekey::slot_id(vault_salt);
+    let secret = match omy_secret::Protector::retrieve(&p, &id) {
+        Ok(k) => k,
+        Err(omy_secret::Error::NotFound) => {
+            bail!(
+                "这台机器上没有为该文件所属的库保管设备密钥。\n\n\
+                 先用 `omy key device <文件> add` 挂上，或改用密码解锁。"
+            )
+        }
+        Err(omy_secret::Error::UserCancelled) => bail!("已取消 Windows Hello 确认"),
+        Err(e) => bail!("取出设备密钥失败：{e}"),
+    };
+    Ok(omy_core::devicekey::kek_from_secret(&secret, vault_salt))
+}
 pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
     if a.output.is_some() && a.files.len() > 1 {
         bail!("-o/--output 只能用于单个输入；多个输入请用 --output-dir");
     }
 
-    let src = PasswordSource {
-        env: a.password_env.clone(),
-        file: a.password_file.clone(),
-        stdin: a.password_stdin,
+    // 设备密钥路径没有「密码」这个东西，所以密码留空，
+    // 后面按文件取 KEK 时再分流
+    let pw = if a.device {
+        Vec::new()
+    } else {
+        let src = PasswordSource {
+            env: a.password_env.clone(),
+            file: a.password_file.clone(),
+            stdin: a.password_stdin,
+        };
+        read_password(&src, t("prompt.password"), false)?
     };
-    let pw = read_password(&src, t("prompt.password"), false)?;
 
     let mut results = Vec::new();
 
@@ -84,7 +122,11 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
         // 每个文件的 vault_salt 可能不同，故按文件派生 KEK。
         // 同一 salt 的多个文件由 SessionKeys 缓存复用（见 scan 命令）。
-        let kek = Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?;
+        let kek = if a.device {
+            device_kek(&h.vault_salt)?
+        } else {
+            Kek::from_password(&pw, &h.vault_salt, h.argon2_params())?
+        };
         let opened = omy_core::file::open(&data, &[kek])?;
 
         if opened.is_container() {
