@@ -1779,6 +1779,10 @@ export async function removeRemoteFileCache(f) {
       total_blocks: prev ? prev.total_blocks : 0,
       cached_bytes: 0,
       fully_cached: false,
+      // 「从缓存中移除」只清临时层，不动永久标记，所以这一位要沿用原值
+      // 而不是一律置 false——置 false 会让一个仍然永久保留的文件在界面上
+      // 显示成普通缓存，用户以为自己的永久标记丢了
+      pinned: prev ? prev.pinned === true : false,
     };
     state.remoteCacheStat = { ...state.remoteCacheStat, [key]: zero };
     setNotice(i18n.t('rplace.removed_cache', { size: i18n.formatSize(r.freed_bytes || 0) }));
