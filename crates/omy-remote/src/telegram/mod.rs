@@ -49,6 +49,7 @@ pub mod qr;
 pub mod qrlogin;
 pub mod session;
 pub mod store;
+pub mod tdata;
 
 pub use appid::{AppId, AppIdError, SessionIdentity, SessionMismatch, BUILTIN_API_ID};
 pub use auth::{SendCodeOutcome, SentCodeKind};
@@ -60,3 +61,4 @@ pub use qr::{decide as decide_qr, encode_matrix, token_url, QrMatrix, QrOutcome,
 pub use qrlogin::{QrError, QrEvent, QrSession};
 pub use session::{SavedSession, SessionError};
 pub use store::{plan_chunks, ChunkPlan, Conversation, TelegramId, TelegramStore};
+pub use tdata::{read_tdata, to_saved_session, MtpAuthorization, TdataError};

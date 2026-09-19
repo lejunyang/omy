@@ -44,6 +44,21 @@ grammers-client = { workspace = true }
 grammers-session = { workspace = true }
 grammers-mtsender = { workspace = true }
 grammers-crypto = { workspace = true }
+# tdata 导入要用的原语。
+#
+# 这几个**本来就已经在依赖树里**（grammers-crypto 的传递依赖，Cargo.lock 里
+# 能查到 sha1 0.10 / md-5 0.10 / pbkdf2 0.13），所以不增加编译体积、不拉新的
+# C 工具链、no_c_toolchain 守卫不受影响。但传递依赖不能直接 use，
+# 要用必须显式声明——这和「一行都不用改」不是一回事。
+#
+# AES-IGE 不在这里：grammers-crypto 已经公开了 aes::ige_decrypt，直接用它。
+md-5 = "0.10"
+sha1 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false }
+# PBKDF2-SHA512 要的 HMAC 与 SHA-512。两者同样早就在依赖树里
+# （workspace 已统一声明版本，这里只引用）。
+hmac = { workspace = true }
+sha2 = { workspace = true }
 # 登录令牌要画成二维码；只取模块矩阵，不要它的图像编码
 qrcode = { workspace = true }
 # Telegram 的 auth key 等同账号凭据（拿到它不用密码也不用验证码就能发请求），

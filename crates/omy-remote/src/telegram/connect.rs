@@ -93,8 +93,27 @@ pub async fn connect_saved(
     proxy: Option<&str>,
 ) -> Result<Connection, ConnectError> {
     let saved = session::load(app)?.ok_or(ConnectError::NoSession)?;
+    connect_with(&saved, app, device, proxy).await
+}
+
+/// 用一份**给定的**登录态连上去（不读磁盘）。
+///
+/// tdata 导入要用它：导入拿到的登录态还没落盘，而正确的顺序是
+/// **先问服务端认不认、认了再落盘**。反过来的话，一份已经失效的 tdata
+/// 会把当前可用的那份 session 覆盖掉——用户为了省一次扫码，
+/// 反而把已有的登录弄丢了。
+///
+/// # Errors
+///
+/// 同 [`connect_saved`]，但不会返回 [`ConnectError::NoSession`]。
+pub async fn connect_with(
+    saved: &session::SavedSession,
+    app: &AppId,
+    device: &DeviceInfo,
+    proxy: Option<&str>,
+) -> Result<Connection, ConnectError> {
     let mem = Arc::new(MemorySession::default());
-    session::import_into(&saved, &mem)
+    session::import_into(saved, &mem)
         .await
         .map_err(|e| ConnectError::Connect(e.to_string()))?;
 
