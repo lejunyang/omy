@@ -42,6 +42,18 @@ export const state = reactive({
   remoteDir: '',
   /** 远程目录的条目，已附带识别结果。 */
   remoteItems: [],
+  /**
+   * 当前远程**目录**的有效能力；`null` 表示还没查到（或查失败）。
+   *
+   * 与 `remotePlaces[].caps` 分开存是刻意的：那个是位置级**上界**，这个是
+   * 「在这个目录里实际能做什么」。同一个位置里有的目录可写、有的只读
+   * （「对话即目录」的位置就是这样），只读上界会在只读目录里点亮必然失败的
+   * 删除与上传。
+   *
+   * 切目录时必须先置回 `null` 再去查：留着上一个目录的值会让新目录短暂显示
+   * 错误的能力——而用户完全可能在那一瞬间点下去。
+   */
+  remoteDirCaps: null,
   /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
   remoteRetrying: [],
   /**
@@ -1583,45 +1595,50 @@ function detectSystemLang() {
 
 /* ---------------- 远程位置 ---------------- */
 
-/** 当前远程位置的能力位图。
+/** 本地位置的全能力。
  *
- * 不在远程位置时返回本地的全能力——这样上层判断可以统一写
- * `caps.write`，不必到处分叉「是不是远程」。
+ * 这几份常量的字段必须与后端 `omy_remote::Capabilities` 逐一对上（含
+ * `search`）：少写一个字段，读到的就是 `undefined`，而 `!caps.write` 为真会让
+ * 只读位置反而全部可写。后端 `caps.rs` 的 `field_names_are_stable` 就是为拦这
+ * 件事存在的——**后端加字段时这里三处都要跟着加**。
+ */
+const LOCAL_CAPS = {
+  read: true,
+  write: true,
+  delete: true,
+  rename: true,
+  create_dir: true,
+  random_write: true,
+  range_read: true,
+  // 本地搜索是对已列出条目的前端过滤，没有「下推到服务端」这回事
+  search: false,
+};
+
+/** 状态不明时用的保守能力：能读，什么都不能写。 */
+const SAFE_READONLY_CAPS = {
+  read: true,
+  write: false,
+  delete: false,
+  rename: false,
+  create_dir: false,
+  random_write: false,
+  range_read: true,
+  search: false,
+};
+
+/** 当前所在位置 + 目录的**有效**能力。界面一律读这一个。
  *
- * 下面两份兜底对象的字段必须与后端 `omy_remote::Capabilities` 逐一对上
- * （含 `search`）：少写一个字段，读到的就是 `undefined`，而 `!caps.write`
- * 为真会让只读位置反而全部可写。后端 `caps.rs` 的 `field_names_are_stable`
- * 就是为拦这件事存在的——**后端加字段时这里两处都要跟着加**。
+ * 不在远程位置时返回本地全能力——这样上层判断可以统一写 `caps.write`，
+ * 不必到处分叉「是不是远程」。
+ *
+ * 在远程位置但还没查到目录能力时返回**保守只读**，而不是回落到位置级上界：
+ * 回落等于把「最多能做什么」当成「现在能做什么」用，那正是这层收窄要消除的
+ * 缺陷——用户会在一个只读目录里看到亮着的删除按钮。少几个按钮只是等一下就
+ * 补上，点了报错却已经发出去了。
  */
 export const currentCaps = computed(() => {
-  if (!state.remotePlace) {
-    return {
-      read: true,
-      write: true,
-      delete: true,
-      rename: true,
-      create_dir: true,
-      random_write: true,
-      range_read: true,
-      // 本地搜索是对已列出条目的前端过滤，没有「下推到服务端」这回事
-      search: false,
-    };
-  }
-  const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
-  // 找不到时按只读处理：宁可少几个按钮，也不要对一个状态不明的位置
-  // 发起写操作
-  return (
-    p?.caps || {
-      read: true,
-      write: false,
-      delete: false,
-      rename: false,
-      create_dir: false,
-      random_write: false,
-      range_read: true,
-      search: false,
-    }
-  );
+  if (!state.remotePlace) return LOCAL_CAPS;
+  return state.remoteDirCaps || SAFE_READONLY_CAPS;
 });
 
 /** 刷新远程位置列表。 */
@@ -1642,6 +1659,8 @@ export function leaveRemotePlace() {
   state.remoteDir = '';
   state.remoteItems = [];
   state.remoteRetrying = [];
+  // 能力必须跟着清：留着会让下次进另一个位置时先按上一个位置的能力渲染一帧
+  state.remoteDirCaps = null;
 }
 
 /** 列出当前远程目录。
@@ -1655,6 +1674,10 @@ export async function reloadRemoteDir() {
   state.busyKey = 'busy.loading';
   state.placeError = '';
   state.remoteRetrying = [];
+  // 先作废上一个目录的能力再去查：留着旧值会让新目录短暂显示错误的能力，
+  // 而用户完全可能在那一瞬间点下去
+  state.remoteDirCaps = null;
+  refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
   try {
     state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
   } catch (e) {
@@ -1665,6 +1688,27 @@ export async function reloadRemoteDir() {
     state.busy = false;
     state.busyKey = '';
   }
+}
+
+/** 查当前远程目录的有效能力，查到后写回 `state.remoteDirCaps`。
+ *
+ * 不 await：能力查询不该拖慢列目录（对某些 provider 它是一次网络请求）。
+ * 列表先出来，按钮随后补上——反过来会让整屏卡在一个只影响菜单的请求上。
+ *
+ * 回写前校验位置与目录仍是当前这一个：切目录后晚到的结果必须丢弃，
+ * 否则会把上一个目录的能力贴到新目录上。
+ */
+function refreshRemoteDirCaps(placeId, dir) {
+  api
+    .remoteEffectiveCaps(placeId, dir)
+    .then((caps) => {
+      if (state.remotePlace !== placeId || state.remoteDir !== dir) return;
+      state.remoteDirCaps = caps;
+    })
+    .catch(() => {
+      // 查不到就保持 null，`currentCaps` 会按保守只读处理。
+      // 不在这里回落到位置级上界——那等于把上界当实际能力用
+    });
 }
 
 /** 就地替换一个远程条目（单条目探测与边扫边出共用）。

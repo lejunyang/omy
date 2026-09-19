@@ -305,6 +305,14 @@ function kindLabel(p) {
     : 'WebDAV';
 }
 
+/** 状态栏那枚能力徽标。
+ *
+ * 读的是**有效**能力（按当前目录），不是位置级上界：同一位置里有的目录可写、
+ * 有的只读，按上界显示会告诉用户「可写」而他在这个目录里其实写不了。
+ *
+ * 能力还没查到时显示「只读」而不是「可写」：这一刻的真实情况是「不确定」，
+ * 而两种猜法的代价不对称——猜只读只是少几个按钮，猜可写会让用户点下去才失败。
+ */
 function capsLabel() {
   const c = currentCaps.value;
   return c.write ? i18n.t('rplace.caps_writable') : i18n.t('rplace.readonly_badge');

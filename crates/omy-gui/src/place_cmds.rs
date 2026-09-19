@@ -734,6 +734,32 @@ pub async fn remote_cache_remove_file(
     Ok(serde_json::json!({ "freed_bytes": freed_bytes }))
 }
 
+/// 查询某个远程目录下的**有效能力**。
+///
+/// 与 `remote_place_list` 给出的位置级能力不是一回事：那是**上界**，这是「在这个
+/// 目录里实际能做什么」。界面必须读这一个——位置级能力对「对话即目录」的位置
+/// 只是上界，照它渲染会在只读对话里点亮必然失败的删除与上传。
+///
+/// # Errors
+///
+/// 位置不存在，或驱动为查权限发起的请求失败时返回。**前端收到错误时不要回落到
+/// 位置级能力**：那恰好是把上界当成实际能力用，等于这层收窄没做。按只读处理。
+#[tauri::command]
+pub async fn remote_effective_caps(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    place_id: String,
+    dir: String,
+) -> CmdResult<omy_remote::Capabilities> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    place
+        .store
+        .effective_capabilities(&dir)
+        .await
+        .map_err(|e| to_cmd_err(&e))
+}
+
 /// 读到足以 `open` 的完整文件头。
 ///
 /// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的

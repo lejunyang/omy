@@ -141,6 +141,10 @@ function iconOf(place) {
     >
       <span aria-hidden="true">☁️</span>
       <span class="stext">{{ p.name }}</span>
+      <!-- 这里读的是位置级能力（上界），而不是目录级的有效能力——侧栏列的是
+           位置，还没进任何目录，能拿到的只有上界。语义上也正好：上界都没有写
+           就说明这个位置处处不可写，标「只读」是准的；上界有写则不下结论、
+           不显示徽标，具体哪个目录能写进去之后由 `currentCaps` 说。 -->
       <span v-if="!p.caps.write" class="ro">{{ i18n.t('rplace.readonly_badge') }}</span>
     </button>
     <button class="sitem" data-rp="add" @click="$emit('add-place')">

@@ -421,6 +421,15 @@ export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
 export const remoteBrowse = (placeId, dir) =>
   invoke('remote_browse', { placeId, dir });
 
+/** 查询某个远程目录下的**有效**能力（按目录，不是位置级的那个上界）。
+ *
+ * 位置级能力（`remotePlaceList` 返回项里的 `caps`）对「对话即目录」的位置只是
+ * 上界：同一位置里有的目录可写、有的只读。照上界渲染会点亮必然失败的菜单项，
+ * 所以进目录后要用这个命令收窄。失败时**按只读处理**，不要回落到上界。
+ */
+export const remoteEffectiveCaps = (placeId, dir) =>
+  invoke('remote_effective_caps', { placeId, dir });
+
 /** 重新探测远程目录里的单个文件（「未能读取」条目就地重试，不重载整屏）。 */
 export const remoteProbeEntry = (placeId, id, size) =>
   invoke('remote_probe_entry', { placeId, id, size });
