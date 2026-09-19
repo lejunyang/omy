@@ -40,6 +40,7 @@ pub mod device;
 pub mod login;
 pub mod proxy;
 pub mod qr;
+pub mod qrlogin;
 pub mod session;
 pub mod store;
 
@@ -49,5 +50,6 @@ pub use device::{DeviceInfo, DEVICE_MODEL};
 pub use login::{LoginError, LoginFlow, LoginMethod, LoginState};
 pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
 pub use qr::{decide as decide_qr, token_url, QrOutcome, QrStep};
+pub use qrlogin::{QrError, QrEvent, QrSession};
 pub use session::{SavedSession, SessionError};
 pub use store::{plan_chunks, ChunkPlan, Conversation, TelegramId, TelegramStore};

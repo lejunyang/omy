@@ -128,6 +128,18 @@ grammers-client = { version = "0.10", features = ["proxy"] }
 # 上游加字段时我们这边会静默丢数据，而丢的可能正好是 auth key。
 grammers-session = { version = "0.10", default-features = false, features = ["serde"] }
 
+# 这两个本来由 grammers-client 间接带入，但我们有**必须**直接用到它们的地方，
+# 所以显式声明（版本与 client 保持一致，不一致会解析出两份类型）：
+#
+# - `grammers-mtsender`：SenderPool / ConnectionParams / RpcError。扫码登录要
+#   自己建连接池、要按 RpcError 的 name 区分 FLOOD_WAIT 与 API_ID_PUBLISHED_FLOOD。
+# - `grammers-crypto`：只用 `check_p_and_g` 一个函数，用来在调
+#   `Client::check_password` **之前**验掉 2FA 参数。grammers 内部在参数不合法时
+#   是 `panic!`，而 omy-gui 禁止 panic、release 下 `panic = "abort"` 连
+#   catch_unwind 都救不了——只能不让它有机会被撞到。
+grammers-mtsender = "0.10"
+grammers-crypto = "0.10"
+
 # 钉死这个 rc 版本，**不要改成 "2.0.0-rc0" 或放宽成 ^**。
 #
 # 为什么：grammers 0.10 依赖链里声明的是 `glass_pumpkin = "^2.0.0-rc0"`，
