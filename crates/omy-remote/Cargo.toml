@@ -44,6 +44,8 @@ grammers-client = { workspace = true }
 grammers-session = { workspace = true }
 grammers-mtsender = { workspace = true }
 grammers-crypto = { workspace = true }
+# 登录令牌要画成二维码；只取模块矩阵，不要它的图像编码
+qrcode = { workspace = true }
 # Telegram 的 auth key 等同账号凭据（拿到它不用密码也不用验证码就能发请求），
 # 落盘前必须加密——与 WebDAV 密码走同一条路，见 telegram/session.rs。
 omy-secret = { path = "../omy-secret" }

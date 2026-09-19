@@ -58,6 +58,7 @@ mod remote_cmds;
 mod settings;
 mod state;
 mod storage;
+mod telegram_cmds;
 mod video;
 
 use state::AppState;
@@ -108,6 +109,10 @@ pub fn run() {
     let place_thumbs: Arc<place_files::PlaceThumbs> = Arc::new(place_files::PlaceThumbs::new());
     let for_protocol_thumbs = Arc::clone(&place_thumbs);
 
+    // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
+    // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
+    let telegram_login: telegram_cmds::SharedLogin = Arc::new(telegram_cmds::LoginTask::new());
+
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
     // WebView，而它里面是解密后的内容。
@@ -131,6 +136,7 @@ pub fn run() {
         .manage(Arc::clone(&remote_cache))
         .manage(Arc::clone(&place_files))
         .manage(Arc::clone(&place_thumbs))
+        .manage(Arc::clone(&telegram_login))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
@@ -226,6 +232,12 @@ pub fn run() {
             place_cmds::remote_cache_open_dir,
             place_cmds::remote_cache_file_stat,
             place_cmds::remote_cache_remove_file,
+            telegram_cmds::telegram_can_persist,
+            telegram_cmds::telegram_has_session,
+            telegram_cmds::telegram_forget_session,
+            telegram_cmds::telegram_login_start,
+            telegram_cmds::telegram_submit_password,
+            telegram_cmds::telegram_login_cancel,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]

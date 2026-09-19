@@ -140,6 +140,16 @@ grammers-session = { version = "0.10", default-features = false, features = ["se
 grammers-mtsender = "0.10"
 grammers-crypto = "0.10"
 
+# 把登录令牌画成二维码。
+#
+# **必须 default-features = false**：默认 feature 里的 `image` 会拉进一整套
+# 图像编解码器，而我们只要那个 21x21 的模块矩阵——界面自己用 div 画格子
+# （原型 telegram-remote-prototype.html 就是这么画的）。生成 PNG 再塞进
+# WebView 反而多一次编码和一次 base64。
+#
+# MIT OR Apache-2.0，与本仓库的分层许可兼容。
+qrcode = { version = "0.14", default-features = false }
+
 # 钉死这个 rc 版本，**不要改成 "2.0.0-rc0" 或放宽成 ^**。
 #
 # 为什么：grammers 0.10 依赖链里声明的是 `glass_pumpkin = "^2.0.0-rc0"`，

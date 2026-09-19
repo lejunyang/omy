@@ -80,6 +80,41 @@ pub fn base64url_nopad(data: &[u8]) -> String {
     out
 }
 
+/// 二维码的模块矩阵：`size` 行 `size` 列，`true` 表示黑格。
+///
+/// # 为什么给矩阵而不是图片
+///
+/// 界面自己用格子画（原型 `telegram-remote-prototype.html` 就是这么画的）。
+/// 生成 PNG 再塞进 WebView 要多一次图像编码和一次 base64，而且缩放时会糊——
+/// 二维码最怕的就是边缘模糊导致扫不出来。矩阵交给 CSS 画则任何尺寸都是锐利的。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct QrMatrix {
+    /// 边长（模块数）。
+    pub size: usize,
+    /// 逐行展开的模块，长度为 `size * size`。
+    pub modules: Vec<bool>,
+}
+
+/// 把二维码内容编成模块矩阵。
+///
+/// # Errors
+///
+/// 内容长得放不进任何版本的二维码时返回错误说明。登录令牌只有几十字节，
+/// 正常情况下不会发生；有这个分支是因为**不能 panic**（这一层服务于 GUI）。
+pub fn encode_matrix(content: &str) -> Result<QrMatrix, String> {
+    // 纠错级别选 L：登录二维码是屏幕上显示、近距离扫，不存在污损和磨损，
+    // 而级别越高模块越密、在小尺寸下越难扫。官方客户端显示的也是低纠错级别。
+    let code = qrcode::QrCode::with_error_correction_level(content, qrcode::EcLevel::L)
+        .map_err(|e| format!("无法生成二维码：{e}"))?;
+    let size = code.width();
+    let modules = code
+        .into_colors()
+        .into_iter()
+        .map(|c| c == qrcode::Color::Dark)
+        .collect();
+    Ok(QrMatrix { size, modules })
+}
+
 /// 服务端对 `auth.exportLoginToken` 的三种回应，去掉了凭据本体。
 ///
 /// **不携带 token 字节**：那串东西等同于一次登录凭据，让它流经状态机只会多
@@ -305,5 +340,80 @@ mod tests {
     fn display_carries_the_expiry() {
         let o = decide(QrStep::Shown(QrToken { expires_in_secs: 27 }));
         assert_eq!(o, QrOutcome::Display(QrToken { expires_in_secs: 27 }));
+    }
+
+    /// 矩阵必须是方阵，且长度与边长自洽。
+    ///
+    /// 不这样会怎样：前端按 `size` 逐行切 `modules`，两者对不上时画出来的是
+    /// 一张错位的图——它看起来**像**二维码，但扫不出来。而「扫不出来」这个
+    /// 现象会让人去查令牌编码、有效期、甚至相机，查不到渲染这一步。
+    #[test]
+    fn matrix_is_square_and_self_consistent() {
+        let m = encode_matrix("tg://login?token=Zm9vYmFy").expect("应能生成");
+        assert_eq!(
+            m.modules.len(),
+            m.size * m.size,
+            "模块数必须正好是 size 的平方"
+        );
+        // 二维码最小版本是 21x21，且边长恒为奇数（4*version+17）
+        assert!(m.size >= 21, "边长不该小于版本 1 的 21：{}", m.size);
+        assert_eq!(m.size % 2, 1, "二维码边长恒为奇数：{}", m.size);
+    }
+
+    /// 三个定位角必须是实心的 7x7 回字。
+    ///
+    /// 不这样会怎样：这是唯一能在不引入解码器的前提下验证「画出来的真是二维码
+    /// 而不是一堆随机格子」的结构特征。少了它，一个把所有模块都填成 false 的
+    /// 实现照样能通过上面那条形状断言——而那是一张纯白的图。
+    #[test]
+    fn finder_patterns_are_present_in_three_corners() {
+        let m = encode_matrix("tg://login?token=Zm9vYmFy").expect("应能生成");
+        let at = |x: usize, y: usize| m.modules.get(y * m.size + x).copied().unwrap_or(false);
+        // 定位角的结构：外圈 7x7 全黑边、中间 3x3 实心黑、之间一圈白
+        let check_finder = |ox: usize, oy: usize, label: &str| {
+            for i in 0..7 {
+                assert!(at(ox + i, oy), "{label} 顶边第 {i} 格应为黑");
+                assert!(at(ox + i, oy + 6), "{label} 底边第 {i} 格应为黑");
+                assert!(at(ox, oy + i), "{label} 左边第 {i} 格应为黑");
+                assert!(at(ox + 6, oy + i), "{label} 右边第 {i} 格应为黑");
+            }
+            // 中心 3x3 实心
+            for dy in 2..5 {
+                for dx in 2..5 {
+                    assert!(at(ox + dx, oy + dy), "{label} 中心应为实心黑");
+                }
+            }
+            // 隔离的那一圈白
+            assert!(!at(ox + 1, oy + 1), "{label} 第二圈应为白");
+            assert!(!at(ox + 5, oy + 5), "{label} 第二圈应为白");
+        };
+        check_finder(0, 0, "左上");
+        check_finder(m.size - 7, 0, "右上");
+        check_finder(0, m.size - 7, "左下");
+    }
+
+    /// 不同内容要画出不同的图。
+    ///
+    /// 不这样会怎样：换图时若矩阵没跟着变，用户扫到的永远是第一张（早已过期的）
+    /// 令牌——而界面上动画放了、次数也加了，看起来一切正常。
+    #[test]
+    fn different_content_yields_a_different_matrix() {
+        let a = encode_matrix("tg://login?token=AAAA").expect("应能生成");
+        let b = encode_matrix("tg://login?token=BBBB").expect("应能生成");
+        assert_ne!(a.modules, b.modules, "内容不同，图案必须不同");
+    }
+
+    /// 生成失败要返回错误而不是 panic。
+    ///
+    /// 不这样会怎样：这一层服务于 GUI，而 omy-gui 禁止 panic；release 下
+    /// `panic = "abort"` 更是连 catch_unwind 都救不了，一次崩溃带走整个应用。
+    #[test]
+    fn oversized_content_errors_instead_of_panicking() {
+        // 远超二维码容量上限（最高版本约 2953 字节）
+        let huge: String = std::iter::repeat_n('A', 8000).collect();
+        assert!(
+            encode_matrix(&huge).is_err(),
+            "放不下时要返回错误，不能崩"
+        );
     }
 }
