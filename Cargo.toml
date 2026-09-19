@@ -121,7 +121,12 @@ grammers-client = { version = "0.10", features = ["proxy"] }
 # 整套 C 工具链请回来，而且在装了 MSVC 的开发机上照样编译通过、只有别人的
 # 机器或 Android 交叉编译才炸。要用内存或自建存储，不要照示例写。
 # tests/no_c_toolchain.rs 就是为拦住这种回归而存在的。
-grammers-session = { version = "0.10", default-features = false }
+#
+# 开 `serde`（纯 Rust，只带 serde + serde_with，不碰 C 工具链）让 `DcOption`
+# 可序列化，由我们自己加密后落盘，见 omy-remote 的 telegram/session.rs。
+# 没有它就只能手抄一遍 DcOption 的字段——那是同一份结构的第二处定义，
+# 上游加字段时我们这边会静默丢数据，而丢的可能正好是 auth key。
+grammers-session = { version = "0.10", default-features = false, features = ["serde"] }
 
 # 钉死这个 rc 版本，**不要改成 "2.0.0-rc0" 或放宽成 ^**。
 #
