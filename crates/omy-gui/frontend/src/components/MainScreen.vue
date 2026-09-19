@@ -53,7 +53,10 @@ function remoteIcon(it) {
  * 而不是报一个看不懂的错。
  */
 async function onRemoteOpen(it) {
-  if (it.is_dir) await enterRemoteDir(it.id);
+  // 名字要一并带上：不带的话面包屑会显示 provider 的原始 id
+  // （Telegram 的是 `tg:<对话>`），用户不知道自己在哪个对话里。
+  // 这是同一个缺陷的第二个入口，PlaceBrowser 那条已经带了。
+  if (it.is_dir) await enterRemoteDir(it.id, it.real_name || it.name);
 }
 
 /* ---- 移动端外壳 ----

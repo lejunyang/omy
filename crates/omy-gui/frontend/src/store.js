@@ -2107,9 +2107,21 @@ export async function remoteGoUp() {
     leaveRemotePlace();
     return;
   }
+  // 上一级怎么算，取决于 provider 的 id 形状——不能一律按 '/' 切。
+  //
+  // 这是本文件里第四处「写死 WebDAV 路径形状」的地方（前三处：kindLabel
+  // 硬写 WebDAV、remote_probe_entry 按 '/' 猜名字、crumbs 按 '/' 切段）。
+  // Telegram 的 dir 是 `tg:<对话>`，里面没有斜杠，lastIndexOf 返回 -1，
+  // 于是直接置空回到对话列表——**结果碰巧是对的**（对话只有一层），
+  // 但那靠的是「没有斜杠」这个副作用，不是「这个 provider 有几层」。
+  //
+  // 而且它绕过了 enterRemoteDir，于是不会清 remoteDirName /
+  // remoteViewMode / remoteMessages：从对话返回后面包屑还挂着上一个
+  // 对话的名字。所以这里统一走 enterRemoteDir，让复位只有一处。
   const i = cur.lastIndexOf('/');
-  state.remoteDir = i > 0 ? cur.slice(0, i) : '';
-  await reloadRemoteDir();
+  const parent = i > 0 ? cur.slice(0, i) : '';
+  // 回到根（对话列表）时名字也要空，否则面包屑会留着上一层的名字
+  await enterRemoteDir(parent, '');
 }
 
 /** 添加远程位置后刷新列表并进入它。 */
