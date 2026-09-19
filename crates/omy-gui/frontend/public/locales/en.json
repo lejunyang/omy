@@ -652,7 +652,8 @@
     "session_not_saved": "This sign-in lasts only for the current run: this machine has no usable credential store, so nothing was saved and you will need to scan again next time.",
     "login_failed": "Sign-in failed",
     "flood_wait": "This is a rate limit imposed by Telegram's servers, not an omy error. Please wait {{secs}}s before trying again — retrying repeatedly only makes the wait longer.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "detail": "Server returned: {{detail}}"
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",

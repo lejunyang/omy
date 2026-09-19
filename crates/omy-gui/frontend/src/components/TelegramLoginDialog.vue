@@ -46,6 +46,8 @@ const password = ref('');
 /** 失败的错误码与限流秒数。 */
 const errCode = ref('');
 const waitSecs = ref(0);
+/** 失败的具体原因（服务端错误名）。空表示没有更多信息可说。 */
+const errDetail = ref('');
 /** 登录态有没有真的落盘。 */
 const sessionSaved = ref(true);
 /** 这台机器能不能保存登录态。扫码**之前**就要知道。 */
@@ -95,6 +97,7 @@ const gridStyle = computed(() => {
 function resetTransient() {
   errCode.value = '';
   waitSecs.value = 0;
+  errDetail.value = '';
 }
 
 /** 处理一条后端推来的进度。 */
@@ -144,6 +147,7 @@ function onPhase(p) {
       phase.value = 'failed';
       errCode.value = p.code;
       waitSecs.value = p.wait_secs || 0;
+      errDetail.value = p.detail || '';
       // 密码错了停在本步：清空输入框但保留提示与焦点，不要把用户踢回扫码
       if (p.code === 'tg_wrong_password') {
         password.value = '';
@@ -340,6 +344,11 @@ onBeforeUnmount(() => {
           <div>{{ i18n.te(errCode, i18n.t('tg.login_failed')) }}</div>
           <div v-if="waitSecs > 0" class="d" data-tg="wait">
             {{ i18n.t('tg.flood_wait', { secs: waitSecs }) }}
+          </div>
+          <!-- 服务端给的原因。没有它的话界面只剩一句「登录失败」，
+               用户报障时也说不出任何可供排查的信息 -->
+          <div v-if="errDetail" class="d" data-tg="detail">
+            {{ i18n.t('tg.detail', { detail: errDetail }) }}
           </div>
         </div>
 

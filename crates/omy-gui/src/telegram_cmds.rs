@@ -89,6 +89,14 @@ pub enum LoginPhase {
         code: String,
         /// 限流时的剩余秒数，其余情况为 `None`。
         wait_secs: Option<u32>,
+        /// 供排查的具体原因（服务端错误名 + 代码）。
+        ///
+        /// 只在归不进上面那些具体分类时才有值。**不含服务端的 message**——
+        /// 那里面可能回显请求参数，而扫码请求的参数里有 api_hash。
+        ///
+        /// 没有它的时候界面只能显示一句「登录失败」，排查时完全不知道服务端
+        /// 到底回了什么，只能靠猜。
+        detail: Option<String>,
     },
 }
 
@@ -106,9 +114,16 @@ fn phase_of_error(e: &QrError) -> LoginPhase {
         QrError::Disconnected => ("tg_disconnected", None),
         QrError::Invocation(_) => ("tg_login_failed", None),
     };
+    // 归不进具体分类的才带上原文。已分类的那些自己的文案就说清了出路，
+    // 再附一串错误名只会让界面变吵
+    let detail = match e {
+        QrError::Invocation(d) => Some(d.clone()),
+        _ => None,
+    };
     LoginPhase::Failed {
         code: String::from(code),
         wait_secs: wait,
+        detail,
     }
 }
 
@@ -338,6 +353,14 @@ pub fn telegram_login_cancel(task: tauri::State<'_, SharedLogin>) {
 
 /// 往前端推一步进度。
 fn emit(app: &tauri::AppHandle, phase: &LoginPhase) {
+    // 失败额外打一条日志：界面上那句话是给用户看的，而排查需要错误名。
+    // 这里不含凭据——detail 只有服务端错误名与代码，见 map_err
+    if let LoginPhase::Failed { code, detail, .. } = phase {
+        eprintln!(
+            "[omy] Telegram 登录失败：{code}{}",
+            detail.as_ref().map_or(String::new(), |d| format!(" / {d}"))
+        );
+    }
     if let Err(e) = app.emit(LOGIN_EVENT, phase) {
         // 推不出去不该让登录本身失败：登录在服务端已经生效了，
         // 丢一条界面事件远好过把它整个作废
@@ -385,6 +408,7 @@ async fn run_login(
                         &LoginPhase::Failed {
                             code: String::from("tg_qr_render_failed"),
                             wait_secs: None,
+                            detail: None,
                         },
                     );
                     return;
@@ -442,6 +466,7 @@ async fn handle_password(
                     &LoginPhase::Failed {
                         code: String::from("tg_wrong_password"),
                         wait_secs: None,
+                        detail: None,
                     },
                 );
                 hint = hint.take();
@@ -496,6 +521,7 @@ async fn finish(app: &tauri::AppHandle, sess: &QrSession, appid: &AppId) {
             &LoginPhase::Failed {
                 code: String::from("tg_login_not_effective"),
                 wait_secs: None,
+                detail: None,
             },
         ),
         Err(e) => emit(app, &phase_of_error(&e)),
@@ -513,7 +539,9 @@ mod tests {
     /// 比为了写测试而放宽产品级 lint 好。
     fn failed_parts(p: &LoginPhase) -> Option<(String, Option<u32>)> {
         match p {
-            LoginPhase::Failed { code, wait_secs } => Some((code.clone(), *wait_secs)),
+            LoginPhase::Failed {
+                code, wait_secs, ..
+            } => Some((code.clone(), *wait_secs)),
             _ => None,
         }
     }

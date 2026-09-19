@@ -652,7 +652,8 @@
     "session_not_saved": "这次登录只在本次运行有效：这台机器没有可用的凭据库，登录态没有保存，下次启动需要重新扫码。",
     "login_failed": "登录失败",
     "flood_wait": "这是 Telegram 服务端的限制，不是 omy 出错。请等待 {{secs}} 秒后再试，反复重试只会让等待更久。",
-    "retry": "重试"
+    "retry": "重试",
+    "detail": "服务端返回：{{detail}}"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",
