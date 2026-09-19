@@ -41,6 +41,43 @@ pub enum LoginMethod {
     ///
     /// 移动端首选：同一台设备上扫自己显示的码是做不到的。
     PhoneCode,
+    /// 复用本机 Telegram Desktop 的登录态（读 `tdata`）。
+    ///
+    /// **本期只占位，没有实现**，见 [`LoginMethod::is_implemented`]。
+    ///
+    /// 为什么占位而不实现：现成的 `grammpars` 有一条硬伤——它依赖
+    /// `rusqlite` 且写死 `features = ["bundled"]`，没有开关可关，而 bundled
+    /// 会去编译 SQLite 的 C 代码。本项目选 grammers 的核心理由之一正是整条
+    /// 依赖树里没有 C 工具链（TDLib 就是因此被否决的），引它进来等于把刚
+    /// 赶出门的 C 依赖从窗户请回来，Android 交叉编译也要重新验证。
+    ///
+    /// 那么为什么不自己写解析：解 `tdata` 要先派生出解开 auth key 的主密钥，
+    /// 而这个派生函数的迭代次数在现有资料之间就对不上（一处记 100000，
+    /// 公开资料记 400，另有旧格式用 4000）。这个常数错了不会报错，只会
+    /// 静默解不开或解错——而本机没有真实 `tdata` 可供判定谁对。在拿到能
+    /// 验证的样本之前写它，等于交付一段无法判断对错的密码学代码。
+    ///
+    /// 所以这里只留枚举位，**不留半成品解析代码、不留注释掉的依赖**。
+    TdataImport,
+}
+
+impl LoginMethod {
+    /// 这个方式现在能不能真的用。
+    ///
+    /// 有这个函数而不是「先不加那个枚举位」，是为了让占位不变成陷阱：
+    /// 调用方想路由到 [`LoginMethod::TdataImport`] 时，必须先撞上这里返回的
+    /// `false`。
+    ///
+    /// 不这样会怎样：界面把它当成一个正常选项渲染出来，用户点了之后什么也
+    /// 不发生——既没有进度也没有错误，他会反复点，然后以为程序坏了。
+    #[must_use]
+    pub const fn is_implemented(&self) -> bool {
+        match self {
+            Self::QrCode | Self::PhoneCode => true,
+            // 占位，理由见 variant 上的注释
+            Self::TdataImport => false,
+        }
+    }
 }
 
 /// 二维码登录令牌的展示信息。
@@ -735,6 +772,21 @@ mod tests {
             assert!(!f.state().is_terminal());
             assert!(!f.state().is_in_progress());
         }
+    }
+
+    /// 占位的登录方式必须被明确标成「还不能用」。
+    ///
+    /// 不这样会怎样：界面把 tdata 导入当成正常选项渲染出来，用户点了之后
+    /// 什么也不发生——没有进度也没有错误，他会反复点然后以为程序坏了。
+    /// 而这个枚举位存在的意义只是「将来会有」，不是「现在能用」。
+    #[test]
+    fn placeholder_method_is_marked_unimplemented() {
+        assert!(LoginMethod::QrCode.is_implemented());
+        assert!(LoginMethod::PhoneCode.is_implemented());
+        assert!(
+            !LoginMethod::TdataImport.is_implemented(),
+            "本期没有实现 tdata 导入，不能让它看起来可用"
+        );
     }
 
     /// 登录成功是终态，且不再接受输入。
