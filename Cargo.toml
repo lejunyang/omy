@@ -92,6 +92,42 @@ indicatif = "0.18"
 # MIT 许可，与 omy-gui 的 GPL-3.0 兼容。
 trash = "5.2"
 
+# ---- Telegram（仅 omy-remote 使用）----
+# 纯 Rust 的 MTProto 实现。选它而不是 TDLib 的核心理由是**没有 C 工具链**：
+# 整条依赖树里没有 openssl / ring / bindgen / sqlite，Android 交叉编译已实测
+# 通过。TDLib 正是因为 C++ 依赖在 Android 上的构建成本被否决的。
+#
+# 只取 client 与 session 两个 crate：mtsender / mtproto / tl-types 由 client
+# 间接带入，直接声明反而会多出几处版本需要同步。
+#
+# proxy feature 不是可选项：本机实测直连 Telegram 数据中心
+# （149.154.167.51:443）超时，经 socks5 代理约 3.3 秒完成握手。
+# 没有它，在需要代理的网络环境下根本连不上。
+grammers-client = { version = "0.10", features = ["proxy"] }
+
+# **必须 default-features = false**，否则「没有 C 工具链」这条就不成立了。
+#
+# grammers-session 的默认 feature 里有 `sqlite-storage`，它会拉进 libsql，
+# 而 libsql 的 build 依赖是 bindgen + cmake + cc——也就是一整套 C 工具链。
+# 这正是 TDLib 被否决的那个理由，接进来等于白否决。实测确认：去掉默认
+# feature 后依赖树里 bindgen / libsql / libsql-ffi 全部消失。
+#
+# 代价是没有现成的 sqlite session 存储，要自己序列化 session。这是**想要**
+# 的：session 里有 auth key，本来就该由我们自己决定怎么落盘（放进已加密的
+# 应用数据里），而不是让第三方库在用户目录下另开一个明文 sqlite。
+grammers-session = { version = "0.10", default-features = false }
+
+# 钉死这个 rc 版本，**不要改成 "2.0.0-rc0" 或放宽成 ^**。
+#
+# 为什么：grammers 0.10 依赖链里声明的是 `glass_pumpkin = "^2.0.0-rc0"`，
+# 而上游发的 rc1 改了 `safe_prime::check` 的签名。按 semver，^2.0.0-rc0 会
+# 解析到 rc1，于是 grammers 编译不过——这不是我们的代码的问题，也不是
+# 改自己代码能解决的。已实测：钉 =2.0.0-rc0 后 cargo check 通过。
+#
+# 这是一条只为「让上游能编译」而存在的声明，我们自己一行都不用它。
+# 将来 grammers 放宽或修正那个约束后，这两行应当一起删掉。
+glass_pumpkin = "=2.0.0-rc0"
+
 # 发布配置：优化加解密吞吐
 [profile.release]
 opt-level     = 3
