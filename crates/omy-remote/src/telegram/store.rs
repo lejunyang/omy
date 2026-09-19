@@ -42,6 +42,7 @@
 use std::sync::Mutex;
 
 use grammers_client::media::{Downloadable, Media};
+use grammers_client::message::InputMessage;
 use grammers_client::{tl, Client, InvocationError};
 use grammers_session::types::PeerRef;
 
@@ -309,6 +310,24 @@ pub const fn clamp_to_eof(offset: u64, len: u64, size: u64) -> u64 {
         len
     } else {
         left
+    }
+}
+
+/// 这个对话是不是一个「已经迁移走」的旧基础群。
+///
+/// 判据是 `Chat` 上的 `migrated_to` 有值，或 `deactivated` 为真。两个都看：
+/// 前者说明它升级成了超级群，后者覆盖群被解散之类的情况，两种的共同点是
+/// **再也发不进去东西**。
+fn is_migrated_away(peer: &grammers_client::peer::Peer) -> bool {
+    use grammers_client::peer::Peer;
+    let Peer::Group(g) = peer else {
+        return false;
+    };
+    match &g.raw {
+        tl::enums::Chat::Chat(c) => c.migrated_to.is_some() || c.deactivated,
+        // Empty / Forbidden 也进不去，但那属于「没权限」而不是「迁移走了」，
+        // 交给权限那条路径去表达，这里只管迁移
+        _ => false,
     }
 }
 
@@ -607,6 +626,23 @@ impl TelegramStore {
             };
             let peer = d.peer();
             let title = peer.name().unwrap_or("(无标题)").to_string();
+            // 跳过已迁移走的旧基础群。
+            //
+            // 基础群升级成超级群后，旧的那条**仍然留在对话列表里**
+            // （官方客户端会把它藏起来），带着 deactivated=true 和一个
+            // migrated_to 指向新群。它是个空壳：消息都在新群里，
+            // 而往它发任何东西都会被服务端拒成 PEER_ID_INVALID (400)。
+            //
+            // 不列出来，而不是列成只读：它连「看」的价值都没有。列出来的
+            // 后果是用户看到两个同名群，点进去一个是空的、往里传文件必然
+            // 失败，而错误只是一句 PEER_ID_INVALID，指不到「这个群升级过了」。
+            //
+            // 实测确认：用户账号里那两个同名 omytest 正是同一个群迁移前后的
+            // 两条记录，不是两个群。
+            if is_migrated_away(peer) {
+                continue;
+            }
+
             // 用 bot_api_dialog_id 而**不是** bare_id 当对话号。
             // bare_id 去掉了类型标记，于是 id 为 123 的用户和 id 为 123 的群
             // 会得到同一个 "tg:123"——而「对话即目录」的前提正是目录 id 唯一，
@@ -927,6 +963,99 @@ impl RemoteStore for TelegramStore {
             }
         }
         Ok(out)
+    }
+
+    /// 上传一个文件到某个对话。
+    ///
+    /// # 一定要「作为文件发送」，不能作为照片或视频
+    ///
+    /// 用 `InputMessage::file()` 而不是 `.photo()` / `.document()` 的
+    /// 自动判别：作为照片发送时**服务端会重新编码**（压缩、改尺寸、剥元数据）。
+    /// 对普通图片那只是变糊，对 omy 加密文件是毁灭性的——字节一变，
+    /// 解出来就是一堆认证失败，而那个症状指向密钥、完全指不到「上传方式」。
+    ///
+    /// 代价是发出去的东西在官方客户端里显示为文件而不是图片预览。
+    /// 这个取舍是明确的：omy 的文件本来就该原样存取。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、对话不存在、没有发送权限、网络失败或被限流时返回。
+    async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
+        let client = self.client()?;
+        let chat = Conversation::parse_dir_id(dir_id)?;
+
+        // 先查权限：能力位图说不能发就当场拒绝，别把几 MB 发出去再被拒
+        let caps = self.effective_capabilities(dir_id).await?;
+        if !caps.write {
+            return Err(Error::Forbidden);
+        }
+
+        let peer = self.peer_ref(chat).await?;
+        let mut cursor = std::io::Cursor::new(data);
+        let uploaded = client
+            .upload_stream(&mut cursor, data.len(), name.to_string())
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+
+        let msg = client
+            .send_message(peer, InputMessage::new().file(uploaded))
+            .await
+            .map_err(|e| map_rpc(&e))?;
+
+        let id = TelegramId {
+            chat,
+            message: msg.id(),
+        };
+        let key = id.encode();
+        // 顺手把下载位置记进缓存：刚传完的文件多半马上就要被读
+        // （上层要校验、界面要出缩略图），没有的话又得重列一次消息
+        if let Some(media) = msg.media() {
+            if let Some(loc) = media.to_raw_input_location() {
+                if let Ok(mut m) = self.media.lock() {
+                    m.insert(
+                        key.clone(),
+                        CachedMedia {
+                            location: loc,
+                            size: media_size(&media),
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(Entry {
+            id: key,
+            name: String::from(name),
+            is_dir: false,
+            size: Some(data.len() as u64),
+            mtime: None,
+            etag: None,
+        })
+    }
+
+    /// 删除一条消息。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、没有删除权限、消息不存在时返回。
+    async fn delete(&self, id: &str) -> Result<()> {
+        let client = self.client()?;
+        let tid = TelegramId::decode(id)?;
+        let dir = format!("tg:{}", tid.chat);
+        let caps = self.effective_capabilities(&dir).await?;
+        if !caps.delete {
+            return Err(Error::Forbidden);
+        }
+        let peer = self.peer_ref(tid.chat).await?;
+        client
+            .delete_messages(peer, &[tid.message])
+            .await
+            .map_err(|e| map_rpc(&e))?;
+        // 缓存里的下载位置要跟着失效，否则之后还能「读到」一个已经删掉的文件
+        if let Ok(mut m) = self.media.lock() {
+            m.remove(id);
+        }
+        Ok(())
     }
 
     /// 读取区间。
