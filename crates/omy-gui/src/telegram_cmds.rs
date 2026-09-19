@@ -32,7 +32,7 @@ use omy_remote::telegram::device::DeviceInfo;
 use omy_remote::telegram::qr::{encode_matrix, QrMatrix};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
 use omy_remote::telegram::store::TelegramStore;
-use omy_remote::telegram::{connect, proxy, session as tgsession};
+use omy_remote::telegram::{connect, proxy, session as tgsession, tdata};
 
 use crate::commands::{CmdError, CmdResult};
 
@@ -250,6 +250,169 @@ pub fn telegram_has_session() -> bool {
 #[tauri::command]
 pub fn telegram_forget_session() -> CmdResult<()> {
     tgsession::forget().map_err(|e| CmdError::with("tg_forget_failed", detail(&e.to_string())))
+}
+
+/// tdata 导入的前提探测结果。
+///
+/// 一次把四条前提的状态都给前端，而不是让它连问四个命令——
+/// 分开问的话，界面会出现「一条一条陆续变绿」的闪烁，
+/// 而用户根本不需要看到这个过程。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TdataProbe {
+    /// Telegram Desktop 是否正在运行。
+    ///
+    /// 它运行时会占着 tdata。这条必须**指名道姓**地告诉用户去托盘退出，
+    /// 而不是把一个文件锁错误原样抛出来——那会让人去查磁盘、查权限。
+    pub client_running: bool,
+    /// 自动找到的 tdata 候选路径。
+    ///
+    /// **空是常态而不是错误**：便携版跟着 exe 走、可以在任意盘，
+    /// 自动发现必然落空。前端此时要**就地给路径选择器**，
+    /// 而不是显示「未检测到 Telegram Desktop」——那等于把
+    /// 「需要你补一个信息」显示成「不支持」，用户看到就走了。
+    pub candidates: Vec<String>,
+}
+
+/// 探测 tdata 导入的前提。
+///
+/// 不读任何加密内容，只看进程与目录结构，所以很快、可以随时调。
+#[tauri::command]
+#[must_use]
+pub fn telegram_tdata_probe() -> TdataProbe {
+    TdataProbe {
+        client_running: telegram_desktop_running(),
+        candidates: tdata::common_locations()
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+    }
+}
+
+/// Telegram Desktop 在运行吗。
+///
+/// # 为什么不去试着锁文件
+///
+/// 「能不能读」与「客户端在不在跑」是两回事：客户端运行时我们**仍然读得到**
+/// 那些文件（我们只读副本），但它可能正在写、拿到的是半截状态。
+/// 所以判据是进程在不在，不是文件能不能打开。
+fn telegram_desktop_running() -> bool {
+    // tasklist 是 Windows 自带的，不需要额外依赖。
+    // 失败时返回 false 而不是 true：探测不出来就别拦着用户，
+    // 真有冲突后面解析会失败，那时的错误更具体
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Telegram.exe", "/NH"])
+            .output();
+        match out {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).contains("Telegram.exe"),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// 这个路径像 tdata 吗（给前端做即时反馈）。
+///
+/// 选错目录时当场说，而不是等用户填完密码、点了导入、跑完一轮解密才报错。
+#[tauri::command]
+#[must_use]
+pub fn telegram_tdata_check(path: String) -> bool {
+    tdata::looks_like_tdata(std::path::Path::new(&path))
+}
+
+/// 从 tdata 导入登录态，并注册成远程位置。
+///
+/// # 顺序：先验证服务端认不认，认了再落盘
+///
+/// 反过来的话，一份已经失效的 tdata 会把当前可用的 session 覆盖掉——
+/// 用户为了省一次扫码，反而把已有的登录弄丢了。
+///
+/// # `NeedPasscode` 是正常分支，不是失败
+///
+/// 有没有设本地密码**事先无法预知**（`key_datas` 在不在都一样，
+/// 没设密码时它也存在，只是用空密码加密）。所以只能先试空密码，
+/// 解不开再向用户要——前端据这个错误码弹出输入框。
+///
+/// # Errors
+///
+/// 解析失败、需要/错误的本地密码、服务端不认这份登录态、网络不通时返回，
+/// 各自有不同的错误码。**「解析失败」与「登录态已失效」必须分开**：
+/// 前者要改用扫码，后者说明桌面端那边也已经登出了。
+#[tauri::command]
+pub async fn telegram_tdata_import(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    path: String,
+    passcode: Option<String>,
+    proxy_url: Option<String>,
+) -> CmdResult<String> {
+    let dir = std::path::PathBuf::from(&path);
+    let pass = passcode.unwrap_or_default();
+
+    // 解析。注意这一步**不碰网络**，失败就是格式或密码问题
+    let auth = tokio::task::spawn_blocking(move || tdata::read_tdata(&dir, &pass))
+        .await
+        .map_err(|e| CmdError::with("tg_tdata_failed", detail(&e.to_string())))?
+        .map_err(|e| CmdError::with(tdata_code(&e), detail(&e.to_string())))?;
+
+    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
+        Ok(p) => p.map(|p| p.to_string()),
+        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
+    };
+
+    let app = AppId::builtin();
+    let device = DeviceInfo::current();
+    let saved = tdata::to_saved_session(&auth, app.id());
+
+    // 真的问一句服务端认不认。
+    //
+    // 不问的话，一份几个月前、早已被注销的 tdata 也会「导入成功」，
+    // 错误要等到用户点开某个对话才冒出来，而那时的报错指向那次操作、
+    // 不是这次导入——诊断方向完全跑偏。
+    let conn = connect::connect_with(&saved, &app, &device, proxy.as_deref())
+        .await
+        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+
+    // 到这里才落盘：服务端已经认了，这份登录态确实能用
+    if let Err(e) = tgsession::save_current(&saved) {
+        // 存不住不该让整件事失败——本次会话里它是好的。
+        // 但要说出来，否则用户会以为下次还在
+        eprintln!("[omy] 保存 Telegram 登录态失败：{e}");
+    }
+
+    // 已有占位就先摘掉，否则侧栏会出现两个 Telegram
+    if let Some(old) = reg.telegram_id() {
+        reg.remove(&old);
+    }
+
+    let store = TelegramStore::from_connection(conn.client, conn.runner);
+    let id = reg
+        .add_telegram(String::from("Telegram"), store, proxy.clone())
+        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 保存 Telegram 位置失败：{e}");
+    }
+    Ok(id)
+}
+
+/// 把 tdata 的错误映射成前端能分支的错误码。
+///
+/// **每一种都要有自己的码**，因为界面要做的事完全不同：
+/// 要密码的弹输入框、密码错的提示重输、解析失败的引导去扫码。
+/// 合并成一个码的话，前端只能显示一句笼统的话，
+/// 而用户不知道下一步该干什么。
+fn tdata_code(e: &tdata::TdataError) -> &'static str {
+    match e {
+        tdata::TdataError::NeedPasscode => "tg_tdata_need_passcode",
+        tdata::TdataError::WrongPasscode => "tg_tdata_wrong_passcode",
+        tdata::TdataError::NotTdata | tdata::TdataError::NoKeyData => "tg_tdata_not_found",
+        tdata::TdataError::NoAccount => "tg_tdata_no_account",
+        tdata::TdataError::Corrupt(_) | tdata::TdataError::Unsupported(_) => "tg_tdata_unsupported",
+        tdata::TdataError::Io(_) => "tg_tdata_io",
+    }
 }
 
 /// 连上 Telegram 并把它注册成一个远程位置，返回位置 id。

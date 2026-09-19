@@ -105,5 +105,12 @@
   "tg_cdn_unsupported": "This file is served from Telegram’s CDN, which omy does not support yet. Please download it with an official client",
   "remote_no_search": "This place does not support server-side search",
   "tg_broadcast_no_messages": "omy does not provide a message view for broadcast channels. Files in the channel can still be browsed normally",
-  "remote_no_messages": "This place has no concept of messages"
+  "remote_no_messages": "This place has no concept of messages",
+  "tg_tdata_need_passcode": "This tdata is protected by a local passcode. Enter it below.",
+  "tg_tdata_wrong_passcode": "That local passcode is not correct. Note this is the desktop app passcode, not your two-step verification cloud password.",
+  "tg_tdata_not_found": "No Telegram Desktop sign-in data was found in that folder.",
+  "tg_tdata_no_account": "That tdata holds no account data; the desktop app may never have been signed in.",
+  "tg_tdata_unsupported": "That tdata could not be parsed; its format is not what omy expects. You can sign in with a QR code instead.",
+  "tg_tdata_io": "Reading the tdata folder failed. Check that those files are accessible.",
+  "tg_tdata_failed": "The import failed."
 }

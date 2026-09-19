@@ -172,6 +172,79 @@ function onPhase(p) {
   }
 }
 
+// ---- tdata 导入 ----
+//
+// 与扫码**并列**的一条路，不是它的子步骤：用户要么扫码要么复用桌面端，
+// 画成子步骤会让人以为得先扫码再导入。
+/** 当前在不在 tdata 面板。 */
+const tdataMode = ref(false);
+/** 桌面客户端在不在跑（跑着就占着 tdata）。 */
+const tdRunning = ref(false);
+/** 自动探测到的路径；为空是常态，便携版必然探不到。 */
+const tdPath = ref('');
+/** 自动探测有没有找到——决定提示语是「找到了」还是「请手动指定」。 */
+const tdAuto = ref(false);
+/** 这个路径像不像 tdata（即时反馈，避免填完密码才报错）。 */
+const tdPathOk = ref(false);
+/** 本地密码。**事先不可预知**要不要，所以默认不显示这一栏。 */
+const tdPass = ref('');
+/** 要不要向用户要本地密码——由后端的实际解析结果决定，不猜。 */
+const tdNeedPass = ref(false);
+const tdBusy = ref(false);
+
+async function openTdata() {
+  tdataMode.value = true;
+  errCode.value = '';
+  try {
+    const p = await api.telegramTdataProbe();
+    tdRunning.value = !!p.client_running;
+    const first = (p.candidates || [])[0] || '';
+    tdAuto.value = !!first;
+    if (first) {
+      tdPath.value = first;
+      tdPathOk.value = true;
+    }
+  } catch {
+    // 探测失败不该挡住用户：手动填路径照样能走
+    tdRunning.value = false;
+    tdAuto.value = false;
+  }
+}
+
+/** 路径变了就即时校验，让「选错目录」当场可见。 */
+async function checkTdPath() {
+  const p = tdPath.value.trim();
+  if (!p) { tdPathOk.value = false; return; }
+  try {
+    tdPathOk.value = await api.telegramTdataCheck(p);
+  } catch {
+    tdPathOk.value = false;
+  }
+}
+
+async function importTdata() {
+  const p = tdPath.value.trim();
+  if (!p || tdBusy.value) return;
+  tdBusy.value = true;
+  errCode.value = '';
+  // 密码用完立刻从本地清掉：它在 WebView 里已无用途，留着只是多一处泄露面
+  const pw = tdPass.value || null;
+  try {
+    await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
+    tdPass.value = '';
+    emit('done', { sessionSaved: true, proxyUrl: proxyUrl.value });
+  } catch (e) {
+    const code = api.errCode(e) || 'tg_tdata_failed';
+    errCode.value = code;
+    // 「要密码」不是失败，是一条正常分支——展开输入框而不是把它当错误收场
+    if (code === 'tg_tdata_need_passcode') tdNeedPass.value = true;
+    // 密码错了也要保持输入框可见，否则用户没地方重输
+    if (code === 'tg_tdata_wrong_passcode') { tdNeedPass.value = true; tdPass.value = ''; }
+  } finally {
+    tdBusy.value = false;
+  }
+}
+
 async function start() {
   started.value = true;
   phase.value = 'connecting';
@@ -308,9 +381,83 @@ onBeforeUnmount(() => {
           {{ i18n.t('tg.no_persist') }}
         </div>
 
-        <div class="act">
+        <!-- tdata 面板。与扫码并列的一条路，不是子步骤 -->
+        <template v-if="tdataMode">
+          <div class="sgh" data-tg="td-title">{{ i18n.t('tg.tdata_title') }}</div>
+          <p class="lead">{{ i18n.t('tg.tdata_desc') }}</p>
+
+          <!-- 前提①：客户端在跑就占着 tdata。指名道姓说清「关窗口不够，
+               要从托盘退出」，而不是抛一个文件锁错误让人去查磁盘权限 -->
+          <div v-if="tdRunning" class="warnbox" data-tg="td-running">
+            {{ i18n.t('tg.tdata_running') }}
+          </div>
+
+          <!-- 前提②⑤：找不到就**就地**给输入框。显示「未检测到」等于把
+               「需要你补个信息」说成「不支持」，便携版用户会直接走掉 -->
+          <label class="f">
+            <span class="fl">{{ i18n.t('tg.tdata_path') }}</span>
+            <input
+              v-model="tdPath"
+              data-tg="td-path"
+              type="text"
+              placeholder="D:\TelegramDesktop\tdata"
+              spellcheck="false"
+              @input="checkTdPath"
+            />
+            <span v-if="tdAuto && tdPathOk" class="d" data-tg="td-auto">
+              {{ i18n.t('tg.tdata_autofound') }}
+            </span>
+            <span v-else-if="!tdPath" class="d" data-tg="td-manual">
+              {{ i18n.t('tg.tdata_not_found') }}
+            </span>
+            <span v-else-if="!tdPathOk" class="d warn" data-tg="td-bad">
+              {{ i18n.t('tg.tdata_bad_dir') }}
+            </span>
+            <span class="d">{{ i18n.t('tg.tdata_path_hint') }}</span>
+          </label>
+
+          <!-- 前提④：本地密码只在后端说需要时才出现。
+               有没有设事先无法预知，所以不能画成固定的一步；
+               文案必须与云密码区分，否则用户会把云密码填进来反复被拒 -->
+          <label v-if="tdNeedPass" class="f" data-tg="td-passwrap">
+            <span class="fl">{{ i18n.t('tg.tdata_passcode') }}</span>
+            <input
+              v-model="tdPass"
+              data-tg="td-pass"
+              type="password"
+              autocomplete="off"
+              @keydown.enter="importTdata"
+            />
+            <span class="d">{{ i18n.t('tg.tdata_passcode_hint') }}</span>
+          </label>
+
+          <div class="warnbox" data-tg="td-shared">{{ i18n.t('tg.tdata_shared') }}</div>
+
+          <div v-if="errCode" class="errbox" data-tg="td-err">
+            {{ i18n.te(errCode) }}
+          </div>
+
+          <div class="act">
+            <button class="btn" data-tg="td-back" @click="tdataMode = false">
+              {{ i18n.t('tg.tdata_use_qr') }}
+            </button>
+            <button
+              class="btn pri"
+              data-tg="td-import"
+              :disabled="!tdPathOk || tdBusy"
+              @click="importTdata"
+            >
+              {{ tdBusy ? i18n.t('tg.tdata_importing') : i18n.t('tg.tdata_import') }}
+            </button>
+          </div>
+        </template>
+
+        <div v-else class="act">
           <button class="btn" data-tg="cancel" @click="cancel">
             {{ i18n.t('common.cancel') }}
+          </button>
+          <button class="btn" data-tg="td-open" @click="openTdata">
+            {{ i18n.t('tg.tdata_switch') }}
           </button>
           <button class="btn pri" data-tg="start" @click="start">
             {{ i18n.t('tg.start') }}

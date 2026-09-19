@@ -105,5 +105,12 @@
   "tg_cdn_unsupported": "这个文件由 Telegram 的 CDN 分发，omy 目前还不支持从 CDN 取文件。请改用官方客户端下载",
   "remote_no_search": "这个位置不支持服务端搜索",
   "tg_broadcast_no_messages": "omy 不为广播频道提供消息视图。频道里的文件仍然可以正常浏览",
-  "remote_no_messages": "这个位置没有「消息」这个概念"
+  "remote_no_messages": "这个位置没有「消息」这个概念",
+  "tg_tdata_need_passcode": "这份 tdata 设了本地密码，请在下面输入它。",
+  "tg_tdata_wrong_passcode": "本地密码不正确。注意这是桌面客户端的本地密码，不是两步验证的云密码。",
+  "tg_tdata_not_found": "这个目录里没有 Telegram Desktop 的登录数据。",
+  "tg_tdata_no_account": "这份 tdata 里没有账号数据，桌面端可能从未登录过。",
+  "tg_tdata_unsupported": "无法解析这份 tdata，它的格式与预期不同。可以改用扫码登录。",
+  "tg_tdata_io": "读取 tdata 失败，请检查这些文件是否可以访问。",
+  "tg_tdata_failed": "导入过程出错。"
 }

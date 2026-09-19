@@ -660,7 +660,22 @@
     "already_desc": "本机保存着可用的登录态，不需要再扫码。可随时在官方客户端的「已登录设备」里终止这个会话。",
     "sign_out": "退出账号",
     "scan_again": "重新扫码（换账号）",
-    "connect_failed": "连接 Telegram 失败"
+    "connect_failed": "连接 Telegram 失败",
+    "tdata_switch": "复用桌面端登录态",
+    "tdata_title": "复用 Telegram Desktop 的登录态",
+    "tdata_desc": "读取本机 Telegram Desktop 的 tdata，直接用它已有的登录态，不用扫码。",
+    "tdata_running": "Telegram Desktop 正在运行，请先退出它。关窗口不够——它会最小化到托盘，请从托盘右键退出。",
+    "tdata_path": "tdata 位置",
+    "tdata_path_hint": "便携版请选 Telegram.exe 同目录下的 tdata；安装版通常在 %APPDATA%\\Telegram Desktop\\tdata。",
+    "tdata_autofound": "自动找到了这个位置，可以直接用，也可以改。",
+    "tdata_not_found": "没有自动找到 tdata —— 请手动指定。这很常见，不代表你没装：便携版的 tdata 在 Telegram.exe 同目录，可以在任意盘。",
+    "tdata_bad_dir": "这个目录里没有 Telegram Desktop 的登录数据，请确认选的是 tdata 文件夹本身。",
+    "tdata_passcode": "桌面端本地密码",
+    "tdata_passcode_hint": "这是你为 Telegram Desktop 这个程序设的本地密码（打开客户端时要输的那个）。不是两步验证的云密码，也不是短信验证码。",
+    "tdata_shared": "导入后与桌面端共用同一份登录会话：桌面端登出时，omy 这边会一并失效。",
+    "tdata_import": "导入并连接",
+    "tdata_importing": "正在导入…",
+    "tdata_use_qr": "改用扫码"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

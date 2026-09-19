@@ -189,6 +189,21 @@ pub fn save(session: &MemorySession, app: &AppId) -> Result<PathBuf, SessionErro
     save_to(&saved, &path)
 }
 
+/// 把一份现成的登录态落到**产品路径**。
+///
+/// [`save`] 是从 `MemorySession` 抽取的，而 tdata 导入手里已经是
+/// [`SavedSession`]。用 [`save_to`] 也能写，但那要调用方自己算路径——
+/// 「session 存在哪」就有了两个来源，改一处另一处会悄悄不同步，
+/// 表现是「登录了但重启后还要再登一次」，而两处代码单看都没错。
+///
+/// # Errors
+///
+/// 同 [`save`]。
+pub fn save_current(saved: &SavedSession) -> Result<PathBuf, SessionError> {
+    let path = session_path()?;
+    save_to(saved, &path)
+}
+
 /// 落盘到指定路径（测试用；产品路径走 [`save`]）。
 ///
 /// # Errors

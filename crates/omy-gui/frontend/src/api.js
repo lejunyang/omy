@@ -557,6 +557,28 @@ export const telegramHasSession = () => invoke('telegram_has_session');
 /** 忘掉已保存的登录态（「退出 Telegram 账号」）。 */
 export const telegramForgetSession = () => invoke('telegram_forget_session');
 
+/** 探测 tdata 导入的前提：客户端在不在跑、有没有自动找到 tdata。
+ *
+ * 返回 `{ client_running, candidates }`。**`candidates` 为空是常态**：
+ * 便携版跟着 exe 走、可以在任意盘，自动发现必然落空。此时要**就地**
+ * 给路径输入框，而不是显示「未检测到」——那等于把「需要你补个信息」
+ * 显示成「不支持」，用户看到就走了。
+ */
+export const telegramTdataProbe = () => invoke('telegram_tdata_probe');
+
+/** 这个路径像 tdata 吗。用于即时反馈：选错目录当场说，
+ *  而不是等用户填完密码、点了导入、跑完一轮解密才报错。 */
+export const telegramTdataCheck = (path) => invoke('telegram_tdata_check', { path });
+
+/** 从 tdata 导入登录态并连接，返回位置 id。
+ *
+ * `passcode` 是 **Telegram Desktop 的本地密码**，不是两步验证的云密码。
+ * 有没有设置事先无法预知，所以第一次调用不传；若报
+ * `tg_tdata_need_passcode` 再向用户要，然后带着它重调。
+ */
+export const telegramTdataImport = (path, passcode, proxyUrl) =>
+  invoke('telegram_tdata_import', { path, passcode, proxyUrl });
+
 /** 开始扫码登录。立刻返回，进度走 `onTelegramLogin` 推送。
  *
  * `proxyUrl` 可空。后端会先归一化——grammers 只认 socks5://，
