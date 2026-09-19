@@ -1587,6 +1587,11 @@ function detectSystemLang() {
  *
  * 不在远程位置时返回本地的全能力——这样上层判断可以统一写
  * `caps.write`，不必到处分叉「是不是远程」。
+ *
+ * 下面两份兜底对象的字段必须与后端 `omy_remote::Capabilities` 逐一对上
+ * （含 `search`）：少写一个字段，读到的就是 `undefined`，而 `!caps.write`
+ * 为真会让只读位置反而全部可写。后端 `caps.rs` 的 `field_names_are_stable`
+ * 就是为拦这件事存在的——**后端加字段时这里两处都要跟着加**。
  */
 export const currentCaps = computed(() => {
   if (!state.remotePlace) {
@@ -1598,6 +1603,8 @@ export const currentCaps = computed(() => {
       create_dir: true,
       random_write: true,
       range_read: true,
+      // 本地搜索是对已列出条目的前端过滤，没有「下推到服务端」这回事
+      search: false,
     };
   }
   const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
@@ -1612,6 +1619,7 @@ export const currentCaps = computed(() => {
       create_dir: false,
       random_write: false,
       range_read: true,
+      search: false,
     }
   );
 });
