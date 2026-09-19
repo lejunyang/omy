@@ -43,6 +43,17 @@ use crate::{Capabilities, Result};
 pub enum PlaceStore {
     /// WebDAV / NAS / 被中转出来的云盘。
     WebDav(WebDavStore),
+    /// 仅测试可见：一个**能力随目录而变**的假驱动。
+    ///
+    /// 它存在的唯一理由，是让「外壳必须转发 `effective_capabilities`」这条约束
+    /// 真的能被测到。眼下唯一的真实 provider（WebDAV）各目录能力一致，转发与
+    /// 不转发的结果完全相同，缺陷从外部无法区分——而那一支恰恰是最容易在重构中
+    /// 被顺手删掉的。
+    ///
+    /// 第一个真实的「能力随目录而变」provider（Telegram）落地后，这一支可以
+    /// 删掉，把断言搬到那个 provider 自己的测试里。
+    #[cfg(test)]
+    VaryingForTest(tests::VaryingStore),
 }
 
 impl PlaceStore {
@@ -54,6 +65,8 @@ impl PlaceStore {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::WebDav(_) => "webdav",
+            #[cfg(test)]
+            Self::VaryingForTest(_) => "test-varying",
         }
     }
 
@@ -66,6 +79,8 @@ impl PlaceStore {
     pub const fn as_webdav(&self) -> Option<&WebDavStore> {
         match self {
             Self::WebDav(s) => Some(s),
+            #[cfg(test)]
+            Self::VaryingForTest(_) => None,
         }
     }
 }
@@ -80,6 +95,8 @@ impl RemoteStore for PlaceStore {
     fn capabilities(&self) -> Capabilities {
         match self {
             Self::WebDav(s) => s.capabilities(),
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.capabilities(),
         }
     }
 
@@ -91,48 +108,64 @@ impl RemoteStore for PlaceStore {
     async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
         match self {
             Self::WebDav(s) => s.effective_capabilities(dir_id).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.effective_capabilities(dir_id).await,
         }
     }
 
     fn describe(&self) -> String {
         match self {
             Self::WebDav(s) => s.describe(),
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.describe(),
         }
     }
 
     async fn list(&self, dir_id: &str) -> Result<Vec<Entry>> {
         match self {
             Self::WebDav(s) => s.list(dir_id).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.list(dir_id).await,
         }
     }
 
     async fn read_range(&self, id: &str, offset: u64, len: u64) -> Result<Vec<u8>> {
         match self {
             Self::WebDav(s) => s.read_range(id, offset, len).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.read_range(id, offset, len).await,
         }
     }
 
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.write(dir_id, name, data).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.write(dir_id, name, data).await,
         }
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
         match self {
             Self::WebDav(s) => s.delete(id).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.delete(id).await,
         }
     }
 
     async fn rename(&self, id: &str, new_name: &str) -> Result<()> {
         match self {
             Self::WebDav(s) => s.rename(id, new_name).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.rename(id, new_name).await,
         }
     }
 
     async fn create_dir(&self, parent_id: &str, name: &str) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.create_dir(parent_id, name).await,
+            #[cfg(test)]
+            Self::VaryingForTest(s) => s.create_dir(parent_id, name).await,
         }
     }
 }
@@ -141,6 +174,53 @@ impl RemoteStore for PlaceStore {
 mod tests {
     use super::*;
     use crate::webdav::WebDavConfig;
+
+    /// 一个**能力随目录而变**的假驱动，只在测试里存在。
+    ///
+    /// 用它才能测出「外壳忘了转发 `effective_capabilities`」：WebDAV 各目录能力
+    /// 一致，转发与落回默认实现的结果完全相同，缺陷从外部根本看不出来。
+    ///
+    /// 形状照 Telegram 的真实情形取：位置级是**上界**（能写），具体目录里
+    /// 「自己的收藏夹」可写、「别人的频道」只读。
+    #[derive(Debug)]
+    pub struct VaryingStore;
+
+    impl VaryingStore {
+        /// 可写的那个目录 id。
+        pub const WRITABLE_DIR: &'static str = "saved";
+        /// 只读的那个目录 id。
+        pub const READONLY_DIR: &'static str = "someone-elses-channel";
+    }
+
+    impl RemoteStore for VaryingStore {
+        fn capabilities(&self) -> Capabilities {
+            // 位置级 = 上界：这个账号在**某些**对话里能写
+            Capabilities::conversation_writable(true, true)
+        }
+
+        async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
+            let upper = self.capabilities();
+            let per_dir = if dir_id == Self::WRITABLE_DIR {
+                Capabilities::conversation_writable(true, true)
+            } else {
+                // 别人的频道：能看能搜，不能写不能删
+                Capabilities::conversation_writable(false, false)
+            };
+            Ok(per_dir.narrowed_to(upper))
+        }
+
+        fn describe(&self) -> String {
+            String::from("varying-test")
+        }
+
+        async fn list(&self, _dir_id: &str) -> Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_range(&self, _id: &str, _offset: u64, _len: u64) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
 
     fn webdav(writable: bool) -> PlaceStore {
         PlaceStore::WebDav(
@@ -156,6 +236,12 @@ mod tests {
             })
             .expect("构造 WebDAV 驱动"),
         )
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时")
     }
 
     /// 转发必须保真，不能在这一层改写能力。
@@ -189,13 +275,11 @@ mod tests {
     #[test]
     fn readonly_writes_are_refused_through_the_wrapper() {
         let s = webdav(false);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("建运行时");
-        assert!(rt.block_on(s.delete("/a")).is_err());
-        assert!(rt.block_on(s.write("/", "a", b"1")).is_err());
-        assert!(rt.block_on(s.rename("/a", "b")).is_err());
-        assert!(rt.block_on(s.create_dir("/", "d")).is_err());
+        let r = rt();
+        assert!(r.block_on(s.delete("/a")).is_err());
+        assert!(r.block_on(s.write("/", "a", b"1")).is_err());
+        assert!(r.block_on(s.rename("/a", "b")).is_err());
+        assert!(r.block_on(s.create_dir("/", "d")).is_err());
     }
 
     /// Debug 输出不能带出密码。
@@ -214,34 +298,58 @@ mod tests {
         );
     }
 
-    /// 有效能力经过外壳后仍与位置级一致（WebDAV 各目录能力相同）。
-    ///
-    /// ⚠️ **这条断言目前抓不到「外壳忘了转发 `effective_capabilities`」**，
-    /// 已实测确认：把那一支删掉、落到 trait 的默认实现上，本测试照样通过。
-    /// 原因是眼下唯一的 provider（WebDAV）各目录能力一致，默认实现与转发的
-    /// 结果完全相同，无法从外部区分。
-    ///
-    /// 保留它是因为它验证的是另一件事：**外壳不会在这条路径上改写能力**
-    /// （比如把只读位置的有效能力算成可写）。
-    ///
-    /// 真正能盯住「必须转发」的断言，要等第一个「能力随目录而变」的 provider
-    /// 落地后，写在它自己的测试里：同一位置的两个目录必须给出不同的有效能力。
-    /// **不这样会怎样**：外壳吞掉目录级的收窄，进只读对话后删除菜单照样是亮的，
-    /// 点了才报错。这一条现在是缺口，不是已验证项。
+    /// 外壳不能在有效能力这条路径上改写能力（WebDAV 各目录能力相同）。
     #[test]
-    fn effective_capabilities_are_forwarded() {
+    fn effective_capabilities_are_not_rewritten() {
         let ro = webdav(false);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("建运行时");
-        let eff = rt
+        let eff = rt()
             .block_on(ro.effective_capabilities("/some/dir"))
             .expect("WebDAV 的默认实现不发请求");
-        assert_eq!(
-            eff,
-            ro.capabilities(),
-            "外壳不能在这条路径上改写能力"
-        );
+        assert_eq!(eff, ro.capabilities(), "外壳不能在这条路径上改写能力");
         assert!(!eff.any_write(), "只读位置的有效能力也必须没有写");
+    }
+
+    /// **外壳必须把 `effective_capabilities` 转发给驱动**。
+    ///
+    /// 不这样会怎样：外壳落回 trait 的默认实现，把目录级的收窄整个吞掉——
+    /// 进别人的只读频道后「删除」「上传」照样是亮的，用户点了才收到服务端拒绝。
+    /// 而写操作在点下去之前就该知道做不做得到。
+    ///
+    /// 这条断言必须用一个**能力随目录而变**的驱动才有效：WebDAV 各目录一致，
+    /// 转发与不转发结果相同，从外部区分不了（上一版就因此是个测不到的缺口）。
+    #[test]
+    fn effective_capabilities_are_forwarded_per_dir() {
+        let s = PlaceStore::VaryingForTest(VaryingStore);
+        let r = rt();
+
+        // 位置级是上界：它说「这个位置能写」
+        assert!(s.capabilities().any_write(), "位置级上界应当是可写的");
+
+        let writable = r
+            .block_on(s.effective_capabilities(VaryingStore::WRITABLE_DIR))
+            .expect("取有效能力");
+        let readonly = r
+            .block_on(s.effective_capabilities(VaryingStore::READONLY_DIR))
+            .expect("取有效能力");
+
+        // 要害：两个目录必须给出**不同**的结果。外壳一旦不转发，两者都会等于
+        // 位置级能力，这条断言立刻失败
+        assert_ne!(
+            writable, readonly,
+            "同一位置的两个目录必须能给出不同的有效能力——相同说明外壳没把调用\
+             转发给驱动，目录级的收窄被吞掉了"
+        );
+        assert!(writable.write, "自己的收藏夹应当可写");
+        assert!(writable.delete);
+        assert!(!readonly.any_write(), "别人的频道不能有任何写能力");
+        assert!(readonly.read, "只读频道仍然能看");
+        assert!(readonly.search, "搜索是读能力，只读频道也该有");
+
+        // 只读那一份必须真的窄于位置级上界，而不是被原样透传
+        assert_ne!(
+            readonly,
+            s.capabilities(),
+            "只读目录的有效能力若等于位置级上界，等于收窄没生效"
+        );
     }
 }
