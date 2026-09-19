@@ -2169,3 +2169,57 @@ input {
     height: 44px;
   }
 }
+
+/* ---------- 搜索：两种语义并排可见 ---------- */
+/* 沿用原型 telegram-remote-prototype.html 的定义（L274-278、L151-157），
+   不另造视觉——原型就是这套交互的设计口径。 */
+
+/* 分段控件。两种搜索语义必须并排可见：藏进下拉里用户不会发现，
+   而「搜索词会不会发出去」是他必须能一眼看到的事 */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  overflow: hidden;
+  flex: none;
+}
+.seg button {
+  background: var(--bg2);
+  border: 0;
+  color: var(--fg2);
+  padding: 6px 11px;
+  font-size: 12px;
+  cursor: pointer;
+  min-height: 32px;
+  font-family: inherit;
+}
+.seg button + button {
+  border-inline-start: 1px solid var(--border);
+}
+.seg button.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 提示条。服务端搜索那条用警告色：搜索词已经离开本机，
+   这件事要显眼，不能和普通信息长得一样 */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 12px;
+  font-size: 12px;
+  border-block-end: 1px solid var(--border);
+  line-height: 1.45;
+}
+.banner .bx {
+  flex: 1;
+}
+.banner.info {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.banner.warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}

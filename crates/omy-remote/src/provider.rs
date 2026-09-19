@@ -133,6 +133,15 @@ impl RemoteStore for PlaceStore {
         }
     }
 
+    /// 必须转发：不转发的话 Telegram 的服务端搜索会落回 trait 默认实现，
+    /// 变成「支持搜索但一搜就报不支持」——而能力位图说它支持。
+    async fn search(&self, dir_id: &str, query: &str, limit: usize) -> Result<Vec<Entry>> {
+        match self {
+            Self::WebDav(s) => s.search(dir_id, query, limit).await,
+            Self::Telegram(s) => s.search(dir_id, query, limit).await,
+        }
+    }
+
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.write(dir_id, name, data).await,

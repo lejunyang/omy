@@ -169,7 +169,24 @@ pub async fn remote_browse(
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
 
     let items = place.store.list(&dir).await.map_err(|e| to_cmd_err(&e))?;
+    Ok(scan_entries(&app, &state, &thumbs, &place, &place_id, &dir, items))
+}
 
+/// 把一批远程条目变成「骨架 + 后台识别」的结果。
+///
+/// `remote_browse` 与 `remote_search` 共用这一份。搜索另写一份的话，结果里就
+/// 不会有 omy 识别、缩略图与锁定态——表现是「浏览时能看出哪些是加密文件，
+/// 一搜索就全成了普通文件」，而这恰恰是用户最需要在搜索结果里看到的信息。
+#[allow(clippy::too_many_arguments)]
+fn scan_entries(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, crate::commands::Shared>,
+    thumbs: &tauri::State<'_, Arc<PlaceThumbs>>,
+    place: &Arc<crate::places::Place>,
+    place_id: &str,
+    dir: &str,
+    items: Vec<omy_remote::store::Entry>,
+) -> Vec<RemoteEntry> {
     // 扫描行为读配置：识别范围（仅 .omy / 所有文件）与并发上限。
     // 每次浏览读一次配置，改完设置无需重启即可生效。
     let scan_cfg = omy_config::Config::load().unwrap_or_default();
@@ -219,8 +236,8 @@ pub async fn remote_browse(
         let shared = Arc::clone(&shared);
         let thumbs = Arc::clone(&thumbs_arc);
         let app = app.clone();
-        let place_id = place_id.clone();
-        let dir = dir.clone();
+        let place_id = place_id.to_owned();
+        let dir = dir.to_owned();
         tokio::spawn(async move {
             // 拿到许可才发请求；permit 在任务结束时释放
             let _permit = match permit.await {
@@ -242,8 +259,69 @@ pub async fn remote_browse(
     }
 
     // 立即返回骨架，不等后台识别（结果走 remote-entry 事件）
-    Ok(entries)
+    entries
 }
+
+/// 在服务端搜索。
+///
+/// # 这个命令会把搜索词发到服务端
+///
+/// 与 `remote_browse` 分开而不是加一个参数，正是为了让这件事在调用点上就
+/// 看得见：前端调的是哪个命令，决定了要不要给用户那条「搜索词已发送」的提示。
+/// 合成一个命令加 flag 的话，界面很容易在某条路径上忘了提示，
+/// 而用户不会知道自己搜的词出去了。
+///
+/// # 只对声明了 `search` 能力的位置可用
+///
+/// 不支持的位置在这里就拒绝，而不是发出去等服务端报错——本地目录和网盘根本
+/// 没有这个概念，界面上那个分段控件也不该出现。
+///
+/// # Errors
+///
+/// 位置不存在、不支持搜索、网络失败或被限流时返回。
+#[tauri::command]
+pub async fn remote_search(
+    app: tauri::AppHandle,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    place_id: String,
+    dir: String,
+    query: String,
+) -> CmdResult<Vec<RemoteEntry>> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+
+    // 能力位图是唯一真相：不支持搜索就当场拒绝，不要发出去让服务端报错
+    if !place.store.capabilities().search {
+        return Err(CmdError::code("remote_no_search"));
+    }
+
+    // 条数由后端定，不开放给前端。
+    //
+    // 开放的话前端可以传一个很大的数，而每一条结果都要跟一次头部识别请求——
+    // 既慢又容易撞服务端限流。用户在结果屏上也看不完那么多。
+    let items = place
+        .store
+        .search(&dir, &query, SEARCH_LIMIT)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+
+    // 搜索结果同样要走识别：否则搜出来的加密文件看不出是加密文件。
+    //
+    // dir 用搜索时的 dir 原样传下去，让前端的「位置+目录」过滤仍然成立；
+    // 跨对话搜索时 dir 为空，事件也就归到空目录那一屏，与发起搜索的那屏一致。
+    Ok(scan_entries(
+        &app, &state, &thumbs, &place, &place_id, &dir, items,
+    ))
+}
+
+/// 一次搜索最多返回多少条。
+///
+/// 不是「越多越好」：结果屏用户看不完，而每一条都要跟一次头部识别请求，
+/// 条数上去之后既慢又容易撞服务端限流。
+const SEARCH_LIMIT: usize = 100;
 
 /// 后台识别完一个远程条目时推送的事件名。
 pub const REMOTE_ENTRY_EVENT: &str = "remote-entry";

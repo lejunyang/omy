@@ -87,6 +87,23 @@ export const state = reactive({
   showThumbnails: true,
   /** 搜索词。 */
   query: '',
+  /** 搜索模式：'local' 本地过滤（默认）/ 'server' 服务端搜索。
+   *
+   * **默认必须是 local**：服务端搜索会把搜索词发到 Telegram 的服务器上，
+   * 用户搜「离婚协议」这个词就出去了。所以它是一个要显式切换、切换后能看到
+   * 提示的模式，而不是悄悄发生的默认行为。
+   */
+  searchMode: 'local',
+  /** 服务端搜索返回的候选集。与 remoteItems 分开存。
+   *
+   * 不复用 remoteItems：那是「当前目录里有什么」，而搜索结果可能来自别的
+   * 对话。混在一起的话退出搜索时无从恢复原来那一屏。
+   */
+  searchResults: [],
+  /** 这批服务端结果是用哪个词搜出来的，用于提示条如实显示。 */
+  searchedQuery: '',
+  /** 服务端搜索进行中。 */
+  searching: false,
   /** 会话里的凭据数量。0 表示没有任何密码，但**不影响浏览**。 */
   credentials: 0,
   /** 正在忙（扫描 / 派生 / 加密）。 */
@@ -360,9 +377,17 @@ export function thumbUrl(id) {
  * 不重排——否则会和后端的顺序打架。
  */
 export const visibleEntries = computed(() => {
-  // 在容器里就列容器的内容。同一个 computed 供主界面使用，
-  // 这样网格、列表、搜索、状态栏全都不需要知道自己在哪种位置
-  const source = state.container ? containerEntries.value : state.entries;
+  // 服务端搜索模式：列的是候选集，而不是当前目录。
+  //
+  // 仍然要过一遍本地精筛——这就是原型里的「两段式搜索」：服务端按文字缩小
+  // 范围（快、省流量），本地再按**解出来的真实文件名**匹配。服务端搜的是
+  // 消息文字，omy 加密文件的真实文件名它永远没有，所以少了本地这一段，
+  // 搜索对加密文件就完全失效。
+  const source = state.searchMode === 'server' && state.remotePlace
+    ? state.searchResults
+    : state.container
+      ? containerEntries.value
+      : state.entries;
   const q = state.query.trim().toLowerCase();
   if (!q) return source;
   return source.filter((e) => {
@@ -1641,6 +1666,91 @@ export const currentCaps = computed(() => {
   return state.remoteDirCaps || SAFE_READONLY_CAPS;
 });
 
+/** 远程视图里该显示哪些条目。
+ *
+ * 远程网格以前直接渲染 `state.remoteItems`，于是顶栏那个搜索框**对远程位置
+ * 完全无效**——输入什么都不会过滤。本地视图有 `visibleEntries` 做过滤，
+ * 远程没有对应物，这个缺口从界面上看不出来（搜索框照常能输入）。
+ *
+ * 两种语义都落在这里：
+ * - 本地过滤：在已加载的这一屏里按**解出来的真实文件名**匹配，搜索词不出本机；
+ * - 服务端搜索：列服务端给的候选集，再用同一套本地规则精筛一遍。
+ */
+export const remoteVisible = computed(() => {
+  const server = state.searchMode === 'server';
+  const source = server ? state.searchResults : state.remoteItems;
+  const q = state.query.trim().toLowerCase();
+  if (!q) return source;
+  return source.filter((e) => {
+    // 锁定的加密文件没有可搜的名字：用磁盘上的密文名去匹配等于拿乱码当明文搜，
+    // 既搜不到也会泄露信息。解锁对应密码后它会自动出现在结果里
+    if (e.is_encrypted && !e.unlocked) return false;
+    const name = e.real_name || e.name;
+    return name.toLowerCase().includes(q);
+  });
+});
+
+/** 被本地精筛挡掉的加密文件数量。
+ *
+ * 界面要如实说明「还有 N 个加密文件因为没解锁而没参与搜索」——不说的话
+ * 用户会以为那些文件不存在，而其实只是差一个密码。
+ */
+export const searchLockedOut = computed(() => {
+  const q = state.query.trim();
+  if (!q) return 0;
+  const source = state.searchMode === 'server' ? state.searchResults : state.remoteItems;
+  return source.filter((e) => e.is_encrypted && !e.unlocked).length;
+});
+
+/** 当前位置支不支持服务端搜索。
+ *
+ * 分段控件据此决定**出不出现**（而不是置不置灰）：本地目录和网盘根本没有
+ * 「搜索整个对话」这个概念，摆一个灰按钮只会让人以为是暂时不可用。
+ */
+export const canServerSearch = computed(
+  () => !!state.remotePlace && !!currentCaps.value.search,
+);
+
+/** 发起一次服务端搜索。
+ *
+ * 只有用户显式切到「搜索整个对话」时才会走到这里——这是把搜索词发出去的
+ * 唯一路径，保持它唯一才好确认「发出去」和「告诉用户发出去了」是同步的。
+ */
+export async function runServerSearch() {
+  const q = state.query.trim();
+  if (!state.remotePlace || !q) {
+    state.searchResults = [];
+    state.searchedQuery = '';
+    return;
+  }
+  state.searching = true;
+  state.placeError = '';
+  try {
+    state.searchResults = await api.remoteSearch(state.remotePlace, state.remoteDir, q);
+    // 记下真正搜出去的那个词，而不是读 state.query——用户可能在请求飞行途中
+    // 又改了输入框，那样提示条会显示一个其实没发出去的词
+    state.searchedQuery = q;
+  } catch (e) {
+    state.searchResults = [];
+    state.searchedQuery = '';
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+  } finally {
+    state.searching = false;
+  }
+}
+
+/** 切换搜索模式。 */
+export async function setSearchMode(mode) {
+  state.searchMode = mode;
+  if (mode === 'server') {
+    await runServerSearch();
+  } else {
+    // 切回本地时清掉服务端结果：留着会让用户以为本地过滤也能搜到那些
+    state.searchResults = [];
+    state.searchedQuery = '';
+  }
+}
+
 /** 刷新远程位置列表。 */
 export async function reloadRemotePlaces() {
   state.remotePlaces = await api.remotePlaceList().catch(() => []);
@@ -1661,6 +1771,11 @@ export function leaveRemotePlace() {
   state.remoteRetrying = [];
   // 能力必须跟着清：留着会让下次进另一个位置时先按上一个位置的能力渲染一帧
   state.remoteDirCaps = null;
+  // 搜索态也要清：回到本地后还留着「服务端搜索」模式的话，界面会显示一个
+  // 本地位置根本不支持的模式，而那批结果也已经不属于眼前这个位置了
+  state.searchMode = 'local';
+  state.searchResults = [];
+  state.searchedQuery = '';
 }
 
 /** 列出当前远程目录。

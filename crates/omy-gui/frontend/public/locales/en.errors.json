@@ -102,5 +102,6 @@
   "tg_connect_failed": "Could not connect to Telegram. Check your network or proxy settings",
   "tg_session_expired": "The Telegram session is no longer valid (it may have been revoked on another device). Please scan the QR code again",
   "tg_register_failed": "Could not register the Telegram place",
-  "tg_cdn_unsupported": "This file is served from Telegram’s CDN, which omy does not support yet. Please download it with an official client"
+  "tg_cdn_unsupported": "This file is served from Telegram’s CDN, which omy does not support yet. Please download it with an official client",
+  "remote_no_search": "This place does not support server-side search"
 }

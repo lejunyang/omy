@@ -456,6 +456,18 @@ export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
  * 返回 `unlocked:false` 表示是 omy 但密码不对（区别于网络错误），
  * `not_encrypted:true` 表示根本不是 omy。
  */
+/** 在服务端搜索。
+ *
+ * **这会把搜索词发送到服务端。** 与 remoteBrowse 分成两个函数而不是加一个
+ * 参数，是为了让这件事在调用点上就看得见——合成一个再用 flag 区分的话，
+ * 界面很容易在某条路径上忘了给提示，而用户不会知道自己搜的词出去了。
+ *
+ * 返回的是**候选集**：服务端搜的是消息文字与说明，omy 加密文件的真实文件名
+ * 它永远没有。精筛要在本地按解出来的名字再做一轮。
+ */
+export const remoteSearch = (placeId, dir, query) =>
+  invoke('remote_search', { placeId, dir, query });
+
 export const remotePlaceOpen = (placeId, path, size) =>
   invoke('remote_place_open', { placeId, path, size });
 

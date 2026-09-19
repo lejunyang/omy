@@ -687,6 +687,19 @@ impl TelegramStore {
             .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
             .limit(limit);
 
+        self.collect_media(&mut it, chat).await
+    }
+
+    /// 把一串消息收成文件条目，顺带缓存它们的下载位置。
+    ///
+    /// `list` 与 `search` 共用这一份。两处各写一份的话，以后给条目加个字段，
+    /// 改了一处忘了另一处，表现是「浏览时有这个信息、一搜索就没了」，
+    /// 而这种不一致很难被注意到。
+    async fn collect_media(
+        &self,
+        it: &mut grammers_client::client::SearchIter,
+        chat: i64,
+    ) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
         let mut cache = Vec::new();
         loop {
@@ -774,8 +787,17 @@ impl RemoteStore for TelegramStore {
     async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
         // 根目录就是对话列表本身：它不接受任何写操作——
         // 「在根目录新建」等于「建一个群」，见模块文档。
+        //
+        // 但它**支持搜索**，而且正是跨对话搜索的入口，所以不能直接用
+        // `read_only()`——那个构造器把 search 置成 false（对本地目录与网盘
+        // 是对的）。用它的后果是：界面按能力位图决定分段控件出不出现，
+        // 于是在最需要「搜索整个账号」的那一屏，控件反而消失了；
+        // 而搜索本身是好的，从后端完全看不出问题。
         if dir_id.is_empty() {
-            return Ok(Capabilities::read_only());
+            return Ok(Capabilities {
+                search: true,
+                ..Capabilities::read_only()
+            });
         }
         let chat = Conversation::parse_dir_id(dir_id)?;
         self.conversation(chat)
@@ -839,6 +861,72 @@ impl RemoteStore for TelegramStore {
             return Err(Error::NotFound(format!("未知对话：{dir_id}")));
         }
         self.list_messages(chat, DEFAULT_MESSAGE_PAGE).await
+    }
+
+    /// 服务端搜索。
+    ///
+    /// # 搜索词会离开本机
+    ///
+    /// 这个方法把 `query` 发给 Telegram 服务器。调用方**必须**已经就此告知
+    /// 用户——原型 §5 把它设计成需要显式切换的模式，而不是默认行为，
+    /// 正是因为「搜了什么」本身就是敏感信息。
+    ///
+    /// # 返回候选集，不是最终结果
+    ///
+    /// 服务端搜的是消息文字与说明。omy 加密文件的真实文件名服务端**永远没有**
+    /// ——那是加密掉的东西，上传它等于白加密，还会让用户以为自己是安全的。
+    /// 所以结果要在本地按解出来的真实文件名再精筛一轮。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、网络失败、限流、对话不存在时返回。
+    async fn search(&self, dir_id: &str, query: &str, limit: usize) -> Result<Vec<Entry>> {
+        let client = self.client()?;
+        if query.is_empty() {
+            // 空词不发请求：服务端会把它当成「列全部」，白占一次限流配额，
+            // 而调用方要的显然不是这个
+            return Ok(Vec::new());
+        }
+        // 根目录搜索要跨所有对话。实测过的六种过滤器都是**对话内**的，
+        // 没有「全局搜文件」那种东西，所以只能逐个对话搜再合并。
+        let chats: Vec<i64> = if dir_id.is_empty() {
+            if self.conversation_count() == 0 {
+                self.refresh_conversations().await?;
+            }
+            self.conversations
+                .lock()
+                .map(|c| c.iter().map(|c| c.chat).collect())
+                .unwrap_or_default()
+        } else {
+            vec![Conversation::parse_dir_id(dir_id)?]
+        };
+
+        let mut out = Vec::new();
+        for chat in chats {
+            // 一个对话失败不该让整次搜索失败：跨对话搜索时，某个频道可能刚好
+            // 没权限或被限流，因此丢掉其余全部结果是不划算的
+            let Ok(peer) = self.peer_ref(chat).await else {
+                continue;
+            };
+            let mut it = client
+                .search_messages(peer)
+                .query(query)
+                // 与 list 一样用 Empty：Document 过滤器不等于「所有文档」，
+                // 实测一条 video/mp4 的 Document 不被它命中（见 list_messages）
+                .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
+                .limit(limit);
+            match self.collect_media(&mut it, chat).await {
+                Ok(mut v) => out.append(&mut v),
+                Err(e) if e.is_retryable() => return Err(e),
+                // 非暂时性错误（没权限之类）就跳过这个对话，继续搜别的
+                Err(_) => continue,
+            }
+            if out.len() >= limit {
+                out.truncate(limit);
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// 读取区间。
@@ -1272,6 +1360,27 @@ mod tests {
             rt.block_on(s.read_range("tg:1:2", 0, 1)),
             Err(Error::Protocol(ref m)) if m.contains("尚未登录")
         ));
+    }
+
+    /// 根目录必须既只读又可搜。
+    ///
+    /// 不这样会怎样：根目录是**跨对话搜索**的入口，而通用的 `read_only()`
+    /// 把 search 置成 false。界面按这一位决定分段控件出不出现，于是在最需要
+    /// 「搜索整个账号」的那一屏控件反而消失——偏偏搜索本身是好的，
+    /// 从后端一点异常都看不出来。端到端测试抓到过这个。
+    #[test]
+    fn root_is_read_only_but_searchable() {
+        let s = TelegramStore::with_conversations(vec![conv(1, "收藏夹", true, true)]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+        let caps = rt.block_on(s.effective_capabilities("")).expect("取根能力");
+        assert!(caps.read, "根目录要能看");
+        assert!(caps.search, "根目录是跨对话搜索的入口，必须声明 search");
+        assert!(
+            !caps.any_write(),
+            "根目录不能有写能力——在根目录新建等于建一个群"
+        );
     }
 
     /// 越过文件尾的读取要被收敛掉，而不是照发。

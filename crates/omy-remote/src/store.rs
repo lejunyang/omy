@@ -101,6 +101,33 @@ pub trait RemoteStore: Send + Sync {
     /// 网络失败、越界或文件不存在时返回。
     async fn read_range(&self, id: &str, offset: u64, len: u64) -> Result<Vec<u8>>;
 
+    /// 在服务端搜索。
+    ///
+    /// # 这个方法为什么不能并进 `list`
+    ///
+    /// **它会把搜索词发到服务端。** 用户在 omy 里搜「离婚协议」，这个词就到了
+    /// Telegram 的服务器上。并进 `list` 的话，前端无从区分某次查询到底有没有
+    /// 把词发出去，也就没法在界面上如实告诉用户——而这正是必须让用户知情的事。
+    ///
+    /// 所以它是独立方法，且只有 `capabilities().search` 为真的位置才该被调用。
+    ///
+    /// # 返回的是候选集，不是最终结果
+    ///
+    /// 服务端搜的是消息文字与说明，**不保证匹配文件名**，而 omy 加密文件的
+    /// 真实文件名服务端永远不可能有（那是加密掉的东西，上传它等于白加密）。
+    /// 所以调用方拿到的是一个缩小后的候选集，精确匹配要在本地按解出来的
+    /// 真实文件名再做一轮。
+    ///
+    /// `dir_id` 为空表示在整个位置里搜。
+    ///
+    /// # Errors
+    ///
+    /// 位置不支持搜索、网络失败或被限流时返回。
+    async fn search(&self, dir_id: &str, query: &str, limit: usize) -> Result<Vec<Entry>> {
+        let _ = (dir_id, query, limit);
+        Err(crate::Error::Unsupported("search"))
+    }
+
     /// 上传一个文件。
     ///
     /// # Errors

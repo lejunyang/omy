@@ -678,5 +678,16 @@
     "warn_not_safer": "It saves typing, not protection. Passwordless unlock stops a stolen disk and another PC, but not malware running on this one — so do not weaken your password because of it.",
     "warn_can_be_lost": "Replacing the PC, reinstalling the OS, clearing the TPM or resetting Windows Hello makes it permanently unrecoverable. Keep remembering your password; this is not a backup.",
     "cancelled": "Cancelled"
+  },
+  "search": {
+    "local": "Filter loaded",
+    "server": "Search whole chat",
+    "local_hint": "Matches real file names among items already loaded on this machine. The search term never leaves your device",
+    "server_hint": "Sends the search term to Telegram’s servers and searches the whole chat",
+    "local_banner": "Filtering the items already loaded on this machine, matching decrypted real file names. The search term never leaves your device. Anything not loaded yet is out of scope — that is what “Search whole chat” is for.",
+    "server_banner": "The search term “{{q}}” has been sent to Telegram’s servers. The server searches message text and captions, and does not guarantee matching file names; real names of encrypted files cannot be found because omy never uploads them. Server results only narrow the candidates — exact matching still happens locally.",
+    "searching": "Searching the whole chat…",
+    "locked_out_one": "Another encrypted file did not take part in the search because it is locked. It will appear once the matching password is added",
+    "locked_out_other": "Another {{count}} encrypted files did not take part in the search because they are locked. They will appear once the matching password is added"
   }
 }
