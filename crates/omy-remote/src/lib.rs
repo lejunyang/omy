@@ -17,6 +17,7 @@ pub mod caps;
 pub mod provider;
 pub mod source;
 pub mod store;
+pub mod telegram;
 pub mod transfer;
 pub mod webdav;
 
