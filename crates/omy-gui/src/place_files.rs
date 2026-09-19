@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use omy_remote::cache::BlockCache;
 use omy_remote::source::RemoteSource;
-use omy_remote::webdav::WebDavStore;
+use omy_remote::PlaceStore;
 
 /// 全局密文块缓存。
 ///
@@ -142,7 +142,11 @@ pub struct OpenPlaceFile {
     /// 完整文件头（密文）。每次请求据此重新 `open`，不长期持有 payload key。
     pub header: Vec<u8>,
     /// 接好缓存与网络的密文来源。
-    pub source: RemoteSource<WebDavStore>,
+    ///
+    /// 泛型参数用 [`PlaceStore`]（各 provider 的统一外壳）而不是某个具体驱动：
+    /// 写死成 `RemoteSource<WebDavStore>` 会让播放链路也单态化到 WebDAV，
+    /// 加第二个 provider 时只剩「另拉一条平行链路」这一条路。
+    pub source: RemoteSource<PlaceStore>,
     /// 解密后内容的 MIME。
     pub mime: String,
 }
@@ -324,7 +328,7 @@ mod tests {
     fn make_holder(tag: u64) -> OpenPlaceFile {
         use omy_core::crypto::{Argon2Params, Kek};
         use omy_core::file::{encrypt, EncryptOptions, RandomMaterial};
-        use omy_remote::webdav::{Vendor, WebDavConfig};
+        use omy_remote::webdav::{Vendor, WebDavConfig, WebDavStore};
 
         let salt = [7u8; 16];
         let params = Argon2Params::TEST_WEAK;
@@ -342,14 +346,14 @@ mod tests {
         )
         .expect("加密");
 
-        let store = Arc::new(
+        let store = Arc::new(PlaceStore::from(
             WebDavStore::new(WebDavConfig {
                 base_url: String::from("http://127.0.0.1:1/"),
                 vendor: Vendor::Generic,
                 ..WebDavConfig::default()
             })
             .expect("store"),
-        );
+        ));
         // 独立运行时；holder 测试不真正读取，句柄随测试结束而丢弃
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

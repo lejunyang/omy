@@ -4,23 +4,27 @@
 //!
 //! ```text
 //! RemoteStore      列举 / 读 Range / 写 / 删 / 改名     ← 驱动实现它
+//! PlaceStore       把各驱动收成一个具体类型             ← 应用层持有它
 //! Capabilities     能力位图，唯一真相                    ← 界面与命令层都读它
 //! RemoteSource     impl omy_core::source::BlockSource    ← 接上现有解密与播放
+//! TransferManager  传输任务列表与状态机                  ← 进度 / 暂停 / 重试
 //! ```
 //!
 //! 驱动只管字节搬运，识别 omy 文件、解密、播放全部复用 `omy-core` 既有实现。
 
 pub mod cache;
 pub mod caps;
+pub mod provider;
 pub mod source;
 pub mod store;
 pub mod transfer;
 pub mod webdav;
 
 pub use caps::Capabilities;
+pub use provider::PlaceStore;
 pub use source::RemoteSource;
 pub use store::{Entry, RemoteStore};
-pub use transfer::{TransferManager, TransferKind, TaskState};
+pub use transfer::{TaskState, TransferKind, TransferManager};
 
 /// 远程操作错误。
 ///

@@ -22,8 +22,8 @@ use crate::place_files::{OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
 use omy_core::crypto::Kek;
 use omy_remote::source::RemoteSource;
-use omy_remote::webdav::{WebDavConfig, WebDavStore};
-use omy_remote::{Error as RemoteError, RemoteStore};
+use omy_remote::webdav::WebDavConfig;
+use omy_remote::{Error as RemoteError, PlaceStore, RemoteStore};
 
 /// 远程目录里的一项，已附带识别结果。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -308,7 +308,7 @@ fn skeleton_entry(
 /// - 能读到但不是 omy → 保持非加密；
 /// - 是 omy 且当前会话密钥能开 → `unlocked`，头部带缩略图则登记轻量句柄。
 async fn probe_remote_entry(
-    store: &WebDavStore,
+    store: &PlaceStore,
     shared: &Shared,
     thumbs: &PlaceThumbs,
     mut e: RemoteEntry,
@@ -688,7 +688,7 @@ async fn build_remote_source(
     reg: &tauri::State<'_, Arc<PlaceRegistry>>,
     cache: &tauri::State<'_, Arc<RemoteCache>>,
     req: &RemoteFileRef,
-) -> CmdResult<RemoteSource<WebDavStore>> {
+) -> CmdResult<RemoteSource<PlaceStore>> {
     let place = reg
         .get(&req.place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -740,7 +740,7 @@ pub async fn remote_cache_remove_file(
 /// 文件头部更长，此时按 `peek_header` 给出的 `header_len` 补读，直到覆盖
 /// 完整 TLV 与头部 MAC。载荷依旧一个字节都不下载。
 async fn fetch_full_header(
-    store: &WebDavStore,
+    store: &PlaceStore,
     path: &str,
     size: u64,
 ) -> Result<Vec<u8>, RemoteError> {

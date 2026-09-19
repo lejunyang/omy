@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use omy_remote::webdav::{Vendor, WebDavConfig, WebDavStore};
-use omy_remote::{Capabilities, RemoteStore};
+use omy_remote::{Capabilities, PlaceStore, RemoteStore};
 
 /// 一个已注册的远程位置。
 pub struct Place {
@@ -29,10 +29,15 @@ pub struct Place {
     pub id: String,
     /// 显示名。
     pub name: String,
-    /// 驱动类型，目前只有 `webdav`。
+    /// 驱动类型，与 [`PlaceStore::kind`] 一致，也是配置里存的那个字符串。
     pub kind: String,
     /// 驱动实例。
-    pub store: Arc<WebDavStore>,
+    ///
+    /// 类型是 [`PlaceStore`] 而不是某个具体驱动：这里写死成 `Arc<WebDavStore>`
+    /// 的话，整个 GUI 层就单态化到了 WebDAV，加第二个 provider 只能另拉一条
+    /// 平行的命令链路——那正是 AGENTS.md「同一逻辑不允许两处实现」要拦的。
+    /// **新增 provider 时要改的是 `PlaceStore` 那个枚举，不是这里。**
+    pub store: Arc<PlaceStore>,
 }
 
 /// 下发给前端的位置信息。
@@ -74,7 +79,7 @@ impl PlaceRegistry {
     ///
     /// URL 非法或客户端构造失败时返回。
     pub fn add_webdav(&self, name: String, cfg: WebDavConfig) -> omy_remote::Result<String> {
-        let store = Arc::new(WebDavStore::new(cfg)?);
+        let store = Arc::new(PlaceStore::from(WebDavStore::new(cfg)?));
         // id 用递增序号而非名字：名字可以重复，也可以带斜杠之类
         // 会破坏后续拼接的字符
         let id = {
@@ -86,7 +91,9 @@ impl PlaceRegistry {
         let place = Arc::new(Place {
             id: id.clone(),
             name,
-            kind: String::from("webdav"),
+            // 由驱动自己报类型，不在这里写字面量：两处各写一份迟早对不上，
+            // 而对不上的后果是配置存进去读回来变成另一种驱动
+            kind: String::from(store.kind()),
             store,
         });
         if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -215,8 +222,13 @@ impl PlaceRegistry {
         let saved: Vec<omy_config::SavedPlace> = o
             .iter()
             .filter_map(|id| m.get(id))
-            .map(|p| {
-                let c = p.store.config();
+            // 非 WebDAV 的位置在这里被跳过，而不是存成一条半截记录：
+            // `SavedPlace` 的 url / username / vendor 都是 WebDAV 专有字段，
+            // 用空串凑出来的记录下次恢复会造出一个连不上的位置。
+            // **新增 provider 时要在 omy-config 里给它自己的持久化形状，
+            // 并在这里补一支**，而不是任它静默消失。
+            .filter_map(|p| p.store.as_webdav().map(|w| (Arc::clone(p), w.config())))
+            .map(|(p, c)| {
                 // 没有密码就不必造信封；有密码但没有保护密钥时也不存，
                 // 两种情况在配置里都表现为 secret 缺失，界面提示重新登录
                 let secret = if c.password.is_empty() {
@@ -304,7 +316,7 @@ impl PlaceRegistry {
                 id: sp.id.clone(),
                 name: sp.name.clone(),
                 kind: sp.kind.clone(),
-                store: Arc::new(store),
+                store: Arc::new(PlaceStore::from(store)),
             });
             if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
                 // 恢复时保留原 id：前端可能存了「上次打开的位置」
@@ -433,7 +445,7 @@ mod tests {
             .iter()
             .filter_map(|info| r.get(&info.id))
             .map(|p| {
-                let c = p.store.config();
+                let c = p.store.as_webdav().expect("夹具里都是 WebDAV").config();
                 let secret = key
                     .as_ref()
                     .and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
@@ -465,7 +477,7 @@ mod tests {
         assert!(first.caps.any_write(), "可写标志必须跟着恢复");
 
         let place = restored.get(&first.id).expect("取回");
-        let c = place.store.config();
+        let c = place.store.as_webdav().expect("应恢复成 WebDAV 驱动").config();
         assert_eq!(c.base_url, "https://dav.example.com/dav");
         assert_eq!(c.username, "u");
         if key.is_some() {
@@ -506,8 +518,9 @@ mod tests {
         assert_eq!(n, 1, "位置必须恢复出来");
         assert_eq!(need_login, 1, "必须被计为需要重新登录");
         let place = r.get("p1").expect("应存在");
-        assert!(place.store.config().password.is_empty(), "密码应为空");
-        assert_eq!(place.store.config().base_url, "https://dav.example.com/dav");
+        let c = place.store.as_webdav().expect("应是 WebDAV 驱动").config();
+        assert!(c.password.is_empty(), "密码应为空");
+        assert_eq!(c.base_url, "https://dav.example.com/dav");
     }
 
     /// URL 损坏的条目跳过，不能让整个恢复流程失败。
