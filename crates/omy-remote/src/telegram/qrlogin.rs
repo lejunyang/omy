@@ -195,6 +195,15 @@ pub enum QrError {
 /// 后者要给「填自己的 api_id」按钮。混进笼统的失败里，界面只能显示「登录失败」，
 /// 而这两种情况各自都有明确且不同的出路。
 fn map_err(e: &InvocationError) -> QrError {
+    map_err_at("", e)
+}
+
+/// 同上，但标明是**哪一步**失败的。
+///
+/// 扫码流程里会发 exportLoginToken / importLoginToken / getPassword /
+/// updates.getState 四种请求，它们可能返回同一个错误码。不标出处的话，
+/// 拿到一句「AUTH_KEY_UNREGISTERED」根本无从下手——而这几步的成因完全不同。
+fn map_err_at(step: &str, e: &InvocationError) -> QrError {
     if let InvocationError::Rpc(r) = e {
         if r.name.starts_with("FLOOD_WAIT") {
             return QrError::FloodWait {
@@ -205,9 +214,17 @@ fn map_err(e: &InvocationError) -> QrError {
             return QrError::ApiIdPublishedFlood;
         }
         // 只带错误名与代码，**不带 message**：服务端的原文里可能回显请求参数
-        return QrError::Invocation(format!("{} ({})", r.name, r.code));
+        return QrError::Invocation(if step.is_empty() {
+            format!("{} ({})", r.name, r.code)
+        } else {
+            format!("{} ({}) @ {step}", r.name, r.code)
+        });
     }
-    QrError::Invocation(e.to_string())
+    QrError::Invocation(if step.is_empty() {
+        e.to_string()
+    } else {
+        format!("{e} @ {step}")
+    })
 }
 
 impl QrSession {
@@ -330,7 +347,7 @@ impl QrSession {
                 if e.is("SESSION_PASSWORD_NEEDED") {
                     return self.ask_password().await;
                 }
-                return Err(map_err(&e));
+                return Err(map_err_at("exportLoginToken", &e));
             }
         };
         self.handle_login_token(res).await
@@ -384,6 +401,25 @@ impl QrSession {
     async fn import_into_dc(&mut self, dc: i32, token: Vec<u8>) -> Result<QrEvent, QrError> {
         use grammers_session::Session as _;
 
+        // **先切 home_dc，再发请求。**
+        //
+        // 这一步的位置是真机实测钉下来的。原先放在 import 成功之后，于是
+        // 「账号开了 2FA」这条分支上 home_dc 还是旧的：服务端回
+        // SESSION_PASSWORD_NEEDED，我们接着调 account.getPassword，而那个
+        // 请求走 invoke（发往 home_dc）——旧 DC 上这次登录根本不存在，
+        // 于是回 AUTH_KEY_UNREGISTERED (401)，整趟登录失败。
+        //
+        // 现象极具迷惑性：用户明明扫了码、手机上也确认了，界面却报一个
+        // 看起来像「会话被吊销」的 401，而真正的原因只是我们把请求发错了
+        // 数据中心。
+        //
+        // 提前切没有坏处：服务端已经明说这次登录属于 dc，旧 DC 上本来就没有
+        // 它的授权。
+        self.session
+            .set_home_dc_id(dc)
+            .await
+            .map_err(|e| QrError::Invocation(e.to_string()))?;
+
         let req = tl::functions::auth::ImportLoginToken { token };
         let res = match self.client.invoke_in_dc(dc, &req).await {
             Ok(r) => r,
@@ -391,15 +427,9 @@ impl QrSession {
                 if e.is("SESSION_PASSWORD_NEEDED") {
                     return self.ask_password().await;
                 }
-                return Err(map_err(&e));
+                return Err(map_err_at("importLoginToken", &e));
             }
         };
-        // 迁移成功后主数据中心就是它了。不改的话之后每次请求还是发往旧 DC，
-        // 而那边并不认这次登录——现象是「登录成功了但立刻又说未登录」
-        self.session
-            .set_home_dc_id(dc)
-            .await
-            .map_err(|e| QrError::Invocation(e.to_string()))?;
         self.pending = None;
         self.pending_ttl = 0;
         match res {
@@ -470,7 +500,7 @@ impl QrSession {
             .invoke(&tl::functions::account::GetPassword {})
             .await
             .map(Into::into)
-            .map_err(|e| map_err(&e))
+            .map_err(|e| map_err_at("account.getPassword", &e))
     }
 
     /// 提交两步验证的云密码。
@@ -545,7 +575,10 @@ impl QrSession {
     ///
     /// 网络失败时返回。
     pub async fn is_authorized(&self) -> Result<bool, QrError> {
-        self.client.is_authorized().await.map_err(|e| map_err(&e))
+        self.client
+            .is_authorized()
+            .await
+            .map_err(|e| map_err_at("updates.getState", &e))
     }
 }
 
