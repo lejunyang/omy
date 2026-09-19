@@ -41,6 +41,8 @@ import {
   canServerSearch,
   setSearchMode,
   runServerSearch,
+  canShowMessages,
+  setRemoteViewMode,
 } from '../store.js';
 
 const emit = defineEmits(['open', 'add']);
@@ -53,6 +55,16 @@ const currentPlace = computed(() =>
 /** 面包屑分段：每段带可跳转的绝对目录。 */
 const crumbs = computed(() => {
   const out = [];
+  // 有显示名就只画一段，用名字。
+  //
+  // 按 '/' 切段是**写死了 WebDAV 的路径形状**：Telegram 的 dir 是
+  // `tg:<对话>`，里面没有斜杠，整串会被当成一段原样显示，用户看到
+  // 「tg:-1003929965717」这种东西，完全不知道自己在哪个对话里。
+  // 而那个名字进目录时本来就在手上。
+  if (state.remoteDirName) {
+    out.push({ name: state.remoteDirName, dir: state.remoteDir });
+    return out;
+  }
   let acc = '';
   for (const seg of state.remoteDir.split('/').filter(Boolean)) {
     acc += `/${seg}`;
@@ -156,7 +168,7 @@ function activate(f) {
     return;
   }
   if (f.is_dir) {
-    enterRemoteDir(f.id);
+    enterRemoteDir(f.id, displayName(f));
     return;
   }
   if (f.is_encrypted && f.unlocked) {
@@ -328,6 +340,42 @@ function onThumbError(token) {
  * 加了 Telegram 之后就变成了谎话：一个叫 Telegram 的位置标着 WebDAV，
  * 用户会以为自己加错了东西。回落本身就是这个缺陷的根源。
  */
+/** 消息时间戳 → 本地可读时间。 */
+function fmtDate(sec) {
+  try {
+    return new Date(sec * 1000).toLocaleString();
+  } catch {
+    return String(sec);
+  }
+}
+
+/** 从消息行打开那个文件。
+ *
+ * 复用 onOpen 那条路：同一个 id、同一套识别与预览。另写一份的话，
+ * 文件视图修了预览、消息视图还是老样子。
+ */
+async function openFromMessage(m) {
+  if (!m.file_id) return;
+  // 走与文件视图**完全相同**的那条路（onEntryDbl）：同一个 id、同一套识别
+  // 与预览。另写一份的话，文件视图修了预览、消息视图还是老样子。
+  //
+  // 消息里带的是后端给的 file_id，与文件视图里那个是同一个值——这正是
+  // 「条目标识保留 (对话, 消息号)」那条设计的回报。
+  const inList = state.remoteItems.find((f) => f.id === m.file_id);
+  // 列表里有就用列表里那份：它已经过识别，带着 unlocked / real_name /
+  // 缩略图。没有（比如消息比当前这页文件更早）才现造一个最小条目
+  await onEntryDbl(
+    inList || {
+      id: m.file_id,
+      name: m.file_name || '',
+      size: m.file_size || 0,
+      is_dir: false,
+      is_encrypted: false,
+      unlocked: false,
+    },
+  );
+}
+
 function kindLabel(p) {
   if (p.kind === 'nextcloud') return i18n.t('rplace.vendor_nextcloud');
   if (p.kind === 'telegram') return i18n.t('rplace.vendor_telegram');
@@ -458,6 +506,26 @@ function rowTitle(f) {
             :aria-label="i18n.t('view.search')"
             @keydown.enter="state.searchMode === 'server' && runServerSearch()"
           />
+          <!-- 文件 / 消息 切换。只在**对话内**且是 Telegram 时出现——
+               位置列表那层没有「消息」这个概念，网盘更没有。
+               与搜索那个分段控件同理：不支持就整个不出现，不是置灰。 -->
+          <div v-if="canShowMessages" class="seg" data-tg="viewmode">
+            <button
+              :class="{ on: state.remoteViewMode === 'files' }"
+              data-tg="vm-files"
+              @click="setRemoteViewMode('files')"
+            >
+              {{ i18n.t('msgs.view_files') }}
+            </button>
+            <button
+              :class="{ on: state.remoteViewMode === 'messages' }"
+              data-tg="vm-messages"
+              @click="setRemoteViewMode('messages')"
+            >
+              {{ i18n.t('msgs.view_messages') }}
+            </button>
+          </div>
+
           <!-- 只在位置支持服务端搜索时出现，不支持时整个不出现而非置灰：
                网盘根本没有「搜索整个对话」这个概念 -->
           <div v-if="canServerSearch" class="seg" data-tg="searchmode">
@@ -505,6 +573,56 @@ function rowTitle(f) {
           <div class="bx">{{ i18n.tn('search.locked_out', lockedOut) }}</div>
         </div>
 
+        <!-- 消息时间线。与文件网格并列的一种渲染，不是另一个页面：
+             对话是同一个、面包屑同一条、返回行为也一样。 -->
+        <template v-if="state.remoteViewMode === 'messages'">
+          <div v-if="state.loadingMessages" class="empty">
+            <div class="icon" aria-hidden="true">⏳</div>
+            <div class="title">{{ i18n.t('msgs.loading') }}</div>
+          </div>
+          <div v-else-if="state.placeError" class="empty" data-tg="msg-error">
+            <div class="icon" aria-hidden="true">⚠️</div>
+            <div class="title">{{ state.placeError }}</div>
+          </div>
+          <div v-else-if="!state.remoteMessages.length" class="empty">
+            <div class="icon" aria-hidden="true">📭</div>
+            <div class="title">{{ i18n.t('msgs.empty') }}</div>
+          </div>
+          <div v-else class="msglist" data-tg="msglist">
+            <div
+              v-for="m in state.remoteMessages"
+              :key="m.message"
+              class="msgrow"
+              :class="{ out: m.outgoing, hasfile: !!m.file_id }"
+              data-tg="msgrow"
+            >
+              <div class="msgmeta">
+                <span class="msgid">#{{ m.message }}</span>
+                <span class="msgdate">{{ fmtDate(m.date) }}</span>
+                <span v-if="m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
+              </div>
+              <!-- 带文件的消息：点它就打开那个文件，走与文件视图完全相同的
+                   那条路（同一个 id、同一套识别与预览），不另写一份 -->
+              <button
+                v-if="m.file_id"
+                class="msgfile"
+                :data-tg-file="m.file_id"
+                @click="openFromMessage(m)"
+              >
+                <span aria-hidden="true">📎</span>
+                <span class="mfname">{{ m.file_name }}</span>
+                <span class="mfsize">{{ i18n.formatSize(m.file_size || 0) }}</span>
+              </button>
+              <!-- 纯文本消息是正常的一行，不是「缺了文件」的残缺条目 -->
+              <div v-if="m.text" class="msgtext">{{ m.text }}</div>
+              <div v-else-if="!m.file_id" class="msgtext dim">
+                {{ i18n.t('msgs.no_file') }}
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
         <div v-if="state.searching" class="empty">
           <div class="icon" aria-hidden="true">⏳</div>
           <div class="title">{{ i18n.t('search.searching') }}</div>
@@ -599,6 +717,7 @@ function rowTitle(f) {
             </span>
           </div>
         </div>
+        </template>
       </template>
     </div>
 

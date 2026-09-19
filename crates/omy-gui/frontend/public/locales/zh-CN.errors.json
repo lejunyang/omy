@@ -103,5 +103,7 @@
   "tg_session_expired": "Telegram 登录态已失效（可能已在其他设备上被撤销），请重新扫码登录",
   "tg_register_failed": "注册 Telegram 位置失败",
   "tg_cdn_unsupported": "这个文件由 Telegram 的 CDN 分发，omy 目前还不支持从 CDN 取文件。请改用官方客户端下载",
-  "remote_no_search": "这个位置不支持服务端搜索"
+  "remote_no_search": "这个位置不支持服务端搜索",
+  "tg_broadcast_no_messages": "omy 不为广播频道提供消息视图。频道里的文件仍然可以正常浏览",
+  "remote_no_messages": "这个位置没有「消息」这个概念"
 }

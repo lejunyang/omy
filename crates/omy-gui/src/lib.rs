@@ -229,6 +229,7 @@ pub fn run() {
             place_cmds::remote_place_remove,
             place_cmds::remote_browse,
             place_cmds::remote_search,
+            place_cmds::remote_messages,
             place_cmds::remote_effective_caps,
             place_cmds::remote_probe_entry,
             place_cmds::remote_place_open,

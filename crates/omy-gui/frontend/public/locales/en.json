@@ -690,5 +690,13 @@
     "searching": "Searching the whole chat…",
     "locked_out_one": "Another encrypted file did not take part in the search because it is locked. It will appear once the matching password is added",
     "locked_out_other": "Another {{count}} encrypted files did not take part in the search because they are locked. They will appear once the matching password is added"
+  },
+  "msgs": {
+    "view_files": "Files",
+    "view_messages": "Messages",
+    "loading": "Loading messages…",
+    "empty": "No messages in this conversation",
+    "no_file": "(no file)",
+    "outgoing": "Sent by me"
   }
 }

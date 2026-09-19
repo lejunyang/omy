@@ -495,6 +495,17 @@ export const remoteCacheFileStat = (placeId, path, size) =>
     req: { place_id: placeId, path, size },
   });
 
+/** 列一个对话里的消息（以文件为主线的消息视图）。
+ *
+ * 只读：不发消息、不做回复关系 / 转发 / reactions / 已读状态。
+ * 用途是让用户按时间线找文件——「我记得上周发过一个东西」。
+ *
+ * 广播频道没有这个视图（ToS 3.3 的 sponsored messages 要求），
+ * 后端会回 `tg_broadcast_no_messages`。
+ */
+export const remoteMessages = (placeId, dir) =>
+  invoke('remote_messages', { placeId, dir });
+
 /** 列出一个远程目录容器里的条目。
  *
  * 参数是 `remotePlaceOpen` 颁发的播放句柄 token，不是位置 id + 路径：

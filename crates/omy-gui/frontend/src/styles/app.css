@@ -2223,3 +2223,92 @@ input {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
   color: var(--warn);
 }
+
+/* ---------- 消息时间线 ---------- */
+/* 与文件网格并列的一种渲染，不是另一个页面。
+   色值与间距沿用既有组件，不另造一套视觉。 */
+
+.msglist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.msgrow {
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  padding: 8px 10px;
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 自己发的稍作区分。不做成聊天气泡的左右分栏——
+   这是找文件的时间线，不是聊天界面 */
+.msgrow.out {
+  border-inline-start: 2px solid var(--accent);
+}
+
+.msgmeta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg2);
+}
+
+.msgid {
+  font-variant-numeric: tabular-nums;
+}
+
+.msgout {
+  color: var(--accent);
+}
+
+/* 带文件的那一行做成可点的按钮：它是这个视图的主线 */
+.msgfile {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: start;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  padding: 6px 8px;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  min-height: 34px;
+}
+
+.msgfile:hover {
+  border-color: var(--accent);
+}
+
+.mfname {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mfsize {
+  color: var(--fg2);
+  font-size: 11px;
+  flex: none;
+}
+
+.msgtext {
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msgtext.dim {
+  color: var(--fg2);
+}

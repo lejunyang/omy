@@ -85,6 +85,13 @@ const CHUNK: u64 = 512 * 1024;
 /// 而这不会有任何报错。
 pub const CDN_REDIRECT: &str = "telegram cdn redirect";
 
+/// 广播频道不提供消息视图时给出的标记。
+///
+/// 原因见 [`TelegramStore::messages`]：ToS 3.3 的 sponsored messages 要求。
+/// 做成公开常量供 GUI 映射成一句用户看得懂的话——否则界面只会显示一句
+/// 笼统的「不支持此操作」，而用户完全不知道为什么这个频道没有消息视图。
+pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view";
+
 /// 进一个对话时默认拉多少条带文件的消息。
 ///
 /// 不是「全部」：一个活跃群里可能有上万条，全拉会让进目录等很久，也白白占
@@ -246,6 +253,12 @@ pub struct Conversation {
     pub can_send: bool,
     /// 当前账号能不能删里面的消息。
     pub can_delete: bool,
+    /// 是不是**广播频道**（`broadcast=true`，不是超级群）。
+    ///
+    /// 单独记这一位是因为消息视图要据它决定出不出现，见
+    /// [`TelegramStore::messages`] 上关于 ToS 3.3 的说明。
+    /// 超级群（megagroup）不算——它在协议里也是 Channel，但不是广播频道。
+    pub broadcast: bool,
 }
 
 impl Conversation {
@@ -394,6 +407,36 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "text/plain" => "txt",
         _ => return None,
     })
+}
+
+/// 消息视图里的一条消息。
+///
+/// 刻意**很窄**：只有「以文件为主线的消息视图」用得上的字段。
+/// 不做回复关系、转发链、reactions、已读状态——那些属于聊天客户端，
+/// 而 omy 是文件管理器（文档 §1.3 把它们列在 out of scope）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MessageRow {
+    /// 消息号。与文件条目 id 里的那个是同一个，便于两个视图互相跳转。
+    pub message: i32,
+    /// 消息文字 / 媒体说明。可能为空。
+    pub text: String,
+    /// Unix 秒。给界面排时间轴用。
+    pub date: i64,
+    /// 是不是自己发的。
+    pub outgoing: bool,
+    /// 这条消息带的文件在文件视图里的 id；没有可下载媒体时为 `None`。
+    ///
+    /// **判据是「能不能取出下载位置」，不是 `Media` 的变体**——`Media` 是
+    /// `non_exhaustive` 的，按变体列举会在 grammers 加新类型时静默漏掉；
+    /// 而且实测过服务端按**发送方式**分类，一条 `Media::Document` 的视频
+    /// 并不被 `Document` 过滤器命中。
+    ///
+    /// 纯文本消息在这里就是 `None`，那是正常的一行，不是错误。
+    pub file_id: Option<String>,
+    /// 文件显示名。`file_id` 为 `None` 时也为 `None`。
+    pub file_name: Option<String>,
+    /// 文件字节数。
+    pub file_size: Option<u64>,
 }
 
 /// Telegram 驱动。
@@ -660,6 +703,9 @@ impl TelegramStore {
             } else {
                 (true, false)
             };
+            // grammers 把「超级群」也归进 Peer::Group，只有真正的广播频道
+            // 才是 Peer::Channel——正好是我们要区分的那条线
+            let broadcast = is_channel;
             if let Ok(Some(r)) = peer.to_ref().await {
                 peers.insert(chat_id, r);
             }
@@ -668,6 +714,7 @@ impl TelegramStore {
                 title,
                 can_send,
                 can_delete,
+                broadcast,
             });
         }
 
@@ -779,6 +826,115 @@ impl TelegramStore {
             });
         }
 
+        if let Ok(mut m) = self.media.lock() {
+            for (k, v) in cache {
+                m.insert(k, v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 列一个对话里的消息（**以文件为主线的消息视图**）。
+    ///
+    /// # 为什么不覆盖广播频道
+    ///
+    /// Telegram ToS 3.3 要求：允许访问频道内容的应用必须支持官方 sponsored
+    /// messages，且不得干扰该功能。文档 §9.3 记着：**只展示文件时这条适用性
+    /// 存疑，而真做消息列表页时它就是硬约束**（§11.2 第 10 项）。
+    ///
+    /// omy 是文件管理器，不打算实现广告投放与曝光回报（`viewSponsoredMessage`
+    /// / `clickSponsoredMessage`）。所以这里**直接不给广播频道提供消息视图**——
+    /// 不把它渲染成消息时间线，就不落进 3.3 的字面范围。私聊、群、超级群不在
+    /// 这条范围内，照常可用。
+    ///
+    /// 广播频道的**文件视图**不受影响（那是本期既有行为）。
+    ///
+    /// 这是个可以被推翻的判断，写在这里而不是埋掉：要改的话，要么实现
+    /// sponsored messages 支持，要么重新解读 3.3 的适用范围。
+    ///
+    /// # 纯文本消息是正常的一行
+    ///
+    /// 它们没有可下载的媒体，`file_id` 为 `None`。**不要把它们当成「取不到
+    /// 位置的文件」而过滤掉或报错**——消息视图里本来就该有它们，
+    /// 那正是它与文件视图的区别。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、对话不存在、是广播频道、网络失败或限流时返回。
+    pub async fn messages(&self, dir_id: &str, limit: usize) -> Result<Vec<MessageRow>> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+
+        // 先判**不随状态变化的事实**，再判依赖运行时状态的。
+        //
+        // 顺序反了的话（先查有没有连接），同一个广播频道会在断线时说
+        // 「尚未登录」、连上后才说「不提供消息视图」——而后者才是真正的原因，
+        // 且重连也不会变。用户按前一句去重连，只会白试一次。
+        if self.conversation(chat).is_some_and(|c| c.broadcast) {
+            return Err(Error::Unsupported(BROADCAST_NO_MESSAGES));
+        }
+
+        let client = self.client()?;
+        if self.conversation(chat).is_none() {
+            self.refresh_conversations().await?;
+        }
+        let conv = self
+            .conversation(chat)
+            .ok_or_else(|| Error::NotFound(format!("未知对话：{dir_id}")))?;
+        // 刚拉回来的对话表可能才认出它是广播频道，这里再判一次
+        if conv.broadcast {
+            return Err(Error::Unsupported(BROADCAST_NO_MESSAGES));
+        }
+
+        let peer = self.peer_ref(chat).await?;
+        let mut it = client.iter_messages(peer).limit(limit);
+        let mut out = Vec::new();
+        let mut cache = Vec::new();
+        loop {
+            let msg = match it.next().await {
+                Ok(Some(m)) => m,
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            };
+            let id = TelegramId {
+                chat,
+                message: msg.id(),
+            };
+            // 有没有可下载的媒体。取不到位置的（投票、位置、纯文本）
+            // 一律 file_id=None，而不是被丢掉
+            let (file_id, file_name, file_size) = match msg.media() {
+                Some(media) => match media.to_raw_input_location() {
+                    Some(loc) => {
+                        let key = id.encode();
+                        let size = media_size(&media);
+                        cache.push((
+                            key.clone(),
+                            CachedMedia {
+                                location: loc,
+                                size,
+                            },
+                        ));
+                        (
+                            Some(key),
+                            Some(media_name(&media, msg.id())),
+                            Some(size),
+                        )
+                    }
+                    None => (None, None, None),
+                },
+                None => (None, None, None),
+            };
+            out.push(MessageRow {
+                message: msg.id(),
+                text: msg.text().to_string(),
+                date: msg.date().timestamp(),
+                outgoing: msg.outgoing(),
+                file_id,
+                file_name,
+                file_size,
+            });
+        }
+        // 顺带把下载位置也缓存了：用户多半会从消息视图直接点开那个文件，
+        // 不缓存的话又要为此重列一次
         if let Ok(mut m) = self.media.lock() {
             for (k, v) in cache {
                 m.insert(k, v);
@@ -1149,6 +1305,7 @@ mod tests {
             title: String::from(title),
             can_send: send,
             can_delete: del,
+            broadcast: false,
         }
     }
 
@@ -1488,6 +1645,125 @@ mod tests {
         assert!(matches!(
             rt.block_on(s.read_range("tg:1:2", 0, 1)),
             Err(Error::Protocol(ref m)) if m.contains("尚未登录")
+        ));
+    }
+
+    /// 消息行的字段名是前端契约，不能随手改。
+    ///
+    /// 不这样会怎样：字段名是前端直接读的属性名，改了**不会有编译错误**，
+    /// 只会让界面上那一列变成空白——和 `caps.rs` 的 `field_names_are_stable`
+    /// 要拦的是同一类事。
+    #[test]
+    fn message_row_field_names_are_stable() {
+        let r = MessageRow {
+            message: 7,
+            text: String::from("hi"),
+            date: 1_700_000_000,
+            outgoing: true,
+            file_id: Some(String::from("tg:1:7")),
+            file_name: Some(String::from("a.omy")),
+            file_size: Some(42),
+        };
+        let j = serde_json::to_value(&r).expect("序列化");
+        for k in [
+            "message",
+            "text",
+            "date",
+            "outgoing",
+            "file_id",
+            "file_name",
+            "file_size",
+        ] {
+            assert!(j.get(k).is_some(), "字段 {k} 不见了——前端会读到 undefined");
+        }
+    }
+
+    /// 纯文本消息是正常的一行，不是「取不到位置的文件」。
+    ///
+    /// 不这样会怎样：筛选逻辑若把「没有下载位置」当成错误或直接过滤掉，
+    /// 消息视图里就只剩带文件的消息——那它和文件视图就没区别了，
+    /// 而用户要的恰恰是「按时间线看到当时聊了什么」。
+    #[test]
+    fn text_only_message_is_a_valid_row() {
+        let r = MessageRow {
+            message: 3,
+            text: String::from("只是一句话"),
+            date: 1_700_000_000,
+            outgoing: false,
+            file_id: None,
+            file_name: None,
+            file_size: None,
+        };
+        // 没有文件不代表这一行无效：它有文字、有时间、有消息号
+        assert!(r.file_id.is_none());
+        assert!(!r.text.is_empty());
+        assert_eq!(r.message, 3);
+    }
+
+    /// 广播频道不提供消息视图，而**私聊与群照常提供**。
+    ///
+    /// 不这样会怎样：ToS 3.3 要求允许访问频道内容的应用必须支持官方
+    /// sponsored messages。omy 不实现广告投放与曝光回报，所以不把广播频道
+    /// 渲染成消息时间线——不落进那条的字面范围（文档 §9.3 / §11.2 第 10 项）。
+    ///
+    /// 这条断言同时守住另一半：**不能因噎废食把所有对话的消息视图都关掉**。
+    /// 只断言「频道被拒」的话，一个「永远返回 Unsupported」的实现也能通过。
+    #[test]
+    fn broadcast_channels_have_no_message_view() {
+        let s = TelegramStore::with_conversations(vec![
+            conv(1, "群聊", true, true),
+            Conversation {
+                chat: 2,
+                title: String::from("某广播频道"),
+                can_send: false,
+                can_delete: false,
+                broadcast: true,
+            },
+        ]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+
+        // 广播频道：必须以「不支持」拒掉，且理由要能被界面区分出来
+        assert!(
+            matches!(
+                rt.block_on(s.messages("tg:2", 10)),
+                Err(Error::Unsupported(w)) if w == BROADCAST_NO_MESSAGES
+            ),
+            "广播频道不该有消息视图，且要给出专门的标记而不是笼统的不支持"
+        );
+
+        // 普通群：不能被这条规则误伤。没有连接时停在「尚未登录」，
+        // 而不是停在「不支持」——两者必须能区分开
+        assert!(
+            matches!(
+                rt.block_on(s.messages("tg:1", 10)),
+                Err(Error::Protocol(ref m)) if m.contains("尚未登录")
+            ),
+            "普通群的消息视图不该被广播频道那条规则挡掉"
+        );
+    }
+
+    /// 广播频道的**文件视图**不受影响。
+    ///
+    /// 不这样会怎样：为了躲 ToS 3.3 把整个频道都屏蔽掉，会顺手废掉本期已经
+    /// 在用的能力——而 3.3 约束的是「消息流」，不是「频道里的文件」。
+    #[test]
+    fn broadcast_channels_still_list_files() {
+        let s = TelegramStore::with_conversations(vec![Conversation {
+            chat: 2,
+            title: String::from("某广播频道"),
+            can_send: false,
+            can_delete: false,
+            broadcast: true,
+        }]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+        // 走到「没接 RPC」而不是被拒，说明文件那条路没被这条规则波及
+        assert!(matches!(
+            rt.block_on(s.list("tg:2")),
+            Err(Error::Unsupported("telegram list messages"))
         ));
     }
 

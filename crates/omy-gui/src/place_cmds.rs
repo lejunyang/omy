@@ -76,6 +76,9 @@ fn to_cmd_err(e: &RemoteError) -> CmdError {
         RemoteError::NotFound(_) => "remote_not_found",
         RemoteError::RateLimited => "remote_rate_limited",
         RemoteError::Unsupported(what) if *what == CDN_REDIRECT => "tg_cdn_unsupported",
+        RemoteError::Unsupported(what) if *what == BROADCAST_NO_MESSAGES => {
+            "tg_broadcast_no_messages"
+        }
         RemoteError::Unsupported(_) => "remote_unsupported",
         RemoteError::Network(_) => "remote_network",
         _ => "remote_failed",
@@ -89,6 +92,10 @@ fn to_cmd_err(e: &RemoteError) -> CmdError {
 /// 做成常量并由两边共用，是因为靠字面量对暗号的写法会在改动一侧时静默失效——
 /// 而失效的表现只是「文案退回通用错误」，没有任何报错。
 const CDN_REDIRECT: &str = omy_remote::telegram::store::CDN_REDIRECT;
+
+/// 广播频道不提供消息视图时的标记。与 omy-remote 里那个共用同一个常量，
+/// 理由同 [`CDN_REDIRECT`]：两边各写一份字面量会在改动一侧时静默失效。
+const BROADCAST_NO_MESSAGES: &str = omy_remote::telegram::store::BROADCAST_NO_MESSAGES;
 
 /// 添加一个 WebDAV 位置。
 ///
@@ -882,6 +889,48 @@ pub async fn remote_list_container(
     }
     Ok(items)
 }
+
+/// 列一个对话里的消息（以文件为主线的消息视图）。
+///
+/// # 范围
+///
+/// 这**不是**聊天客户端：只读、不发消息、不做回复关系 / 转发链 / reactions /
+/// 已读状态（文档 §1.3 把它们列在 out of scope）。它的用途是让用户按时间线
+/// 找文件——「我记得上周发过一个东西」。
+///
+/// # 广播频道没有消息视图
+///
+/// 见 `TelegramStore::messages` 上关于 ToS 3.3 的说明。这里把那个标记映射成
+/// 专门的错误码，好让界面给一句能看懂的话而不是笼统的「不支持此操作」。
+///
+/// # Errors
+///
+/// 位置不存在、不是 Telegram、是广播频道、网络失败或限流时返回。
+#[tauri::command]
+pub async fn remote_messages(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    place_id: String,
+    dir: String,
+) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        // 只有 Telegram 有「消息」这个概念。WebDAV 上没有，
+        // 界面也不该显示那个切换——这里是最后一道
+        return Err(CmdError::code("remote_no_messages"));
+    };
+    tg.messages(&dir, MESSAGE_PAGE)
+        .await
+        .map_err(|e| to_cmd_err(&e))
+}
+
+/// 消息视图一次拉多少条。
+///
+/// 不是「全部」：活跃对话里可能有上万条，全拉既慢又白占限流配额，
+/// 而用户在时间线上一次也看不完这么多。
+const MESSAGE_PAGE: usize = 80;
 
 /// 查询单个远程文件在本地密文块缓存里的覆盖情况（不下载载荷）。
 #[tauri::command]

@@ -94,6 +94,26 @@ export const state = reactive({
    * 提示的模式，而不是悄悄发生的默认行为。
    */
   searchMode: 'local',
+  /** 对话内的渲染方式：'files' 文件网格（默认）/ 'messages' 消息时间线。
+   *
+   * 默认 files：omy 是文件管理器，消息视图是辅助找文件的手段而不是主线
+   * （文档 §1.3）。
+   */
+  remoteViewMode: 'files',
+  /** 当前所在目录的**显示名**。
+   *
+   * 面包屑不能直接拿 remoteDir 当名字：那是 provider 的 id。WebDAV 的 id
+   * 恰好是人可读的路径，Telegram 的是 `tg:<对话>`——直接显示会让用户看到
+   * 一串数字，完全不知道自己在哪个对话里。
+   *
+   * 进目录时由调用方把列表里那个名字传进来（它本来就有）。
+   */
+  remoteDirName: '',
+  /** 消息视图的数据。与 remoteItems 分开：一个是「这个对话里有哪些文件」，
+   *  一个是「这个对话里发生过什么」，来源和生命周期都不同。 */
+  remoteMessages: [],
+  /** 消息视图正在加载。 */
+  loadingMessages: false,
   /** 服务端搜索返回的候选集。与 remoteItems 分开存。
    *
    * 不复用 remoteItems：那是「当前目录里有什么」，而搜索结果可能来自别的
@@ -1706,6 +1726,38 @@ export const currentCaps = computed(() => {
   return state.remoteDirCaps || SAFE_READONLY_CAPS;
 });
 
+/** 切到消息视图并加载。
+ *
+ * 只在对话内可用：位置列表那一层没有「消息」这个概念。
+ */
+export async function setRemoteViewMode(mode) {
+  state.remoteViewMode = mode;
+  if (mode !== 'messages') return;
+  if (!state.remotePlace || !state.remoteDir) return;
+  state.loadingMessages = true;
+  state.placeError = '';
+  try {
+    state.remoteMessages = await api.remoteMessages(state.remotePlace, state.remoteDir);
+  } catch (e) {
+    state.remoteMessages = [];
+    // 广播频道那条要给专门的话：用户需要知道这是「omy 不为频道做这个视图」，
+    // 而不是「加载失败、再试一次」——再试多少次都一样
+    state.placeError = i18n.te(api.errCode(e), i18n.te('remote_failed'));
+  } finally {
+    state.loadingMessages = false;
+  }
+}
+
+/** 消息视图里能不能用。
+ *
+ * 只有 Telegram 有「消息」这个概念，而且要已经进到某个对话里。
+ * WebDAV 上不显示这个切换——不是置灰，是整个不出现（与搜索那个分段控件同理）。
+ */
+export const canShowMessages = computed(
+  () => !!state.remotePlace && !!state.remoteDir
+    && (state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram'),
+);
+
 /** 远程视图里该显示哪些条目。
  *
  * 远程网格以前直接渲染 `state.remoteItems`，于是顶栏那个搜索框**对远程位置
@@ -1816,6 +1868,10 @@ export function leaveRemotePlace() {
   state.searchMode = 'local';
   state.searchResults = [];
   state.searchedQuery = '';
+  // 消息视图也要复位：留着会让下次进另一个对话时先显示上一个对话的消息
+  state.remoteViewMode = 'files';
+  state.remoteMessages = [];
+  state.remoteDirName = '';
 }
 
 /** 列出当前远程目录。
@@ -1832,6 +1888,9 @@ export async function reloadRemoteDir() {
   // 先作废上一个目录的能力再去查：留着旧值会让新目录短暂显示错误的能力，
   // 而用户完全可能在那一瞬间点下去
   state.remoteDirCaps = null;
+  // 换目录就清掉上一个对话的消息，否则切到消息视图会先闪一屏别的对话的内容
+  state.remoteMessages = [];
+  state.remoteViewMode = 'files';
   refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
   try {
     state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
@@ -2029,8 +2088,11 @@ export async function removeRemotePlace(id) {
 }
 
 /** 进入远程子目录。 */
-export async function enterRemoteDir(id) {
+export async function enterRemoteDir(id, name) {
   state.remoteDir = id;
+  // 记下显示名。拿不到就留空，由面包屑那边决定怎么兜底——
+  // 不要在这里回落到 id，那样面包屑就无从区分「有名字」和「没名字」了
+  state.remoteDirName = name || '';
   await reloadRemoteDir();
 }
 

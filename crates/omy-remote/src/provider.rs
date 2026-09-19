@@ -193,12 +193,14 @@ mod tests {
                 title: String::from("收藏夹"),
                 can_send: true,
                 can_delete: true,
+                broadcast: false,
             },
             Conversation {
                 chat: 2,
                 title: String::from("别人的频道"),
                 can_send: false,
                 can_delete: false,
+                broadcast: true,
             },
         ]))
     }

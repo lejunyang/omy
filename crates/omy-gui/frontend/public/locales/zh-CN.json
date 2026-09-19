@@ -690,5 +690,13 @@
     "searching": "正在搜索整个对话…",
     "locked_out_one": "还有 1 个加密文件因为没有解锁而没参与搜索，解锁对应密码后会自动出现",
     "locked_out_other": "还有 {{count}} 个加密文件因为没有解锁而没参与搜索，解锁对应密码后会自动出现"
+  },
+  "msgs": {
+    "view_files": "文件",
+    "view_messages": "消息",
+    "loading": "正在加载消息…",
+    "empty": "这个对话里没有消息",
+    "no_file": "（无文件）",
+    "outgoing": "我发的"
   }
 }
