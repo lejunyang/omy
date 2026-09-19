@@ -312,6 +312,71 @@ pub const fn clamp_to_eof(offset: u64, len: u64, size: u64) -> u64 {
     }
 }
 
+/// 一个媒体的字节数；拿不到时给 0（表示「大小未知」）。
+///
+/// 图片与文档取大小的路径不同：文档直接有 size，而图片在服务端存的是若干种
+/// 尺寸，要取最大的那一档。给 0 而不是猜一个数——`clamp_to_eof` 把 0 当作
+/// 「未知」从而不做收敛，猜一个数则会把文件在那个位置截断。
+fn media_size(m: &Media) -> u64 {
+    u64::try_from(Downloadable::size(m).unwrap_or(0)).unwrap_or(0)
+}
+
+/// 一个媒体在文件列表里显示的名字。
+///
+/// # 为什么要给图片和视频编名字
+///
+/// 只有「作为文件发送」的东西才带文件名。作为照片发送的图片、作为视频发送的
+/// 视频，在协议里都**没有文件名**——直接用 name() 会得到 None，界面上就是一行
+/// 看不出是什么的空条目。
+///
+/// 所以按 mime 推一个扩展名，并用消息号保证唯一。带上扩展名不只是好看：
+/// omy 上层按扩展名决定能不能内嵌预览，没有扩展名的视频会被当成未知类型。
+fn media_name(m: &Media, msg_id: i32) -> String {
+    match m {
+        Media::Document(d) => {
+            if let Some(n) = d.name().filter(|n| !n.is_empty()) {
+                return n.to_string();
+            }
+            let ext = d.mime_type().and_then(ext_for_mime).unwrap_or("bin");
+            format!("message-{msg_id}.{ext}")
+        }
+        // 图片一律 .jpg：Telegram 服务端把作为照片发送的图片统一转成 JPEG
+        // （原图若是 PNG 也会被转），所以这不是猜测而是服务端的行为
+        Media::Photo(_) => format!("photo-{msg_id}.jpg"),
+        _ => format!("message-{msg_id}"),
+    }
+}
+
+/// 从 mime 推一个扩展名。
+///
+/// 只覆盖常见的几种，认不出就让调用方回落到 `bin`。这里不引第三方 mime 库：
+/// 为几个分支拉一个依赖不划算，而且真正要紧的是「有个扩展名让上层能判类型」，
+/// 不是覆盖全 IANA 列表。
+fn ext_for_mime(mime: &str) -> Option<&'static str> {
+    // 去掉 "; charset=..." 之类的参数部分再比，否则 "text/plain; charset=utf-8"
+    // 会一个都匹配不上
+    let base = mime.split(';').next().unwrap_or(mime).trim();
+    Some(match base {
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/x-matroska" => "mkv",
+        "video/webm" => "webm",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/ogg" => "ogg",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "text/plain" => "txt",
+        _ => return None,
+    })
+}
+
 /// Telegram 驱动。
 ///
 /// # 两种构造方式
@@ -597,15 +662,29 @@ impl TelegramStore {
 
     /// 列一个对话里带文件的消息。
     ///
-    /// 用 `Document` 过滤器而不是拉全部消息再本地筛：搜索可下推已实测，
-    /// 让服务端筛能少传绝大部分无关消息，也少占限流配额。
+    /// # 为什么不用 `Document` 过滤器
+    ///
+    /// 因为它**不等于「所有文档」**。实测（真实账号）：一条 `mime=video/mp4`、
+    /// 8.4 MB 的消息，`Media` 类型确实是 `Document`，却不被 `Document` 过滤器
+    /// 命中，只能靠 `Video` / `PhotoVideo` / `Empty` 取到——服务端是按**发送
+    /// 方式**分类的，不是按 `Media` 类型，作为视频发送就归 `Video`。
+    ///
+    /// 同理，作为照片发送的图片是 `Photo` 类型，`Document` 过滤器完全取不到。
+    ///
+    /// 所以这里用 `Empty` 拉全部消息，再在本地按「有没有可下载的媒体」筛。
+    /// 代价是多传一些无媒体的消息；收益是不会因为服务端的分类口径而漏东西，
+    /// 而漏东西的表现是「我明明发过那个文件，omy 里却看不到」且不报错。
+    ///
+    /// 用多个专门过滤器分别拉再合并也能做到，但那要发 N 次请求、还要去重
+    /// （实测一条视频同时被 `Video` 与 `PhotoVideo` 命中），
+    /// 在限流敏感的 Telegram 上不划算。
     async fn list_messages(&self, chat: i64, limit: usize) -> Result<Vec<Entry>> {
         let client = self.client()?;
         let peer = self.peer_ref(chat).await?;
 
         let mut it = client
             .search_messages(peer)
-            .filter(tl::enums::MessagesFilter::InputMessagesFilterDocument)
+            .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
             .limit(limit);
 
         let mut out = Vec::new();
@@ -617,8 +696,13 @@ impl TelegramStore {
                 Err(e) => return Err(map_rpc(&e)),
             };
             let Some(media) = msg.media() else { continue };
-            // 只收文档：图片走 Photo 分支、没有文件名，而 omy 关心的是文件
-            let Media::Document(doc) = &media else {
+            // 判据是「能不能下载」，不是「是不是某个 Media 变体」。
+            //
+            // 按变体列举会在 grammers 加新变体时静默漏掉（Media 是
+            // non_exhaustive 的），而 to_raw_input_location() 返回 Some 就
+            // 意味着这东西真能取字节——这才是「它算不算一个文件」的真实判据。
+            // 投票、位置、联系人这些自然会返回 None 被过滤掉。
+            let Some(loc) = media.to_raw_input_location() else {
                 continue;
             };
             let id = TelegramId {
@@ -626,24 +710,17 @@ impl TelegramStore {
                 message: msg.id(),
             };
             let key = id.encode();
-            let size = u64::try_from(doc.size().unwrap_or(0)).unwrap_or(0);
-            if let Some(loc) = media.to_raw_input_location() {
-                cache.push((
-                    key.clone(),
-                    CachedMedia {
-                        location: loc,
-                        size,
-                    },
-                ));
-            }
+            let size = media_size(&media);
+            cache.push((
+                key.clone(),
+                CachedMedia {
+                    location: loc,
+                    size,
+                },
+            ));
             out.push(Entry {
                 id: key,
-                // 没有文件名的文档用消息号兜底，而不是留空——留空的条目在
-                // 界面上是一行看不出是什么的东西
-                name: doc
-                    .name()
-                    .filter(|n| !n.is_empty())
-                    .map_or_else(|| format!("message-{}", msg.id()), ToString::to_string),
+                name: media_name(&media, msg.id()),
                 is_dir: false,
                 size: Some(size),
                 mtime: None,
@@ -1225,6 +1302,33 @@ mod tests {
     fn clamp_to_eof_treats_zero_size_as_unknown() {
         assert_eq!(clamp_to_eof(0, 100, 0), 100);
         assert_eq!(clamp_to_eof(9999, 100, 0), 100);
+    }
+
+    /// mime 带参数时也要能认出扩展名。
+    ///
+    /// 不这样会怎样：服务端给的是 `text/plain; charset=utf-8` 这种带参数的
+    /// 形式，直接整串去比会一个都匹配不上，于是所有文本文件都被命名成 .bin。
+    /// 而 omy 上层按扩展名决定能不能内嵌预览——.bin 会被当成未知类型，
+    /// 表现是「明明是文本却不给预览」，症状完全指不到 mime 解析。
+    #[test]
+    fn ext_for_mime_ignores_parameters() {
+        assert_eq!(ext_for_mime("text/plain; charset=utf-8"), Some("txt"));
+        assert_eq!(ext_for_mime("video/mp4"), Some("mp4"));
+        // 认不出的要如实返回 None，让调用方回落，而不是瞎猜一个
+        assert_eq!(ext_for_mime("application/x-whatever"), None);
+    }
+
+    /// 扩展名不能带点，否则拼出来会是 `x..mp4`。
+    ///
+    /// 不这样会怎样：文件名多一个点，按扩展名判类型的地方可能仍然能用，
+    /// 但用户看到的是一个明显不对的名字，而且导出到本地后也是错的。
+    #[test]
+    fn ext_for_mime_returns_bare_extension() {
+        for m in ["video/mp4", "image/png", "audio/mpeg", "application/pdf"] {
+            let e = ext_for_mime(m).unwrap_or("");
+            assert!(!e.starts_with('.'), "{m} 的扩展名不该带点：{e}");
+            assert!(!e.is_empty());
+        }
     }
 
     /// 列消息时坏 dir_id 也要先被拒。
