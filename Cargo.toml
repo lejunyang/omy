@@ -115,6 +115,12 @@ grammers-client = { version = "0.10", features = ["proxy"] }
 # 代价是没有现成的 sqlite session 存储，要自己序列化 session。这是**想要**
 # 的：session 里有 auth key，本来就该由我们自己决定怎么落盘（放进已加密的
 # 应用数据里），而不是让第三方库在用户目录下另开一个明文 sqlite。
+#
+# ⚠ 一个会反复咬人的坑：**grammers 官方的 examples 用的正是 SqliteSession**
+# （见 grammers-client 的 examples/dialogs.rs）。照抄示例会把 libsql 连同
+# 整套 C 工具链请回来，而且在装了 MSVC 的开发机上照样编译通过、只有别人的
+# 机器或 Android 交叉编译才炸。要用内存或自建存储，不要照示例写。
+# tests/no_c_toolchain.rs 就是为拦住这种回归而存在的。
 grammers-session = { version = "0.10", default-features = false }
 
 # 钉死这个 rc 版本，**不要改成 "2.0.0-rc0" 或放宽成 ^**。
