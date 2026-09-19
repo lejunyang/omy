@@ -14,11 +14,13 @@ pub mod cache;
 pub mod caps;
 pub mod source;
 pub mod store;
+pub mod transfer;
 pub mod webdav;
 
 pub use caps::Capabilities;
 pub use source::RemoteSource;
 pub use store::{Entry, RemoteStore};
+pub use transfer::{TransferManager, TransferKind, TaskState};
 
 /// 远程操作错误。
 ///
