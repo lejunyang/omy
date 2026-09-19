@@ -96,5 +96,11 @@
   "tg_qr_render_failed": "Could not render the QR code",
   "tg_login_not_effective": "The sign-in does not appear to have taken effect on the server; please scan again",
   "tg_login_failed": "Telegram sign-in failed",
-  "tg_forget_failed": "Could not clear the saved Telegram sign-in"
+  "tg_forget_failed": "Could not clear the saved Telegram sign-in",
+  "tg_no_session": "Not signed in to Telegram yet. Please scan the QR code first",
+  "tg_session_unreadable": "Could not read the saved Telegram session. You may need to sign in again",
+  "tg_connect_failed": "Could not connect to Telegram. Check your network or proxy settings",
+  "tg_session_expired": "The Telegram session is no longer valid (it may have been revoked on another device). Please scan the QR code again",
+  "tg_register_failed": "Could not register the Telegram place",
+  "tg_cdn_unsupported": "This file is served from Telegram’s CDN, which omy does not support yet. Please download it with an official client"
 }

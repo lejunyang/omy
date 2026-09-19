@@ -519,6 +519,13 @@ export const telegramSubmitPassword = (password) =>
 /** 取消登录（关掉登录界面时必须调，否则那条连接会一直占着配额）。 */
 export const telegramLoginCancel = () => invoke('telegram_login_cancel');
 
+/** 用已保存的登录态连上 Telegram，并注册成一个远程位置，返回位置 id。
+ *
+ * 幂等：已经连过就返回原来那个 id，不会在侧栏里堆出两个 Telegram。
+ */
+export const telegramPlaceConnect = (proxyUrl) =>
+  invoke('telegram_place_connect', { proxyUrl: proxyUrl || null });
+
 /**
  * 订阅扫码登录进度。payload 形如 `{ phase, ... }`：
  * `connecting` / `qr` / `migrating` / `need_password` / `done` / `failed`。

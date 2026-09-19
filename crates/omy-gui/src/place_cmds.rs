@@ -63,18 +63,32 @@ pub struct RemoteEntry {
 }
 
 /// 把远程错误映射为结构化错误码。
+///
+/// # 为什么 CDN 重定向要单拎一条
+///
+/// 它也是 `Unsupported`，落到通用的 `remote_unsupported` 上，用户看到的是
+/// 「该位置不支持此操作」——既不说是哪个操作，也不说能怎么办，是个死胡同。
+/// 而这件事对用户其实有明确的下一步（改用官方客户端下载），值得一句自己的话。
 fn to_cmd_err(e: &RemoteError) -> CmdError {
     let code = match e {
         RemoteError::Unauthorized => "remote_unauthorized",
         RemoteError::Forbidden => "remote_forbidden",
         RemoteError::NotFound(_) => "remote_not_found",
         RemoteError::RateLimited => "remote_rate_limited",
+        RemoteError::Unsupported(what) if *what == CDN_REDIRECT => "tg_cdn_unsupported",
         RemoteError::Unsupported(_) => "remote_unsupported",
         RemoteError::Network(_) => "remote_network",
         _ => "remote_failed",
     };
     CmdError::with(code, serde_json::json!({ "detail": e.to_string() }))
 }
+
+/// `read_range` 撞到 CDN 重定向时给出的标记。
+///
+/// 与 `omy_remote::telegram::store` 里那个 `Unsupported` 的参数必须逐字相同。
+/// 做成常量并由两边共用，是因为靠字面量对暗号的写法会在改动一侧时静默失效——
+/// 而失效的表现只是「文案退回通用错误」，没有任何报错。
+const CDN_REDIRECT: &str = omy_remote::telegram::store::CDN_REDIRECT;
 
 /// 添加一个 WebDAV 位置。
 ///
@@ -909,6 +923,39 @@ fn probe_omy(
 
 #[cfg(test)]
 mod tests {
+
+    /// CDN 重定向要有自己的错误码，不能落到通用的「不支持此操作」。
+    ///
+    /// 不这样会怎样：用户看到一句「该位置不支持此操作」——既不说是哪个操作，
+    /// 也不说能怎么办，是个死胡同。而这件事其实有明确的下一步（改用官方客户端
+    /// 下载），值得一句自己的话。
+    ///
+    /// 这条映射的失效方式很安静：两侧字面量只要有一处改动，CDN 错误就会退回
+    /// 通用码，界面上只是文案变笼统，不会有任何报错。
+    #[test]
+    fn cdn_redirect_gets_its_own_error_code() {
+        let e = to_cmd_err(&RemoteError::Unsupported(CDN_REDIRECT));
+        assert_eq!(
+            e.code, "tg_cdn_unsupported",
+            "CDN 重定向应当有专门的错误码，实际是 {}",
+            e.code
+        );
+
+        // 其他 Unsupported 仍然走通用码——否则这条特判就成了「所有不支持都
+        // 说成 CDN」，那是另一种误导
+        let other = to_cmd_err(&RemoteError::Unsupported("something else"));
+        assert_eq!(other.code, "remote_unsupported");
+    }
+
+    /// 常量必须与 omy-remote 里那个逐字相同。
+    ///
+    /// 不这样会怎样：两边各写一份字面量，改一侧不会有编译错误，
+    /// 上面那条断言却仍然通过（它用的是同一个常量）——测试全绿而功能已坏。
+    /// 所以这里直接断言常量的**值**，让改动必须同时改到这里。
+    #[test]
+    fn cdn_marker_matches_the_remote_crate() {
+        assert_eq!(CDN_REDIRECT, "telegram cdn redirect");
+    }
     use super::*;
 
     /// 错误码要能区分认证、限流与网络，而不是一律「失败」。

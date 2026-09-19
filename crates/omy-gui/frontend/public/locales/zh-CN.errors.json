@@ -96,5 +96,11 @@
   "tg_qr_render_failed": "二维码生成失败",
   "tg_login_not_effective": "登录似乎没有在服务端生效，请重新扫码",
   "tg_login_failed": "Telegram 登录失败",
-  "tg_forget_failed": "清除 Telegram 登录态失败"
+  "tg_forget_failed": "清除 Telegram 登录态失败",
+  "tg_no_session": "还没有登录 Telegram，请先扫码登录",
+  "tg_session_unreadable": "读取 Telegram 登录态失败，可能需要重新登录",
+  "tg_connect_failed": "连接 Telegram 失败，请检查网络或代理设置",
+  "tg_session_expired": "Telegram 登录态已失效（可能已在其他设备上被撤销），请重新扫码登录",
+  "tg_register_failed": "注册 Telegram 位置失败",
+  "tg_cdn_unsupported": "这个文件由 Telegram 的 CDN 分发，omy 目前还不支持从 CDN 取文件。请改用官方客户端下载"
 }

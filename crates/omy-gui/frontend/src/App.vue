@@ -107,9 +107,23 @@ const showTelegramLogin = ref(false);
  * 登录态是否落盘要如实转达：存不住时用户下次打开又要扫码，不说清楚
  * 他会以为程序把他登出了。
  */
-function onTelegramDone({ sessionSaved }) {
+async function onTelegramDone({ sessionSaved, proxyUrl }) {
   showTelegramLogin.value = false;
   setNotice(sessionSaved ? i18n.t('tg.session_saved') : i18n.t('tg.session_not_saved'));
+  // 登录完就把它接成一个远程位置并进去。
+  //
+  // 不停在「登录成功」那句提示上：用户扫码是为了看里面的文件，
+  // 停在提示上等于让他自己去找入口，而那个入口刚刚才出现。
+  try {
+    state.placeBrowserOpen = true;
+    const id = await api.telegramPlaceConnect(proxyUrl);
+    await afterPlaceAdded(id);
+  } catch (e) {
+    // 按错误码给话，不要把 Error 对象丢进 te()——那会落到通用「内部错误」，
+    // 把「没登录态 / 登录态失效 / 网络不通」三种抹平成一句，
+    // 而它们要引导用户做的事完全不同
+    setNotice(i18n.te(api.errCode(e), i18n.t('tg.connect_failed')));
+  }
 }
 
 /** 远程位置添加成功：刷新列表并直接进去。

@@ -152,7 +152,9 @@ function onPhase(p) {
     case 'done':
       phase.value = 'done';
       sessionSaved.value = p.session_saved;
-      emit('done', { sessionSaved: p.session_saved });
+      // 代理要一并回传：登录走了代理而后续浏览不走，表现是「登录成功了
+      // 但点进去什么都加载不出来」，而这两件事看起来毫无关联
+      emit('done', { sessionSaved: p.session_saved, proxyUrl: proxyUrl.value });
       break;
     case 'failed':
       phase.value = 'failed';
@@ -277,7 +279,7 @@ onBeforeUnmount(() => {
           <button class="btn" data-tg="rescan" @click="scanAnyway">
             {{ i18n.t('tg.scan_again') }}
           </button>
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true, proxyUrl })">
             {{ i18n.t('common.close') }}
           </button>
         </div>
@@ -422,7 +424,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-if="phase === 'done'" class="act">
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved, proxyUrl })">
             {{ i18n.t('common.close') }}
           </button>
         </div>

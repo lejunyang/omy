@@ -658,7 +658,8 @@
     "already_signed_in": "已登录 Telegram",
     "already_desc": "本机保存着可用的登录态，不需要再扫码。可随时在官方客户端的「已登录设备」里终止这个会话。",
     "sign_out": "退出账号",
-    "scan_again": "重新扫码（换账号）"
+    "scan_again": "重新扫码（换账号）",
+    "connect_failed": "连接 Telegram 失败"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

@@ -77,6 +77,13 @@ use crate::{Capabilities, Error, Result};
 /// 一个中等大小的文件被切成上百次请求——而请求数直接关系到会不会撞限流。
 const CHUNK: u64 = 512 * 1024;
 
+/// `read_range` 撞到 CDN 重定向时，`Error::Unsupported` 带的标记。
+///
+/// 做成公开常量而不是就地写字面量：GUI 要据此给一句专门的提示，
+/// 两边各写一份字面量的话，改动一侧会让提示静默退回通用错误文案，
+/// 而这不会有任何报错。
+pub const CDN_REDIRECT: &str = "telegram cdn redirect";
+
 /// 进一个对话时默认拉多少条带文件的消息。
 ///
 /// 不是「全部」：一个活跃群里可能有上万条，全拉会让进目录等很久，也白白占
@@ -820,7 +827,7 @@ impl RemoteStore for TelegramStore {
                     }
                 }
                 Ok(tl::enums::upload::File::CdnRedirect(_)) => {
-                    return Err(Error::Unsupported("telegram cdn redirect"));
+                    return Err(Error::Unsupported(CDN_REDIRECT));
                 }
                 Err(e) => return Err(map_rpc(&e)),
             }
