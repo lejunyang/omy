@@ -38,6 +38,9 @@ import {
   remoteFileCache,
   removeRemoteFileCache,
   placeThumbUrl,
+  canServerSearch,
+  setSearchMode,
+  runServerSearch,
 } from '../store.js';
 
 const emit = defineEmits(['open', 'add']);
@@ -59,13 +62,32 @@ const crumbs = computed(() => {
 });
 
 const visible = computed(() => {
+  // 服务端搜索模式下列的是候选集，不是当前目录的内容
+  const source =
+    state.searchMode === 'server' ? state.searchResults : state.remoteItems;
   const q = state.query.trim().toLowerCase();
-  if (!q) return state.remoteItems;
-  // 锁定项没有可搜的明文名，只用真实名/目录名匹配，避免「搜什么都有」
-  return state.remoteItems.filter((f) => {
+  if (!q) return source;
+  // 锁定项没有可搜的明文名，只用真实名/目录名匹配，避免「搜什么都有」。
+  //
+  // 服务端结果也要过这一遍：服务端搜的是消息文字，omy 加密文件的真实文件名
+  // 它永远没有。少了本地这一段，搜索对加密文件就完全失效（原型 §5 的
+  // 「两段式搜索」说的就是这件事）。
+  return source.filter((f) => {
     const name = f.is_dir ? f.name : f.unlocked ? f.real_name || f.name : '';
     return (name || '').toLowerCase().includes(q);
   });
+});
+
+/** 被本地精筛挡掉的加密文件数。
+ *
+ * 要如实告诉用户「还有 N 个因为没解锁而没参与搜索」——不说的话他会以为
+ * 那些文件不存在，而其实只差一个密码。
+ */
+const lockedOut = computed(() => {
+  if (!state.query.trim()) return 0;
+  const source =
+    state.searchMode === 'server' ? state.searchResults : state.remoteItems;
+  return source.filter((f) => !f.is_dir && f.is_encrypted && !f.unlocked).length;
 });
 
 /** 状态栏的 🔓已解锁 / 🔒未解锁计数：只数加密文件，明文与目录不计。
@@ -299,10 +321,18 @@ function onThumbError(token) {
   brokenThumbs.value = next;
 }
 
+/** 位置类型的显示名。
+ *
+ * 认不出的 kind **原样显示它自己**，不要回落到某个具体 provider 的名字。
+ * 这里原本的 else 分支硬写 'WebDAV'——在只有一个 provider 时看不出问题，
+ * 加了 Telegram 之后就变成了谎话：一个叫 Telegram 的位置标着 WebDAV，
+ * 用户会以为自己加错了东西。回落本身就是这个缺陷的根源。
+ */
 function kindLabel(p) {
-  return p.kind === 'nextcloud'
-    ? i18n.t('rplace.vendor_nextcloud')
-    : 'WebDAV';
+  if (p.kind === 'nextcloud') return i18n.t('rplace.vendor_nextcloud');
+  if (p.kind === 'telegram') return i18n.t('rplace.vendor_telegram');
+  if (p.kind === 'webdav') return 'WebDAV';
+  return p.kind || '';
 }
 
 /** 状态栏那枚能力徽标。
@@ -415,7 +445,71 @@ function rowTitle(f) {
 
       <!-- 二、某个位置的目录浏览 -->
       <template v-else>
-        <div v-if="state.busy" class="empty">
+        <!-- 搜索栏。之前这一屏根本没有输入框（输入框在 MainScreen 顶栏，
+             而这是一个独立整屏），于是本地过滤形同虚设——用户没法输入。 -->
+        <div class="searchbar" data-pb="searchbar">
+          <span aria-hidden="true">🔍</span>
+          <input
+            v-model="state.query"
+            class="sinput"
+            type="search"
+            data-tg="searchinput"
+            :placeholder="i18n.t('view.search')"
+            :aria-label="i18n.t('view.search')"
+            @keydown.enter="state.searchMode === 'server' && runServerSearch()"
+          />
+          <!-- 只在位置支持服务端搜索时出现，不支持时整个不出现而非置灰：
+               网盘根本没有「搜索整个对话」这个概念 -->
+          <div v-if="canServerSearch" class="seg" data-tg="searchmode">
+            <button
+              :class="{ on: state.searchMode === 'local' }"
+              data-tg="mode-local"
+              :title="i18n.t('search.local_hint')"
+              @click="setSearchMode('local')"
+            >
+              {{ i18n.t('search.local') }}
+            </button>
+            <button
+              :class="{ on: state.searchMode === 'server' }"
+              data-tg="mode-server"
+              :title="i18n.t('search.server_hint')"
+              @click="setSearchMode('server')"
+            >
+              {{ i18n.t('search.server') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 两种语义各自的提示条。服务端那条是警告色：
+             搜索词已经离开本机，这件事必须显眼 -->
+        <div
+          v-if="state.query.trim() && canServerSearch && state.searchMode === 'local'"
+          class="banner info"
+          data-tg="banner-local"
+        >
+          <span aria-hidden="true">🔎</span>
+          <div class="bx">{{ i18n.t('search.local_banner') }}</div>
+        </div>
+        <div
+          v-if="state.searchMode === 'server' && state.searchedQuery"
+          class="banner warn"
+          data-tg="banner-server"
+        >
+          <span aria-hidden="true">☁️</span>
+          <div class="bx">
+            {{ i18n.t('search.server_banner', { q: state.searchedQuery }) }}
+          </div>
+        </div>
+        <div v-if="lockedOut > 0" class="banner info" data-tg="banner-locked">
+          <span aria-hidden="true">🔒</span>
+          <div class="bx">{{ i18n.tn('search.locked_out', lockedOut) }}</div>
+        </div>
+
+        <div v-if="state.searching" class="empty">
+          <div class="icon" aria-hidden="true">⏳</div>
+          <div class="title">{{ i18n.t('search.searching') }}</div>
+        </div>
+        <div v-else-if="state.busy" class="empty">
           <div class="icon" aria-hidden="true">⏳</div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
         </div>

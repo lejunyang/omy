@@ -29,10 +29,6 @@ import {
   enterRemoteDir,
   setView,
   remoteVisible,
-  searchLockedOut,
-  canServerSearch,
-  setSearchMode,
-  runServerSearch,
 } from '../store.js';
 import SideBar from './SideBar.vue';
 import EntryCard from './EntryCard.vue';
@@ -187,30 +183,7 @@ function onRowMenu(e, ev) {
       type="search"
       :placeholder="i18n.t('view.search')"
       :aria-label="i18n.t('view.search')"
-      @keydown.enter="state.searchMode === 'server' && runServerSearch()"
     />
-
-    <!-- 分段控件：只在位置**支持**服务端搜索时出现，不支持时整个不出现
-         而不是置灰。本地目录与网盘根本没有「搜索整个对话」这个概念，
-         摆一个灰按钮会让人以为是暂时不可用、去找怎么启用。 -->
-    <div v-if="canServerSearch && !isMobile" class="seg" data-tg="searchmode">
-      <button
-        :class="{ on: state.searchMode === 'local' }"
-        data-tg="mode-local"
-        :title="i18n.t('search.local_hint')"
-        @click="setSearchMode('local')"
-      >
-        {{ i18n.t('search.local') }}
-      </button>
-      <button
-        :class="{ on: state.searchMode === 'server' }"
-        data-tg="mode-server"
-        :title="i18n.t('search.server_hint')"
-        @click="setSearchMode('server')"
-      >
-        {{ i18n.t('search.server') }}
-      </button>
-    </div>
 
     <span class="spacer"></span>
 
@@ -364,37 +337,7 @@ function onRowMenu(e, ev) {
              只在条目渲染上分叉。另起一套组件的话，搜索、空态、统计这些
              都得写第二遍，迟早出现「本地修了远程还是老样子」。 -->
         <template v-if="state.remotePlace">
-          <!-- 两种搜索语义各自的提示条。
-               服务端那条是**警告色**：搜索词已经离开本机了，这件事必须让用户
-               看见，而不是藏在一个图标的 tooltip 里。 -->
-          <div
-            v-if="state.query.trim() && canServerSearch && state.searchMode === 'local'"
-            class="banner info"
-            data-tg="banner-local"
-          >
-            <span aria-hidden="true">🔎</span>
-            <div class="bx">{{ i18n.t('search.local_banner') }}</div>
-          </div>
-          <div
-            v-if="state.searchMode === 'server' && state.searchedQuery"
-            class="banner warn"
-            data-tg="banner-server"
-          >
-            <span aria-hidden="true">☁️</span>
-            <div class="bx">
-              {{ i18n.t('search.server_banner', { q: state.searchedQuery }) }}
-            </div>
-          </div>
-          <div v-if="searchLockedOut > 0" class="banner info" data-tg="banner-locked">
-            <span aria-hidden="true">🔒</span>
-            <div class="bx">{{ i18n.tn('search.locked_out', searchLockedOut) }}</div>
-          </div>
-
-          <div v-if="state.searching" class="empty">
-            <div class="icon" aria-hidden="true">⏳</div>
-            <div class="title">{{ i18n.t('search.searching') }}</div>
-          </div>
-          <div v-else-if="state.busy" class="empty">
+          <div v-if="state.busy" class="empty">
             <div class="icon" aria-hidden="true">⏳</div>
             <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
           </div>

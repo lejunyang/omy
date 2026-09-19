@@ -164,6 +164,13 @@ pub async fn remote_browse(
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
+    // 未连接的 Telegram 占位在这里自动连上。
+    //
+    // 从配置恢复出来的位置是未连接占位（恢复流程刻意不碰网络，否则应用会卡在
+    // 启动那一刻）。不在这里补连的话，用户点「进入」只会看到一句
+    // 「找不到该远程位置」——而那句话是错的：位置就在那儿，只是还没连。
+    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -289,6 +296,8 @@ pub async fn remote_search(
     dir: String,
     query: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;

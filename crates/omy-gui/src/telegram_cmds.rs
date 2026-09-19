@@ -305,8 +305,59 @@ pub async fn telegram_place_connect(
     // 这条约束由类型系统保证，不靠谁记得。
     let store = TelegramStore::from_connection(conn.client, conn.runner);
 
-    reg.add_telegram(String::from("Telegram"), store)
-        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))
+    let id = reg
+        .add_telegram(String::from("Telegram"), store, proxy.clone())
+        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
+
+    // 落盘，否则「加过的位置重启就没了」而且不报错。
+    //
+    // places.rs 的 persist 早就支持 Telegram 了，只是这里一直没调用——
+    // WebDAV 那条路径在 add / remove 时都调了，这条漏了。
+    // 失败只记日志不报错：位置在本次会话里是好的，为了一个「下次还在不在」
+    // 让本次直接失败不划算，而用户此刻要的是先能用。
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 保存 Telegram 位置失败：{e}");
+    }
+    Ok(id)
+}
+
+/// 确保某个 Telegram 位置已连上；已经连上就什么都不做。
+///
+/// 供 `remote_browse` 之类在真正用它之前调用——用户点「进入」是想看里面的
+/// 东西，不是想诊断连接状态。让他先看到一句「还没连上」再自己去找哪里能连，
+/// 是把实现细节摊给用户。
+///
+/// # Errors
+///
+/// 登录态失效或网络不通时返回，错误码与 `telegram_place_connect` 一致。
+pub async fn ensure_connected(
+    reg: &Arc<crate::places::PlaceRegistry>,
+    place_id: &str,
+) -> CmdResult<()> {
+    let Some(p) = reg.get(place_id) else {
+        return Ok(()); // 位置不存在由调用方自己报，这里不越俎代庖
+    };
+    if p.kind != "telegram" || telegram_store_connected(&p.store) {
+        return Ok(());
+    }
+    // 用这个位置自己存着的代理重连。本机直连 Telegram 数据中心是超时的，
+    // 丢了代理就只能等超时——而超时很久，用户只看到界面卡住
+    let proxy = p.proxy.clone();
+    let app = AppId::builtin();
+    let device = DeviceInfo::current();
+    let conn = connect::connect_saved(&app, &device, proxy.as_deref())
+        .await
+        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+    let store = TelegramStore::from_connection(conn.client, conn.runner);
+    // 换掉占位：先摘再加，否则会并存两条
+    reg.remove(place_id);
+    reg.add_telegram_with_id(
+        String::from(place_id),
+        p.name.clone(),
+        store,
+        proxy,
+    );
+    Ok(())
 }
 
 /// 这个位置是不是一个**已连接**的 Telegram。

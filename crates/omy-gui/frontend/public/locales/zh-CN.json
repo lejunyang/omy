@@ -619,7 +619,8 @@
     "decrypted_local": "已解密 {{name}}，保存到 {{dir}}",
     "menu_remove_cache": "从缓存中移除",
     "removed_cache": "已从缓存移除，释放 {{size}}",
-    "remove_cache_failed": "移除缓存失败"
+    "remove_cache_failed": "移除缓存失败",
+    "vendor_telegram": "Telegram"
   },
   "common": {
     "back": "返回",

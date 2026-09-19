@@ -32,6 +32,11 @@ pub struct Place {
     pub name: String,
     /// 驱动类型，与 [`PlaceStore::kind`] 一致，也是配置里存的那个字符串。
     pub kind: String,
+    /// 这个位置用的代理地址（目前只有 Telegram 用）。
+    ///
+    /// 存在 `Place` 上而不是只存在于那次连接调用里：重启后要靠它重连，
+    /// 而本机直连 Telegram 数据中心是超时的。
+    pub proxy: Option<String>,
     /// 驱动实例。
     ///
     /// 类型是 [`PlaceStore`] 而不是某个具体驱动：这里写死成 `Arc<WebDavStore>`
@@ -95,6 +100,7 @@ impl PlaceRegistry {
             // 由驱动自己报类型，不在这里写字面量：两处各写一份迟早对不上，
             // 而对不上的后果是配置存进去读回来变成另一种驱动
             kind: String::from(store.kind()),
+            proxy: None,
             store,
         });
         if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -113,7 +119,12 @@ impl PlaceRegistry {
     /// # Errors
     ///
     /// 注册表锁失效时返回。
-    pub fn add_telegram(&self, name: String, store: TelegramStore) -> omy_remote::Result<String> {
+    pub fn add_telegram(
+        &self,
+        name: String,
+        store: TelegramStore,
+        proxy: Option<String>,
+    ) -> omy_remote::Result<String> {
         let store = Arc::new(PlaceStore::from(store));
         let id = {
             let Ok(o) = self.order.lock() else {
@@ -125,6 +136,7 @@ impl PlaceRegistry {
             id: id.clone(),
             name,
             kind: String::from(store.kind()),
+            proxy,
             store,
         });
         if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -132,6 +144,33 @@ impl PlaceRegistry {
             o.push(id.clone());
         }
         Ok(id)
+    }
+
+    /// 用**指定的 id** 添加一个 Telegram 位置。
+    ///
+    /// 给「把未连接的占位换成真连接」用：必须保住原来那个 id，
+    /// 否则前端手里的 id 会失效，表现是刚点进去就报「找不到该远程位置」——
+    /// 而位置明明就在那儿。
+    pub fn add_telegram_with_id(
+        &self,
+        id: String,
+        name: String,
+        store: TelegramStore,
+        proxy: Option<String>,
+    ) {
+        let store = Arc::new(PlaceStore::from(store));
+        let place = Arc::new(Place {
+            id: id.clone(),
+            name,
+            kind: String::from(store.kind()),
+            proxy,
+            store,
+        });
+        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
+            if m.insert(id.clone(), place).is_none() {
+                o.push(id);
+            }
+        }
     }
 
     /// 已注册的 Telegram 位置 id（若有）。
@@ -279,7 +318,15 @@ impl PlaceRegistry {
                     id: p.id.clone(),
                     name: p.name.clone(),
                     kind: p.kind.clone(),
-                    url: String::new(),
+                    // 复用 url 字段存代理地址。
+                    //
+                    // 不新增字段：这个字段对 Telegram 本来就空着，而代理**不是
+                    // 凭据**（它是本机地址，不涉及账号），放明文没有问题。
+                    //
+                    // 必须存：本机直连 Telegram 数据中心是超时的，没有代理就连不上。
+                    // 不存的话重启后自动连必然超时，而超时要等很久，
+                    // 用户只看到界面卡住、看不出和代理有关。
+                    url: p.proxy.clone().unwrap_or_default(),
                     username: String::new(),
                     vendor: String::new(),
                     // 能不能写由对话决定（effective_capabilities），
@@ -355,6 +402,8 @@ impl PlaceRegistry {
                     id: sp.id.clone(),
                     name: sp.name.clone(),
                     kind: sp.kind.clone(),
+                    // 代理存在 url 字段里（见 persist 处的说明）
+                    proxy: Some(sp.url.clone()).filter(|s| !s.is_empty()),
                     store: Arc::new(PlaceStore::from(TelegramStore::new())),
                 });
                 if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -411,6 +460,7 @@ impl PlaceRegistry {
                 id: sp.id.clone(),
                 name: sp.name.clone(),
                 kind: sp.kind.clone(),
+                proxy: None,
                 store: Arc::new(PlaceStore::from(store)),
             });
             if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
