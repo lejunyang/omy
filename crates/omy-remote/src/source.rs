@@ -120,6 +120,8 @@ impl<S: RemoteStore> RemoteSource<S> {
                 total_blocks: total,
                 cached_bytes: 0,
                 fully_cached: false,
+                // 连缓存目录都没有，自然谈不上永久保留
+                pinned: false,
             },
         }
     }
@@ -131,6 +133,55 @@ impl<S: RemoteStore> RemoteSource<S> {
             Some(c) => c.remove_file_blocks(&self.place, &self.cache_key(), self.total_ct_blocks()),
             None => 0,
         }
+    }
+
+    /// 把该文件标记为永久保留，并把已缓存的块搬进永久层。
+    ///
+    /// 这些永久层操作都由 `RemoteSource` 转发而不是让调用方直接用
+    /// `BlockCache`：缓存键含文件版本（见 `cache_version`），只有这里能算对。
+    /// 让 GUI 自己拼键必然拼错——错了不会报错，只会「标记了却永远不命中」。
+    ///
+    /// # Errors
+    ///
+    /// 本机不支持永久缓存、或标记写盘失败时返回。
+    pub fn pin(&self) -> crate::Result<u64> {
+        match &self.cache {
+            Some(c) => c.pin_file(&self.place, &self.cache_key(), self.total_ct_blocks()),
+            None => Err(crate::Error::Unsupported("本次会话没有可用的缓存目录")),
+        }
+    }
+
+    /// 取消永久保留，把块搬回临时层（从此可被淘汰）。
+    ///
+    /// # Errors
+    ///
+    /// 标记删除失败时返回。
+    pub fn unpin(&self) -> crate::Result<u64> {
+        match &self.cache {
+            Some(c) => c.unpin_file(&self.place, &self.cache_key(), self.total_ct_blocks()),
+            None => Ok(0),
+        }
+    }
+
+    /// 取消永久保留并直接删掉这些块，返回释放字节数。
+    ///
+    /// # Errors
+    ///
+    /// 标记删除失败时返回。
+    pub fn unpin_and_drop(&self) -> crate::Result<u64> {
+        match &self.cache {
+            Some(c) => c.unpin_and_drop(&self.place, &self.cache_key(), self.total_ct_blocks()),
+            None => Ok(0),
+        }
+    }
+
+    /// 该文件是否已被标记为永久保留。
+    #[must_use]
+    pub fn is_pinned(&self) -> bool {
+        self.cache
+            .as_ref()
+            .map(|c| c.is_pinned(&self.place, &self.cache_key()))
+            .unwrap_or(false)
     }
 
     /// 按块取密文，优先走缓存。
