@@ -653,7 +653,12 @@
     "login_failed": "登录失败",
     "flood_wait": "这是 Telegram 服务端的限制，不是 omy 出错。请等待 {{secs}} 秒后再试，反复重试只会让等待更久。",
     "retry": "重试",
-    "detail": "服务端返回：{{detail}}"
+    "detail": "服务端返回：{{detail}}",
+    "checking": "正在检查登录状态…",
+    "already_signed_in": "已登录 Telegram",
+    "already_desc": "本机保存着可用的登录态，不需要再扫码。可随时在官方客户端的「已登录设备」里终止这个会话。",
+    "sign_out": "退出账号",
+    "scan_again": "重新扫码（换账号）"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

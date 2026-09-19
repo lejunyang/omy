@@ -56,6 +56,17 @@ const canPersist = ref(true);
 const proxyUrl = ref('');
 /** 已经点过开始了吗（决定显示前置说明还是登录过程）。 */
 const started = ref(false);
+/** 本机已经有可用的登录态吗。
+ *
+ * 有的话不该再摆一张二维码——用户的登录态就在盘上，让他重扫一次既多余又
+ * 有风险（频繁扫码可能被 Telegram 判为异常）。
+ *
+ * 判的是「auth key 在不在」而不是「文件在不在」：一份没有 auth key 的存档
+ * 看着一切正常，用起来却仍是未登录。
+ */
+const hasSession = ref(false);
+/** 正在查有没有登录态。查之前不要先渲染扫码界面，否则会闪一下。 */
+const checking = ref(true);
 
 const pwInput = useTemplateRef('pwInput');
 
@@ -186,6 +197,22 @@ async function submitPassword() {
   }
 }
 
+/** 退出 Telegram 账号：清掉本机保存的登录态。 */
+async function signOut() {
+  try {
+    await api.telegramForgetSession();
+    hasSession.value = false;
+  } catch (e) {
+    errCode.value = api.errCode(e) || 'tg_forget_failed';
+    phase.value = 'failed';
+  }
+}
+
+/** 已有登录态时，用户仍可以主动重新扫码（换账号）。 */
+function scanAnyway() {
+  hasSession.value = false;
+}
+
 async function cancel() {
   try {
     await api.telegramLoginCancel();
@@ -201,6 +228,14 @@ onMounted(async () => {
     canPersist.value = await api.telegramCanPersist();
   } catch {
     // 问不到就按能存处理：这只影响一句提示，不影响能不能登录
+  }
+  try {
+    hasSession.value = await api.telegramHasSession();
+  } catch {
+    // 问不到就当没有：多扫一次码总好过让用户以为已登录、然后处处失败
+    hasSession.value = false;
+  } finally {
+    checking.value = false;
   }
   // 倒计时只做显示。真正何时换图由后端决定——两边各算一份必然漂移，
   // 而漂移的表现是「界面说还有 8 秒，图却已经换了」
@@ -223,8 +258,33 @@ onBeforeUnmount(() => {
     <div class="dlg" data-tg="login">
       <div class="dh">{{ i18n.t('tg.login_title') }}</div>
 
+      <!-- 正在查有没有登录态。不先占位的话会先闪一下扫码界面 -->
+      <div v-if="checking" class="prog" data-tg="checking">
+        {{ i18n.t('tg.checking') }}
+      </div>
+
+      <!-- 已经登录过：不要再摆二维码。用户的登录态就在盘上，
+           让他重扫既多余又有风险（频繁扫码可能被判为异常） -->
+      <template v-else-if="hasSession && !started">
+        <div class="okbox" data-tg="already">
+          <div class="strong">{{ i18n.t('tg.already_signed_in') }}</div>
+          <div class="d">{{ i18n.t('tg.already_desc') }}</div>
+        </div>
+        <div class="act">
+          <button class="btn" data-tg="signout" @click="signOut">
+            {{ i18n.t('tg.sign_out') }}
+          </button>
+          <button class="btn" data-tg="rescan" @click="scanAnyway">
+            {{ i18n.t('tg.scan_again') }}
+          </button>
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true })">
+            {{ i18n.t('common.close') }}
+          </button>
+        </div>
+      </template>
+
       <!-- 开始之前：说明 + 代理 + 「存不存得住」的前置告知 -->
-      <template v-if="!started">
+      <template v-else-if="!started">
         <p class="lead">{{ i18n.t('tg.qr_why') }}</p>
 
         <label class="f">

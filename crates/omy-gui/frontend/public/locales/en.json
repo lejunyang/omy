@@ -653,7 +653,12 @@
     "login_failed": "Sign-in failed",
     "flood_wait": "This is a rate limit imposed by Telegram's servers, not an omy error. Please wait {{secs}}s before trying again — retrying repeatedly only makes the wait longer.",
     "retry": "Retry",
-    "detail": "Server returned: {{detail}}"
+    "detail": "Server returned: {{detail}}",
+    "checking": "Checking sign-in state…",
+    "already_signed_in": "Already signed in to Telegram",
+    "already_desc": "A usable sign-in is stored on this machine, so there is no need to scan again. You can terminate this session at any time under \"Active sessions\" in an official client.",
+    "sign_out": "Sign out",
+    "scan_again": "Scan again (switch account)"
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",
