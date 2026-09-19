@@ -107,6 +107,7 @@ const emit = defineEmits([
   'settings',
   'places',
   'add-place',
+  'telegram',
 ]);
 
 // 总大小按**当前看到的**条目算。在容器里时 `state.entries` 是外层
@@ -262,6 +263,7 @@ function onRowMenu(e, ev) {
       @navigate="onDrawerNavigate"
       @lang="$emit('lang')"
       @add-place="$emit('add-place')"
+      @telegram="$emit('telegram'); onDrawerNavigate()"
     />
 
     <div class="main">

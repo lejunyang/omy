@@ -11,7 +11,7 @@ defineProps({
   mobile: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['pick', 'devices', 'navigate', 'lang', 'add-place']);
+const emit = defineEmits(['pick', 'devices', 'navigate', 'lang', 'add-place', 'telegram']);
 
 /** 正在等用户在系统设置页里操作。 */
 const granting = ref(false);
@@ -150,6 +150,13 @@ function iconOf(place) {
     <button class="sitem" data-rp="add" @click="$emit('add-place')">
       <span aria-hidden="true">➕</span>
       <span class="stext">{{ i18n.t('rplace.add') }}</span>
+    </button>
+    <!-- Telegram 单独一个入口，不混进「连接远程位置」那个 WebDAV 表单：
+         它的登录方式完全不同（扫码，不是填地址和密码），塞进同一个表单
+         只能做成一个选了之后大半字段都灰掉的下拉，反而更难懂。 -->
+    <button class="sitem" data-tg="entry" @click="$emit('telegram')">
+      <span aria-hidden="true">✈️</span>
+      <span class="stext">{{ i18n.t('tg.login_title') }}</span>
     </button>
 
     <div class="sgrp">{{ i18n.t('places.devices') }}</div>

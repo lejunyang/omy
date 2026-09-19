@@ -92,12 +92,25 @@ import RemoteScreen from './components/RemoteScreen.vue';
 import PlaceBrowser from './components/PlaceBrowser.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
+import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock.js';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
 /** 添加远程位置对话框是否打开。 */
 const showAddPlace = ref(false);
+/** Telegram 扫码登录对话框是否打开。 */
+const showTelegramLogin = ref(false);
+
+/** 扫码登录结束。
+ *
+ * 登录态是否落盘要如实转达：存不住时用户下次打开又要扫码，不说清楚
+ * 他会以为程序把他登出了。
+ */
+function onTelegramDone({ sessionSaved }) {
+  showTelegramLogin.value = false;
+  setNotice(sessionSaved ? i18n.t('tg.session_saved') : i18n.t('tg.session_not_saved'));
+}
 
 /** 远程位置添加成功：刷新列表并直接进去。
  *
@@ -821,6 +834,7 @@ onBeforeUnmount(() => {
     @devices="showDevices = true"
     @settings="showSettings = true"
     @add-place="showAddPlace = true"
+    @telegram="showTelegramLogin = true"
     @places="onPlacesEntry"
   />
 
@@ -964,5 +978,11 @@ onBeforeUnmount(() => {
     v-if="showAddPlace"
     @cancel="showAddPlace = false"
     @added="onPlaceAdded"
+  />
+
+  <TelegramLoginDialog
+    v-if="showTelegramLogin"
+    @cancel="showTelegramLogin = false"
+    @done="onTelegramDone"
   />
 </template>

@@ -488,3 +488,41 @@ export const remoteCacheRemoveFile = (placeId, path, size) =>
   invoke('remote_cache_remove_file', {
     req: { place_id: placeId, path, size },
   });
+
+/* ---------------- Telegram 扫码登录 ---------------- */
+
+/** 这台机器能不能安全保存 Telegram 登录态。
+ *
+ * 要在**开始扫码之前**问：答案为否时先告诉用户「这台机器上登录态存不住，
+ * 每次启动都要重新扫一次」，而不是等他扫完了才说。
+ */
+export const telegramCanPersist = () => invoke('telegram_can_persist');
+
+/** 已经有可用的登录态了吗（判的是 auth key 在不在，不是文件在不在）。 */
+export const telegramHasSession = () => invoke('telegram_has_session');
+
+/** 忘掉已保存的登录态（「退出 Telegram 账号」）。 */
+export const telegramForgetSession = () => invoke('telegram_forget_session');
+
+/** 开始扫码登录。立刻返回，进度走 `onTelegramLogin` 推送。
+ *
+ * `proxyUrl` 可空。后端会先归一化——grammers 只认 socks5://，
+ * 而系统代理给出的通常是 http:// 形式。
+ */
+export const telegramLoginStart = (proxyUrl) =>
+  invoke('telegram_login_start', { proxyUrl: proxyUrl || null });
+
+/** 提交两步验证的云密码。 */
+export const telegramSubmitPassword = (password) =>
+  invoke('telegram_submit_password', { password });
+
+/** 取消登录（关掉登录界面时必须调，否则那条连接会一直占着配额）。 */
+export const telegramLoginCancel = () => invoke('telegram_login_cancel');
+
+/**
+ * 订阅扫码登录进度。payload 形如 `{ phase, ... }`：
+ * `connecting` / `qr` / `migrating` / `need_password` / `done` / `failed`。
+ * 返回 unlisten。
+ */
+export const onTelegramLogin = (handler) =>
+  listen('telegram-login', (e) => handler(e.payload));

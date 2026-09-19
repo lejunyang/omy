@@ -83,5 +83,18 @@
   "device_key_not_enrolled": "Passwordless unlock is not set up for this location",
   "device_key_failed": "Passwordless unlock failed",
   "device_key_store_failed": "Windows Hello could not store the key",
-  "user_cancelled": "Cancelled"
+  "user_cancelled": "Cancelled",
+  "tg_login_in_progress": "A Telegram sign-in is already in progress",
+  "tg_no_login_in_progress": "No sign-in is currently waiting for a password",
+  "tg_bad_proxy": "That proxy address cannot be used. Fix it and try again — this is a configuration problem, not a network failure.",
+  "tg_flood_wait": "Telegram is rate-limiting requests; you need to wait a while",
+  "tg_api_id_flood": "omy's built-in application identity has been restricted by Telegram. Retrying will not help — enter your own api_id in Settings.",
+  "tg_wrong_password": "That cloud password is not correct, please try again",
+  "tg_signup_required": "This number has no Telegram account yet. Third-party apps cannot register one — use an official client first.",
+  "tg_unsupported_2fa": "Cannot handle the two-step verification parameters the server returned; please update omy and try again",
+  "tg_disconnected": "The connection to Telegram was lost",
+  "tg_qr_render_failed": "Could not render the QR code",
+  "tg_login_not_effective": "The sign-in does not appear to have taken effect on the server; please scan again",
+  "tg_login_failed": "Telegram sign-in failed",
+  "tg_forget_failed": "Could not clear the saved Telegram sign-in"
 }

@@ -83,5 +83,18 @@
   "device_key_not_enrolled": "这个位置还没启用免密解锁",
   "device_key_failed": "免密解锁失败",
   "device_key_store_failed": "交给 Windows Hello 保管失败",
-  "user_cancelled": "已取消"
+  "user_cancelled": "已取消",
+  "tg_login_in_progress": "已经有一个 Telegram 登录在进行中",
+  "tg_no_login_in_progress": "当前没有等待密码的登录流程",
+  "tg_bad_proxy": "代理地址不可用，请改正后重试（这是配置问题，不是网络故障）",
+  "tg_flood_wait": "Telegram 限制了请求频率，需要等待一段时间",
+  "tg_api_id_flood": "omy 内置的应用身份已被 Telegram 限制。重试无用，请到设置里填写你自己申请的 api_id",
+  "tg_wrong_password": "云密码不正确，请重新输入",
+  "tg_signup_required": "这个号码还没有 Telegram 账号。第三方应用无法注册，请先用官方客户端注册",
+  "tg_unsupported_2fa": "无法处理服务端给出的两步验证参数，请更新 omy 后重试",
+  "tg_disconnected": "与 Telegram 的连接已断开",
+  "tg_qr_render_failed": "二维码生成失败",
+  "tg_login_not_effective": "登录似乎没有在服务端生效，请重新扫码",
+  "tg_login_failed": "Telegram 登录失败",
+  "tg_forget_failed": "清除 Telegram 登录态失败"
 }
