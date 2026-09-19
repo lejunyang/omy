@@ -108,6 +108,11 @@ pub fn run() {
     // 远程列表缩略图句柄表：只存文件头，刷新目录 / 锁定即清空。
     let place_thumbs: Arc<place_files::PlaceThumbs> = Arc::new(place_files::PlaceThumbs::new());
     let for_protocol_thumbs = Arc::clone(&place_thumbs);
+    // 远程容器内条目的登记表。与 PlaceFiles 分开：一个管「打开了哪些远程
+    // 文件」，一个管「那些文件里的容器条目」，后者跟着前者失效
+    let place_containers: Arc<place_files::PlaceContainers> =
+        Arc::new(place_files::PlaceContainers::new());
+    let for_protocol_containers = Arc::clone(&place_containers);
 
     // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
     // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
@@ -136,6 +141,7 @@ pub fn run() {
         .manage(Arc::clone(&remote_cache))
         .manage(Arc::clone(&place_files))
         .manage(Arc::clone(&place_thumbs))
+        .manage(Arc::clone(&place_containers))
         .manage(Arc::clone(&telegram_login))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
@@ -144,9 +150,10 @@ pub fn run() {
             let rm = Arc::clone(&for_protocol_remote);
             let pf = Arc::clone(&for_protocol_places);
             let pt = Arc::clone(&for_protocol_thumbs);
+            let pc = Arc::clone(&for_protocol_containers);
             // 解密可能耗时，必须离开 WebView 线程
             std::thread::spawn(move || {
-                responder.respond(protocol::handle(&st, &rm, &pf, &pt, &request));
+                responder.respond(protocol::handle(&st, &rm, &pf, &pt, &pc, &request));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -228,6 +235,7 @@ pub fn run() {
             place_cmds::remote_place_close,
             place_cmds::remote_decrypt_to_local,
             place_cmds::remote_cache_usage,
+            place_cmds::remote_list_container,
             place_cmds::remote_cache_pin,
             place_cmds::remote_cache_unpin,
             place_cmds::remote_cache_clear,

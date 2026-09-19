@@ -779,6 +779,46 @@ export async function enterContainer(entry) {
   }
 }
 
+/** 进入一个**远程**目录容器。
+ *
+ * 与本地 `enterContainer` 同构，区别只在拿条目的方式：本地读磁盘，
+ * 这里要先 `remotePlaceOpen` 拿句柄（容器明文不在磁盘上）。
+ *
+ * 复用同一个 `state.container`，于是面包屑、返回、列表渲染全都不用分叉——
+ * 另起一套的话「本地修了远程还是老样子」是迟早的事。
+ */
+export async function enterRemoteContainer(f) {
+  if (!state.remotePlace) return false;
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  state.placeError = '';
+  try {
+    const opened = await api.remotePlaceOpen(state.remotePlace, f.id, f.size || 0);
+    if (!opened || !opened.token) {
+      state.placeError = i18n.te('container_failed');
+      return false;
+    }
+    const items = await api.remoteListContainer(opened.token);
+    state.container = {
+      entryId: f.id,
+      name: f.real_name || f.name,
+      items,
+      cwd: '',
+      // 记下来源：容器内条目的预览要走 /pcitem/ 而不是 /citem/，
+      // 少了这一位前端会拼出本地那条 URL，表现是点开里面的文件一片空白
+      remote: true,
+      fileToken: opened.token,
+    };
+    state.selected = [];
+    return true;
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), i18n.te('container_failed'));
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
 /** 在容器内进入一个子目录。 */
 export function enterContainerDir(path) {
   if (!state.container) return;

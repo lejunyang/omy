@@ -495,6 +495,16 @@ export const remoteCacheFileStat = (placeId, path, size) =>
     req: { place_id: placeId, path, size },
   });
 
+/** 列出一个远程目录容器里的条目。
+ *
+ * 参数是 `remotePlaceOpen` 颁发的播放句柄 token，不是位置 id + 路径：
+ * 容器明文不在磁盘上、要按需解，而那个句柄背后挂着已建好的远程源与缓存。
+ *
+ * 只读头部，不下载载荷——几百 MB 的容器也能先「进去看看」。
+ */
+export const remoteListContainer = (token) =>
+  invoke('remote_list_container', { token });
+
 /** 把一个远程文件转为永久缓存。
  *
  * **这是一次真实的下载任务**：会把整个文件的密文块都取到本地，耗时与文件

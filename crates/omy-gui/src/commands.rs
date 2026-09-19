@@ -296,6 +296,7 @@ pub async fn lock(
     remote: State<'_, std::sync::Arc<crate::remote::RemoteSession>>,
     place_files: State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
     place_thumbs: State<'_, std::sync::Arc<crate::place_files::PlaceThumbs>>,
+    place_containers: State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
 ) -> CmdResult<()> {
     state.lock();
     devices.close();
@@ -315,6 +316,13 @@ pub async fn lock(
     place_files.clear();
     // 列表缩略图句柄（文件头）同样随锁定失效，否则锁定后 pthumb token 仍在。
     place_thumbs.clear();
+    // 远程容器内条目的 token 也要清。
+    //
+    // 单看「不清也不致命」：serve_place_container_item 会回查所属句柄，
+    // 而 place_files 刚清过，所以请求会 404。但把这条保证寄托在「另一张表
+    // 恰好也清了」是脆的——那条依赖没有任何断言守着，谁为了少查一次表把
+    // 回查删掉，就静默破防。每一张能通向明文的表都自己清自己。
+    place_containers.clear();
     Ok(())
 }
 
@@ -675,7 +683,7 @@ pub async fn list_container(
 /// 单独提出来是为了能测：这段映射（偏移、目录判定、MIME 推导）才是
 /// 会出错的地方，而 `list_container` 的其余部分是取状态和解密，
 /// 那些在别处已有覆盖。
-fn items_from_index(idx: &omy_core::container::ContainerIndex) -> Vec<ContainerItem> {
+pub(crate) fn items_from_index(idx: &omy_core::container::ContainerIndex) -> Vec<ContainerItem> {
     idx.entries
         .iter()
         .map(|e| {

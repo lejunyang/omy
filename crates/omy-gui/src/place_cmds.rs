@@ -18,7 +18,7 @@ use tauri::Emitter;
 
 use crate::commands::{CmdError, CmdResult, Shared};
 use crate::decrypt::{DecryptProgress, DECRYPT_PROGRESS_EVENT};
-use crate::place_files::{OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
+use crate::place_files::{PlaceContainers, OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
 use omy_core::crypto::Kek;
 use omy_remote::source::RemoteSource;
@@ -817,6 +817,70 @@ async fn build_remote_source(
         rt,
     )
     .map_err(|_| CmdError::code("not_an_omy_file"))
+}
+
+/// 列出一个**远程**目录容器里的条目。
+///
+/// # 与本地 `list_container` 的分工
+///
+/// 索引解析、条目映射、MIME 推导全部复用 `commands::items_from_index`——
+/// 那段逻辑与密文从哪来无关，写第二份迟早漂移。这里只负责把远程那份头部
+/// 取过来、并按远程句柄登记 token。
+///
+/// # 只读头部，不下载载荷
+///
+/// 索引在 TLV 区，读头部就够。这正是远程容器能「进去看看」而不必先拉下
+/// 几百 MB 的原因。
+///
+/// # 参数为什么是句柄而不是位置 id + 路径
+///
+/// 容器明文不在磁盘上、要按需解，而 `remote_place_open` 颁发的句柄背后正好
+/// 挂着已经建好的远程源与密文缓存。顺带也让「句柄失效 → 容器 token 跟着
+/// 失效」自动成立。
+///
+/// # Errors
+///
+/// 句柄不存在、当前会话打不开、或这个文件不是目录容器时返回。
+#[tauri::command]
+pub async fn remote_list_container(
+    state: tauri::State<'_, Shared>,
+    files: tauri::State<'_, Arc<PlaceFiles>>,
+    containers: tauri::State<'_, Arc<PlaceContainers>>,
+    token: String,
+) -> CmdResult<Vec<crate::commands::ContainerItem>> {
+    let Some(f) = files.get(&token) else {
+        return Err(CmdError::code("remote_file_closed"));
+    };
+    let header = f.header.clone();
+    let shared: Shared = Arc::clone(&state);
+    let idx = tauri::async_runtime::spawn_blocking(move || {
+        let h = omy_core::file::peek_header(&header).ok()?;
+        let keks: Vec<omy_core::crypto::Kek> = shared.with_session(|s| {
+            s.all_for(&h.vault_salt).into_iter().map(|c| c.kek).collect()
+        })?;
+        let opened = omy_core::file::open(&header, &keks).ok()?;
+        opened.folder_index().ok()
+    })
+    .await
+    .map_err(|_| CmdError::code("internal"))?;
+
+    let Some(idx) = idx else {
+        return Err(CmdError::code("not_a_container"));
+    };
+
+    let mut items = crate::commands::items_from_index(&idx);
+    for it in &mut items {
+        if let (Some(off), Some(size)) = (it.offset, it.size) {
+            it.token = containers.register(crate::place_files::PlaceContainerRef {
+                file_token: token.clone(),
+                inner_path: it.path.clone(),
+                offset: off,
+                size,
+                mime: it.mime.clone(),
+            });
+        }
+    }
+    Ok(items)
 }
 
 /// 查询单个远程文件在本地密文块缓存里的覆盖情况（不下载载荷）。

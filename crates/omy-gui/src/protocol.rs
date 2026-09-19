@@ -82,6 +82,8 @@ pub enum Target {
     PlaceFile(String),
     /// 远程存储位置缩略图。
     PlaceThumb(String),
+    /// 远程目录容器里的一个条目（`/pcitem/<token>`）。
+    PlaceContainerItem(String),
     /// 未加密文件的正文（磁盘明文直读）。
     Plain(String),
     /// 容器（加密文件夹）内单个文件的正文。
@@ -103,6 +105,7 @@ pub fn parse_target(path: &str) -> Option<Target> {
         ("rthumb/", Target::RemoteThumb as fn(String) -> Target),
         ("pfile/", Target::PlaceFile as fn(String) -> Target),
         ("pthumb/", Target::PlaceThumb as fn(String) -> Target),
+        ("pcitem/", Target::PlaceContainerItem as fn(String) -> Target),
         ("file/", Target::File as fn(String) -> Target),
         ("thumb/", Target::Thumb as fn(String) -> Target),
         ("plain/", Target::Plain as fn(String) -> Target),
@@ -229,6 +232,7 @@ pub fn handle(
     remote: &Arc<RemoteSession>,
     place_files: &PlaceFiles,
     place_thumbs: &crate::place_files::PlaceThumbs,
+    place_containers: &crate::place_files::PlaceContainers,
     request: &Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {
     // CORS 预检必须在任何解密之前短路。
@@ -268,6 +272,9 @@ pub fn handle(
         Target::RemoteThumb(id) => serve_remote_thumb(state, remote, &id),
         Target::PlaceFile(token) => serve_place_file(state, place_files, request, &token),
         Target::PlaceThumb(token) => serve_place_thumb(state, place_thumbs, &token),
+        Target::PlaceContainerItem(token) => {
+            serve_place_container_item(state, place_files, place_containers, request, &token)
+        }
         Target::Plain(token) => serve_plain(state, request, &token),
         Target::ContainerItem(token) => serve_container_item(state, request, &token),
     }
@@ -1019,6 +1026,97 @@ fn open_place(
     f: &crate::place_files::OpenPlaceFile,
 ) -> Option<OpenedFile> {
     open_place_header(state, &f.header)
+}
+
+/// 远程目录容器里的一个条目。
+///
+/// 与本地 `serve_container_item` 同构，区别只在密文从哪来：这里走
+/// `RemoteSource`（块对齐、密文缓存、按需 Range 拉取），本地那条直接读磁盘。
+///
+/// # 授权不看登记时的状态
+///
+/// token 背后存的是「所属远程句柄 + 区间」，每次请求都要重新拿那个句柄并用
+/// **当前**会话密钥打开。锁定后句柄表被清空，这里自然 404——登记那一刻的
+/// 解锁状态不构成后续请求的授权依据。
+fn serve_place_container_item(
+    state: &Arc<AppState>,
+    files: &PlaceFiles,
+    containers: &crate::place_files::PlaceContainers,
+    request: &Request<Vec<u8>>,
+    token: &str,
+) -> Response<Vec<u8>> {
+    let Some(item) = containers.resolve(token) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Some(f) = files.get(&item.file_token) else {
+        return bare(StatusCode::NOT_FOUND);
+    };
+    let Some(opened) = open_place(state, &f) else {
+        return bare(StatusCode::FORBIDDEN);
+    };
+
+    let total = item.size;
+    let range_header = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok());
+
+    let (start, end_inclusive, is_partial) = match range_header {
+        Some(h) => match parse_range(h, total) {
+            Some(r) => (r.0, r.1, true),
+            None => {
+                return with_common_headers(
+                    Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+                )
+                .body(Vec::new())
+                .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+        },
+        None => (0u64, total.saturating_sub(1), false),
+    };
+
+    let end_inclusive = if is_partial {
+        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
+    } else {
+        end_inclusive
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
+    } else {
+        (length, is_partial, end_inclusive)
+    };
+
+    // 关键：区间要落在**容器明文里该条目的位置**上。
+    // item.offset 是它在容器载荷中的起点，请求里的 start 是相对该条目的偏移，
+    // 两者相加才是要读的绝对位置。漏加 item.offset 的话每个条目都会读到容器
+    // 开头那一段——表现是「点开任何一个文件看到的都是同一份内容」。
+    let abs = item.offset.saturating_add(start);
+    let data = match omy_core::source::read_source_range(&f.source, &opened, abs, length) {
+        Ok(d) => d,
+        Err(_) => return bare(StatusCode::BAD_GATEWAY),
+    };
+
+    let mut b = Response::builder()
+        .status(if is_partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        })
+        .header(header::CONTENT_TYPE, item.mime.clone())
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, data.len().to_string());
+    if is_partial {
+        b = b.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end_inclusive}/{total}"),
+        );
+    }
+    with_common_headers(b)
+        .body(data)
+        .unwrap_or_else(|_| Response::new(Vec::new()))
 }
 
 /// 用会话密钥打开一段远程文件头（播放句柄与缩略图句柄共用）。

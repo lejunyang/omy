@@ -208,6 +208,112 @@ pub struct PlaceFiles {
 /// `browse` 列目录时已经把完整头部取回来了。这里登记「token → 完整头部」，
 /// `omystream://pthumb/<token>` 凭头部当场 `open` 出缩略图，零额外网络请求。
 ///
+/// 远程容器内一个条目的定位信息。
+///
+/// # 为什么不把内部路径编进 entry id
+///
+/// 让前端直接传偏移和长度，等于把「读这个容器任意位置」的能力交给 WebView 里
+/// 的任何脚本，越过了索引这层约束——本地容器（见 [`crate::citem`]）当初就是
+/// 为此改成 token 的，这里沿用同一套。
+///
+/// 另一个理由是 **entry id 的形状不该动**：Telegram 的 `tg:<对话>:<消息>`
+/// 已经是两级，容器内是第三级，硬塞进去会让 id 变成一个需要分情况解析的东西，
+/// 而这个决定一旦铺开就很难改。
+#[derive(Debug, Clone)]
+pub struct PlaceContainerRef {
+    /// 所属远程文件的播放句柄 token（`remote_place_open` 颁发的那个）。
+    ///
+    /// 用它而不是「位置 id + 路径」：容器明文不在磁盘上、要按需解，
+    /// 而那个句柄背后正好挂着已经建好的远程源与密文缓存。句柄失效（锁定、
+    /// 关闭）时这个 token 自然跟着失效，不必单独清理。
+    pub file_token: String,
+    /// 相对容器根的路径，供诊断与界面显示。
+    pub inner_path: String,
+    /// 在容器**明文载荷**里的起始偏移。
+    pub offset: u64,
+    /// 该条目的字节数。
+    pub size: u64,
+    /// MIME，按容器内的文件名后缀推导。
+    pub mime: String,
+}
+
+/// 远程容器条目的访问登记表。
+#[derive(Default)]
+pub struct PlaceContainers {
+    inner: Mutex<HashMap<String, PlaceContainerRef>>,
+}
+
+impl PlaceContainers {
+    /// 空表。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记一个条目，返回访问 token。
+    ///
+    /// 同一（句柄, 内部路径）重复登记得到**同一个** token：容器面板每次重新列
+    /// 都会再登记一遍，token 变来变去会让前端已拿到的 URL 失效，
+    /// 表现是列表一刷新图就裂了。
+    pub fn register(&self, r: PlaceContainerRef) -> Option<String> {
+        let key = token_for_place_item(&r.file_token, &r.inner_path);
+        self.inner.lock().ok()?.insert(key.clone(), r);
+        Some(key)
+    }
+
+    /// 按 token 取回定位信息。
+    #[must_use]
+    pub fn resolve(&self, token: &str) -> Option<PlaceContainerRef> {
+        self.inner.lock().ok()?.get(token).cloned()
+    }
+
+    /// 清空（锁定时调用）。留着一批可用 token 与「锁定后什么都看不到」矛盾。
+    pub fn clear(&self) {
+        if let Ok(mut m) = self.inner.lock() {
+            m.clear();
+        }
+    }
+
+    /// 已登记条目数。
+    ///
+    /// 只有测试用得上——产品代码不需要知道表里有几条。留着是因为
+    /// 「锁定后表里什么都不剩」那条断言需要它：只验 resolve 返回 None
+    /// 不够，那也可能是 token 算错了而不是表真的清了。
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.inner.lock().map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// 是否为空。理由同 [`PlaceContainers::len`]。
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// 由（句柄, 内部路径）算出稳定 token。
+///
+/// 用哈希而不是把路径放进 URL：容器内的文件名是**解密出来的内容**，
+/// 让它出现在 URL 里等于写进 WebView 的网络面板。
+///
+/// 中间必须有分隔符：直接拼的话 `("ab","c")` 与 `("a","bc")` 会撞成同一个
+/// token——一个容器里的文件会被另一个容器的 URL 读到。`\0` 不可能出现在
+/// 这两段中的任何一段里。
+fn token_for_place_item(file_token: &str, inner_path: &str) -> String {
+    // 与 `crate::citem::token_for` 用同一个哈希：同一件事同一个工具，
+    // 两条容器路径的 token 算法保持一致，也不必为此多引一个依赖。
+    let mut buf = Vec::with_capacity(
+        file_token.len().saturating_add(inner_path.len()).saturating_add(1),
+    );
+    buf.extend_from_slice(file_token.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(inner_path.as_bytes());
+    let h = omy_core::util::blake2b_256(&buf);
+    // 取前 16 字节：够长到不会偶然相撞，又不至于让 URL 长得离谱。
+    // token 本身不是凭据——真正的授权是「它在表里」且「所属句柄仍有效」。
+    h.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
 /// 与 [`PlaceFiles`] 分开：缩略图只服务当前这一屏列表，刷新目录即清空，
 /// 不与播放句柄（要跨多次 Range 请求、锁定才清）混在同一张表里。
 #[derive(Default)]
@@ -249,6 +355,81 @@ impl PlaceThumbs {
 
 #[cfg(test)]
 mod tests {
+    /// 同一条目重复登记必须得到同一个 token。
+    ///
+    /// 不这样会怎样：容器面板每次重新列都会再登记一遍，token 变来变去会让
+    /// 前端已经拿到的 URL 失效——表现是列表一刷新，里面的图就全裂了。
+    #[test]
+    fn place_container_token_is_stable() {
+        let a = token_for_place_item("pf1", "a/b.txt");
+        let b = token_for_place_item("pf1", "a/b.txt");
+        assert_eq!(a, b);
+    }
+
+    /// 不同句柄或不同路径必须得到不同 token，且字段边界不能被跨越。
+    ///
+    /// 不这样会怎样：("ab","c") 与 ("a","bc") 撞成同一个 token，
+    /// 一个容器里的文件会被另一个容器的 URL 读到。分隔符就是为这条而加的。
+    #[test]
+    fn place_container_token_has_no_field_collision() {
+        assert_ne!(
+            token_for_place_item("pf1", "a.txt"),
+            token_for_place_item("pf2", "a.txt")
+        );
+        assert_ne!(
+            token_for_place_item("pf1", "a.txt"),
+            token_for_place_item("pf1", "b.txt")
+        );
+        assert_ne!(
+            token_for_place_item("ab", "c"),
+            token_for_place_item("a", "bc")
+        );
+    }
+
+    /// token 里不能带出容器内的文件名。
+    ///
+    /// 不这样会怎样：容器内的文件名是**解密出来的内容**，把它放进 URL 等于
+    /// 写进 WebView 的网络面板——加密了内容却把目录结构泄露出去。
+    #[test]
+    fn place_container_token_does_not_leak_inner_name() {
+        let t = token_for_place_item("pf1", "工资表/2026-机密.xlsx");
+        assert!(!t.contains("工资"), "token 不能含明文文件名：{t}");
+        assert!(!t.contains("xlsx"), "连后缀也不该带出来：{t}");
+    }
+
+    /// 锁定后不能残留可用 token。
+    ///
+    /// 不这样会怎样：锁定的语义是「从现在起什么都看不到」，而留着一批能
+    /// 解析的 token 与它直接矛盾。目前即使不清，请求也会因为所属句柄已清
+    /// 而 404——但那是**另一张表**的保证，这里必须自己成立，
+    /// 否则谁把回查那步优化掉就静默破防。
+    #[test]
+    fn place_containers_clear_leaves_nothing() {
+        let r = PlaceContainers::new();
+        let t = r
+            .register(PlaceContainerRef {
+                file_token: String::from("pf1"),
+                inner_path: String::from("a.txt"),
+                offset: 0,
+                size: 10,
+                mime: String::from("text/plain"),
+            })
+            .expect("登记");
+        assert!(r.resolve(&t).is_some(), "刚登记的应当解析得出");
+        r.clear();
+        assert!(r.resolve(&t).is_none(), "锁定后旧 token 必须失效");
+        assert!(r.is_empty());
+    }
+
+    /// 未登记的 token 一律解析不出。
+    ///
+    /// 这条守的是「构造一个 token 就能读容器任意位置」。
+    #[test]
+    fn place_containers_reject_unknown_token() {
+        let r = PlaceContainers::new();
+        assert!(r.resolve("deadbeef").is_none());
+    }
+
     use super::*;
 
     /// 根目录为 `None`（无法定位缓存位置）时降级为无缓存，而不是让状态构造失败。
