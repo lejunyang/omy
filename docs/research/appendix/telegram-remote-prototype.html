@@ -109,7 +109,7 @@ code{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:.92em
 .cmeta{font-size:10.5px;color:var(--fg2);margin-top:2px}
 /* 条目来源（消息号）要在界面上留一行：file_reference 过期时刷新
    **必须**用 (peer, message_id) 重取消息，没存来源就永远刷不回来。
-   顺带为下一期的消息列表页留下入口。 */
+   这份来源信息同时也是文件视图与消息视图之间的锚点。 */
 .corigin{font-size:9.5px;color:var(--fg2);opacity:.75;margin-top:1px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 条目状态三种，视觉必须互相可分（14 号文档 §6.3 已立的规矩）：
@@ -276,6 +276,17 @@ input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid 
   cursor:pointer;min-height:32px;font-family:inherit}
 .seg button+button{border-inline-start:1px solid var(--border)}
 .seg button.on{background:var(--accent);color:#fff}
+/* 消息视图。刻意朴素：它是只读时间线，不是聊天输入界面，
+   做得越像聊天软件，用户越会去找「发送」。 */
+.msgs{display:flex;flex-direction:column;gap:10px}
+.msg{border:1px solid var(--border);border-radius:var(--r-s);background:var(--bg2);padding:10px 12px}
+.mhead{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:5px}
+.mhead b{color:var(--fg);font-weight:600}
+.mtime{color:var(--fg3)}
+.mid{margin-inline-start:auto;color:var(--fg3);font-family:var(--mono);font-size:11px}
+.mbody{font-size:13px;color:var(--fg);line-height:1.6;word-break:break-word}
+.mfile{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);
+  border-radius:var(--r-s);background:var(--bg);padding:6px 10px;font-size:12px}
 .searchbar{display:flex;gap:9px;align-items:center;padding:9px 12px;background:var(--bg2);
   border-block-end:1px solid var(--border);flex-wrap:wrap}
 .sinput{flex:1;min-width:150px}
@@ -488,12 +499,15 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
       <button class="tbtn on" id="thm">🌙 深色</button>
       <button class="tbtn" id="plat">端：两端</button>
       <button class="tbtn on" id="capbtn">当前对话：可写</button>
+      <button class="tbtn" id="bcastbtn">对话类型：普通群</button>
     </div>
   </div>
   <div class="note">
     <b>怎么看这份原型：</b>右上三个按钮分别切主题、切端（两端 / 仅桌面 / 仅移动）、
     切当前对话的可写性。第 3 节的对话列表加载、第 4 节的文件懒加载、
     第 5 节的搜索模式、第 7 节的错误态、第 8 节的传输管理都是<b>真的会动</b>的。<br>
+    切「对话类型」到<b>广播频道</b>后再切到「消息」视图，可以看到消息视图
+    <b>刻意不覆盖广播频道</b>时给的说明（第 4 节）——注意它不是错误态。<br>
     切「当前对话：可写 / 只读」时请观察<b>侧栏、面包屑、状态栏、上传按钮</b>
     是否一起变——这是设计要点：<b>一个状态要在它影响到的每一处被表达，
     而不是弹一个 toast 了事</b>。只在一处标的后果是「用户换个进法就看不到了」。
@@ -1236,6 +1250,14 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
                  「清掉临时缓存能省多少」，也看不出哪些内容离线还在 -->
             <span class="ctag">🗄️ 临时 3.4 / 10 GB</span>
             <span class="ctag net">📌 永久 4.7 GB</span>
+            <!-- 同一个对话的两个视图。做成页面内切换而不是另开页面：
+                 对话是同一个、面包屑是同一条、返回行为一样。
+                 拆成两个页面会让面包屑分叉、返回要记两套栈，
+                 而用户心里只有一个「对话」。 -->
+            <span class="seg" id="viewseg" role="group" aria-label="视图">
+              <button class="on" data-view="files">文件</button>
+              <button data-view="msgs">消息</button>
+            </span>
             <button class="btn" id="upbtn">⬆️ 上传到此对话</button>
           </div>
 
@@ -1287,6 +1309,7 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
           </div>
 
           <div class="content">
+            <div id="filesview" data-view="files">
             <div class="grid" id="tgrid">
               <div class="card" data-state="unlocked">
                 <div class="thumb">🎬<span class="cachebadge">已缓存</span></div>
@@ -1323,6 +1346,64 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
             <div style="display:flex;justify-content:center;margin-top:14px">
               <button class="btn" id="loadmore">加载更多（每次 30 条）</button>
             </div>
+            </div><!-- /filesview -->
+
+            <!-- 消息视图。刻意只读：没有发送、没有回复关系、没有转发链、
+                 没有 reactions、没有已读状态。omy 是文件管理器，
+                 不是要做一个 Telegram 客户端 —— 少做的这些是决定，不是遗漏。 -->
+            <div id="msgsview" data-view="msgs" hidden>
+              <div class="note acc" style="margin-bottom:12px">
+                <b>纯文本消息在这里是正常的一行，不是「残缺的文件」。</b>
+                这是消息视图与文件视图<b>判据相反</b>的地方：同一条没有附件的消息，
+                文件视图要<b>过滤掉</b>（它不是文件），消息视图要<b>照常显示</b>（它就是内容本身）。
+                照搬文件视图的过滤逻辑，消息视图就会退化成文件视图 ——
+                两边都能正常渲染，只有对着一个以文字为主的对话才看得出来。
+              </div>
+              <div class="msgs" id="msglist">
+                <div class="msg" data-kind="text">
+                  <div class="mhead"><b>我</b><span class="mtime">2026-03-14 09:12</span>
+                    <span class="mid">#4819</span></div>
+                  <div class="mbody">下面这份扫描件记得存一下，原件我就丢了。</div>
+                </div>
+                <div class="msg" data-kind="file">
+                  <div class="mhead"><b>我</b><span class="mtime">2026-03-14 09:12</span>
+                    <span class="mid">#4821</span></div>
+                  <div class="mbody"><span class="mfile">🖼️ 扫描件.pdf · 18 MB
+                    <span class="pinbadge">📌 永久</span></span></div>
+                </div>
+                <div class="msg" data-kind="text">
+                  <div class="mhead"><b>我</b><span class="mtime">2026-03-12 22:40</span>
+                    <span class="mid">#4790</span></div>
+                  <div class="mbody">会议录音在下一条，重点在 12 分 30 秒之后。</div>
+                </div>
+                <div class="msg" data-kind="file">
+                  <div class="mhead"><b>我</b><span class="mtime">2026-03-12 22:41</span>
+                    <span class="mid">#4790</span></div>
+                  <div class="mbody"><span class="mfile">🎵 录音 0312.m4a · 42 MB</span></div>
+                </div>
+                <div class="msg" data-kind="text">
+                  <div class="mhead"><b>我</b><span class="mtime">2026-02-28 18:03</span>
+                    <span class="mid">#4655</span></div>
+                  <div class="mbody">备份密码换了，用新的那一套。</div>
+                </div>
+              </div>
+              <div style="display:flex;justify-content:center;margin-top:14px">
+                <button class="btn" id="msgmore">加载更早的消息</button>
+              </div>
+
+              <!-- 广播频道：刻意不做，不是错误态。
+                   「不支持 / 暂未支持」暗示以后会做，「加载失败」让用户去重试一个
+                   永远不会成功的操作 —— 三种说法都不对。 -->
+              <div class="note" id="msgbcast" hidden style="margin-top:12px">
+                <b>这个频道不提供消息视图。</b>
+                omy 的消息视图<b>不覆盖广播频道</b>，这是一个明确的决定，
+                不是还没做、也不是加载失败，<b>重试不会有变化</b>。<br>
+                原因是官方条款要求「可访问频道内容的应用必须支持官方推广消息」，
+                而实现广告投放与曝光回报<b>与一个本地加密文件管理工具的定位冲突</b>。<br>
+                <b>这个频道的文件照常可用</b> —— 切回「文件」即可，
+                受影响的只是「把频道当消息时间线来读」这一种用法。
+              </div>
+            </div><!-- /msgsview -->
           </div>
 
           <div class="statusbar">
@@ -1364,11 +1445,12 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
       只有浏览非 omy 的普通媒体时才用服务端缩略图。
     </div>
     <div class="note acc">
-      <b>本期只做文件，不做消息时间线。</b>卡片上那行「消息 #4821」不是装饰：
+      <b>卡片上那行「消息 #4821」不是装饰。</b>
       <code>file_reference</code> 过期时必须用 <b>(对话, 消息号)</b> 去重取消息才能换到新凭据，
-      <b>没存来源就永远刷不回来</b>。也就是说，为下一期消息列表页保留的信息，
-      与本期正确性所必需的信息是同一份，<b>不构成额外成本</b>。
-      至于「把一个对话的全部消息按时间线列出来」——本期<b>不实现</b>，这里也不放假入口。
+      <b>没存来源就永远刷不回来</b>。
+      这份信息现在还有第二个用途：它是<b>文件视图与消息视图之间的锚点</b>，
+      从一个文件跳回它所在的那条消息不需要任何额外数据 ——
+      当初为正确性存的东西，扩展时正好够用，<b>没有补过数据结构</b>。
     </div>
   </div>
 
@@ -2181,6 +2263,90 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
           </div>
           <div class="statusbar" style="font-size:10.5px">
             <span>已加载 36 个（未列完）</span><span class="spacer"></span><span>🐌 受限</span></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑤b 对话内：消息视图。与桌面同一套 .seg / .msg 组件，只换外壳。
+           移动端尤其要注意：切换控件必须在拇指够得到的地方，
+           而不是塞进右上角的 ⋮ 菜单里 —— 藏起来的视图等于没有。 -->
+      <div class="phone">
+        <div class="pcap">⑤b 对话内：消息视图（同一对话的第二个视图）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">🔖 收藏夹</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div style="padding:9px 12px 0">
+            <span class="seg" style="width:100%;display:flex">
+              <button style="flex:1">文件</button>
+              <button class="on" style="flex:1">消息</button>
+            </span>
+          </div>
+          <div class="mbody">
+            <div class="msgs">
+              <div class="msg" data-kind="text">
+                <div class="mhead"><b>我</b><span class="mtime">03-14 09:12</span>
+                  <span class="mid">#4819</span></div>
+                <div class="mbody" style="padding:0">下面这份扫描件记得存一下，原件我就丢了。</div>
+              </div>
+              <div class="msg" data-kind="file">
+                <div class="mhead"><b>我</b><span class="mtime">03-14 09:12</span>
+                  <span class="mid">#4821</span></div>
+                <div class="mbody" style="padding:0">
+                  <span class="mfile">🖼️ 扫描件.pdf · 18 MB <span class="pinbadge">📌</span></span></div>
+              </div>
+              <div class="msg" data-kind="text">
+                <div class="mhead"><b>我</b><span class="mtime">03-12 22:40</span>
+                  <span class="mid">#4790</span></div>
+                <div class="mbody" style="padding:0">会议录音在下一条，重点在 12 分 30 秒之后。</div>
+              </div>
+              <div class="msg" data-kind="file">
+                <div class="mhead"><b>我</b><span class="mtime">03-12 22:41</span>
+                  <span class="mid">#4790</span></div>
+                <div class="mbody" style="padding:0">
+                  <span class="mfile">🎵 录音 0312.m4a · 42 MB</span></div>
+              </div>
+            </div>
+            <div class="sdesc" style="text-align:center;margin-top:10px">向上滚动加载更早的消息</div>
+          </div>
+          <div class="statusbar" style="font-size:10.5px">
+            <span>消息视图 · 只读</span><span class="spacer"></span><span>已加载 4 条</span></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑤c 广播频道：消息视图刻意不做。
+           注意这里用的是普通 note 而非 banner bad —— 它不是故障。
+           用错误色会让用户去重试一个永远不会成功的操作。 -->
+      <div class="phone">
+        <div class="pcap">⑤c 广播频道：不提供消息视图（不是错误）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">📢 某资源分享频道</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div style="padding:9px 12px 0">
+            <span class="seg" style="width:100%;display:flex">
+              <button style="flex:1">文件</button>
+              <button class="on" style="flex:1">消息</button>
+            </span>
+          </div>
+          <div class="mbody">
+            <div class="note" style="font-size:11.5px">
+              <b>这个频道不提供消息视图。</b>
+              omy 的消息视图<b>不覆盖广播频道</b>，这是一个明确的决定，
+              不是还没做、也不是加载失败，<b>重试不会有变化</b>。<br><br>
+              原因是官方条款要求「可访问频道内容的应用必须支持官方推广消息」，
+              而实现广告投放与曝光回报<b>与一个本地加密文件管理工具的定位冲突</b>。<br><br>
+              <b>这个频道的文件照常可用</b> —— 切回「文件」即可。
+            </div>
+            <div style="text-align:center;margin-top:10px">
+              <button class="btn">切回文件视图</button>
+            </div>
+          </div>
+          <div class="statusbar" style="font-size:10.5px">
+            <span>广播频道 · 仅文件视图</span><span class="spacer"></span><span>📢 只读</span></div>
           <div class="mbar">
             <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
             <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
@@ -3495,6 +3661,48 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
       }, 420 + i * 260);
     });
   });
+
+  /* ---------- 文件 / 消息视图切换 ----------
+     同一个页面内切换，面包屑与返回行为都不变。
+     状态挂到根节点上，便于断言从外部观察当前在哪个视图。 */
+  var fView = document.getElementById('filesview');
+  var mView = document.getElementById('msgsview');
+  var bcastNote = document.getElementById('msgbcast');
+  var msgList = document.getElementById('msglist');
+  var msgMore = document.getElementById('msgmore');
+
+  function applyView(v) {
+    fView.hidden = (v !== 'files');
+    mView.hidden = (v !== 'msgs');
+    document.querySelectorAll('#viewseg button').forEach(function (x) {
+      x.classList.toggle('on', x.getAttribute('data-view') === v);
+    });
+    document.documentElement.setAttribute('data-view', v);
+    // 上传是对「这个对话」的操作，与看哪个视图无关，所以不随视图隐藏
+  }
+  document.querySelectorAll('#viewseg button').forEach(function (b) {
+    b.addEventListener('click', function () { applyView(b.getAttribute('data-view')); });
+  });
+  applyView('files');
+
+  /* 广播频道：切过去时消息时间线整个不出现，代之以「刻意不做」的说明。
+     注意它不是 banner、不是错误色 —— 它不是故障。 */
+  function applyBroadcast(on) {
+    bcastNote.hidden = !on;
+    msgList.hidden = on;
+    msgMore.hidden = on;
+    document.documentElement.setAttribute('data-broadcast', on ? '1' : '0');
+  }
+  var bcastBtn = document.getElementById('bcastbtn');
+  bcastBtn.addEventListener('click', function () {
+    var on = document.documentElement.getAttribute('data-broadcast') !== '1';
+    applyBroadcast(on);
+    bcastBtn.classList.toggle('on', on);
+    bcastBtn.textContent = '对话类型：' + (on ? '广播频道' : '普通群');
+    // 切到广播频道时不自动跳视图：让用户自己切过去看，
+    // 否则他不会意识到「文件视图仍然可用」这件事
+  });
+  applyBroadcast(false);
 
   /* ---------- 搜索：服务端 vs 本地 ---------- */
   document.querySelectorAll('#srchseg button').forEach(function (b) {

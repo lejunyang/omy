@@ -3159,7 +3159,8 @@ star 数和「最近有提交」是看不出来的。选型时「活跃 + 许可
 > 能力位图到界面的投影方式沿用 [14 号文档 §5–§6](14-remote-locations-cloud.md)，
 > 永久缓存的规则以 [14 号文档 §8.4.1](14-remote-locations-cloud.md) 为准（本文只引用不复述）。
 >
-> 原型已通过 **52 项自动化断言**（本轮重写的聚焦套件，真实 Chrome + CDP 回读 DOM）。
+> 原型已通过 **37 项自动化断言**（针对本轮变更的聚焦套件，真实 Chrome + CDP 回读 DOM），
+> 并有 7 项变异测试确认这些断言能抓到真实缺陷。
 > **这些断言证明的是设计自洽与渲染正确，不是产品行为已实现**——
 > 原型背后没有 Telegram、没有 MTProto，功能的端到端验证在真实 GUI 上进行（§11.4）。
 > 详见 [appendix/verification-report.md §9](appendix/verification-report.md)。

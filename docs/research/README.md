@@ -4,7 +4,7 @@
 
 > **文档状态**：01–12 为设计定稿（v1.0）。
 > 13 是**实现期新增的待评审方案**，14 是实现期设计（首期已落地），
-> 15 为**调研，未实现**，均不属于 v1.0 定稿范围。
+> 15 为**实现期调研与设计**（消息视图等部分已随主线落地），不属于 v1.0 定稿范围。
 > **最后更新**：2026-09-19
 
 ---
@@ -44,9 +44,9 @@
 **附录**
 - [appendix/ui-prototype.html](appendix/ui-prototype.html) — **可交互界面原型**（浏览器直接打开，可切换深/浅主题、网格/列表、锁定/解锁态）
 - [appendix/remote-locations-prototype.html](appendix/remote-locations-prototype.html) — **远程位置界面原型**（PC + 移动端，可切换可写/只读位置，看能力位图如何投影到界面）
-- [appendix/telegram-remote-prototype.html](appendix/telegram-remote-prototype.html) — **Telegram 远程位置界面原型**（PC + 移动端，可切换深/浅主题、端、对话可写性；含三步连接向导、连通性自检与代理配置、api_id 内置/自建的切换、扫码 / 手机号 / tdata 三种登录入口、验证码的数字/密语/短句三形态、对话范围二选一、对话列表与文件网格的懒加载、统一传输管理页、永久缓存、服务端搜索 vs 本地过滤、六种错误态）
+- [appendix/telegram-remote-prototype.html](appendix/telegram-remote-prototype.html) — **Telegram 远程位置界面原型**（PC + 移动端，可切换深/浅主题、端、对话可写性；含三步连接向导、连通性自检与代理配置、api_id 内置/自建的切换、扫码 / 手机号 / tdata 三种登录入口、验证码的数字/密语/短句三形态、对话范围二选一、对话列表与文件网格的懒加载、统一传输管理页、永久缓存、服务端搜索 vs 本地过滤、六种错误态、文件 / 消息双视图与广播频道的不做说明）
 - [appendix/test-vectors.json](appendix/test-vectors.json) — 5 组确定性测试向量
-- [appendix/verification-report.md](appendix/verification-report.md) — 验证报告（格式 68 + 交叉验证 98 + UI 原型 23 + Telegram 原型 52 项断言）
+- [appendix/verification-report.md](appendix/verification-report.md) — 验证报告（格式 68 + 交叉验证 98 + UI 原型 23 + Telegram 原型 37 项断言）
 - [reference/](reference/) — Python 参考实现（可运行，用于验证格式设计）
 
 ---
