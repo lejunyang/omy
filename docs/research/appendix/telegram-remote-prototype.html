@@ -1,0 +1,3606 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>omy 远程位置 · Telegram · 界面原型</title>
+<style>
+/* 色值与组件写法整套沿用 appendix/remote-locations-prototype.html，
+   后者又取自 crates/omy-gui/frontend/src/styles/app.css。
+   这里**不新造视觉体系**：新增的只有登录向导、二维码、状态机图这几个
+   本页独有的构件，其余（卡片状态、侧栏、设置行、动作面板、移动画框）
+   全部复用同名类，改一处就能同时影响两份原型。 */
+:root{
+  color-scheme:dark;
+  --bg:#0d1117; --bg2:#161b22; --bg3:#1c2128; --border:#30363d;
+  --fg:#e6edf3; --fg2:#8b949e; --accent:#4493f8;
+  --ok:#3fb950; --warn:#d29922; --danger:#f85149;
+  --r-s:4px; --r-m:8px; --r-l:12px; --sp:4px;
+}
+:root[data-theme='light']{
+  color-scheme:light;
+  --bg:#ffffff; --bg2:#f7f8fa; --bg3:#eef0f3; --border:#e5e7eb;
+  --fg:#1f2328; --fg2:#656d76; --accent:#2563eb;
+  --ok:#16a34a; --warn:#d97706; --danger:#dc2626;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:14px/1.45 'Segoe UI Variable','Microsoft YaHei UI',-apple-system,'PingFang SC','Inter','Noto Sans CJK SC',sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0}
+code{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:.92em}
+
+/* ---------- 原型外壳（非产品 UI，仅用于承载展示） ---------- */
+.page{max-width:1280px;margin:0 auto;padding:24px 20px 80px}
+.phead{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;
+  padding-bottom:16px;border-bottom:2px solid var(--accent);margin-bottom:8px}
+.ptitle{font-size:20px;font-weight:700}
+.psub{color:var(--fg2);font-size:12px;margin-top:4px}
+.ctrls{display:flex;gap:8px;flex-wrap:wrap}
+.tbtn{background:var(--bg2);color:var(--fg);border:1px solid var(--border);
+  border-radius:var(--r-s);padding:7px 13px;cursor:pointer;font-size:13px;min-height:36px;font-family:inherit}
+.tbtn:hover{border-color:var(--accent)}
+.tbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.sec{margin-top:36px}
+.sech{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.secn{font-size:16px;font-weight:700}
+.secd{color:var(--fg2);font-size:12.5px}
+.note{border-inline-start:3px solid var(--warn);background:var(--bg2);
+  border-radius:0 var(--r-s) var(--r-s) 0;padding:9px 13px;margin:12px 0;font-size:12.5px;color:var(--fg2)}
+.note b{color:var(--fg)}
+.note.acc{border-inline-start-color:var(--accent)}
+.note.dgr{border-inline-start-color:var(--danger)}
+.frame{border:1px solid var(--border);border-radius:var(--r-m);overflow:hidden;background:var(--bg);margin-top:12px}
+.flabel{background:var(--bg3);border-bottom:1px solid var(--border);padding:5px 12px;
+  font-size:11.5px;color:var(--fg2);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+
+/* ---------- 产品 UI：桌面骨架 ---------- */
+.app{display:grid;grid-template-columns:200px 1fr;height:520px;background:var(--bg)}
+.side{background:var(--bg2);border-inline-end:1px solid var(--border);padding:8px 6px;overflow:auto}
+.sgrp{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;padding:10px 8px 4px;font-weight:600}
+.sitem{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;color:var(--fg);
+  padding:7px 8px;border-radius:var(--r-s);cursor:pointer;text-align:start;font-size:13px;min-height:34px;font-family:inherit}
+.sitem:hover{background:var(--bg3)}
+.sitem.sel{background:var(--accent);color:#fff}
+.stext{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ro{font-size:9.5px;border:1px solid var(--warn);color:var(--warn);border-radius:3px;
+  padding:1px 4px;flex:none;letter-spacing:.3px;white-space:nowrap}
+.sitem.sel .ro{border-color:#fff;color:#fff}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.dot.on{background:var(--ok)}
+.dot.off{background:var(--fg2)}
+.dot.err{background:var(--danger)}
+.dot.wait{background:var(--warn)}
+.badge{background:var(--bg3);color:var(--fg2);border-radius:9px;padding:1px 6px;font-size:10.5px}
+
+.main{display:flex;flex-direction:column;min-width:0}
+.crumb{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);
+  background:var(--bg2);flex-wrap:wrap}
+.cbtn{background:none;border:1px solid transparent;color:var(--fg2);cursor:pointer;
+  border-radius:var(--r-s);width:28px;height:28px;font-size:14px;font-family:inherit}
+.cbtn:hover{background:var(--bg3);color:var(--fg)}
+.cpath{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden;font-size:13px}
+.cseg{background:none;border:0;color:var(--fg2);cursor:pointer;padding:3px 5px;
+  border-radius:var(--r-s);white-space:nowrap;font-family:inherit;font-size:13px}
+.cseg:hover{background:var(--bg3);color:var(--fg)}
+.cseg.cur{color:var(--fg);font-weight:600}
+.sep{color:var(--fg2);font-size:11px}
+.ctag{font-size:11px;padding:2px 7px;border-radius:10px;background:var(--bg3);color:var(--fg2);
+  display:inline-flex;align-items:center;gap:4px;flex:none}
+.ctag.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.ctag.net{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.ctag.bad{color:var(--danger);background:color-mix(in srgb,var(--danger) 14%,transparent)}
+/* display:inline-flex/flex 会覆盖 [hidden] 的默认 display:none，
+   于是 el.hidden=true 完全不起作用——元素照常显示。
+   这个坑在产品代码里同样存在（Vue 的 v-show 也是改 display），
+   所以统一用一条高优先级规则兜住。 */
+[hidden]{display:none !important}
+
+.content{flex:1;overflow:auto;padding:12px;background:var(--bg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:10px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
+  padding:9px;cursor:pointer;position:relative;overflow:hidden}
+.card:hover{border-color:var(--accent)}
+.thumb{height:72px;border-radius:var(--r-s);background:var(--bg3);display:flex;
+  align-items:center;justify-content:center;font-size:26px;margin-bottom:7px;position:relative}
+.cname{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmeta{font-size:10.5px;color:var(--fg2);margin-top:2px}
+/* 条目来源（消息号）要在界面上留一行：file_reference 过期时刷新
+   **必须**用 (peer, message_id) 重取消息，没存来源就永远刷不回来。
+   顺带为下一期的消息列表页留下入口。 */
+.corigin{font-size:9.5px;color:var(--fg2);opacity:.75;margin-top:1px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 条目状态三种，视觉必须互相可分（14 号文档 §6.3 已立的规矩）：
+   已解锁 / 不属于当前密码 / 未能读取。
+   「官方已禁止保存」**不是**其中一种状态——按 DEC-20 取 C，这类内容
+   与普通文件同等对待，只在详情面板留一行次要告知（见第 4b 节）。 */
+.card.locked .thumb{color:var(--fg2)}
+.card.failed{border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.card.failed .thumb{color:var(--danger)}
+.card.probing .thumb{color:var(--fg2)}
+.card.probing .cname{color:var(--fg2)}
+.card.waiting{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.card.waiting .thumb{color:var(--warn)}
+/* 「永久缓存」角标。与「已缓存」（临时缓存，--ok 色）必须区分开：
+   永久缓存是用户主动钉住的、不参与 LRU 淘汰；临时缓存随时可能被淘汰。
+   两者混成一个标记，用户就无法判断「这文件离线时还在不在」。 */
+.card.pinned .thumb{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent)}
+.pinbadge{position:absolute;inset-block-start:4px;inset-inline-end:4px;font-size:9px;
+  background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent);
+  border-radius:3px;padding:1px 4px;line-height:1.3}
+.skel{height:9px;border-radius:3px;background:linear-gradient(90deg,var(--bg3) 25%,var(--border) 50%,var(--bg3) 75%);
+  background-size:200% 100%;animation:sk 1.4s linear infinite}
+@keyframes sk{to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}
+.retry{position:absolute;inset-block-end:4px;inset-inline-end:4px;font-size:9.5px;
+  background:var(--danger);color:#fff;border:0;border-radius:3px;padding:2px 6px;cursor:pointer;font-family:inherit}
+.cachebadge{position:absolute;inset-block-start:4px;inset-inline-end:4px;font-size:9px;
+  background:color-mix(in srgb,var(--ok) 22%,transparent);color:var(--ok);border-radius:3px;padding:1px 4px}
+.srvbadge{position:absolute;inset-block-start:4px;inset-inline-start:4px;font-size:9px;
+  background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent);border-radius:3px;padding:1px 4px}
+
+.statusbar{display:flex;gap:14px;align-items:center;padding:6px 12px;border-top:1px solid var(--border);
+  background:var(--bg2);font-size:11.5px;color:var(--fg2);flex-wrap:wrap}
+.spacer{flex:1}
+.rotag{color:var(--warn)}
+
+/* 位置级横幅：限流等待、会话失效这类「整个位置都用不了」的状态，
+   不能只靠单个卡片表达——用户看到的是一屏都坏了，得在一处说明原因 */
+.banner{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;font-size:12px;
+  border-block-end:1px solid var(--border);line-height:1.45}
+.banner.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--warn)}
+.banner.bad{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
+.banner.info{background:color-mix(in srgb,var(--accent) 10%,transparent);color:var(--accent)}
+.banner .bx{flex:1}
+.banner b{color:inherit}
+.bact{background:transparent;border:1px solid currentColor;color:inherit;border-radius:var(--r-s);
+  padding:4px 10px;font-size:11.5px;cursor:pointer;flex:none;min-height:28px;font-family:inherit}
+
+/* ---------- 菜单 / 动作面板 ---------- */
+.menu{width:274px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
+  padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.mi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-s);
+  font-size:13px;cursor:pointer;position:relative;min-height:34px}
+.mi.two{display:grid;grid-template-columns:auto 1fr;gap:2px 9px;align-items:start;padding-block:8px}
+.mi.two>.mico2{grid-row:1;align-self:center}
+.mi.two>.mtxt{grid-row:1;align-self:center}
+/* 长说明落在第 2 列第 2 行，于是左边缘与标签文字严格对齐。
+   为什么不放右侧：右侧只剩百来像素，一句完整解释必然换行，
+   而右对齐的换行文本读起来是断的。 */
+.mi.two>.mnote{grid-column:2;grid-row:2;font-size:11px;color:var(--fg2);line-height:1.4;text-align:start}
+.mi:hover:not(.dis){background:var(--bg3)}
+.mi.dis{opacity:.45;cursor:not-allowed}
+.mi .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2);white-space:nowrap}
+.msep{height:1px;background:var(--border);margin:4px 2px}
+
+/* ---------- 面板 / 设置行 ---------- */
+.panel{padding:16px;background:var(--bg)}
+.prow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.prow:last-child{border-bottom:0}
+.plabel{width:150px;flex:none;font-size:13px}
+.pval{flex:1;min-width:190px;color:var(--fg2);font-size:12.5px;word-break:break-all}
+.bar{height:8px;border-radius:4px;background:var(--bg3);overflow:hidden;margin-top:7px;max-width:400px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+select,input[type=text],input[type=password]{background:var(--bg3);color:var(--fg);border:1px solid var(--border);
+  border-radius:var(--r-s);padding:6px 9px;font-size:13px;min-height:34px;font-family:inherit}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;min-height:34px}
+.btn{background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:var(--r-s);
+  padding:6px 13px;cursor:pointer;font-size:13px;min-height:34px;font-family:inherit}
+.btn:hover:not(:disabled){border-color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.dgr{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.btn:disabled{opacity:.42;cursor:not-allowed}
+.hint{display:flex;gap:8px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-s);
+  padding:10px 12px;font-size:12px;color:var(--fg2);margin-top:14px;line-height:1.5}
+.hint b{color:var(--fg)}
+.sdesc{font-size:11.5px;color:var(--fg2);margin-top:5px;line-height:1.45}
+.sgh{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;margin-bottom:7px}
+.newcap{font-size:9.5px;border:1px solid var(--accent);color:var(--accent);
+  border-radius:3px;padding:1px 5px;margin-inline-start:6px;white-space:nowrap;vertical-align:middle}
+
+/* ---------- 连接向导（PC 弹窗，规格同设置弹窗 840×520） ---------- */
+.setwrap{padding:16px;background:var(--bg3);display:flex;justify-content:center}
+.setdlg{width:100%;max-width:840px;height:520px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--r-l);overflow:hidden;display:flex;flex-direction:column}
+.seth{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.sethn{font-size:15px;font-weight:600}
+.setbody{flex:1;display:grid;grid-template-columns:196px 1fr;min-height:0}
+.setnav{background:var(--bg2);border-inline-end:1px solid var(--border);padding:10px 8px;overflow:auto}
+.setpane{padding:16px 18px;overflow:auto}
+.pgh{font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+/* 步骤条：向导三步且顺序固定，用户需要知道「还有几步」才愿意开始 */
+.stepl{display:flex;flex-direction:column;gap:2px}
+.step{display:flex;align-items:flex-start;gap:9px;padding:8px;border-radius:var(--r-s);font-size:12.5px;color:var(--fg2)}
+.step .sn{width:19px;height:19px;border-radius:50%;border:1px solid var(--border);flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:10.5px}
+.step.on{color:var(--fg);background:var(--bg3)}
+.step.on .sn{background:var(--accent);border-color:var(--accent);color:#fff}
+.step.done .sn{background:color-mix(in srgb,var(--ok) 25%,transparent);border-color:var(--ok);color:var(--ok)}
+.step .st2{font-size:10.5px;opacity:.8;margin-top:2px}
+
+/* 风险告知块：账号级不可逆风险，摩擦级别与「转码不可还原」同级——
+   必须勾选才能继续，不能折叠成小字 */
+.riskbox{border:1px solid color-mix(in srgb,var(--danger) 50%,var(--border));
+  background:color-mix(in srgb,var(--danger) 8%,transparent);border-radius:var(--r-m);padding:13px}
+.riskh{color:var(--danger);font-weight:600;font-size:13.5px;display:flex;gap:7px;align-items:center;margin-bottom:8px}
+.riskbox ul{margin:8px 0 0;padding-inline-start:20px;font-size:12.5px;color:var(--fg2);line-height:1.75}
+.riskbox ul b{color:var(--fg)}
+.quote{border-inline-start:2px solid var(--border);padding:2px 0 2px 10px;margin:9px 0;
+  font-size:11.5px;color:var(--fg2);font-style:italic;line-height:1.5}
+
+/* 登录方式卡片 */
+.optgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:9px}
+.opt{display:flex;gap:10px;padding:11px;border:1px solid var(--border);border-radius:var(--r-m);
+  cursor:pointer;align-items:flex-start;background:none;color:var(--fg);text-align:start;font-family:inherit}
+.opt.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.opt.dis{opacity:.5;cursor:not-allowed}
+.ot{font-size:13px;font-weight:500}
+.od{font-size:11.5px;color:var(--fg2);margin-top:3px;line-height:1.45}
+.rec{font-size:9.5px;border:1px solid var(--ok);color:var(--ok);border-radius:3px;padding:1px 4px;margin-inline-start:5px}
+
+/* 验证码输入格：格数按服务端返回的 code length 渲染，不写死 */
+.codebox{display:flex;gap:7px;margin-top:8px}
+.codebox span{width:34px;height:42px;border:1px solid var(--border);border-radius:var(--r-s);
+  background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:17px;font-family:ui-monospace,monospace}
+.codebox span.f{border-color:var(--accent)}
+
+/* 二维码：用 JS 按确定性算法画格子，避免任何外部资源 */
+.qrwrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.qr{width:176px;height:176px;background:#fff;padding:9px;border-radius:var(--r-s);flex:none;
+  display:grid;grid-template-columns:repeat(21,1fr);grid-template-rows:repeat(21,1fr)}
+.qr i{background:transparent}
+.qr i.b{background:#000}
+.qr.stale{opacity:.35}
+.qrside{flex:1;min-width:190px;font-size:12.5px;color:var(--fg2);line-height:1.6}
+.ttl{font-size:11.5px;color:var(--warn);margin-top:7px}
+
+/* 对话行（对话即目录） */
+.chatlist{display:flex;flex-direction:column;gap:5px}
+.chatrow{display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--bg2);
+  border:1px solid var(--border);border-radius:var(--r-s);font-size:13px;cursor:pointer}
+.chatrow:hover{border-color:var(--accent)}
+.av{width:30px;height:30px;border-radius:50%;background:var(--bg3);flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:15px}
+.cmid{flex:1;min-width:0}
+.cnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.csub{font-size:11px;color:var(--fg2);margin-top:1px}
+.ckind{font-size:10.5px;color:var(--fg2);flex:none}
+
+/* 分段控件：搜索的两种语义必须并排可见，藏进下拉里用户不会发现 */
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--r-s);overflow:hidden}
+.seg button{background:var(--bg2);border:0;color:var(--fg2);padding:6px 11px;font-size:12px;
+  cursor:pointer;min-height:32px;font-family:inherit}
+.seg button+button{border-inline-start:1px solid var(--border)}
+.seg button.on{background:var(--accent);color:#fff}
+.searchbar{display:flex;gap:9px;align-items:center;padding:9px 12px;background:var(--bg2);
+  border-block-end:1px solid var(--border);flex-wrap:wrap}
+.sinput{flex:1;min-width:150px}
+/* 服务端结果与本地结果之间要有明确分隔条，否则用户分不清「这一屏是从哪来的」 */
+.rsep{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg2);margin:4px 0 8px}
+.rsep::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ---------- 移动端画框 ---------- */
+.phones{display:flex;gap:22px;flex-wrap:wrap}
+.phone{width:310px;flex:none}
+.pcap{font-size:11.5px;color:var(--fg2);margin-bottom:6px;text-align:center}
+.screen{width:310px;height:590px;border:1px solid var(--border);border-radius:22px;
+  overflow:hidden;background:var(--bg);display:flex;flex-direction:column;position:relative}
+.mtop{display:flex;align-items:center;gap:8px;padding:12px 12px 9px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.mtitle{flex:1;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mico{width:34px;height:34px;border-radius:var(--r-s);border:0;background:none;color:var(--fg);
+  font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit}
+.mpath{display:flex;align-items:center;gap:5px;padding:7px 12px;background:var(--bg2);
+  border-bottom:1px solid var(--border);font-size:11.5px;color:var(--fg2);overflow:auto;white-space:nowrap}
+.mbody{flex:1;overflow:auto;padding:10px}
+.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+/* 移动端底栏：必须给安全区，否则手势导航条盖住按钮 */
+.mbar{display:flex;border-top:1px solid var(--border);background:var(--bg2);
+  padding-bottom:env(safe-area-inset-bottom,0px)}
+.mtab{flex:1;background:none;border:0;color:var(--fg2);padding:8px 2px 9px;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;min-height:48px;font-family:inherit}
+.mtab.on{color:var(--accent)}
+.mtab i{font-style:normal;font-size:17px}
+/* 移动端不用右键菜单，用底部动作面板 */
+.sheet{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end}
+.sheetc{width:100%;background:var(--bg2);border-radius:var(--r-l) var(--r-l) 0 0;
+  padding:8px 8px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--border)}
+.grab{width:34px;height:4px;border-radius:2px;background:var(--border);margin:5px auto 10px}
+.sheeth{font-size:12px;color:var(--fg2);padding:0 10px 8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sheetnote{font-size:11.5px;color:var(--fg2);padding:0 11px 9px;line-height:1.55}
+/* 触控目标不小于 44px */
+.si{display:flex;align-items:center;gap:11px;padding:12px 11px;border-radius:var(--r-s);
+  font-size:14px;min-height:46px;cursor:pointer}
+.si.dis{opacity:.45}
+.si .mh{margin-inline-start:auto;font-size:10.5px;color:var(--fg2)}
+.mlist{display:flex;flex-direction:column;gap:2px}
+.lrow{display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:var(--r-s);min-height:46px}
+.lrow:active{background:var(--bg3)}
+.lic{width:30px;text-align:center;font-size:17px;flex:none}
+.lmid{flex:1;min-width:0}
+.lnm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lsz{font-size:10.5px;color:var(--fg2);margin-top:1px}
+.mgh{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;padding:14px 12px 6px}
+.mrow{display:flex;align-items:center;gap:11px;padding:12px;min-height:48px;
+  border-bottom:1px solid var(--border);cursor:pointer}
+.mrow:active{background:var(--bg3)}
+.mri{width:22px;text-align:center;flex:none;font-size:15px}
+.mrt{flex:1;font-size:13.5px}
+.mrv{font-size:12px;color:var(--fg2);max-width:112px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.mra{color:var(--fg2);font-size:15px;flex:none}
+/* 移动端向导：全屏分步，主按钮吸底（带安全区） */
+.wizfoot{padding:11px 12px calc(11px + env(safe-area-inset-bottom,0px));
+  border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:9px}
+.wizfoot .btn{flex:1}
+
+.tprog{padding:8px 12px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r-s);font-size:11.5px}
+.tline{display:flex;justify-content:space-between;color:var(--fg2);margin-bottom:5px;gap:8px}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--fg2)}
+.lg{display:flex;align-items:center;gap:6px}
+.sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--border);flex:none}
+
+table.mx{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:12px}
+table.mx th,table.mx td{border:1px solid var(--border);padding:7px 9px;text-align:start;vertical-align:top}
+table.mx th{background:var(--bg2);font-weight:600}
+.yes{color:var(--ok)}.no{color:var(--danger)}.mid{color:var(--warn)}
+
+/* ---------- 传输管理页（跨对话、跨任务类型的汇总视图） ---------- */
+/* 任务行用 grid 而非 flex：五列（图标 / 名称+来源 / 进度 / 速度 / 操作）
+   要在不同任务类型之间**竖向对齐**，否则一眼扫不出哪个任务卡住了。 */
+.tsk{display:grid;grid-template-columns:24px 1fr 132px 88px auto;gap:10px;
+  align-items:center;padding:9px 11px;border-bottom:1px solid var(--border);font-size:12.5px}
+.tsk:last-child{border-bottom:0}
+.tskn{min-width:0}
+.tsknm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 来源那一行是必需的：汇总视图跨对话，不写来源就无法知道这个任务属于谁 */
+.tsksrc{font-size:10.5px;color:var(--fg2);margin-top:1px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tskbar{height:6px;border-radius:3px;background:var(--bg3);overflow:hidden}
+.tskbar>i{display:block;height:100%;background:var(--accent)}
+.tsk[data-st="paused"] .tskbar>i{background:var(--fg2)}
+.tsk[data-st="failed"] .tskbar>i{background:var(--danger)}
+.tsk[data-st="done"] .tskbar>i{background:var(--ok)}
+.tsk[data-st="waiting"] .tskbar>i{background:var(--warn)}
+.tskv{font-size:11px;color:var(--fg2);text-align:end;white-space:nowrap}
+.tskact{display:flex;gap:5px}
+/* 操作按钮做成 26×26 的图标钮：一行最多三个，够放暂停/取消/重试 */
+/* 28px 是触控目标下限。26px 在手机上点不中——这一条上一轮已在
+   另两个按钮上抓到过一次，新写的组件又踩了一遍，所以改在类上而不是逐个实例改 */
+.tbtn2{width:28px;height:28px;border:1px solid var(--border);background:var(--bg3);
+  color:var(--fg);border-radius:var(--r-s);cursor:pointer;font-size:11px;font-family:inherit;
+  display:inline-flex;align-items:center;justify-content:center}
+.tbtn2:hover{border-color:var(--accent)}
+.tbtn2:disabled{opacity:.35;cursor:not-allowed}
+.tskgrp{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;
+  font-weight:600;padding:10px 11px 5px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.tskfilter{display:flex;gap:9px;align-items:center;padding:9px 11px;background:var(--bg2);
+  border-bottom:1px solid var(--border);flex-wrap:wrap}
+/* 两条容量条并排：临时与永久必须分开看出来，
+   合成一条的话用户永远不知道「清掉临时缓存能省多少」 */
+.caprow{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.capbox{flex:1;min-width:210px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r-s);padding:11px 12px}
+.capttl{font-size:12px;display:flex;align-items:center;gap:6px}
+.capnum{font-size:15px;font-weight:600;margin-top:5px}
+.capsub{font-size:11px;color:var(--fg2);margin-top:3px;line-height:1.45}
+.capbar{height:7px;border-radius:4px;background:var(--bg3);overflow:hidden;margin-top:7px}
+.capbar>i{display:block;height:100%}
+.capbar.tmp>i{background:var(--ok)}
+.capbar.perm>i{background:var(--accent)}
+/* 永久缓存没有「上限进度」可言——它由用户钉了多少决定，不该画成快满了的样子。
+   用虚线底纹表达「无上限」，与临时缓存的实心进度条区分。 */
+.capbar.perm{background:repeating-linear-gradient(90deg,var(--bg3),var(--bg3) 4px,transparent 4px,transparent 7px)}
+
+/* 验证码送达位置：这一条要比周围文字更显眼。
+   用户真的因为「已发送」三个字而盯着短信白等了很久——
+   「去哪里看」才是他此刻唯一需要的信息，不能和别的说明混成一片灰字。 */
+.codeto{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;margin:10px 0;
+  border:1px solid var(--accent);border-radius:var(--r-m);
+  background:color-mix(in srgb,var(--accent) 8%,var(--bg2));font-size:12.5px;line-height:1.6}
+.codeto .ci{flex:none;font-size:15px;line-height:1.25}
+.codeto .cx{flex:1;color:var(--fg2)}
+.codeto .cx b{color:var(--fg)}
+/* 二维码自动刷新的一瞬要能被看见：静默换图等于没告诉用户发生过什么 */
+.qr.refreshed{animation:qrflash .9s ease-out}
+@keyframes qrflash{
+  0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 70%,transparent)}
+  100%{box-shadow:0 0 0 10px transparent}}
+
+/* 验证码有三种形态（数字 / 密语 / 短句），输入区要能容纳每一种。
+   画成固定 6 格数字是界面替服务端做假设，换形态就崩。 */
+.codeseg{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:10px 0}
+.codeseg .ctab{font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--border);background:var(--bg2);color:var(--fg2)}
+.codeseg .ctab.on{border-color:var(--accent);color:var(--fg);
+  background:color-mix(in srgb,var(--accent) 12%,var(--bg2))}
+.codeinput{width:100%;max-width:330px}
+
+/* tdata 前提检查清单：一条一行，通过 / 未通过两态。
+   做成清单而不是一段话，是因为用户要能一眼看出**卡在哪一条**。 */
+.reqs{border:1px solid var(--border);border-radius:var(--r-m);background:var(--bg2);
+  padding:4px 0;margin:10px 0}
+.req{display:flex;align-items:flex-start;gap:9px;padding:8px 12px;font-size:12px;
+  line-height:1.55;border-bottom:1px solid var(--border)}
+.req:last-child{border-bottom:0}
+.req .ri{flex:none;width:16px;text-align:center}
+.req .rt{flex:1;color:var(--fg2)}
+.req .rt b{color:var(--fg)}
+.req[data-ok="1"] .ri{color:var(--ok)}
+.req[data-ok="0"] .ri{color:var(--danger)}
+/* 账号行：tdata 可含多个 account，必须让用户选，不能默默取第一个 */
+.acct{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);
+  border-radius:var(--r-s);background:var(--bg2);margin-bottom:7px;cursor:pointer}
+.acct.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--bg2))}
+.acct .aav{width:26px;height:26px;border-radius:50%;background:var(--bg3);flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:13px}
+.acct .anm{font-size:12.5px;color:var(--fg)}
+.acct .asub{font-size:10.5px;color:var(--fg2);margin-top:1px}
+
+/* 连通性自检：三态各自的颜色取自既有语义色，不新造。
+   checking=中性、ok=--ok、need-proxy=--warn（不是 --danger：
+   「需要代理」是一个待配置的前提，不是故障） */
+.conn{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border-radius:var(--r-m);
+  border:1px solid var(--border);background:var(--bg2);font-size:12px;line-height:1.6;margin:12px 0}
+.conn .ci{flex:none;font-size:14px;line-height:1.3}
+.conn .cb{flex:1;color:var(--fg2)}
+.conn[data-st="checking"]{border-color:var(--border)}
+.conn[data-st="ok"]{border-color:var(--ok)}
+.conn[data-st="proxy"]{border-color:var(--warn)}
+.conn[data-st="bad"]{border-color:var(--danger)}
+.conn b{color:var(--fg)}
+/* 代理表单在需要时**展开显示**，不塞进折叠的高级设置：
+   直连不通的用户会卡在这里，而他看不出原因 */
+.pxbox{border:1px solid var(--border);border-radius:var(--r-m);background:var(--bg2);
+  padding:12px;margin-top:10px}
+.pxerr{font-size:11.5px;color:var(--danger);line-height:1.6;margin-top:6px}
+.pxfix{font-size:11.5px;color:var(--fg2);line-height:1.6;margin-top:6px;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pxok{font-size:11.5px;color:var(--ok);line-height:1.6;margin-top:6px}
+
+pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-m);
+  padding:14px;overflow:auto;font-size:11.5px;line-height:1.55;color:var(--fg2);margin:12px 0 0;
+  font-family:ui-monospace,'Cascadia Code',Consolas,monospace}
+
+@media (max-width:860px){
+  .app{grid-template-columns:1fr}
+  .side{display:none}
+  .setbody{grid-template-columns:1fr}
+  .setnav{display:none}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="phead">
+    <div>
+      <div class="ptitle">omy 远程位置 · Telegram · 界面原型</div>
+      <div class="psub">配套 <code>docs/research/15-telegram-remote.md</code> §12 · 桌面端与移动端 · 组件与色值沿用 <code>remote-locations-prototype.html</code></div>
+    </div>
+    <div class="ctrls">
+      <button class="tbtn on" id="thm">🌙 深色</button>
+      <button class="tbtn" id="plat">端：两端</button>
+      <button class="tbtn on" id="capbtn">当前对话：可写</button>
+    </div>
+  </div>
+  <div class="note">
+    <b>怎么看这份原型：</b>右上三个按钮分别切主题、切端（两端 / 仅桌面 / 仅移动）、
+    切当前对话的可写性。第 3 节的对话列表加载、第 4 节的文件懒加载、
+    第 5 节的搜索模式、第 7 节的错误态、第 8 节的传输管理都是<b>真的会动</b>的。<br>
+    切「当前对话：可写 / 只读」时请观察<b>侧栏、面包屑、状态栏、上传按钮</b>
+    是否一起变——这是设计要点：<b>一个状态要在它影响到的每一处被表达，
+    而不是弹一个 toast 了事</b>。只在一处标的后果是「用户换个进法就看不到了」。
+  </div>
+  <div class="note dgr">
+    <b>图标与命名上的两条硬约束（来自 Telegram API ToS，见文档 §9.3）：</b><br>
+    · ToS 2.4「must not use the official Telegram logo」→ 本原型<b>一律不用纸飞机图标</b>，
+      位置图标用中性的 <b>💬</b>。这不是美术偏好，是合规要求。<br>
+    · ToS 2.2 要求让用户知道本应用使用了 Telegram API 并属于 Telegram 生态 →
+      连接向导第 1 步与「关于」页都要明写，<b>不能只写在项目 README 里</b>。
+  </div>
+
+  <!-- ============ 1. 首次配置 + 风险告知 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">1 · 桌面：连接向导（三步）——风险告知 → 登录 → 选对话</div>
+      <div class="secd">默认<b>开箱可用</b>：不需要先去申请 api_id；风险告知仍在登录之前且必须勾选</div>
+    </div>
+    <div class="note acc">
+      <b>为什么向导里没有「填 api_id / api_hash」这一步：</b>
+      api_id 在<b>协议层</b>确实是必需入参（<code>auth.exportLoginToken</code> 与
+      <code>initConnection</code> 都要它），但<b>「协议必须有」不等于「必须由用户提供」</b>——
+      omy 内置一份默认值，用户想换成自己的可以在设置里覆盖（见第 1b 节）。<br>
+      把它做成必经步骤的代价太具体：用户要先离开 omy、去
+      <code>my.telegram.org</code> 登录、填一张英文表单、再回来粘两串字符串，
+      <b>而这一切发生在他还没看到任何功能之前</b>。绝大多数人会在这里直接放弃。<br>
+      <b>内置的代价也如实说</b>：内置值随源码公开，被滥用举报后会触发
+      <code>API_ID_PUBLISHED_FLOOD</code>，且<b>所有用内置值的用户同时失效</b>。
+      这就是第 7 节那个错误态存在的原因，也是「可覆盖」必须提供的原因——
+      它是用户唯一的自救路径。
+    </div>
+
+    <div class="frame"><div class="flabel"><span>桌面 · 连接向导 840×520</span><span id="wizlab">步骤 1 / 3 · 风险告知</span></div>
+      <div class="setwrap">
+        <div class="setdlg">
+          <div class="seth">
+            <span>💬</span><span class="sethn">连接远程位置 · Telegram</span>
+            <button class="cbtn" style="margin-inline-start:auto" aria-label="关闭">✕</button>
+          </div>
+          <div class="setbody">
+            <nav class="setnav">
+              <div class="stepl" id="stepl">
+                <div class="step on" data-s="1"><span class="sn">1</span>
+                  <span>了解风险<span class="st2">账号会被置于观察状态</span></span></div>
+                <div class="step" data-s="2"><span class="sn">2</span>
+                  <span>登录账号<span class="st2">扫码 / 手机号 / 云密码</span></span></div>
+                <div class="step" data-s="3"><span class="sn">3</span>
+                  <span>选择可见对话<span class="st2">对话即目录</span></span></div>
+              </div>
+              <div class="hint" style="margin-top:14px;font-size:11px">
+                <span>ⓘ</span><div>本功能通过 <b>Telegram API</b> 访问你自己的 Telegram 账号。
+                  omy 是第三方应用，与 Telegram 官方无关。</div>
+              </div>
+            </nav>
+
+            <!-- 步骤 1：风险告知 -->
+            <section class="setpane" data-w="1">
+              <div class="pgh">⚠️ 请先了解使用第三方客户端的风险</div>
+              <div class="riskbox">
+                <div class="riskh"><span>🚨</span><span>你的 Telegram 账号会被置于观察状态</span></div>
+                <div style="font-size:12.5px;color:var(--fg2);line-height:1.6">
+                  这不是 omy 的推测，而是 Telegram 官方文档的原文：</div>
+                <div class="quote">“Due to excessive abuse of the Telegram API, all accounts that sign up
+                  or log in using unofficial Telegram API clients are automatically put under observation
+                  to avoid violations of the Terms of Service.”</div>
+                <ul>
+                  <li>在 omy 里登录<b>这个动作本身</b>就会触发观察状态，与你之后做什么无关。</li>
+                  <li>omy 将持有<b>你账号的完整权限</b>——能读到的不只是文件，而是这个账号能看到的全部内容。</li>
+                  <li>登录凭据（session）泄露<b>等于账号被接管</b>，后果比一个网盘密码严重得多。
+                    omy 会用系统凭据库加密保存它；拿不到密钥时<b>宁可不保存，也绝不明文写入磁盘</b>。</li>
+                  <li>这个会话在 Telegram 里<b>以「omy」的名义出现</b>在「已登录设备」列表中——
+                    omy <b>不把自己伪装成官方客户端</b>，所以你能一眼认出它，
+                    并随时在那里<b>终止它</b>。这是你的兜底手段。</li>
+                </ul>
+              </div>
+              <label class="chk" style="margin-top:14px">
+                <input type="checkbox" id="riskack" /> 我已阅读并了解上述风险，自愿继续</label>
+              <div class="sdesc">这一步<b>没有「以后再说」</b>：账号级风险不可逆，不能用一行折叠小字打发。</div>
+              <!-- device_model 如实报 omy，不对齐 Telegram Desktop。
+                   这不是技术限制而是产品立场：伪装会让用户在「已登录设备」里
+                   分不清哪个是 omy、哪个是自己真正的桌面端——想撤销都不敢动 -->
+              <div class="hint" id="devhint" style="margin-top:10px"><span>🪪</span><div>
+                omy 向 Telegram 报告的设备名就是 <b>omy</b>，<b>不伪装成官方客户端</b>。
+                代价是这个会话在列表里一眼就能被看出是第三方应用；
+                换来的是<b>你能把它和自己真正的桌面端区分开</b>，
+                想撤销时不必担心踢错。</div></div>
+              <div style="display:flex;gap:9px;margin-top:16px">
+                <button class="btn">取消</button>
+                <button class="btn pri" id="risknext" disabled>继续</button>
+              </div>
+            </section>
+
+            <!-- 步骤 2：登录（由第 2 节展开）。
+                 勾完风险直接到这里——中间不再插一道「去申请 api_id」的门。 -->
+            <section class="setpane" data-w="2" hidden>
+              <div class="pgh">🔐 登录你的 Telegram 账号</div>
+
+              <!-- 连通性自检放在登录动作**之前**。两个理由：
+                   ① 实测本机直连 MTProto DC 超时、经 socks5 才通（文档 §8.6），
+                      对国内用户代理很可能是必需项，不该藏进折叠的高级设置；
+                   ② 用户分不清「连不上」是代理 / 网络 / api_id 哪一个的问题，
+                      先自检就把归因定下来，而不是让他在登录失败后盲猜。 -->
+              <div class="conn" id="connchk" data-st="checking">
+                <span class="ci" id="connico">⏳</span>
+                <div class="cb" id="conntext">正在检查与 Telegram 的连接…</div>
+                <button class="btn" id="connretry" style="padding:2px 9px;min-height:28px">重新检查</button>
+              </div>
+
+              <div class="pxbox" id="pxbox" hidden>
+                <div class="sgh" style="margin-top:0">代理设置</div>
+                <div class="prow"><div class="plabel">连接方式</div>
+                  <div class="pval">
+                    <div class="seg" id="pxmode">
+                      <button data-px="direct">直连</button>
+                      <button class="on" data-px="proxy">使用代理</button>
+                    </div>
+                    <div class="sdesc" id="pxmodedesc">直连不通时必须走代理，否则登录会一直超时。</div>
+                  </div></div>
+                <div class="prow" id="pxaddrrow"><div class="plabel">代理地址</div>
+                  <div class="pval">
+                    <input type="text" id="pxaddr" value="socks5://127.0.0.1:7897"
+                      style="width:100%;max-width:330px" spellcheck="false" />
+                    <!-- 不回显底层错误串。grammers 报的是「proxy scheme not supported: http」，
+                         用户会拿这句去查一个不存在的网络故障（14 号文档 §6.3 同款教训） -->
+                    <div class="pxerr" id="pxerr" hidden></div>
+                    <div class="pxfix" id="pxfix" hidden>
+                      <span id="pxfixtext"></span>
+                      <button class="btn" id="pxfixbtn" style="padding:2px 9px;min-height:28px">一键改为 socks5://</button>
+                    </div>
+                    <div class="pxok" id="pxok" hidden>✓ 格式可用</div>
+                    <div class="sdesc">只支持 <code>socks5://主机:端口</code>。
+                      <b>从系统代理设置里抄出来的地址通常是 <code>http://…</code></b>，
+                      需要把开头改成 <code>socks5://</code>——同一个端口一般两种协议都支持。</div>
+                  </div></div>
+                <div class="prow" style="border-bottom:0;padding-bottom:0">
+                  <div class="plabel">读取系统代理</div>
+                  <div class="pval">
+                    <button class="btn" id="pxsys">从系统设置读取</button>
+                    <div class="sdesc">读到后 omy <b>会自动把 scheme 改写为 <code>socks5://</code></b>，
+                      不原样透传——直接透传一定失败。</div>
+                  </div></div>
+              </div>
+
+              <div class="prow" style="margin-top:12px"><div class="plabel">位置名称</div>
+                <div class="pval"><input type="text" value="我的 Telegram" style="width:220px" />
+                  <div class="sdesc">显示在侧栏里的名字，可随时改。</div></div></div>
+              <!-- api_id 的入口留在这里，但是**折叠的次要项**：
+                   要让想换的人找得到，同时不让不关心的人多点一下 -->
+              <div class="hint" id="apihintline"><span>🔑</span><div>
+                当前使用 <b id="apisrc1">omy 内置的 API 凭据</b>，无需申请即可登录。
+                <button class="btn" id="apitoggle" style="padding:2px 9px;min-height:28px;margin-inline-start:6px">改用自己的…</button>
+              </div></div>
+              <div style="display:flex;gap:9px;margin-top:14px">
+                <button class="btn" id="loginback">上一步</button>
+                <button class="btn pri" id="loginnext">跳到「选择可见对话」</button>
+              </div>
+            </section>
+
+            <!-- 步骤 3：可见对话（由第 3 节展开） -->
+            <section class="setpane" data-w="3" hidden>
+              <div class="pgh">💬 选择哪些对话出现在这个位置里</div>
+              <div class="sdesc">这一步在下面第 3 节单独展开。</div>
+              <div style="display:flex;gap:9px;margin-top:14px">
+                <button class="btn" id="chatback">上一步</button>
+                <button class="btn pri">完成</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note dgr">
+      <b>代理为什么放在向导正文里，而不是「高级设置」：</b>
+      实测本机<b>到 MTProto 数据中心的直连是超时的</b>，而经 SOCKS5 代理握手
+      约 3.3 秒就通（文档 §8.6）。也就是说<b>对一部分用户，代理不是可选项而是前提</b>。
+      折叠起来的后果很具体：他在登录那一步一直超时，而屏幕上没有任何东西
+      指向「你需要配代理」——他会去查网络、换密码、重装应用。<br>
+      <b>但也不把它做成一个人人都要填的必填项。</b>折中是<b>先自检再决定</b>：
+      能直连就只显示一行绿色的「可直连」，需要代理时才把表单展开在原地。
+      这样既不让不需要的人多填一步，也不让需要的人无从得知。<br>
+      <b>自检还顺带解决了一个归因问题</b>：用户分不清「连不上」是代理、网络还是
+      api_id 的问题。把检查放在登录动作之前，归因就已经定下来了，
+      而不是等他登录失败后盲猜。
+    </div>
+    <div class="note">
+      <b>向导为什么是三步而不是一个长表单：</b>这三步的失败原因完全不同——
+      不接受风险就该在<b>最前面</b>退出，一步都不用往下走；登录失败可能要等几十分钟（限流），
+      而它与前后两步都无关；选对话是纯偏好，失败了也不影响已经建立的连接。
+      混成一页时，用户在登录那步卡住会被迫重看前面全部内容。<br>
+      <b>顺序仍然不可调，但理由只剩一条：风险告知必须在登录之前。</b>
+      官方说的是「登录这个动作本身」就会让账号进入观察状态——
+      放到登录之后再告知，那个不可逆的后果已经发生了，告知就变成了通知。
+      至于第 2、3 步，先登录才能拉到对话列表，这是数据依赖而非产品规定。<br>
+      <b>原来的第 2 步（填 api_id）去哪了：</b>降级为设置里的可选项。
+      它不再是「继续」的前提，因为它不该是——见第 1b 节。
+    </div>
+  </div>
+
+  <!-- ============ 1b. api_id 作为设置里的可选项 ============ -->
+  <div class="sec" data-plat="pc" data-apisec="1">
+    <div class="sech">
+      <div class="secn">1b · 桌面：设置 › API 凭据（可选，不填就用内置默认值）</div>
+      <div class="secd">默认开箱可用；想换成自己的随时可换，且<b>当前用的是哪一种必须看得出来</b></div>
+    </div>
+    <div class="note">
+      <b>这一页要回答的只有两个问题：我现在用的是哪一份？想换怎么换？</b>
+      所以状态行写在最上面、用两种明显不同的措辞，而不是靠一个输入框空不空让用户自己推断。
+    </div>
+    <div class="frame"><div class="flabel"><span>设置 › 我的 Telegram › API 凭据</span>
+      <span id="apilab">当前：内置默认值</span></div>
+      <div class="panel">
+        <!-- 当前来源必须显式写出来。只放两个输入框、空着代表用内置，
+             是让用户去猜——而这件事的后果（会不会被别人的滥用连带失效）他有权知道 -->
+        <div class="prow"><div class="plabel">当前使用</div>
+          <div class="pval">
+            <span class="ctag net" id="apisrc">🔑 omy 内置的默认凭据</span>
+            <div class="sdesc" id="apisrcdesc">无需申请，开箱可用。内置值随源码公开，
+              若被滥用举报会触发 <code>API_ID_PUBLISHED_FLOOD</code>，
+              届时<b>所有使用内置值的用户会同时失效</b>，需改用自己的（见第 7 节）。</div>
+          </div></div>
+
+        <div class="prow"><div class="plabel">使用自己的 api_id</div>
+          <div class="pval">
+            <label class="chk"><input type="checkbox" id="ownapi" /> 改用我自己申请的 API 凭据</label>
+            <div class="sdesc">只影响本机这一个位置。<b>不勾就继续用内置值</b>，不需要做任何事。</div>
+          </div></div>
+
+        <div id="apifields" hidden>
+          <div class="sgh">获取步骤</div>
+          <div style="font-size:12.5px;color:var(--fg2);line-height:1.9;margin-bottom:12px">
+            1. 打开 <code>my.telegram.org</code> 并用你的手机号登录　<button class="btn" style="padding:2px 9px;min-height:28px">复制网址</button><br>
+            2. 进入「API development tools」，填写表单（应用名可随意）<br>
+            3. 把页面给出的 <code>api_id</code> 与 <code>api_hash</code> 粘贴到下面
+          </div>
+          <div class="prow"><div class="plabel">api_id</div>
+            <div class="pval"><input type="text" id="apiid" placeholder="一串数字" style="width:170px" inputmode="numeric" />
+              <div class="sdesc" id="apiiderr" hidden style="color:var(--danger)">api_id 是一串数字，请检查是否粘贴完整。</div></div></div>
+          <div class="prow"><div class="plabel">api_hash</div>
+            <div class="pval"><input type="text" id="apihash" placeholder="32 位十六进制字符串" style="width:100%;max-width:330px" /></div></div>
+          <div style="display:flex;gap:9px;margin-top:4px">
+            <button class="btn pri" id="apisave" disabled>保存并重新连接</button>
+            <button class="btn" id="apireset">恢复使用内置值</button>
+          </div>
+          <div class="hint"><span>ⓘ</span><div>
+            换自己的 api_id 需要<b>重新登录一次</b>：session 是与 api_id 绑定的。<br>
+            Telegram 侧<b>一个手机号只能绑一个 api_id</b>——若你已为别的工具申请过，直接复用那一份。<br>
+            <b>输入框留空等于仍用内置值</b>，不会把位置改成不可用状态。
+          </div></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>为什么校验放在本地（api_id 必须是纯数字）：</b>本地就能挡住的错误，
+      不要留到发一次网络请求、等它超时之后再报。<br>
+      <b>为什么「恢复使用内置值」是一个明确的按钮</b>，而不是让用户清空输入框：
+      清空是一个「什么都没做」的动作，用户无法确认自己到底切回去了没有。
+      而这两种状态在出故障时的含义完全不同。
+    </div>
+  </div>
+
+  <!-- ============ 2. 登录方式与三条流程 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">2 · 桌面：登录方式的选择与各自的完整流程</div>
+      <div class="secd">扫码为推荐路径；手机号路径要走完验证码与云密码两个分支</div>
+    </div>
+    <div class="note acc">
+      <b>为什么扫码是推荐项（文档 §4.2）：</b>用户不必把手机号和验证码输进一个第三方应用。
+      代价是 grammers <b>没有现成封装</b>，三步流程 + 30 秒刷新 + 数据中心迁移分支都要自己实现——
+      这是一笔要如实计入的实现成本，不是「库已经支持了」。<br>
+      <b>为什么没有「机器人（Bot）登录」这个平级选项：</b>见下方第三张卡片，它<b>不是被隐藏了，是做不到</b>。
+    </div>
+
+    <div class="frame"><div class="flabel"><span>桌面 · 登录 · 步骤 2 / 3</span><span id="authlab">当前：扫码登录</span></div>
+      <div class="panel">
+        <div class="optgrid" id="authpick">
+          <button class="opt sel" data-a="qr">
+            <span>📷</span><div><div class="ot">用已登录的手机扫码<span class="rec">主推</span></div>
+            <div class="od">不必把手机号和验证码输进 omy。<b>也不存在「码发到哪去了」的问题</b>——
+              你本来就在那台已登录的设备上操作。</div></div></button>
+          <button class="opt" data-a="phone">
+            <span>📱</span><div><div class="ot">手机号 + 验证码<span class="cand">备选</span></div>
+            <div class="od"><b>你已有其他登录设备时，验证码会发到那台设备的 Telegram 里，
+              不是短信。</b>那等于你仍要去另一个客户端取码——而扫码本就在那里完成。</div></div></button>
+          <button class="opt" data-a="tdata">
+            <span>🖥️</span><div><div class="ot">复用桌面端登录态（tdata）</div>
+            <div class="od">读取本机 Telegram Desktop 已有的登录态，<b>完全不用再登录一次</b>。
+              有若干前提，见下方检查清单。</div></div></button>
+          <button class="opt dis" data-a="bot" aria-disabled="true">
+            <span>🤖</span><div><div class="ot">机器人 Token（不提供）</div>
+            <div class="od">不是权衡后的取舍，是<b>能力上做不到</b>：机器人接口没有列目录、没有搜索，
+              下载还有 20 MB 上限。点这里看详细原因。</div></div></button>
+        </div>
+
+        <!-- 扫码流程 -->
+        <div data-auth="qr" style="margin-top:18px">
+          <div class="sgh">扫码登录</div>
+          <div class="qrwrap">
+            <div class="qr" id="qrimg" role="img" aria-label="登录二维码（原型示意，非真实凭据）"></div>
+            <div class="qrside">
+              <b style="color:var(--fg)">在手机上打开 Telegram → 设置 → 设备 → 扫描二维码</b>
+              <div class="ttl" id="qrttl">二维码 28 秒后自动刷新</div>
+              <div style="margin-top:9px">二维码<b>本身就是登录凭据</b>，请勿截图分享。</div>
+              <!-- 过期后必须自动重新导出 token 并换图，不能让它停成一张死图。
+                   但换图这件事要**让用户看见**：静默替换会让盯着屏幕的人
+                   以为卡住了，或者怀疑自己刚才扫的那张还算不算数。 -->
+              <div class="sdesc" id="qrrefresh" data-refreshed="0">
+                过期后 omy 会<b>自动重新获取并换一张</b>，无需手动操作。
+                换图时这里会提示你一次。</div>
+              <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn" id="qrok">模拟：手机确认成功</button>
+                <button class="btn" id="qrexp">模拟：令牌过期（自动换图）</button>
+                <button class="btn" id="qr2fa">模拟：该账号开了两步验证</button>
+              </div>
+              <div class="sdesc" id="qrstate" data-st="waiting">状态：等待手机端确认</div>
+            </div>
+          </div>
+          <div class="note" style="margin-top:14px">
+            <b>一个必须做成中间态、不能做成失败的分支：</b>两端数据中心不同时，服务端会先返回
+            「需要切换数据中心」而不是成功。此时界面要显示<b>「正在切换数据中心…」</b>并继续等，
+            <b>不能弹「登录失败，请重试」</b>——那会让一次本来会成功的登录被用户自己打断。
+          </div>
+          <div class="note dgr">
+            <b>这一屏的实测边界，请勿误读：</b>运行层只验证到<b>第一步</b>——
+            <code>auth.exportLoginToken</code> 发得出去、返回了 34 字节令牌（文档 §8.6）。
+            <b>扫码确认、<code>importLoginToken</code>、数据中心迁移、2FA 分支，
+            一次都没跑过</b>（缺一个能收验证码的账号）。<br>
+            所以上面这些中间态与流转顺序<b>是设计稿，不是已验证的行为</b>。
+            照着实现时要以随包源码与真实响应为准，别把原型当成实测记录——
+            这正是 AGENTS.md「以实测为准，不以设计文档为准」的反面：
+            <b>没测过的东西不能写成测过的样子</b>。
+          </div>
+        </div>
+
+        <!-- 手机号流程 -->
+        <div data-auth="phone" hidden style="margin-top:18px">
+          <div class="sgh">手机号 + 验证码</div>
+
+          <div data-ps="1">
+            <div class="prow"><div class="plabel">手机号</div>
+              <div class="pval" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <select style="width:110px"><option>+86 中国</option><option>+1 美国</option><option>+81 日本</option></select>
+                <input type="text" placeholder="手机号码" style="width:180px" inputmode="numeric" /></div></div>
+            <div class="sdesc">这个号码会发送给 Telegram 服务器用于登录，omy 不做其它用途。</div>
+          </div>
+
+          <div data-ps="2" hidden>
+            <!-- 不要笼统写「验证码已发送」。真实踩到过：用户盯着短信等了很久，
+                 而码在他另一台已登录设备的 Telegram 里。
+                 标题必须直接回答「去哪儿看」。 -->
+            <div style="font-size:13px" id="codetitle">验证码已发到你的 Telegram 应用内</div>
+            <div class="codeto" id="codechan" data-ct="app">
+              <span class="ci">💬</span>
+              <div class="cx"><b>请到你其他已登录的 Telegram 客户端里查看，不要去短信里找。</b><br>
+                它来自<b>带蓝色对勾的官方「Telegram」服务会话</b>——
+                不是名为「Verification Codes」的那个第三方会话，两者容易认错。</div>
+            </div>
+            <div class="sdesc">
+              发送方式由<b>服务端决定并告知</b>（应用内 / 短信 / 电话），界面按它显示、不写死。
+              账号<b>已有其他活跃登录时，Telegram 会优先发到应用内</b>，这是常态而非异常。
+            </div>
+            <!-- 验证码**不一定是数字**：服务端可能返回密语（word）或短句（phrase）。
+                 所以输入区按服务端给的类型渲染，不写死格数、也不写死数字键盘。
+                 下面三个标签是原型里用来切换演示的，真实实现由服务端类型决定。 -->
+            <div class="codeseg" id="codeform">
+              <span class="sdesc" style="margin:0">演示形态：</span>
+              <button class="ctab on" data-cf="digits">数字码</button>
+              <button class="ctab" data-cf="word">密语（word）</button>
+              <button class="ctab" data-cf="phrase">短句（phrase）</button>
+            </div>
+            <div id="codeDigits">
+              <div class="codebox" aria-label="验证码输入"><span class="f">4</span><span>1</span><span>7</span><span></span><span></span></div>
+              <div class="sdesc">格数按服务端返回的长度渲染，<b>不写死 5 位</b>。</div>
+            </div>
+            <div id="codeWord" hidden>
+              <input type="text" class="codeinput" id="codeWordIn" placeholder="请输入收到的密语"
+                autocapitalize="none" autocomplete="one-time-code" spellcheck="false" />
+              <div class="sdesc">这一种收到的是<b>一个词</b>，不是数字。
+                输入框<b>不能限制为数字</b>，移动端也不能弹数字键盘。</div>
+            </div>
+            <div id="codePhrase" hidden>
+              <input type="text" class="codeinput" id="codePhraseIn" placeholder="请输入收到的短句（可能含空格）"
+                autocapitalize="none" autocomplete="one-time-code" spellcheck="false" />
+              <div class="sdesc">这一种是<b>一句话，可能含空格</b>。
+                按「一格一字符」的思路做输入框，这种形态直接没法填。</div>
+            </div>
+            <div style="display:flex;gap:9px;margin-top:11px;flex-wrap:wrap;align-items:center">
+              <button class="btn" id="codeagain" disabled>重新发送（58 秒后可用）</button>
+              <span class="sdesc" style="margin:0" id="codenext">
+                届时将改用：<b>短信</b>（由服务端指定）</span>
+              <button class="btn" id="codebad">模拟：验证码错误</button>
+            </div>
+            <!-- 这里的分寸要拿捏准：没有「改用短信」按钮（首次请求已无法指定），
+                 但**有**重发——官方通过 next_type 告知下一种可用方式，
+                 换成哪种由服务端定、且要等 timeout。 -->
+            <div class="hint" style="margin-top:10px"><span>ⓘ</span><div>
+              <b>没有「改用短信接收」按钮</b>：首次请求<b>无法指定</b>投递方式，
+              那个参数官方已从现行接口移除。<br>
+              <b>但「重新发送」是有的</b>：服务端会告知<b>下一种可用方式</b>，
+              重发即按它投递——所以按钮旁如实写出「届时将改用哪一种」，
+              而不是含糊地写「重新发送」。<b>换成哪种由服务端决定，不由用户挑</b>，
+              且必须等倒计时结束（倒计时期间按钮禁用）。</div></div>
+            <div class="sdesc" id="codeerr" hidden style="color:var(--danger)">
+              验证码不正确。请核对后重新输入；<b>号码无需重填</b>，输错验证码不应把你退回上一步。</div>
+          </div>
+
+          <div data-ps="3" hidden>
+            <div style="font-size:13px">这个账号启用了两步验证</div>
+            <div class="sdesc">需要再输入一次你的 Telegram <b>云密码</b>（不是刚才的验证码，也不是 omy 的密码）。</div>
+            <div class="prow"><div class="plabel">云密码</div>
+              <div class="pval"><input type="password" placeholder="Telegram 云密码" style="width:230px" />
+                <div class="sdesc">密码提示（由 Telegram 提供）：<b>「宠物名字 + 生日」</b>。
+                  提示来自服务端，没有提示时这一行<b>整行不显示</b>，不要放一个空的「提示：」。</div></div></div>
+            <div class="note" style="margin:10px 0 0">
+              <b>这一步在扫码路径下同样会出现。</b>官方文档只在手机号路径写明了这个分支，
+              扫码页没有逐字写——所以实现上<b>必须容纳它</b>，界面按「云密码是一个独立子步、
+              两条路径共用同一个组件」来设计，而不是挂在手机号流程里。
+              （这条记在文档 §11.2 第 5 项，未核实。）
+            </div>
+          </div>
+
+          <div data-ps="4" hidden>
+            <div style="font-size:13px;color:var(--ok)">✅ 已登录：张某某（+86 ••• ••• 1234）</div>
+            <div class="sdesc">登录凭据已用系统凭据库加密保存在本机。
+              可随时在官方客户端的「已登录设备」里终止这个会话。</div>
+          </div>
+
+          <div style="display:flex;gap:9px;margin-top:16px;flex-wrap:wrap;align-items:center">
+            <button class="btn" id="psback">上一步</button>
+            <button class="btn pri" id="psnext">下一步</button>
+            <button class="btn" id="psflood">模拟：触发限流</button>
+            <span class="sdesc" style="margin:0" id="pslab">子步 1 / 4 · 输入手机号</span>
+          </div>
+          <div class="banner warn" id="floodbox" hidden style="margin-top:12px;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--r-s)">
+            <span>⏳</span><div class="bx"><b>请求过于频繁，需要等待 <span id="floodsec">41</span> 秒</b><br>
+              这是 Telegram 服务端的限制，不是 omy 出错，<b>反复点击不会更快</b>。
+              倒计时结束前「重新发送」与「下一步」都是禁用的——
+              让按钮可点然后必然失败，等于骗用户。</div>
+            <button class="bact" id="floodclear">（原型）立即结束等待</button>
+          </div>
+        </div>
+
+        <!-- tdata 导入：五条前提（文档 §12.3.4）在这里落成真实流程 -->
+        <div data-auth="tdata" hidden style="margin-top:18px" data-tdsec="1">
+          <div class="sgh">复用桌面端登录态</div>
+          <div class="sdesc" style="margin-bottom:10px">
+            读取本机 Telegram Desktop 的 <code>tdata</code>，直接拿到已有的登录态。
+            <b>这条路径尚未经过真机验证</b>，下面的流程是按已核实的前提设计的。
+          </div>
+
+          <div class="sgh">前提检查</div>
+          <div class="reqs" id="tdreqs">
+            <!-- 客户端运行时会占用 tdata。必须指名道姓让用户去退出它，
+                 而不是把一个文件锁错误原样抛出来——那会让人去查磁盘、查权限 -->
+            <div class="req" data-ok="0" data-req="running"><span class="ri">✕</span>
+              <span class="rt"><b>Telegram Desktop 正在运行，需要先退出</b>
+                <span class="sdesc" style="margin:0">客户端运行时会占用 tdata。
+                  <b>关窗口不够</b>——它会最小化到托盘，请从托盘右键退出。</span></span></div>
+            <!-- 真正的前提是「能不能定位到 tdata」，不是「装了哪个版本」。
+                 便携版自动发现必然落空，所以找不到时**就地给路径选择器** -->
+            <div class="req" data-ok="0" data-req="path"><span class="ri">✕</span>
+              <span class="rt"><b>没有自动找到 tdata —— 请手动指定</b>
+                <span class="sdesc" style="margin:0">这很常见，<b>不代表你没装</b>：
+                  便携版的 tdata 在 <code>Telegram.exe</code> 同目录，可以在任意盘。</span></span></div>
+          </div>
+          <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+            <button class="btn" id="tdsimquit">模拟：已退出桌面端</button>
+            <span class="sdesc" style="margin:0" id="tdreqlab">还有 2 项前提未满足</span>
+          </div>
+
+          <!-- 路径选择器**就地**出现，而不是只报「未检测到 Telegram Desktop」：
+               那等于把「需要你补一个信息」显示成「不支持」，用户看到就走了 -->
+          <div class="sgh">tdata 位置</div>
+          <div class="prow"><div class="plabel">路径</div>
+            <div class="pval">
+              <input type="text" id="tdpath" style="width:100%;max-width:430px" spellcheck="false"
+                placeholder="例如 D:\TelegramDesktop\tdata" />
+              <div class="sdesc" id="tdpathhint">
+                <b>自动检测没找到，请手动选择。</b>便携版请选
+                <code>Telegram.exe</code> 同目录下的 <code>tdata</code>；
+                安装版通常在 <code>%APPDATA%\Telegram Desktop\tdata</code>。
+              </div>
+            </div>
+            <button class="btn" id="tdbrowse">浏览…</button></div>
+
+          <div id="tdrest" hidden>
+            <div class="sgh">选择账号</div>
+            <!-- tdata 可含多个 account；另外更新器会在 tupdates\temp\tdata 留一个，
+                 那不是账号——列出来用户会看到一个选了就必然失败的幽灵账号 -->
+            <div id="tdaccts">
+              <div class="acct sel" data-acct="0"><span class="aav">👤</span>
+                <div><div class="anm">我的主账号</div>
+                  <div class="asub">+86 ••• 1234 · 上次活跃 2 小时前</div></div></div>
+              <div class="acct" data-acct="1"><span class="aav">👤</span>
+                <div><div class="anm">工作号</div>
+                  <div class="asub">+86 ••• 5678 · 上次活跃 3 天前</div></div></div>
+            </div>
+            <div class="sdesc">这份 tdata 里有 <b>2 个账号</b>，omy 只导入你选中的那一个。
+              更新器遗留的 <code>tupdates\temp\tdata</code> <b>已被排除</b>，
+              它不是账号，列出来只会变成一个选了就失败的条目。</div>
+
+            <div class="sgh">桌面端本地密码</div>
+            <div class="prow"><div class="plabel">是否设置了</div>
+              <div class="pval">
+                <div class="seg" id="tdpassseg">
+                  <button class="on" data-tp="no">没设置</button>
+                  <button data-tp="yes">设置了</button>
+                </div>
+                <div class="sdesc">由<b>实际解析结果</b>判断，不看
+                  <code>key_datas</code> 在不在——没设密码时它也存在（用默认空密码加密）。</div>
+              </div></div>
+            <div id="tdpassbox" hidden>
+              <div class="prow"><div class="plabel">本地密码</div>
+                <div class="pval">
+                  <input type="password" id="tdpass" placeholder="Telegram Desktop 的本地密码"
+                    style="width:100%;max-width:300px" />
+                  <!-- 与 2FA 云密码的措辞必须不同：两者都叫「密码」，
+                       用户会把云密码填进来然后反复被拒，而他两个都记得 -->
+                  <div class="sdesc" id="tdpasshint">
+                    这是你<b>为 Telegram Desktop 这个程序设的本地密码</b>（打开客户端时要输的那个）。<br>
+                    <b>不是两步验证的云密码</b>，也不是短信验证码——云密码属于你的账号，
+                    本地密码只属于这台电脑上的这个客户端。
+                  </div>
+                </div></div>
+            </div>
+
+            <div class="sgh">会话是共用的，不是复制的</div>
+            <div class="riskbox">
+              <div class="riskh"><span>⚠️</span><span>导入后与桌面端共用同一份登录会话</span></div>
+              <ul style="margin-top:0">
+                <li><b>桌面端登出，omy 这边会一并失效</b>——它们是同一个会话，不是两份。</li>
+                <li><b>两边同时使用可能互相干扰</b>：已知表现是收不到新消息、聊天加载不出来。
+                  这不是 omy 的 bug，而你<b>多半不会把它和这次导入联系起来</b>。</li>
+                <li>官方客户端<b>重新登录并选择「登出」时会删除会话文件</b>，
+                  从那一刻起两边分开，omy 这边也要重新登录。</li>
+              </ul>
+            </div>
+            <label class="chk" style="margin-top:12px">
+              <input type="checkbox" id="tdlogout" /> 导入后<b>同时登出桌面端</b>，让 omy 独占这个会话</label>
+            <div class="sdesc">不勾：两边共用，可能互相干扰。勾选：桌面客户端要重新登录一次。
+              <b>这个选择交给你，omy 不替你决定。</b></div>
+
+            <div style="display:flex;gap:9px;margin-top:16px;flex-wrap:wrap">
+              <button class="btn pri" id="tdimport">导入并连接</button>
+              <button class="btn" id="tdcancel">改用扫码</button>
+            </div>
+            <div class="sdesc" id="tdresult" hidden></div>
+          </div>
+        </div>
+
+        <!-- 为何没有 bot 登录 -->
+        <div data-auth="bot" hidden style="margin-top:18px">
+          <div class="sgh">为什么不提供机器人（Bot）登录</div>
+          <div class="sdesc" style="margin-bottom:10px">
+            用机器人登录看起来更安全（不碰个人账号、没有封号风险），所以这一条<b>必须解释清楚，
+            而不是默默不做</b>。三条各自独立的致命伤：</div>
+          <table class="mx">
+            <thead><tr><th>做不到什么</th><th>后果</th></tr></thead>
+            <tbody>
+              <tr><td>机器人接口<b>没有「列出对话」和「搜索历史消息」这两个动作</b></td>
+                <td>远程位置的第一件事就是列目录——直接无法实现，不是慢或麻烦</td></tr>
+              <tr><td>单文件<b>下载上限 20 MB</b></td>
+                <td>omy 的核心场景是加密视频拖动播放，20 MB 连一个短片都装不下</td></tr>
+              <tr><td>机器人<b>看不到你的文件</b>，只能看到别人主动发给它的</td>
+                <td>而用户要的恰恰是「我自己频道 / 收藏夹里的东西」</td></tr>
+            </tbody>
+          </table>
+          <div class="note" style="margin-top:12px">
+            自建本地机器人服务器能解掉 20 MB 上限，但<b>动词集合不变</b>，前两条纹丝不动；
+            而且要求用户自己编译部署一个服务，与 omy「装上就能用」冲突。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 3. 对话即目录 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">3 · 桌面：对话即目录 —— 范围是动态还是静态，必须让用户看出来</div>
+      <div class="secd">两个并列选项；对话列表本身也懒加载，点「加载更多对话」可看到骨架态</div>
+    </div>
+    <div class="note dgr">
+      <b>这一屏最容易做出的错误暗示：</b>勾选框看起来像「授予 omy 访问这些对话的权限」。
+      <b>它不是。</b>omy 用的是你账号的完整权限，勾选只是<b>决定哪些对话出现在这个位置的列表里</b>，
+      是显示范围，不是权限边界。文案必须如实写成「显示哪些对话」，
+      <b>绝不能写成「授权访问范围」</b>——那是一个用户会据此做安全判断的假承诺。
+    </div>
+    <div class="note">
+      <b>为什么把范围做成两个并列选项，而不是一个「添加」按钮：</b>
+      原先的写法是「从全部 1,382 个对话中添加…」——这句话<b>有歧义</b>。
+      用户会读成「把现在这批加进来」，于是合理地以为<b>以后新建的频道不会自动出现</b>。
+      而这两种语义的差别是真实存在且用户会据此做决定的：<b>一个动态跟随，一个是静态快照</b>。
+      所以直接做成二选一，并在选项里写明「含今后新增」与「仅这些」。
+    </div>
+    <div class="frame"><div class="flabel"><span>桌面 · 连接向导 · 步骤 3 / 3</span>
+      <span id="scopelab">范围：全部对话（动态）</span></div>
+      <div class="panel">
+        <div class="optgrid" id="scopepick" style="margin-bottom:14px">
+          <button class="opt sel" data-sc="all">
+            <span>&#128260;</span><div><div class="ot">全部对话<span class="rec">动态范围</span></div>
+            <div class="od"><b>今后新加入的频道 / 群 / 私聊会自动出现</b>在这个位置里，
+              不需要回来再勾一次。</div></div></button>
+          <button class="opt" data-sc="manual">
+            <span>&#9989;</span><div><div class="ot">手动挑选指定对话</div>
+            <div class="od"><b>一次性的静态快照</b>：只包含你现在勾选的这些，
+              今后新加入的对话<b>不会</b>自动进来。</div></div></button>
+        </div>
+
+        <div id="scopeAllNote" class="hint"><span>&#9432;</span><div>
+          已选择<b>全部对话（动态范围）</b>。侧栏会列出你的对话，<b>今后新增的也会自动出现</b>。<br>
+          对话很多时列表按需分页加载（见下方「手动挑选」里的加载机制），不会一次拉完。
+        </div></div>
+
+        <div id="scopeManual" hidden>
+          <div class="searchbar" style="border:1px solid var(--border);border-radius:var(--r-s);margin-bottom:12px">
+            <span>&#128269;</span><input class="sinput" type="text" placeholder="按对话名称过滤（本地过滤，不发送到服务器）" />
+            <select style="width:132px"><option>按最近活跃</option><option>按文件数量</option><option>按名称</option></select>
+          </div>
+          <div class="chatlist" id="chatpick">
+            <div class="chatrow"><input type="checkbox" checked /><span class="av">&#128278;</span>
+              <div class="cmid"><div class="cnm">收藏夹</div>
+                <div class="csub">1,204 个文件 · 只有你能看到</div></div>
+              <span class="ckind">可写</span></div>
+            <div class="chatrow"><input type="checkbox" checked /><span class="av">&#128226;</span>
+              <div class="cmid"><div class="cnm">我的备份频道</div>
+                <div class="csub">8,431 个文件 · 你是管理员</div></div>
+              <span class="ckind">可写</span></div>
+            <div class="chatrow"><input type="checkbox" checked /><span class="av">&#128226;</span>
+              <div class="cmid"><div class="cnm">某公开资料频道</div>
+                <div class="csub">62,099 个文件 · 你不是管理员</div></div>
+              <span class="ro">只读</span></div>
+            <div class="chatrow"><input type="checkbox" checked /><span class="av">&#128101;</span>
+              <div class="cmid"><div class="cnm">家庭相册群</div>
+                <div class="csub">3,102 个文件 · 4 位成员</div></div>
+              <span class="ckind">可写</span></div>
+            <div class="chatrow"><input type="checkbox" /><span class="av">&#128100;</span>
+              <div class="cmid"><div class="cnm">张三</div>
+                <div class="csub">27 个文件 · 私聊</div></div>
+              <span class="ckind">可写</span></div>
+          </div>
+          <!-- 对话列表本身也要懒加载：会话上千时一次拉完同样是性能问题。
+               底层是 messages.getDialogs 的 offset 分页（offset_date /
+               offset_id / offset_peer 三元组往前翻），不是「页码」。
+
+               实测（真实账号）：服务端**只在未取完时给出总数，取完返回 None**。
+               所以这里**不显示「共 N 个」**，也不用总数画进度——那个数字会消失。
+               「还有没有更多」一律按**满页判定**：返回条数 == 请求 limit 就假定还有，
+               不满页就收起入口。单页返回量仍不写死（样本账号只有 4 个对话，
+               测不出上限：「500 也只返回 4」说明的是只有 4 个，不是上限是 4）。 -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn" id="moredlg">加载更多对话</button>
+            <span class="sdesc" style="margin:0" id="dlgcount" data-loaded="5" data-done="0">
+              已加载 5 个对话（可能还有更多）</span>
+          </div>
+          <div class="hint"><span>&#9432;</span><div>
+            <b>这是静态快照。</b>今后你新加入的频道或群<b>不会</b>自动出现在这里，
+            需要回到这一步重新勾选。想让它们自动进来，请改选「全部对话」。
+          </div></div>
+        </div>
+
+        <div class="hint"><span>&#9432;</span><div>
+          <b>每个对话的可写性各不相同</b>（你是不是管理员、是不是只读频道），
+          所以「能不能上传 / 删除」必须<b>按当前所在的对话</b>判断，而不是按整个位置判断。
+          这与网盘位置不同，是 Telegram 带来的新情况——详见第 9 节。
+        </div></div>
+      </div>
+    </div>
+    <div class="note">
+      <b>对话列表为什么也要懒加载：</b>文件列表要懒加载是显然的（一个频道几十万条消息），
+      但<b>对话本身也可能上千</b>——重度用户的对话列表拉完一遍同样慢。
+      底层是 <code>messages.getDialogs</code> 的<b>偏移分页</b>：用
+      <code>(offset_date, offset_id, offset_peer)</code> 三元组往前翻，
+      <b>不是页码</b>，所以界面上只能给「加载更多」而不是「跳到第 N 页」。<br>
+      <b>计数只写「已加载 N 个」，不写「共 N 个」。</b>这一条是被实测改过的：
+      服务端<b>只在未取完时给出总数，取完反而返回空</b>——
+      也就是说那个总数<b>会在你最需要它的时候消失</b>。
+      拿它去画进度条或算「还剩多少」，到最后一页就会得到一个空值，
+      界面要么报错要么显示成 0。<br>
+      <b>所以「还有没有更多」改用满页判定</b>：这一批返回的条数等于请求的
+      <code>limit</code> 就假定还有、继续给「加载更多」；<b>不满一页就收起入口</b>。
+      这与文件列表同一条纪律——<b>不假装列全了</b>，但也不去承诺一个拿不到的总数。<br>
+      <b>单页返回量仍然不写死。</b>目前的实测样本账号只有 4 个对话：
+      <code>limit=500</code> 也只返回 4 条，这说明的是<b>只有 4 个对话</b>，
+      <b>不是上限是 4</b>——样本量不足以测出真实单页上限。
+    </div>
+  </div>
+
+  <!-- ============ 4. 主界面 + 懒加载 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">4 · 桌面：对话内的文件网格与懒加载</div>
+      <div class="secd">点「加载更多」可以真的看到骨架屏 → 逐个收敛的过程</div>
+    </div>
+    <div class="note">
+      <b>为什么必须写「已加载 N 个（未列完）」而不是「N 个项目」：</b>
+      一个十年老频道有几十万条消息，界面永远不可能列全。
+      写成「60 个项目」是在<b>撒谎</b>——用户会据此以为搜不到的东西就是不存在。
+    </div>
+
+    <div class="frame">
+      <div class="flabel"><span>桌面 · 1280×520</span><span id="lab1">💬 我的 Telegram › 收藏夹 · 可写</span></div>
+      <div class="app">
+        <aside class="side">
+          <div class="sgrp">位置</div>
+          <button class="sitem"><span>🏠</span><span class="stext">主目录</span></button>
+          <button class="sitem"><span>💾</span><span class="stext">C:\</span></button>
+
+          <div class="sgrp">远程位置</div>
+          <button class="sitem"><span class="dot on"></span><span class="stext">家里 NAS</span></button>
+          <button class="sitem"><span class="dot on"></span><span class="stext">Nextcloud</span><span class="ro">只读</span></button>
+          <!-- 位置图标用 💬 而非纸飞机：ToS 2.4 禁止使用官方 logo -->
+          <button class="sitem sel" id="sv1">
+            <span class="dot on" id="sv1d"></span><span class="stext">我的 Telegram</span>
+            <span class="ro" id="sv1r" hidden>只读</span>
+          </button>
+          <button class="sitem"><span>➕</span><span class="stext">连接远程位置</span></button>
+
+          <div class="sgrp">此位置的对话</div>
+          <button class="sitem sel" style="margin-inline-start:6px"><span>🔖</span><span class="stext">收藏夹</span></button>
+          <button class="sitem" style="margin-inline-start:6px"><span>📢</span><span class="stext">我的备份频道</span></button>
+          <button class="sitem" style="margin-inline-start:6px"><span>📢</span><span class="stext">某公开资料频道</span><span class="ro">只读</span></button>
+          <button class="sitem" style="margin-inline-start:6px"><span>👥</span><span class="stext">家庭相册群</span></button>
+          <!-- 按 DEC-20 取 C：受保护对话在侧栏**不加任何徽标**，与普通对话同等呈现 -->
+          <button class="sitem" style="margin-inline-start:6px"><span>📢</span>
+            <span class="stext">某资源分享频道</span></button>
+        </aside>
+
+        <div class="main">
+          <div class="crumb">
+            <button class="cbtn" aria-label="后退">←</button><button class="cbtn" aria-label="前进">→</button>
+            <button class="cbtn" aria-label="刷新">⟳</button>
+            <nav class="cpath">
+              <span class="ctag net">💬 我的 Telegram</span>
+              <span class="sep">›</span><button class="cseg cur" id="curchat">🔖 收藏夹</button>
+            </nav>
+            <span class="ctag warn" id="rotag" hidden>此对话只读</span>
+            <span class="ctag" id="speedtag">🐌 下载受限（非会员）</span>
+            <!-- 临时与永久两层必须分开显示：合成一个数字，用户就无法判断
+                 「清掉临时缓存能省多少」，也看不出哪些内容离线还在 -->
+            <span class="ctag">🗄️ 临时 3.4 / 10 GB</span>
+            <span class="ctag net">📌 永久 4.7 GB</span>
+            <button class="btn" id="upbtn">⬆️ 上传到此对话</button>
+          </div>
+
+          <div class="banner warn" id="bnFlood" hidden>
+            <span>⏳</span><div class="bx"><b>Telegram 要求等待 <span id="bnFloodSec">37</span> 秒后再继续</b>
+              —— 请求过于频繁触发了服务端限流。已暂停后台识别，倒计时结束会自动恢复，<b>你不需要做任何事</b>。</div>
+          </div>
+          <div class="banner bad" id="bnAuth" hidden>
+            <span>🔐</span><div class="bx"><b>登录已失效，需要重新登录</b><br>
+              最常见的原因是<b>同一份 omy 配置被同时在两台机器上使用</b>（便携模式下把整个
+              <code>omy-data</code> 拷到另一台机器就会这样）。Telegram 已作废这个会话，
+              <b>重试无用，必须重新登录</b>。也可能是你在官方客户端里「终止了所有其他会话」。</div>
+            <button class="bact">重新登录…</button>
+          </div>
+          <!-- API_ID_PUBLISHED_FLOOD：内置 api_id 被举报后失效。
+               与其它错误态最大的不同是**它不是用户的问题、也不是网络的问题**，
+               而且 omy 自己修不了——所以横幅必须带自救按钮，不能只报错。 -->
+          <div class="banner bad" id="bnApiId" hidden>
+            <span>🔑</span><div class="bx"><b>omy 内置的 API 凭据已被 Telegram 限制</b><br>
+              这不是网络问题，也不是你账号的问题，<b>重试无效</b>。内置凭据是公开的，
+              被滥用举报后会被封，<b>所有使用内置凭据的用户会同时遇到这一条</b>，
+              且 <b>omy 无法自行修复</b>。<br>
+              <b>解决办法只有一个：改用你自己申请的 api_id</b>（免费，几分钟）。
+              已缓存的内容不受影响，仍可浏览。</div>
+            <button class="bact" id="bnApiIdAct">填写自己的 api_id…</button>
+          </div>
+          <!-- 代理 scheme 不受支持：grammers 0.10 只接受 socks5://。
+               这是**配置错误**，正确动作是改配置，而不是等待或重试。
+               关键是**不回显底层错误串**：它说的是「scheme 不支持」，
+               用户会据此去排查一个根本不存在的网络故障。 -->
+          <div class="banner bad" id="bnProxy" hidden>
+            <span>🧦</span><div class="bx"><b>代理地址的格式不受支持，需要改成 <code>socks5://</code></b><br>
+              omy 只支持 <code>socks5://主机:端口</code>。
+              <b>这不是网络故障，也不是代理不可用</b>——很可能是地址直接抄自系统
+              代理设置（那里通常写成 <code>http://…</code>）。
+              同一个端口一般两种协议都支持，<b>只需把开头换掉</b>。</div>
+            <button class="bact" id="bnProxyAct">去修正代理地址…</button>
+          </div>
+          <div class="banner bad" id="bnNet" hidden>
+            <span>📡</span><div class="bx"><b>连不上 Telegram</b><br>
+              已显示的是<b>本机缓存中的内容</b>；缓存里没有的部分暂时打不开。
+              这是网络问题，<b>与你的密码无关</b>——不必去试别的密码。</div>
+            <button class="bact">重试连接</button>
+          </div>
+          <div class="banner info" id="bnRef" hidden>
+            <span>🔄</span><div class="bx"><b>正在刷新文件引用…</b>
+              Telegram 的文件凭据有时效，omy 正用保存的来源消息自动换一份。
+              <b>正常情况下你不会看到这条</b>——它在几百毫秒内自愈，只在刷新也失败时才转成错误。</div>
+          </div>
+
+          <div class="content">
+            <div class="grid" id="tgrid">
+              <div class="card" data-state="unlocked">
+                <div class="thumb">🎬<span class="cachebadge">已缓存</span></div>
+                <div class="cname">家庭录像 2019.mkv</div><div class="cmeta">4.8 GB</div>
+                <div class="corigin">2019-08-11 · 消息 #1204</div>
+              </div>
+              <div class="card pinned" data-state="unlocked" data-pinned="1">
+                <div class="thumb">🖼️<span class="pinbadge">📌 永久</span></div>
+                <div class="cname">扫描件.pdf</div><div class="cmeta">18 MB · 永久缓存</div>
+                <div class="corigin">2026-03-14 · 消息 #4821</div>
+              </div>
+              <div class="card locked" data-state="locked">
+                <div class="thumb">🔒</div>
+                <div class="cname">加密文件</div><div class="cmeta">不属于当前密码</div>
+                <div class="corigin">2025-11-02 · 消息 #3907</div>
+              </div>
+              <div class="card probing" data-state="probing">
+                <div class="thumb">⏳</div>
+                <div class="cname"><span class="skel" style="display:block;width:82%"></span></div>
+                <div class="cmeta">识别中…</div>
+                <div class="corigin">消息 #4820</div>
+              </div>
+              <div class="card failed" data-state="failed">
+                <div class="thumb">⚠️<button class="retry">重试</button></div>
+                <div class="cname">未能读取</div><div class="cmeta">网络错误</div>
+                <div class="corigin">消息 #2213</div>
+              </div>
+              <div class="card" data-state="unlocked">
+                <div class="thumb">🎵</div>
+                <div class="cname">录音 0312.m4a</div><div class="cmeta">42 MB</div>
+                <div class="corigin">2026-03-12 · 消息 #4790</div>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:center;margin-top:14px">
+              <button class="btn" id="loadmore">加载更多（每次 30 条）</button>
+            </div>
+          </div>
+
+          <div class="statusbar">
+            <span>💬 已连接 · 我的 Telegram</span>
+            <!-- 「未列完」必须写出来，见上方说明 -->
+            <span id="sbcount" data-loaded="6">已加载 6 个文件（未列完）</span>
+            <span>🔓 3</span><span>🔒 1</span>
+            <span class="spacer"></span>
+            <span id="sbspeed">🐌 下载速度受限（非会员账号）</span>
+            <span class="rotag" id="sbro" hidden>此对话只读</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="lg"><span class="sw" style="background:var(--bg2)"></span>已解锁 — 显示真名与缩略图</span>
+      <span class="lg"><span class="sw" style="background:var(--bg2);color:var(--fg2)">🔒</span>不属于当前密码</span>
+      <span class="lg"><span class="sw" style="border-color:var(--danger)"></span>未能读取（网络）— 可重试</span>
+      <span class="lg"><span class="sw" style="border-color:var(--accent)"></span>📌 永久缓存 — 不参与 LRU 淘汰</span>
+      <span class="lg"><span class="sw" style="background:var(--bg3)"></span>识别中 — 边扫边出</span>
+      <span class="lg"><span class="sw" style="border-color:var(--warn)"></span>限流等待 — 自动恢复，不可重试</span>
+    </div>
+    <div class="note acc">
+      <b>「已缓存」与「永久缓存」是两个不同的角标，刻意不合并。</b>
+      前者（绿色，临时层）随时可能被 LRU 淘汰；后者（蓝色 📌，永久层）
+      是用户主动钉住的、不参与淘汰、也<b>不占临时层的上限</b>。<br>
+      合成一个标记的后果很具体：用户无法判断<b>断网时这个文件还在不在</b>——
+      而这恰恰是他钉住它的唯一理由。容量展示同理要分两个数字，见第 4b 节。
+    </div>
+    <div class="note">
+      <b>「下载速度受限（非会员账号）」为什么要常驻状态栏：</b>非会员账号看大文件被限速是<b>协议层面
+      必然发生的</b>，不是偶发故障。不说明的话用户只会得出「omy 很慢」这一个结论。<br>
+      <b>但 omy 不弹会员购买引导。</b>官方要求客户端在这时引导购买——那是给官方客户端的要求，
+      omy 是文件管理器，弹推广既怪异也不合适。折中就是这一行如实标注。
+      （是否与 ToS 1.3 冲突，记在文档 §11.2 第 12 项，未核实。）<br>
+      <b>缩略图这里用的是 omy 自己的。</b>Telegram 给 <code>.omy</code> 文件生成的缩略图是<b>密文的</b>缩略图，
+      毫无意义；真正的缩略图在 omy 文件头里，解出来<b>零额外网络请求</b>。
+      只有浏览非 omy 的普通媒体时才用服务端缩略图。
+    </div>
+    <div class="note acc">
+      <b>本期只做文件，不做消息时间线。</b>卡片上那行「消息 #4821」不是装饰：
+      <code>file_reference</code> 过期时必须用 <b>(对话, 消息号)</b> 去重取消息才能换到新凭据，
+      <b>没存来源就永远刷不回来</b>。也就是说，为下一期消息列表页保留的信息，
+      与本期正确性所必需的信息是同一份，<b>不构成额外成本</b>。
+      至于「把一个对话的全部消息按时间线列出来」——本期<b>不实现</b>，这里也不放假入口。
+    </div>
+  </div>
+
+  <!-- ============ 4b. 统一传输管理页 + 永久缓存 ============ -->
+  <div class="sec" data-plat="pc" data-xfersec="1">
+    <div class="sech">
+      <div class="secn">4b · 桌面：统一传输管理页（下载 / 缓存 / 上传汇总）</div>
+      <div class="secd">跨对话、跨任务类型的一处汇总；下方按钮可真实暂停 / 取消 / 重试</div>
+    </div>
+    <div class="note">
+      <b>为什么必须有这一页，而不是把进度显示在各个对话里：</b>
+      任务本身是<b>跨对话</b>的——用户可能同时在往收藏夹传一个文件、
+      从某频道缓存一部电影、又在给第三个对话里的文件做永久缓存。
+      进度只画在「当前所在的对话」里，用户一旦切走就<b>看不到也管不了</b>，
+      只能靠反复切回去确认。<br>
+      而且这三类任务的失败原因互不相同（限流 / 分片过期 / 空间不足），
+      <b>只有在一处汇总才能看出「是不是所有任务都卡在同一个原因上」</b>——
+      比如一次限流会让全部任务同时进入等待，分散显示时看起来像三个独立故障。
+    </div>
+    <div class="frame"><div class="flabel"><span>桌面 · 传输管理 1280×520</span>
+      <span id="xferlab">3 进行中 · 1 等待 · 1 失败</span></div>
+      <div class="app">
+        <aside class="side">
+          <div class="sgrp">位置</div>
+          <button class="sitem"><span>🏠</span><span class="stext">主目录</span></button>
+          <div class="sgrp">远程位置</div>
+          <button class="sitem"><span class="dot on"></span><span class="stext">家里 NAS</span></button>
+          <button class="sitem"><span class="dot on"></span><span class="stext">我的 Telegram</span></button>
+          <div class="sgrp">全局</div>
+          <!-- 传输管理与文件浏览并列，是一个顶层入口而非某个位置的子页 -->
+          <button class="sitem sel"><span>🔀</span><span class="stext">传输管理</span>
+            <span class="badge" id="xferbadge">5</span></button>
+          <button class="sitem"><span>🗄️</span><span class="stext">缓存与存储</span></button>
+          <button class="sitem"><span>⚙️</span><span class="stext">设置</span></button>
+        </aside>
+
+        <div class="main">
+          <div class="tskfilter">
+            <div class="seg" id="xferseg">
+              <button class="on" data-f="all">全部</button>
+              <button data-f="active">进行中</button>
+              <button data-f="done">已完成</button>
+            </div>
+            <span class="spacer"></span>
+            <button class="btn" id="pauseall">全部暂停</button>
+            <button class="btn" id="clrdone">清除已完成</button>
+          </div>
+
+          <div class="content" style="padding:0">
+            <div class="tskgrp">上传</div>
+            <div class="tsk" data-st="running" data-kind="up">
+              <span>⬆️</span>
+              <div class="tskn"><div class="tsknm">MFRGG2LONFXW4ZDJ.omy</div>
+                <div class="tsksrc">→ 💬 我的 Telegram › 收藏夹 · 1.2 GB</div></div>
+              <div><div class="tskbar"><i style="width:62%"></i></div></div>
+              <div class="tskv">62% · 2.1 MB/s</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="pause" title="暂停">⏸</button>
+                <button class="tbtn2" data-act="cancel" title="取消">✕</button></div>
+            </div>
+
+            <div class="tskgrp">下载 / 解密到本地</div>
+            <div class="tsk" data-st="running" data-kind="down">
+              <span>⬇️</span>
+              <div class="tskn"><div class="tsknm">家庭录像 2019.mkv</div>
+                <div class="tsksrc">← 💬 我的 Telegram › 收藏夹 · 消息 #1204 · 4.8 GB</div></div>
+              <div><div class="tskbar"><i style="width:34%"></i></div></div>
+              <div class="tskv">34% · 1.4 MB/s</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="pause" title="暂停">⏸</button>
+                <button class="tbtn2" data-act="cancel" title="取消">✕</button></div>
+            </div>
+            <div class="tsk" data-st="waiting" data-kind="down">
+              <span>⏳</span>
+              <div class="tskn"><div class="tsknm">讲座录像.mp4</div>
+                <div class="tsksrc">← 💬 我的 Telegram › 某资源分享频道 · 消息 #9021</div></div>
+              <div><div class="tskbar"><i style="width:8%"></i></div></div>
+              <!-- 等待原因必须写出来。不写的话用户会以为任务坏了而反复重试，
+                   而限流下重试只会把等待时间越点越长 -->
+              <div class="tskv">限流等待 37s</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="pause" title="暂停">⏸</button>
+                <button class="tbtn2" data-act="cancel" title="取消">✕</button></div>
+            </div>
+            <div class="tsk" data-st="failed" data-kind="down">
+              <span>⚠️</span>
+              <div class="tskn"><div class="tsknm">旅行 vlog.mkv</div>
+                <div class="tsksrc">← 💬 我的 Telegram › 家庭相册群 · 分片已过期，需重新开始</div></div>
+              <div><div class="tskbar"><i style="width:71%"></i></div></div>
+              <div class="tskv">已中断 71%</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="retry" title="重试">↻</button>
+                <button class="tbtn2" data-act="cancel" title="移除">✕</button></div>
+            </div>
+
+            <div class="tskgrp">永久缓存</div>
+            <!-- 永久缓存是一次**真实的下载任务**，所以它出现在这里而不是
+                 做成一个点完就静默后台跑的开关：要有进度、能取消、失败能重试 -->
+            <div class="tsk" data-st="running" data-kind="pin">
+              <span>📌</span>
+              <div class="tskn"><div class="tsknm">扫描件.pdf</div>
+                <div class="tsksrc">永久缓存 · 💬 我的 Telegram › 收藏夹 · 18 MB</div></div>
+              <div><div class="tskbar"><i style="width:88%"></i></div></div>
+              <div class="tskv">88%</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="pause" title="暂停">⏸</button>
+                <button class="tbtn2" data-act="cancel" title="取消">✕</button></div>
+            </div>
+            <div class="tsk" data-st="done" data-kind="pin">
+              <span>📌</span>
+              <div class="tskn"><div class="tsknm">会议录像 0417.mp4</div>
+                <div class="tsksrc">永久缓存 · 已完成 · 880 MB</div></div>
+              <div><div class="tskbar"><i style="width:100%"></i></div></div>
+              <div class="tskv">已完成</div>
+              <div class="tskact">
+                <button class="tbtn2" data-act="unpin" title="取消永久缓存">📌</button></div>
+            </div>
+          </div>
+
+          <div class="statusbar">
+            <span id="xfersum">3 进行中 · 1 等待 · 1 失败 · 1 已完成</span>
+            <span class="spacer"></span>
+            <span>⬆️ 2.1 MB/s</span><span>⬇️ 1.4 MB/s</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>任务行为什么用五列 grid 而不是随内容流动：</b>三类任务（上传 / 下载 / 永久缓存）
+      的进度条与速度必须<b>竖向对齐</b>，否则一眼扫不出哪个任务卡住了。<br>
+      <b>来源那一行（「← 💬 我的 Telegram › 某频道 · 消息 #9021」）是必需的。</b>
+      这是汇总视图，同名文件可能来自不同对话；不写来源，用户无法判断
+      要取消的到底是哪一个。它用的正是 <code>(对话, 消息号)</code> 这份信息——
+      与 <code>file_reference</code> 刷新所需的是同一份，不构成额外成本。<br>
+      <b>「等待」必须写出等待原因</b>（这里是「限流等待 37s」）。只显示一个停住的
+      进度条，用户会以为任务坏了而反复重试——而限流下重试只会更糟。
+    </div>
+
+    <div class="sech" style="margin-top:26px">
+      <div class="secn">4b-2 · 缓存与存储：临时与永久两层必须分开看</div>
+      <div class="secd">同一处信息架构，紧邻传输管理，不做成两个割裂的页面</div>
+    </div>
+    <div class="note acc">
+      <b>永久缓存的规则以 14 号文档 §8.4.1 为准，本节只描述界面怎么呈现它。</b>
+      15 号文档 §7.5 也只做指路。同一条规则写在两处迟早漂移——
+      这是 AGENTS.md「同一逻辑不允许两处实现」的同款要求。
+    </div>
+    <div class="frame"><div class="flabel"><span>设置 › 缓存与存储</span><span>临时层 + 永久层</span></div>
+      <div class="panel">
+        <div class="caprow">
+          <div class="capbox">
+            <div class="capttl">🗄️ 临时缓存（自动）</div>
+            <div class="capnum" id="tmpnum">1.2 GB / 2.0 GB</div>
+            <div class="capbar tmp"><i style="width:60%"></i></div>
+            <div class="capsub">按 LRU 自动淘汰。<b>「最大缓存」与「退出时清空」只约束这一层。</b></div>
+          </div>
+          <div class="capbox">
+            <div class="capttl">📌 永久缓存（手动钉住）</div>
+            <!-- 绝对值 + 计数，**不画进度条**：它没有分母，
+                 画了条用户就会去找那个不存在的上限 -->
+            <div class="capnum" id="permnum">4.7 GB（6 个文件）</div>
+            <div class="capbar perm"><i style="width:100%;background:transparent"></i></div>
+            <div class="capsub"><b>不占用上面的上限</b>，也不参与 LRU 淘汰。
+              只有你手动取消才会释放。</div>
+          </div>
+        </div>
+
+        <div class="prow" style="margin-top:14px"><div class="plabel">最大缓存</div>
+          <div class="pval"><select style="width:190px"><option>512 MB</option><option>1 GB</option>
+            <option selected>2 GB（默认）</option><option>5 GB</option><option>10 GB</option>
+            <option>不限制</option></select>
+            <div class="sdesc">只约束<b>临时层</b>。永久缓存不受它限制。</div></div></div>
+        <div class="prow"><div class="plabel">退出时清空</div>
+          <div class="pval"><label class="chk"><input type="checkbox" /> 关闭应用时清空临时缓存</label>
+            <div class="sdesc">同样只针对<b>临时层</b>；永久缓存不会被清掉。</div></div></div>
+        <div class="prow"><div class="plabel">缓存位置</div>
+          <div class="pval"><code>omy-data/cache/remote/</code>（临时）<br>
+            <code>omy-data/cache/pinned/</code>（永久）
+            <div class="sdesc"><b>默认都在应用目录下</b>，跟随便携模式；两层是
+              <b>同父目录下的两个物理目录</b>，所以清空临时层不会误删永久层。</div></div>
+          <button class="btn">更改…</button></div>
+        <div class="prow"><div class="plabel">清理</div>
+          <div class="pval">
+            <!-- 清空按钮必须拆成两个：一个按钮同时清掉两层，
+                 会让用户在想省空间时意外丢掉他特意钉住的离线内容 -->
+            <button class="btn dgr" id="clrtmp">清空临时缓存（释放 1.2 GB）</button>
+            <button class="btn" id="mgperm">管理永久缓存…</button>
+            <div class="sdesc"><b>永久缓存没有「一键清空」</b>，只能在管理列表里逐个取消——
+              它们是用户明确要求留下的内容。</div></div></div>
+
+        <div id="permlist" hidden style="margin-top:6px">
+          <div class="sgh">永久缓存的文件（6 个 · 4.7 GB）</div>
+          <div class="chatlist">
+            <div class="chatrow" style="cursor:default"><span class="av">📌</span>
+              <div class="cmid"><div class="cnm">会议录像 0417.mp4</div>
+                <div class="csub">880 MB · 💬 我的 Telegram › 收藏夹 · 消息 #4789</div></div>
+              <button class="btn" data-unpin="1">取消永久</button></div>
+            <div class="chatrow" style="cursor:default"><span class="av">📌</span>
+              <div class="cmid"><div class="cnm">扫描件.pdf</div>
+                <div class="csub">18 MB · 💬 我的 Telegram › 收藏夹 · 消息 #4821</div></div>
+              <button class="btn" data-unpin="1">取消永久</button></div>
+            <div class="chatrow" style="cursor:default"><span class="av">📌</span>
+              <div class="cmid"><div class="cnm">项目归档.tar.omy</div>
+                <div class="csub">2.1 GB · 🗄️ 家里 NAS › /备份</div></div>
+              <button class="btn" data-unpin="1">取消永久</button></div>
+          </div>
+          <div class="hint"><span>ⓘ</span><div>
+            <b>这个列表是必需的，不是锦上添花。</b>没有它，用户要取消一个文件的永久缓存
+            就只能回到它原来的位置去找——而 Telegram 上那条消息他<b>可能根本找不回来</b>
+            （几十万条消息里的某一条，且搜索搜不到加密文件的真实文件名）。<br>
+            每一行都写明<b>来源位置与消息号</b>，理由同传输管理页。
+          </div></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>三处刻意的差异，都是为了不让用户误判：</b><br>
+      · <b>临时层画进度条，永久层不画。</b>永久缓存没有分母（它由用户钉了多少决定），
+        画成进度条用户就会去找那个不存在的上限，然后以为「快满了」。<br>
+      · <b>清空按钮拆成两个。</b>一个按钮同时清两层，会让想省空间的用户
+        意外丢掉他特意留下的离线内容。<br>
+      · <b>永久层只有逐个取消，没有一键清空。</b>它们是用户明确要求留下的，
+        提供一键清空等于鼓励一次误操作抹掉全部。
+    </div>
+
+    <div class="sech" style="margin-top:26px">
+      <div class="secn">4c · 条目菜单：永久缓存开关，以及那一行告知</div>
+      <div class="secd">开关粒度按<b>文件</b>；开启前先告知要下多少</div>
+    </div>
+    <div class="frame"><div class="flabel"><span>条目菜单 + 确认框 + 详情面板</span>
+      <span>DEC-20 取 C：保存类操作与普通文件一致</span></div>
+      <div class="panel" style="display:flex;gap:26px;flex-wrap:wrap;justify-content:center">
+
+        <div>
+          <div class="pcap">条目菜单（受保护对话里的文件，与普通文件一致）</div>
+          <div class="menu">
+            <div class="mi"><span>👁️</span><span>预览</span></div>
+            <div class="msep"></div>
+            <!-- DEC-20 取 C：不置灰、不标待定，与普通文件完全一样 -->
+            <div class="mi"><span>📥</span><span>解密到本地…</span></div>
+            <div class="mi two">
+              <span class="mico2">📌</span><span class="mtxt">永久缓存此文件</span>
+              <span class="mnote">离线也能打开，不参与自动清理。将下载约 4.8 GB。</span>
+            </div>
+            <div class="mi"><span>🗄️</span><span>从缓存中移除</span></div>
+            <!-- 转发这一项**不能**跟着受保护标记一起撤：它是服务端强制拦截、
+                 有专门错误码，是这件事里唯一确定无疑的部分。
+                 置灰 + 说明而不是消失，否则用户会以为 omy 没做转发。 -->
+            <div class="mi two dis">
+              <span class="mico2">↪️</span><span class="mtxt">转发到其它对话</span>
+              <span class="mnote">该对话禁止转发，这一条是 Telegram 服务端强制的。</span>
+            </div>
+            <div class="msep"></div>
+            <div class="mi dis"><span>🗑️</span><span>删除</span><span class="mh">此对话只读</span></div>
+          </div>
+          <div class="sdesc" style="max-width:274px">
+            菜单项直接写出<b>将下载约 4.8 GB</b>——点开关之前就要知道代价，
+            而不是点完才发现在跑一个几 GB 的任务。
+          </div>
+        </div>
+
+        <div style="flex:1;min-width:330px;max-width:430px">
+          <div class="pcap">开启永久缓存前的确认</div>
+          <div style="background:var(--bg2);border:1px solid var(--border);
+            border-radius:var(--r-l);padding:18px">
+            <div style="font-size:15px;font-weight:600;margin-bottom:10px;display:flex;gap:8px;align-items:center">
+              <span>📌</span><span>永久缓存「家庭录像 2019.mkv」</span></div>
+            <div style="font-size:12.5px;color:var(--fg2);line-height:1.65">
+              将立即下载 <b>约 4.8 GB</b> 到本机并长期保留：
+            </div>
+            <ul style="font-size:12.5px;color:var(--fg2);line-height:1.8;margin:9px 0 0;padding-inline-start:20px">
+              <li>之后<b>断网也能打开</b>，且不会被自动清理掉。</li>
+              <li><b>不占用临时缓存的上限</b>，但会实际占用磁盘空间。</li>
+              <li>保存在 <code>omy-data/cache/pinned/</code>（可在设置里更改）。</li>
+              <li>这是一个<b>真实的下载任务</b>：可在传输管理页暂停、取消、重试。</li>
+            </ul>
+            <div class="prow" style="margin-top:12px;padding-bottom:0;border-bottom:0">
+              <div class="pval">当前可用磁盘 182 GB · 永久缓存已用 4.7 GB</div></div>
+            <div style="display:flex;justify-content:flex-end;gap:9px;margin-top:14px">
+              <button class="btn">取消</button>
+              <button class="btn pri">开始下载并永久缓存</button></div>
+          </div>
+          <div class="sdesc">
+            <b>粒度是「按文件」，不提供「按对话」。</b>对一个几万文件的频道点一下
+            就会无声地开始下几百 GB——任何让下载量不可预期的粒度都不提供。
+          </div>
+        </div>
+
+        <div style="flex:1;min-width:300px;max-width:400px">
+          <div class="pcap">详情面板（那一行告知就在这里）</div>
+          <div style="background:var(--bg2);border:1px solid var(--border);
+            border-radius:var(--r-l);padding:16px">
+            <div style="font-size:14px;font-weight:600">讲座录像.mp4</div>
+            <div class="prow" style="padding-top:9px"><div class="plabel">大小</div>
+              <div class="pval">1.4 GB</div></div>
+            <div class="prow"><div class="plabel">来源</div>
+              <div class="pval">💬 我的 Telegram › 某资源分享频道 · 消息 #9021</div></div>
+            <div class="prow"><div class="plabel">缓存</div>
+              <div class="pval">临时缓存 · 320 MB
+                <label class="chk" style="margin-top:4px"><input type="checkbox" id="pinchk" /> 永久缓存（约 1.4 GB）</label></div></div>
+            <div class="prow"><div class="plabel">播放</div>
+              <div class="pval">⚡ 直通</div></div>
+            <!-- 那一行告知：低视觉权重、次要文字色、不用 danger 色、不弹窗、不展开成一段。
+                 DEC-20 取 C 后它只是一个事实陈述，不是一道关卡。 -->
+            <div class="prow"><div class="plabel">备注</div>
+              <div class="pval" id="nfnote">官方已禁止保存此内容</div></div>
+            <div style="display:flex;gap:9px;margin-top:14px">
+              <button class="btn">预览</button>
+              <button class="btn">解密到本地…</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>那一行告知的口径（DEC-20 取 C）：</b>只在<b>详情面板</b>里放一行
+      「官方已禁止保存此内容」。硬约束是<b>不用红色</b>（不占 danger / error 色）、
+      <b>不弹窗</b>、<b>不写大段说明</b>——它用的是与「大小」「来源」同级的
+      次要文字样式，视觉权重与一条普通元信息相同。<br>
+      <b>为什么保留这一行而不是完全不提：</b>它是一个客观事实，用户有权知道；
+      但既然已决定与普通文件同等对待，它就<b>不该长成一道关卡</b>。
+      「解密到本地」与普通文件完全一样可用，不置灰、不标待定、不加二次确认。
+    </div>
+  </div>
+
+  <!-- ============ 5. 搜索 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">5 · 桌面：服务端搜索与本地过滤必须一眼可分</div>
+      <div class="secd">切换下面的分段控件，看提示条、结果来源与角标如何变化</div>
+    </div>
+    <div class="note dgr">
+      <b>两条红线（文档 §5.3、§9.4 的 L19）：</b><br>
+      · <b>搜索词会被发送到 Telegram 服务器。</b>用户在 omy 里搜「离婚协议」，这个词就到了服务端。
+        所以<b>默认是本地过滤</b>，服务端搜索必须用户<b>显式切换</b>并看到提示。<br>
+      · <b>加密文件的真实文件名永远搜不到，而这是对的。</b>要让服务端能搜到文件名，
+        就得把明文文件名写进消息说明——那等于把 omy 辛苦加密掉的文件名主动上传。
+        <b>比不加密更糟，因为用户以为自己是安全的。</b>
+    </div>
+
+    <div class="frame"><div class="flabel"><span>桌面 · 搜索</span><span id="srchlab">当前：本地过滤（默认）</span></div>
+      <div class="app" style="height:470px;grid-template-columns:1fr">
+        <div class="main">
+          <div class="searchbar">
+            <span>🔍</span>
+            <input class="sinput" type="text" id="q" value="录像" />
+            <div class="seg" id="srchseg">
+              <button class="on" data-m="local">过滤已加载的</button>
+              <button data-m="server">搜索整个对话</button>
+            </div>
+            <select style="width:120px"><option>全部类型</option><option>文档</option>
+              <option>视频</option><option>图片</option><option>音乐</option></select>
+          </div>
+
+          <div class="banner info" id="srchLocal">
+            <span>🔎</span><div class="bx"><b>正在过滤本机已加载的 36 项</b>，按<b>解密后的真实文件名</b>匹配。
+              <b>搜索词不会离开本机。</b>没滚动到的内容不在范围内——这就是为什么旁边有「搜索整个对话」。</div>
+          </div>
+          <div class="banner warn" id="srchServer" hidden>
+            <span>☁️</span><div class="bx"><b>搜索词「录像」已发送到 Telegram 服务器</b><br>
+              服务端搜的是<b>消息文字与说明</b>，<b>不保证匹配文件名</b>（官方文档未做此承诺，
+              omy 也未实测——所以界面上不写「按文件名搜索」）。
+              <b>加密文件的真实文件名搜不到</b>，因为 omy 从不把它上传。
+              服务端结果只用来缩小候选集，精确匹配仍在本地做。</div>
+          </div>
+
+          <div class="content">
+            <div id="resLocal">
+              <div class="rsep">本机已加载的 36 项中匹配到 2 项</div>
+              <div class="grid">
+                <div class="card" data-state="unlocked" data-src="local">
+                  <div class="thumb">🎬<span class="cachebadge">已缓存</span></div>
+                  <div class="cname">家庭录像 2019.mkv</div><div class="cmeta">4.8 GB · 已解锁</div>
+                  <div class="corigin">收藏夹 · 消息 #1204</div></div>
+                <div class="card" data-state="unlocked" data-src="local">
+                  <div class="thumb">🎬</div>
+                  <div class="cname">旧录像备份.tar.omy</div><div class="cmeta">11 GB · 已解锁</div>
+                  <div class="corigin">我的备份频道 · 消息 #77</div></div>
+              </div>
+              <div class="hint"><span>ⓘ</span><div>
+                还有 <b>1 个加密文件</b>因为<b>未用当前密码解锁</b>而无法参与按名搜索——
+                用磁盘上的密文名去匹配等于拿乱码当明文搜，还会泄露信息。
+                <b>解锁对应密码后它会自动出现在结果里。</b></div></div>
+            </div>
+
+            <div id="resServer" hidden>
+              <div class="rsep">☁️ 来自服务端搜索 · 该对话内 14 条匹配（按消息文字）</div>
+              <div class="grid">
+                <div class="card" data-state="unlocked" data-src="server">
+                  <div class="thumb">🎬<span class="srvbadge">☁️</span></div>
+                  <div class="cname">家庭录像 2019.mkv</div><div class="cmeta">4.8 GB · 已解锁</div>
+                  <div class="corigin">消息文字含「录像」· 消息 #1204</div></div>
+                <div class="card probing" data-state="probing" data-src="server">
+                  <div class="thumb">⏳<span class="srvbadge">☁️</span></div>
+                  <div class="cname"><span class="skel" style="display:block;width:78%"></span></div>
+                  <div class="cmeta">识别中…</div>
+                  <div class="corigin">消息 #9902</div></div>
+                <div class="card" data-state="plain" data-src="server">
+                  <div class="thumb">🎞️<span class="srvbadge">☁️</span></div>
+                  <div class="cname">录像片段.mp4</div><div class="cmeta">220 MB · 未加密</div>
+                  <div class="corigin">消息 #8130</div></div>
+                <!-- 跨对话搜索会把别的对话的命中混进同一屏，
+                     所以「永久缓存」这类**按文件**的标记必须跟到单个条目上；
+                     只靠「当前对话」判定会在这里失效——结果屏没有「当前对话」。 -->
+                <div class="card pinned" data-state="unlocked" data-src="server" data-pinned="1">
+                  <div class="thumb">🎬<span class="srvbadge">☁️</span><span class="pinbadge">📌 永久</span></div>
+                  <div class="cname">讲座录像.mp4</div><div class="cmeta">1.4 GB · 永久缓存</div>
+                  <div class="corigin">某资源分享频道 · 消息 #9021</div></div>
+              </div>
+              <div class="rsep" style="margin-top:14px">本机精筛（按真实文件名）· 2 项</div>
+              <div class="hint"><span>ⓘ</span><div>
+                <b>两段式搜索：</b>服务端先按类型与文字缩小候选集（快、省流量），
+                本地再按解出来的真实文件名精筛。<b>两段的结果都要标明来源</b>，
+                否则用户无法解释「为什么这个明明在服务端搜到了却不在最终列表里」。</div></div>
+              <div class="hint"><span>📌</span><div>
+                <b>搜索结果会混进别的对话的文件</b>（上方带「永久」角标那一项来自另一个频道）。
+                这意味着<b>按文件的标记必须跟到每个条目上，不能只靠「当前所在对话」判定</b>——
+                跨对话的结果屏根本没有「当前对话」这个概念。
+                没想到这一点的后果是：对话内浏览时角标正常，一搜索就全没了。<br>
+                这也是每个条目都要携带 <b>(对话, 消息号)</b> 的又一个理由——
+                与 §5.6 的 <code>file_reference</code> 刷新用的是同一份信息。</div></div>
+            </div>
+          </div>
+
+          <div class="statusbar">
+            <span id="sbsrch">本地过滤 · 范围：已加载的 36 项</span>
+            <span class="spacer"></span>
+            <span id="sbcap">此位置支持服务端搜索</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>能力位图新增的那一位（<code>search</code>）就投影在这里。</b>
+      本地目录与网盘位置 <code>search=false</code>，搜索框只有「过滤已加载的」一种语义，
+      分段控件<b>整个不出现</b>（不是置灰）；Telegram <code>search=true</code> 时才多出「搜索整个对话」。<br>
+      不加这一位的后果是二选一：要么服务端搜索白白浪费（在上万条消息的频道里退化成前端过滤，
+      几乎无用），要么在前端写 <code>if (place.kind === 'telegram')</code> 特判——
+      后者会让约束散落到十几个地方，漏一处就是一个骗人的搜索框。
+    </div>
+  </div>
+
+  <!-- ============ 6. 上传 ============ -->
+  <div class="sec" data-plat="pc">
+    <div class="sech">
+      <div class="secn">6 · 桌面：上传到某个对话</div>
+      <div class="secd">目标对话只列可写的；上限来自服务端配置，不硬编码</div>
+    </div>
+    <div class="frame"><div class="flabel"><span>对话框</span><span>上传 2 个文件</span></div>
+      <div class="panel" style="display:flex;justify-content:center">
+        <div style="width:100%;max-width:470px;background:var(--bg2);border:1px solid var(--border);
+          border-radius:var(--r-l);padding:18px">
+          <div style="font-size:15px;font-weight:600;margin-bottom:14px">上传到 Telegram</div>
+
+          <div class="prow" style="padding-top:0"><div class="plabel">目标对话</div>
+            <div class="pval"><select style="width:100%">
+              <option>🔖 收藏夹（只有你能看到）</option>
+              <option>📢 我的备份频道（你是管理员）</option>
+              <option>👥 家庭相册群（4 位成员）</option>
+            </select>
+            <div class="sdesc"><b>只列出你能写入的对话。</b>只读频道不出现在这里——
+              放进去再报错等于让用户白填一遍。</div></div></div>
+
+          <div class="sgh" style="margin-top:14px">将要上传的文件</div>
+          <div class="chatlist">
+            <div class="chatrow" style="cursor:default"><span class="av">📦</span>
+              <div class="cmid"><div class="cnm" style="font-family:ui-monospace,monospace;font-size:12px">MFRGG2LONFXW4ZDJ.omy</div>
+                <div class="csub">1.2 GB · 原名「家庭录像 2020.mkv」（仅本机可见）</div></div></div>
+            <div class="chatrow" style="cursor:default"><span class="av">📦</span>
+              <div class="cmid"><div class="cnm" style="font-family:ui-monospace,monospace;font-size:12px">NB2HI4DTHIXS653X.omy</div>
+                <div class="csub">340 MB · 原名「体检报告.pdf」（仅本机可见）</div></div></div>
+          </div>
+          <div class="note dgr" style="margin:12px 0 0">
+            <b>上传用的是磁盘上的（已加密的）文件名，说明文字留空。</b>
+            这不是偷懒：你开了文件名加密，磁盘上就是那串密文名；
+            若 omy「贴心地」用解密后的真名上传，<b>等于把加密掉的文件名主动交给服务端</b>，
+            前面的加密就白做了。上面第二行的原名<b>只显示给你看，不会发出去</b>。
+          </div>
+
+          <div class="prow" style="margin-top:6px"><div class="plabel">单文件上限</div>
+            <div class="pval">约 1.95 GB（当前账号）
+              <div class="sdesc">这个数字<b>从服务端配置读取</b>，不写死。
+                Telegram 会调整它——写死的后果是某天上限提高了 omy 反而拦住你，
+                或者调低后传到一半才失败。会员账号约 3.9 GB。</div></div></div>
+
+          <div class="prow"><div class="plabel">上传后</div>
+            <div class="pval"><label class="chk"><input type="checkbox" /> 删除本机的加密文件</label>
+              <div class="sdesc">默认不勾。勾选时会<b>先校验远端文件完整</b>（比对大小 + 复读文件头）再删；
+                校验不过就保留。</div></div></div>
+
+          <div style="display:flex;justify-content:flex-end;gap:9px;margin-top:16px">
+            <button class="btn">取消</button><button class="btn pri">开始上传</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame"><div class="flabel"><span>传输中 / 中断</span><span>进度与中断的如实报告</span></div>
+      <div class="panel">
+        <div class="tprog">
+          <div class="tline"><span>⬆️ MFRGG2LONFXW4ZDJ.omy → 🔖 收藏夹</span><span>62% · 2.1 MB/s · 剩余约 3 分</span></div>
+          <div class="bar" style="max-width:none"><i style="width:62%"></i></div>
+          <div class="sdesc">已传 762 MB / 1.2 GB　　<button class="btn" style="padding:2px 9px;min-height:28px">取消</button></div>
+        </div>
+        <div class="banner bad" style="margin-top:14px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:var(--r-s)">
+          <span>⛔</span><div class="bx"><b>上传已中断，需要重新开始</b><br>
+            应用被系统挂起太久，已上传的分片在 Telegram 服务端<b>已经过期</b>——
+            它们的暂存寿命只有几分钟到几小时，<b>跨天续传做不到</b>。
+            界面如实报「需重传」，<b>不假装还能续</b>：假装能续的结果是进度条走到 100% 才失败。</div>
+          <button class="bact">重新上传</button>
+        </div>
+        <div class="banner warn" style="margin-top:10px;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--r-s)">
+          <span>🐌</span><div class="bx"><b>上传速度受限（非会员账号）</b>——协议层面的限制，
+            不是 omy 或你的网络出了问题。传输会继续，只是慢。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 7. 错误与降级态 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">7 · 错误与降级态（不是可选项）</div>
+      <div class="secd">点下面任一态，回到第 4 节看横幅 / 状态栏 / 卡片三处同步变化</div>
+    </div>
+    <div class="ctrls" id="errseg" style="margin-top:12px">
+      <button class="tbtn on" data-e="none">正常</button>
+      <button class="tbtn" data-e="flood">限流等待</button>
+      <button class="tbtn" data-e="auth">会话失效</button>
+      <button class="tbtn" data-e="apiid">内置 api_id 被封</button>
+      <button class="tbtn" data-e="proxy">代理地址格式不对</button>
+      <button class="tbtn" data-e="ref">文件引用过期（自愈中）</button>
+      <button class="tbtn" data-e="net">网络不可达</button>
+    </div>
+    <div class="note" id="errnote">
+      当前：<b>正常</b>。切换上面的按钮观察差异。
+    </div>
+
+    <table class="mx">
+      <thead><tr><th style="width:136px">状态</th><th>用户看到什么</th><th>可不可以重试</th><th>为什么必须区分开</th></tr></thead>
+      <tbody>
+        <tr><td><b>限流等待</b><br><code>FLOOD_WAIT_X</code></td>
+          <td>位置级横幅 + 倒计时；卡片转「等待中」；<b>按钮禁用</b></td>
+          <td class="mid">自动，倒计时结束后恢复。手动重试只会更糟</td>
+          <td>不给倒计时，用户就会疯狂点刷新，把等待时间越点越长</td></tr>
+        <tr><td><b>下载限速</b><br>非会员</td>
+          <td>状态栏常驻一行「下载速度受限（非会员账号）」</td>
+          <td class="yes">不是错误，传输照常进行</td>
+          <td>不说明的话用户只会得出「omy 很慢」；而 omy <b>不弹会员购买引导</b></td></tr>
+        <tr><td><b>会话失效</b><br>被踢 / 被吊销</td>
+          <td>位置级横幅 + <b>「重新登录」</b>按钮；侧栏位置标红点</td>
+          <td class="no"><b>不可重试</b>，会话已被服务端作废</td>
+          <td>当成可重试错误会让界面无限转圈，而真正要做的是重新登录</td></tr>
+        <tr><td><b>内置 api_id 被封</b><br><code>API_ID_PUBLISHED_FLOOD</code></td>
+          <td>位置级横幅 + <b>「填写自己的 api_id…」</b>按钮；侧栏位置标红点；
+            <b>已缓存内容仍可浏览</b></td>
+          <td class="no"><b>不可重试</b>。换自己的 api_id 是唯一出路</td>
+          <td>它与另外几条的归因完全不同：<b>不是你的账号、不是你的网络、也不是 omy 有 bug</b>，
+            而是一份共用凭据被别人滥用连带封了。混进「网络不可达」会让用户白等、
+            混进「会话失效」会让用户反复重新登录——<b>两条路都走不通，
+            而真正该做的事一个字都没提到</b></td></tr>
+        <tr><td><b>代理地址格式不对</b><br><code>socks5://</code> 之外的 scheme</td>
+          <td>位置级横幅 + <b>「去修正代理地址…」</b>按钮；输入框就地给出改写建议</td>
+          <td class="no"><b>不可重试</b>。要改配置，重试一万次都是同一个结果</td>
+          <td><b>底层错误说的是「scheme 不支持」，而用户会把它读成「网络有问题」</b>，
+            然后去查路由、换节点、重装应用。真正要做的只是把
+            <code>http://</code> 换成 <code>socks5://</code>——
+            而系统代理设置里给的恰好就是前者</td></tr>
+        <tr><td><b>文件引用过期</b></td>
+          <td><b>正常情况下什么都看不到</b>（驱动内部自愈）；只在刷新也失败时转成「文件已被删除」</td>
+          <td class="yes">驱动自动换新凭据重试一次</td>
+          <td>把它冒到界面上就变成「拖到后面就播不了」，而用户完全无从判断原因</td></tr>
+        <tr><td><b>网络不可达</b></td>
+          <td>位置级横幅 + 「重试连接」；<b>缓存里有的照常能打开</b></td>
+          <td class="yes">可重试</td>
+          <td><b>最糟的误导是把它混进「密码不对」</b>——用户会反复试密码，而问题在网络</td></tr>
+        <tr><td><b>不属于当前密码</b></td>
+          <td>🔒 卡片 + 「不属于当前密码」</td>
+          <td>—</td>
+          <td>这不代表文件损坏或密码错误，它可能属于另一个密码集</td></tr>
+        <tr><td><b>永久缓存进行中 / 失败</b></td>
+          <td>传输管理页里一条独立任务；卡片上 📌 角标只在<b>下载完成后</b>才出现</td>
+          <td class="yes">可暂停 / 取消 / 重试</td>
+          <td>它是一次<b>真实的下载任务</b>，不是一个标记位。做成「点完就静默后台跑」的开关，
+            用户既看不到几 GB 的进度，也无法中止——这正是第 4b 节那个汇总页存在的理由</td></tr>
+      </tbody>
+    </table>
+    <div class="note acc">
+      <b>为什么 <code>API_ID_PUBLISHED_FLOOD</code> 的横幅必须带一个按钮：</b>
+      其它错误态的正确做法是「说清原因 + 等待或重试」，而这一条<b>等和重试都没用</b>——
+      凭据被封是服务端状态，不会自己恢复，omy 发个新版也只是换一份同样会被封的公开凭据。
+      用户唯一能做的事是换成自己的 api_id，所以那个入口必须<b>直接出现在错误现场</b>，
+      而不是让他去设置里翻。<br>
+      <b>同时要如实说明这不是他的错</b>：不写清「所有用内置值的用户同时遇到」，
+      用户会以为是自己账号出了问题，甚至去官方客户端里改设置——白费工夫。<br>
+      <b>已缓存内容仍可浏览</b>，与网络不可达同一处理：不要因为连不上就把整个位置变成砖。
+    </div>
+    <div class="note">
+      <b>为什么「会话失效」的文案里要点名「两台机器同时用同一份配置」：</b>
+      omy 的配置与缓存就放在可执行文件旁（便携优先），
+      <b>把整个 <code>omy-data</code> 拷到另一台机器一起跑，是极其可能发生的</b>。
+      而它的后果不是报个错重试，是<b>会话被服务端作废、必须重新登录</b>。
+      只说「登录已失效」，用户永远猜不到是自己拷贝目录导致的。
+    </div>
+  </div>
+
+  <!-- ============ 8. 移动端 ============ -->
+  <div class="sec" data-plat="mobile">
+    <div class="sech">
+      <div class="secn">8 · 移动端</div>
+      <div class="secd">与桌面共用组件，只换外壳；登录方式的<b>推荐顺序在移动端要反过来</b></div>
+    </div>
+    <div class="note acc">
+      <b>移动端与桌面最实质的一处差异：扫码登录的前提不成立。</b>
+      桌面上「用手机扫电脑屏幕」很自然；而 omy 本身就装在这台手机上，
+      要扫码得再找一台已登录的设备。所以<b>移动端默认推荐手机号登录</b>，
+      扫码降为次选并注明「需要另一台已登录的设备」。<br>
+      移动端另有一条可能更顺的路径：点一个链接直接唤起本机已安装的官方 Telegram 去确认登录。
+      <b>但这条未经核实</b>（omy 未实测唤起行为），所以原型里标为「待核实」而不是画成可用按钮——
+      画出来就会有人照着实现，然后发现唤不起来。
+    </div>
+    <div class="phones">
+
+      <!-- ① 移动端向导：风险告知 -->
+      <div class="phone">
+        <div class="pcap">① 向导 1/3 · 风险告知（唯一拦人的一步）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">连接 Telegram</span>
+            <span class="badge">1/3</span></div>
+          <div class="mbody">
+            <div class="riskbox">
+              <div class="riskh"><span>🚨</span><span>账号会被置于观察状态</span></div>
+              <div class="quote">“all accounts that sign up or log in using unofficial Telegram
+                API clients are automatically put under observation”</div>
+              <ul>
+                <li>登录<b>这个动作本身</b>就会触发，与之后做什么无关。</li>
+                <li>omy 将持有你账号的<b>完整权限</b>。</li>
+                <li>凭据泄露<b>等于账号被接管</b>；拿不到系统密钥时宁可不保存。</li>
+                <li>可随时在官方客户端<b>终止这个会话</b>。</li>
+              </ul>
+            </div>
+            <label class="chk" style="margin-top:14px;align-items:flex-start">
+              <input type="checkbox" style="margin-top:4px" /> 我已阅读并了解上述风险，自愿继续</label>
+            <div class="sdesc">omy 是第三方应用，通过 Telegram API 访问你的账号，与 Telegram 官方无关。</div>
+          </div>
+          <div class="wizfoot"><button class="btn">取消</button><button class="btn pri" disabled>继续</button></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ①b 连通性自检 + 代理：与桌面同一份逻辑，只换外壳。
+           手机上同样是「不配代理就一直超时」，不能只在桌面做 -->
+      <div class="phone">
+        <div class="pcap">①b 连通性自检 → 需要代理时就地展开</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">连接 Telegram</span>
+            <span class="badge">2/3</span></div>
+          <div class="mbody">
+            <div class="conn" data-st="proxy" style="margin-top:0">
+              <span class="ci">🧦</span>
+              <div class="cb"><b>直连 Telegram 不通，需要配置代理才能继续。</b>
+                这在部分网络环境下是正常的，不代表 omy 或你的网络出了问题。</div>
+            </div>
+            <div class="mgh">代理设置</div>
+            <div class="seg" style="width:100%;margin-bottom:10px">
+              <button style="flex:1">直连</button>
+              <button class="on" style="flex:1">使用代理</button>
+            </div>
+            <input type="text" value="socks5://127.0.0.1:7897" style="width:100%"
+              spellcheck="false" />
+            <div class="pxok" style="margin-top:6px">✓ 格式可用</div>
+            <div class="sdesc">只支持 <code>socks5://主机:端口</code>。
+              <b>系统代理里抄来的通常是 <code>http://…</code></b>，开头要换掉。</div>
+            <button class="btn" style="margin-top:10px;width:100%">从系统设置读取</button>
+            <div class="hint" style="margin-top:10px"><span>ⓘ</span><div>
+              读到后会<b>自动改写为 <code>socks5://</code></b>，不原样透传——
+              直接透传一定失败。</div></div>
+          </div>
+          <div class="wizfoot"><button class="btn">上一步</button>
+            <button class="btn pri">继续登录</button></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>🔀</i>传输</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ② 移动端登录方式 -->
+      <div class="phone">
+        <div class="pcap">② 向导 2/3 · 登录（推荐顺序与桌面相反）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">登录账号</span>
+            <span class="badge">2/3</span></div>
+          <div class="mbody">
+            <div class="opt sel" style="margin-bottom:9px"><span>📱</span>
+              <div><div class="ot">手机号 + 验证码<span class="rec">移动端首选</span></div>
+                <div class="od"><b>你已有其他登录设备时，验证码会发到那台设备的 Telegram 里，
+                  不是短信。</b>无法强制走短信。</div></div></div>
+            <div class="opt" style="margin-bottom:9px"><span>📷</span>
+              <div><div class="ot">扫码登录</div>
+                <div class="od">omy 就在这台手机上，扫码需要<b>另一台已登录的设备</b>来扫。
+                  桌面端则相反，扫码是主推。</div></div></div>
+            <div class="hint" style="margin-top:4px"><span>⌨️</span><div>
+              验证码<b>不一定是数字</b>（可能是一个密语或一句话），
+              所以移动端<b>不能假定弹数字键盘</b>，也不能把输入框限制成数字。</div></div>
+            <div class="opt dis" style="margin-bottom:9px"><span>🔗</span>
+              <div><div class="ot">唤起本机 Telegram 确认<span class="newcap">待核实</span></div>
+                <div class="od">理论上可行（登录令牌本就是一个可点链接），但未实测唤起行为，
+                  因此暂不提供，避免做出一个点了没反应的按钮。</div></div></div>
+            <div class="opt dis"><span>🤖</span>
+              <div><div class="ot">机器人 Token（不提供）</div>
+                <div class="od">机器人接口没有列目录与搜索，下载还有 20 MB 上限——做不到，不是没做。</div></div></div>
+          </div>
+          <div class="wizfoot"><button class="btn">上一步</button><button class="btn pri">下一步</button></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ③ 云密码 -->
+      <div class="phone">
+        <div class="pcap">③ 云密码（两条登录路径共用）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">两步验证</span>
+            <span class="badge">2/3</span></div>
+          <div class="mbody">
+            <div style="font-size:13px;margin-bottom:5px">这个账号启用了两步验证</div>
+            <div class="sdesc" style="margin-bottom:12px">请输入你的 Telegram <b>云密码</b>——
+              不是刚收到的验证码，也不是 omy 的密码。</div>
+            <input type="password" placeholder="Telegram 云密码" style="width:100%" />
+            <div class="sdesc">密码提示（来自 Telegram）：<b>「宠物名字 + 生日」</b><br>
+              没有提示时这一行整行不显示，不放一个空的「提示：」。</div>
+            <div class="note" style="margin-top:14px">
+              <b>它是一个独立子步，不挂在手机号流程下面。</b>扫码路径开了两步验证同样会走到这里，
+              两条路径共用同一个组件——分成两份迟早出现「手机号那边修了的 bug 扫码这边还在」。</div>
+          </div>
+          <div class="wizfoot"><button class="btn">上一步</button><button class="btn pri">登录</button></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ④ 对话列表 = 目录 -->
+      <div class="phone">
+        <div class="pcap">④ 对话即目录（位置根）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">☰</button><span class="mtitle">💬 我的 Telegram</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="mpath">位置根 · 5 个对话</div>
+          <div class="mbody">
+            <div class="mlist">
+              <div class="lrow"><span class="lic">🔖</span><div class="lmid">
+                <div class="lnm">收藏夹</div><div class="lsz">1,204 个文件 · 可写</div></div><span class="mra">›</span></div>
+              <div class="lrow"><span class="lic">📢</span><div class="lmid">
+                <div class="lnm">我的备份频道</div><div class="lsz">8,431 个文件 · 可写</div></div><span class="mra">›</span></div>
+              <div class="lrow"><span class="lic">📢</span><div class="lmid">
+                <div class="lnm">某公开资料频道</div><div class="lsz">62,099 个文件</div></div>
+                <span class="ro">只读</span><span class="mra">›</span></div>
+              <div class="lrow"><span class="lic">👥</span><div class="lmid">
+                <div class="lnm">家庭相册群</div><div class="lsz">3,102 个文件 · 可写</div></div><span class="mra">›</span></div>
+              <!-- 按 DEC-20 取 C：受保护对话在列表里**不加任何徽标**，与普通对话一致 -->
+              <div class="lrow"><span class="lic">📢</span><div class="lmid">
+                <div class="lnm">某资源分享频道</div>
+                <div class="lsz">41,663 个文件</div></div>
+                <span class="ro">只读</span><span class="mra">›</span></div>
+            </div>
+            <div class="hint"><span>ⓘ</span><div>只显示你在设置里选中的对话。
+              <b>这是显示范围，不是权限范围</b>——omy 用的是你账号的完整权限。</div></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑤ 懒加载 + 限流 -->
+      <div class="phone">
+        <div class="pcap">⑤ 对话内：懒加载骨架 + 限流等待</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">🔖 收藏夹</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="banner warn" style="padding:8px 10px;font-size:11px">
+            <span>⏳</span><div class="bx"><b>需等待 37 秒</b>（服务端限流）。已暂停识别，会自动恢复。</div></div>
+          <div class="mbody">
+            <div class="mgrid">
+              <div class="card" data-state="unlocked"><div class="thumb">🎬<span class="cachebadge">缓</span></div>
+                <div class="cname">家庭录像</div><div class="cmeta">4.8 GB</div>
+                <div class="corigin">#1204</div></div>
+              <div class="card locked" data-state="locked"><div class="thumb">🔒</div>
+                <div class="cname">加密文件</div><div class="cmeta">非当前密码</div>
+                <div class="corigin">#3907</div></div>
+              <div class="card waiting" data-state="waiting"><div class="thumb">⏳</div>
+                <div class="cname" style="color:var(--fg2)">等待中</div><div class="cmeta">限流暂停</div>
+                <div class="corigin">#4820</div></div>
+              <div class="card probing" data-state="probing"><div class="thumb">⏳</div>
+                <div class="cname"><span class="skel" style="display:block;width:80%"></span></div>
+                <div class="cmeta">识别中…</div><div class="corigin">#4819</div></div>
+              <div class="card failed" data-state="failed"><div class="thumb">⚠️</div>
+                <div class="cname">未能读取</div><div class="cmeta">点击重试</div>
+                <div class="corigin">#2213</div></div>
+              <div class="card" data-state="unlocked"><div class="thumb">🎵</div>
+                <div class="cname">录音</div><div class="cmeta">42 MB</div>
+                <div class="corigin">#4790</div></div>
+            </div>
+            <div style="text-align:center;margin-top:12px">
+              <span class="skel" style="display:inline-block;width:70%;height:9px"></span>
+              <div class="sdesc">向下滚动继续加载（每次 30 条）</div></div>
+          </div>
+          <div class="statusbar" style="font-size:10.5px">
+            <span>已加载 36 个（未列完）</span><span class="spacer"></span><span>🐌 受限</span></div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑥ 长按动作面板（只读对话） -->
+      <div class="phone">
+        <div class="pcap">⑥ 长按 → 动作面板（只读对话）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">📢 某公开资料频道</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="mpath">💬 我的 Telegram › 某公开资料频道
+            <span class="ro" style="margin-inline-start:6px">只读</span></div>
+          <div class="mbody">
+            <div class="mlist">
+              <div class="lrow"><span class="lic">🎬</span><div class="lmid">
+                <div class="lnm">讲座录像.mp4</div><div class="lsz">1.4 GB · 已解锁</div></div></div>
+              <div class="lrow"><span class="lic">📄</span><div class="lmid">
+                <div class="lnm">资料合集.pdf</div><div class="lsz">86 MB · 未加密</div></div></div>
+            </div>
+          </div>
+          <div class="sheet">
+            <div class="sheetc">
+              <div class="grab"></div>
+              <div class="sheeth">🎬 讲座录像.mp4 <span class="ro">此对话只读</span></div>
+              <div class="si"><span>👁️</span><span>预览</span></div>
+              <div class="si"><span>📥</span><span>解密到本地…</span></div>
+              <div class="si"><span>🗄️</span><span>从缓存中移除</span></div>
+              <div class="si dis"><span>🗑️</span><span>删除</span><span class="mh">此对话只读</span></div>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑦ 移动端传输管理：与桌面同一份汇总视图，只换外壳 -->
+      <div class="phone">
+        <div class="pcap">⑦ 传输管理（底栏「传输」一格）</div>
+        <div class="screen">
+          <div class="mtop"><span class="mtitle">传输管理</span>
+            <button class="mico" aria-label="全部暂停">⏸</button>
+            <button class="mico" aria-label="更多">⋮</button></div>
+          <div style="padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg2)">
+            <div class="seg" style="width:100%">
+              <button class="on" style="flex:1">全部</button>
+              <button style="flex:1">进行中</button>
+              <button style="flex:1">已完成</button></div>
+          </div>
+          <div class="mbody" style="padding:0">
+            <div class="tskgrp">上传</div>
+            <!-- 移动端把五列压成两行：窄屏下强行并排会让每列都只剩十几像素。
+                 但**来源那一行必须留着**——汇总视图里不写来源就分不清是哪个任务。 -->
+            <div class="lrow" style="border-bottom:1px solid var(--border);align-items:flex-start">
+              <span class="lic">⬆️</span>
+              <div class="lmid"><div class="lnm">MFRGG2LONFXW4ZDJ.omy</div>
+                <div class="lsz">→ 收藏夹 · 62% · 2.1 MB/s</div>
+                <div class="tskbar" style="margin-top:5px"><i style="width:62%"></i></div></div>
+              <button class="tbtn2" aria-label="暂停">⏸</button>
+              <button class="tbtn2" aria-label="取消">✕</button></div>
+
+            <div class="tskgrp">下载</div>
+            <div class="lrow" style="border-bottom:1px solid var(--border);align-items:flex-start">
+              <span class="lic">⬇️</span>
+              <div class="lmid"><div class="lnm">家庭录像 2019.mkv</div>
+                <div class="lsz">← 收藏夹 #1204 · 34%</div>
+                <div class="tskbar" style="margin-top:5px"><i style="width:34%"></i></div></div>
+              <button class="tbtn2" aria-label="暂停">⏸</button>
+              <button class="tbtn2" aria-label="取消">✕</button></div>
+            <div class="lrow" style="border-bottom:1px solid var(--border);align-items:flex-start">
+              <span class="lic">⏳</span>
+              <div class="lmid"><div class="lnm">讲座录像.mp4</div>
+                <div class="lsz" style="color:var(--warn)">限流等待 37s · 会自动恢复</div>
+                <div class="tskbar" style="margin-top:5px"><i style="width:8%;background:var(--warn)"></i></div></div>
+              <button class="tbtn2" aria-label="取消">✕</button></div>
+
+            <div class="tskgrp">永久缓存</div>
+            <div class="lrow" style="border-bottom:1px solid var(--border);align-items:flex-start">
+              <span class="lic">📌</span>
+              <div class="lmid"><div class="lnm">扫描件.pdf</div>
+                <div class="lsz">永久缓存 · 88% · 18 MB</div>
+                <div class="tskbar" style="margin-top:5px"><i style="width:88%"></i></div></div>
+              <button class="tbtn2" aria-label="暂停">⏸</button>
+              <button class="tbtn2" aria-label="取消">✕</button></div>
+
+            <div class="caprow" style="padding:12px">
+              <div class="capbox">
+                <div class="capttl">🗄️ 临时缓存</div>
+                <div class="capnum">1.2 / 2.0 GB</div>
+                <div class="capbar tmp"><i style="width:60%"></i></div>
+                <div class="capsub">按 LRU 自动淘汰</div>
+              </div>
+              <div class="capbox">
+                <div class="capttl">📌 永久缓存</div>
+                <div class="capnum">4.7 GB（6 个）</div>
+                <div class="capsub"><b>不占上面的上限</b>，只能手动取消</div>
+              </div>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab on"><i>🔀</i>传输</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑦b 移动端：条目动作面板里的永久缓存开关 + 那一行告知 -->
+      <div class="phone">
+        <div class="pcap">⑦b 长按 → 永久缓存开关 + 详情里那一行告知</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button>
+            <span class="mtitle">📢 某资源分享频道</span>
+            <button class="mico">🔍</button><button class="mico">⋮</button></div>
+          <div class="mpath">💬 我的 Telegram › 某资源分享频道
+            <span class="ro" style="margin-inline-start:6px">只读</span></div>
+          <div class="mbody">
+            <div class="mgrid">
+              <div class="card" data-state="unlocked">
+                <div class="thumb">🎬</div>
+                <div class="cname">讲座录像</div><div class="cmeta">1.4 GB</div>
+                <div class="corigin">#9021</div></div>
+              <div class="card pinned" data-state="plain" data-pinned="1">
+                <div class="thumb">📄<span class="pinbadge">📌</span></div>
+                <div class="cname">资料合集</div><div class="cmeta">永久缓存</div>
+                <div class="corigin">#9019</div></div>
+              <div class="card locked" data-state="locked">
+                <div class="thumb">🔒</div>
+                <div class="cname">加密文件</div><div class="cmeta">非当前密码</div>
+                <div class="corigin">#8877</div></div>
+            </div>
+            <div class="sdesc">这一屏与普通对话<b>看不出区别</b>——按 DEC-20 取 C，
+              受保护内容不再有任何醒目标记。告知收敛到详情面板里的一行次要文字
+              （见下方动作面板的最后一行）。</div>
+          </div>
+          <div class="sheet">
+            <div class="sheetc">
+              <div class="grab"></div>
+              <div class="sheeth">🎬 讲座录像.mp4 · 1.4 GB</div>
+              <div class="si"><span>👁️</span><span>预览</span></div>
+              <!-- 与普通文件一致：不置灰、不标待定、不加二次确认 -->
+              <div class="si"><span>📥</span><span>解密到本地…</span></div>
+              <div class="si"><span>📌</span><span>永久缓存此文件</span>
+                <span class="mh">约 1.4 GB</span></div>
+              <div class="si"><span>🗄️</span><span>从缓存中移除</span></div>
+              <div class="si dis"><span>↪️</span><span>转发</span>
+                <span class="mh">服务端禁止</span></div>
+              <div class="si dis"><span>🗑️</span><span>删除</span>
+                <span class="mh">此对话只读</span></div>
+              <!-- 那一行告知：次要文字色、不用 danger、不弹窗、不展开成一段 -->
+              <div class="sheetnote" style="padding-top:8px">官方已禁止保存此内容</div>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>🔀</i>传输</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑧ 搜索两态 -->
+      <div class="phone">
+        <div class="pcap">⑧ 搜索：两种语义并排可见</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button>
+            <input type="text" value="录像" style="flex:1" /><button class="mico">✕</button></div>
+          <div style="padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg2)">
+            <div class="seg" style="width:100%">
+              <button class="on" style="flex:1">过滤已加载的</button>
+              <button style="flex:1">搜索整个对话</button></div>
+          </div>
+          <div class="banner info" style="font-size:11px;padding:8px 10px">
+            <span>🔎</span><div class="bx">在本机已加载的 36 项里按<b>真实文件名</b>匹配。
+              <b>搜索词不离开本机。</b></div></div>
+          <div class="mbody">
+            <div class="mlist">
+              <div class="lrow"><span class="lic">🎬</span><div class="lmid">
+                <div class="lnm">家庭录像 2019.mkv</div><div class="lsz">4.8 GB · 收藏夹 #1204</div></div></div>
+              <div class="lrow"><span class="lic">🎬</span><div class="lmid">
+                <div class="lnm">旧录像备份.tar.omy</div><div class="lsz">11 GB · 备份频道 #77</div></div></div>
+              <div class="lrow" data-pinned="1"><span class="lic">🎬</span><div class="lmid">
+                <div class="lnm">讲座录像.mp4</div>
+                <div class="lsz">1.4 GB · 资源分享频道 #9021 · 永久缓存</div></div>
+                <span class="lic">📌</span></div>
+            </div>
+            <div class="hint" style="font-size:11px"><span>ⓘ</span><div>
+              切到「搜索整个对话」会把搜索词<b>发送到 Telegram 服务器</b>，并且
+              <b>搜不到加密文件的真实文件名</b>——omy 从不上传它。<br>
+              结果会<b>跨对话</b>，所以「永久缓存」这类按文件的标记跟在每一行上，
+              而不是靠「当前对话」判定。</div></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑨ 会话失效 -->
+      <div class="phone">
+        <div class="pcap">⑨ 会话失效（不可重试）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">☰</button><span class="mtitle">💬 我的 Telegram</span>
+            <button class="mico">⋮</button></div>
+          <div class="banner bad" style="font-size:11px;padding:9px 10px">
+            <span>🔐</span><div class="bx"><b>登录已失效，需要重新登录</b><br>
+              常见原因：同一份 omy 配置被<b>同时在两台设备上使用</b>，
+              或你在官方客户端里终止了所有其他会话。<b>重试无用。</b></div></div>
+          <div class="mbody">
+            <div style="text-align:center;padding:40px 12px;color:var(--fg2)">
+              <div style="font-size:40px">🔐</div>
+              <div style="font-size:13.5px;color:var(--fg);margin-top:12px">这个位置暂时无法访问</div>
+              <div class="sdesc" style="margin-top:7px">已缓存的文件仍可打开，
+                但列目录、播放未缓存的内容都需要重新登录。</div>
+              <button class="btn pri" style="margin-top:16px;width:100%">重新登录…</button>
+              <button class="btn" style="margin-top:9px;width:100%">仅浏览已缓存内容</button>
+            </div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑨b 内置 api_id 被封：与⑨会话失效并列，但出路完全不同 -->
+      <div class="phone">
+        <div class="pcap">⑨b 内置 api_id 被封（重试无用，给出路）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button>
+            <span class="mtitle">我的 Telegram</span><button class="mico">⋮</button></div>
+          <div class="mbody">
+            <div class="banner bad" style="font-size:11px;padding:9px 10px">
+              <span>🔑</span><div class="bx"><b>omy 内置的 API 凭据已被限制</b><br>
+                不是你的账号问题，也不是网络问题，<b>重试无效</b>。</div></div>
+            <div class="sdesc" style="line-height:1.75">
+              内置凭据是公开的，被滥用举报后会被 Telegram 封禁。
+              <b>所有使用内置凭据的用户会同时遇到这一条</b>，且 omy 无法自行修复。<br>
+              解决办法只有一个：改用你自己申请的 api_id（免费，几分钟）。
+            </div>
+            <!-- 自救按钮必须在错误现场，不能让用户自己去设置里翻 -->
+            <button class="btn pri" style="margin-top:12px;width:100%">填写自己的 api_id…</button>
+            <button class="btn" style="margin-top:9px;width:100%">怎么申请？</button>
+            <div class="hint" style="margin-top:12px"><span>ⓘ</span><div>
+              <b>已缓存的内容仍然可以浏览</b>，与离线态同样处理——
+              不要因为连不上就把整个位置变成砖。</div></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>🔀</i>传输</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑨c 代理格式错误：与⑨b 同类——正确动作是改配置，不是等待或重试 -->
+      <div class="phone">
+        <div class="pcap">⑨c 代理地址格式不对（要改配置，不是重试）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button>
+            <span class="mtitle">我的 Telegram</span><button class="mico">⋮</button></div>
+          <div class="mbody">
+            <div class="banner bad" style="font-size:11px;padding:9px 10px">
+              <span>🧦</span><div class="bx"><b>代理地址需要改成 <code>socks5://</code></b><br>
+                这不是网络故障，也不是代理不可用。</div></div>
+            <div class="sdesc" style="line-height:1.75">
+              omy 只支持 <code>socks5://主机:端口</code>。你填的是
+              <code>http://127.0.0.1:7897</code> —— 这通常是<b>直接抄自系统代理设置</b>的，
+              而同一个端口一般两种协议都支持，<b>只需把开头换掉</b>。
+            </div>
+            <input type="text" value="http://127.0.0.1:7897" style="width:100%;margin-top:10px"
+              spellcheck="false" />
+            <div class="pxerr">不支持 http:// 形式，只支持 socks5://。</div>
+            <!-- 给可操作的下一步，而不是只回显底层错误串 -->
+            <button class="btn pri" style="margin-top:10px;width:100%">一键改为 socks5://</button>
+            <button class="btn" style="margin-top:9px;width:100%">从系统设置读取并自动改写</button>
+            <div class="hint" style="margin-top:12px"><span>ⓘ</span><div>
+              <b>重试没有用</b>：这是配置问题，不改地址的话结果每次都一样。
+              <code>socks5h://</code> 与缺端口也同样会被拒。</div></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
+            <button class="mtab"><i>🔀</i>传输</button><button class="mtab"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+      <!-- ⑩ 位置详情（风险告知的常驻位置） -->
+      <div class="phone">
+        <div class="pcap">⑩ 设置 › 此位置（风险告知的常驻位置）</div>
+        <div class="screen">
+          <div class="mtop"><button class="mico">←</button><span class="mtitle">我的 Telegram</span></div>
+          <div class="mbody" style="padding:0">
+            <div class="mgh">账号</div>
+            <div class="mrow"><span class="mri">👤</span><span class="mrt">已登录</span>
+              <span class="mrv">+86 ••• 1234</span></div>
+            <!-- 当前用的是内置还是自己的，必须在这一行就看得出来：
+                 内置值会被别人的滥用连带封掉，用户有权知道自己处在哪种风险下 -->
+            <div class="mrow" data-apirow="1"><span class="mri">🔑</span><span class="mrt">API 凭据</span>
+              <span class="mrv">内置默认值（可改）</span><span class="mra">›</span></div>
+            <!-- 代理不只在向导里出现：网络环境会变（换 Wi-Fi、代理换端口），
+                 所以设置里必须有常驻入口，且当前用的是直连还是代理要能看见 -->
+            <div class="mrow" data-pxrow="1"><span class="mri">🧦</span><span class="mrt">连接方式</span>
+              <span class="mrv">代理 · socks5://127.0.0.1:7897</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🔐</span><span class="mrt">登录凭据</span>
+              <span class="mrv" style="color:var(--ok)">已加密保存</span><span class="mra">›</span></div>
+            <div class="mgh">内容</div>
+            <div class="mrow"><span class="mri">💬</span><span class="mrt">可见对话</span>
+              <span class="mrv">5 个</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🔎</span><span class="mrt">服务端搜索</span>
+              <span class="mrv">需显式开启</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">📌</span><span class="mrt">永久缓存</span>
+              <span class="mrv">4.7 GB · 6 个</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🐌</span><span class="mrt">下载速度</span>
+              <span class="mrv" style="color:var(--warn)">受限</span><span class="mra">›</span></div>
+            <div class="mgh">风险与合规</div>
+            <!-- 风险告知必须能在事后找回来：向导里看过一次不够，
+                 用户几个月后想起来要查时得有地方看 -->
+            <div class="mrow"><span class="mri">🚨</span><span class="mrt">第三方客户端风险说明</span>
+              <span class="mra">›</span></div>
+            <!-- 想撤销授权时用户需要知道去哪儿、找哪个名字。
+                 只在向导里说一次，等他真要撤销时早忘了 -->
+            <div class="mrow" data-devrow="1"><span class="mri">🪪</span>
+              <span class="mrt">在 Telegram 中显示为</span>
+              <span class="mrv">omy · 可在「已登录设备」撤销</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">🔑</span><span class="mrt">改用自己的 api_id</span>
+              <span class="mrv">未使用</span><span class="mra">›</span></div>
+            <div class="mrow"><span class="mri">ℹ️</span><span class="mrt">关于 Telegram API 与本应用</span>
+              <span class="mra">›</span></div>
+            <div style="padding:12px"><button class="btn dgr" style="width:100%">退出登录并删除凭据</button></div>
+          </div>
+          <div class="mbar">
+            <button class="mtab"><i>📁</i>文件</button><button class="mtab"><i>☁️</i>远程</button>
+            <button class="mtab"><i>📡</i>设备</button><button class="mtab on"><i>⚙️</i>设置</button></div>
+        </div>
+      </div>
+
+    </div>
+    <div class="note">
+      <b>移动端的四条硬性要求（前三条来自 AGENTS.md 的既有教训，第四条是本功能新增的）：</b><br>
+      · 打开条目必须读 <code>isMobile</code> 走<b>单击</b>分支——触屏没有 dblclick，
+        只改 CSS 会得到「界面正常但点什么都打不开」。<br>
+      · 底栏与向导主按钮都要 <code>env(safe-area-inset-bottom)</code>，否则手势导航条盖住按钮。<br>
+      · 长按要 <code>user-select:none</code> 抑制系统文字选择与放大镜。<br>
+      · <b>上传中切后台被挂起，回来时分片可能已经过期</b>——必须如实报「已中断，需重传」。
+        这一条在移动端尤其容易踩：桌面上很难复现，真机上一分钟就能撞到。
+    </div>
+  </div>
+
+  <!-- ============ 9. 能力位图投影 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">9 · 能力位图 → 界面的映射</div>
+      <div class="secd">Telegram 带来两处变化：新增一位 <code>search</code>，以及<b>能力随目录变化</b></div>
+    </div>
+    <div class="note dgr">
+      <b>一个由这一节暴露出来的抽象缺口：现有的能力位图挂在「位置」上，而 Telegram 的能力是「每个对话各不相同」。</b>
+      同一个 Telegram 位置里，收藏夹可写、自己的频道可写、别人的公开频道只读。
+      照现状把位置声明成「可写」，进只读频道后删除菜单照样是亮的，点了才报错；
+      声明成「只读」，则自己的频道也传不上去。<br>
+      建议：<b>位置级声明为「能力上界」，进入目录后按该对话收窄成「有效能力」</b>，
+      界面一律读有效能力。这一处要与后端命令层的校验对上，
+      两边注释互相标明「新增写类操作时两边都要改」。
+    </div>
+    <table class="mx">
+      <thead><tr><th>操作</th><th>本地</th><th>网盘只读</th><th>TG 收藏夹</th><th>TG 自己的频道</th><th>TG 他人频道</th><th>做不到时界面怎么表现</th></tr></thead>
+      <tbody>
+        <tr><td>浏览 / 识别 omy</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><td>预览 / 流式播放</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><td>解密到本地</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td><b>保留</b>，这是只读位置的主要用途</td></tr>
+        <tr><td>上传密文</td><td>—</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td>工具栏按钮<b>不出现</b></td></tr>
+        <tr><td>删除 / 改名</td><td class="yes">✓</td><td class="no">✗</td><td class="mid">△ 删=撤回消息</td><td class="mid">△</td><td class="no">✗</td><td>菜单项<b>不出现</b></td></tr>
+        <tr><td>新建目录</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td>整个位置都<b>没有这个概念</b>——「目录」就是对话，
+          新建目录等于建一个频道，不该混进文件管理器</td></tr>
+        <tr><td>改密码 / 加恢复码<br><code>random_write</code></td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td>
+          <td>置灰 + hint：<b>「Telegram 上的文件不能原地改写，请先解密到本地」</b>。
+            这里是置灰而非消失，因为换个状态（解密到本地）就能做</td></tr>
+        <tr><td><b>服务端搜索</b><br><code>search</code>（新增位）</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td>
+          <td><code>false</code> 时搜索框<b>只有「过滤已加载的」一种语义，分段控件整个不出现</b></td></tr>
+        <tr><td><b>转发到其它对话</b><br>（受保护对话）</td>
+          <td>—</td><td>—</td><td>—</td><td>—</td><td class="no">✗</td>
+          <td><b>服务端强制拦截</b>（官方明确写明，有专门错误码）。菜单项<b>禁用 + 说明</b>，
+            而不是消失——消失会让用户以为 omy 没做</td></tr>
+        <tr><td><b>从受保护对话保存到本地</b></td>
+          <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td>
+          <td class="yes">✓</td><td class="yes">✓</td>
+          <td>按 DEC-20 <b>取 C（不处理）</b>：与普通文件同等对待，不置灰、不加二次确认。
+            就取字节这条路径而言<b>未见服务端拦截</b>（从官方错误表反向推断，<b>未实测</b>）。
+            界面上只在详情面板留<b>一行次要文字</b>告知，不弹窗、不用 danger 色</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <b>「消失」与「置灰」的分界（沿用既有规矩）：</b><br>
+      · <b>整个位置 / 这个对话永远做不到</b> → 整项不出现。放个灰按钮反而让人反复去点。<br>
+      · <b>当前状态做不到、换个状态就行</b> → 置灰 + hint 告诉用户下一步。<br>
+      <b>「转发」属于第一类</b>（服务端强制拦，永远做不到）→ 禁用 + 说明原因，
+      而不是消失；消失会让用户以为 omy 没做这个功能，然后去提 bug。<br>
+      <b>前端过滤只是体验，不是安全边界</b>——后端命令层必须在入口独立校验，
+      否则通过 devtools 直接调用就绕过去了。
+    </div>
+  </div>
+
+  <!-- ============ 10. 登录状态机 ============ -->
+  <div class="sec">
+    <div class="sech">
+      <div class="secn">10 · 登录状态机</div>
+      <div class="secd">每个分支都对应界面上的一个具体状态，没有「其它错误」这种兜底格</div>
+    </div>
+    <pre class="fsm">未连接
+  │  勾选风险告知（唯一拦人的前置条件）
+  │  api_id：默认用内置值，**不拦**；想换自己的走设置，与登录流程解耦
+  ▼
+连通性自检 ──┬─ 可直连 ────────────► 继续登录（不显示代理表单）
+             ├─ 直连不通 ──────────► **就地展开代理表单**（不是折叠的高级设置）
+             │                        ⚠ 实测：本机直连 DC 超时，经 socks5 约 3.3s 通
+             │                        ⚠ 这不是故障，是一个待配置的前提，用 warn 不用 danger
+             └─ 代理地址不合法 ────► 就地给出改写建议
+                                      ⚠ 只接受 socks5://；http:// 与 socks5h:// 都拒
+                                      ⚠ 缺端口也拒，且这一种**改写不了**，必须用户补
+  ▼
+未登录 ──────────┬────────── tdata 导入路径 ─────────────┐
+                  │   ⚠ 尚未真机验证，流程按已核实的前提设计
+                  │   前提①客户端未在运行  ②能定位到 tdata
+                  │        │
+                  │        ├ 客户端在跑 ──► 「请先退出」（关窗口不够，要从托盘退）
+                  │        ├ 自动找不到 ──► **就地给路径选择器**，不报「未检测到」
+                  │        │                 ⚠ 便携版必然落空，这不是异常
+                  │        ▼
+                  │   选账号（可含多个；**排除 tupdates\temp\tdata 幽灵项**）
+                  │        │
+                  │        ├ 设了本地密码 ──► 输 **Local Passcode**（≠ 2FA 云密码）
+                  │        │                   ⚠ 由解析结果判断，不看 key_datas 是否存在
+                  │        ▼
+                  │   告知「会话共用」+ 选择是否同时登出桌面端
+                  │        └──────────────────► 已登录（与桌面端共用会话）
+                  │
+                  ├─────────────── 扫码路径 ───────────────┐
+                  │                                        │
+                  │   取登录令牌 → 显示二维码（约 30 秒）   │
+                  │        │                               │
+                  │        ├ 令牌过期 ──► 自动换一张（界面不报错，只换图）
+                  │        ├ 需要切换数据中心 ──► 「正在切换数据中心…」
+                  │        │                     ⚠ 中间态，不是失败，不许弹重试
+                  │        └ 手机端已确认 ──┬──► 已登录
+                  │                         └──► 需要云密码 ──┐
+                  │                                            │
+                  └────────────── 手机号路径 ─────────────┐    │
+                      输入号码 → 请求验证码                │    │
+                        │                                  │    │
+                        ├ 限流 FLOOD_WAIT_X ──► 等待态（倒计时，按钮禁用）
+                        │                        ⚠ 自动恢复，不可手动重试
+                        ▼                                  │    │
+                      输入验证码（格数按服务端给的长度）    │    │
+                        │                                  │    │
+                        ├ 验证码错误 ──► 停在本步重输       │    │
+                        │                ⚠ 不许退回上一步   │    │
+                        ├ 已登录 ◄─────────────────────────┘    │
+                        └ 需要云密码 ──────────────────────────┬─┘
+                                                               ▼
+                                                    输入云密码（显示服务端给的提示）
+                                                               │
+                                                               ├ 密码错误 ──► 停在本步重输
+                                                               ▼
+                                                            已登录
+已登录
+  ├ 正常浏览
+  ├ FLOOD_WAIT_X ─────────────► 位置级等待态（倒计时后自动恢复）
+  ├ 下载限速（非会员）────────► 状态栏常驻一行，不是错误，不弹购买引导
+  ├ 文件引用过期 ─────────────► 驱动内部用 (对话, 消息号) 重取消息换新凭据
+  │                              ├ 成功 ──► 用户看不到任何变化
+  │                              └ 失败 ──► 「该文件已在 Telegram 上被删除」
+  ├ 网络不可达 ───────────────► 位置级横幅 + 可重试；缓存内容照常可用
+  ├ 代理 scheme 不受支持 ─────► 配置错误，**不是网络故障**
+  │                              ⚠ 正确动作是**改配置**，不是等待或重试
+  │                              ⚠ 底层报「scheme not supported」，
+  │                                原样回显会让用户去查不存在的网络问题
+  │                              → 横幅给「去修正代理地址…」并就地给改写建议
+  ├ API_ID_PUBLISHED_FLOOD ──► 内置 api_id 已被封
+  │                              ⚠ **重试无用**：不是网络问题，也不是账号问题
+  │                              ⚠ omy 自己修不了，且**所有用内置值的用户同时失效**
+  │                              → 横幅直接给「填写自己的 api_id」按钮
+  │                                （这是唯一的自救路径，不能只报错不给出路）
+  │                              → 已缓存内容仍可浏览，不要把整个位置变砖
+  └ 会话失效（被踢 / 被吊销）─► 回到「未登录」
+                                 ⚠ 不可重试，必须重新登录
+                                 文案要点名「两台机器同时用同一份配置」这个真实原因
+
+── 与上面这条状态机**正交**的传输任务状态机（每条任务各有一份） ──
+排队中
+  │  达到并发上限前一直排队；界面显示「排队中」而不是 0%
+  ▼
+进行中 ──┬─ 用户暂停 ──────► 已暂停 ──► 用户继续 ──► 进行中
+         ├─ FLOOD_WAIT_X ──► 等待中（显示剩余秒数）──► 自动回到进行中
+         │                    ⚠ 必须写出等待原因，否则用户会反复重试
+         ├─ 分片 / 引用过期 ► 失败（可重试，但**从头开始**）
+         │                    ⚠ 上传分片在服务端只暂存几分钟到几小时，
+         │                      跨天续传做不到，必须如实报「需重传」
+         ├─ 磁盘空间不足 ──► 失败（不可重试，直到用户腾出空间）
+         ├─ 用户取消 ──────► 已取消（永久缓存任务取消后不留半成品）
+         └─ 完成 ──────────► 已完成
+                              ⚠ 永久缓存任务只有到这一步，卡片上的 📌 角标才出现；
+                                提前显示会让用户以为已经能离线打开了</pre>
+    <div class="note">
+      <b>五个刻意的设计点：</b><br>
+      · <b>「需要切换数据中心」必须是中间态。</b>做成失败会让一次本来会成功的登录被用户打断。<br>
+      · <b>「验证码错误」不退回上一步。</b>把手机号也清掉是常见的坏实现，用户得重填两遍。<br>
+      · <b>「文件引用过期」这一支的理想表现是「用户看不到」。</b>它冒到界面上就是
+        「拖到后面就播不了」，而用户完全无从判断原因。<br>
+      · <b>传输任务的「等待中」必须与「失败」分开。</b>限流等待会自动恢复，
+        画成失败会让用户去点重试，而重试只会把等待时间越点越长。<br>
+      · <b>永久缓存的 📌 角标只在下载完成后出现。</b>钉住的那一刻就显示角标，
+        用户会以为已经能离线打开了——而此时文件还在下载，断网就打不开。
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- 主题：与产品一致用 data-theme，不另造一套 ---------- */
+  var thm = document.getElementById('thm');
+  thm.addEventListener('click', function () {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+    thm.textContent = isDark ? '☀️ 浅色' : '🌙 深色';
+  });
+
+  /* ---------- 端切换：三态循环（两端 / 仅桌面 / 仅移动） ----------
+     沿用既有原型「PC 与移动端并列展示」的做法，只多一个聚焦开关：
+     并列看得到差异，聚焦时截图不会被另一端挤走。 */
+  var plats = ['both', 'pc', 'mobile'];
+  var platLabel = { both: '两端', pc: '仅桌面', mobile: '仅移动端' };
+  var pi = 0;
+  var platBtn = document.getElementById('plat');
+  function applyPlat() {
+    var cur = plats[pi];
+    document.querySelectorAll('[data-plat]').forEach(function (el) {
+      el.hidden = cur !== 'both' && el.getAttribute('data-plat') !== cur;
+    });
+    platBtn.textContent = '端：' + platLabel[cur];
+    platBtn.classList.toggle('on', cur !== 'both');
+    document.documentElement.setAttribute('data-plat-view', cur);
+  }
+  platBtn.addEventListener('click', function () { pi = (pi + 1) % plats.length; applyPlat(); });
+  applyPlat();
+
+  /* ---------- 向导步骤：三步 ----------
+     原来的第 2 步「填 api_id」已降级为设置里的可选项，所以这里只有三格。
+     步数写在一处（names 的键数），不要在别处再硬编码一个「/ 4」。 */
+  var wizNames = { 1: '风险告知', 2: '登录账号', 3: '选择可见对话' };
+  var wizTotal = Object.keys(wizNames).length;
+  function gotoStep(n) {
+    document.querySelectorAll('[data-w]').forEach(function (p) {
+      p.hidden = p.getAttribute('data-w') !== String(n);
+    });
+    document.querySelectorAll('#stepl .step').forEach(function (s) {
+      var k = Number(s.getAttribute('data-s'));
+      s.classList.toggle('on', k === n);
+      s.classList.toggle('done', k < n);
+    });
+    document.getElementById('wizlab').textContent =
+      '步骤 ' + n + ' / ' + wizTotal + ' · ' + wizNames[n];
+    document.documentElement.setAttribute('data-wiz-step', String(n));
+    document.documentElement.setAttribute('data-wiz-total', String(wizTotal));
+  }
+  // 风险必须勾选才能继续：账号级风险不可逆，与「转码不可还原」同一摩擦级别。
+  // 注意这是**唯一**仍然拦人的一步——api_id 不再拦。
+  var ack = document.getElementById('riskack');
+  var riskNext = document.getElementById('risknext');
+  ack.addEventListener('change', function () { riskNext.disabled = !ack.checked; });
+  riskNext.addEventListener('click', function () { gotoStep(2); });
+  document.getElementById('loginback').addEventListener('click', function () { gotoStep(1); });
+  document.getElementById('loginnext').addEventListener('click', function () { gotoStep(3); });
+  document.getElementById('chatback').addEventListener('click', function () { gotoStep(2); });
+  gotoStep(1);
+
+  /* ---------- 连通性自检 + 代理配置 ----------
+     实测：本机直连 MTProto DC 超时，经 socks5 约 3.3s 通（文档 §8.6）。
+     所以自检有三种落点：可直连 / 需要代理 / 代理地址本身不合法。
+     原型里用一个假的探测过程演示三态之间的流转。 */
+  var connBox = document.getElementById('connchk');
+  var connIco = document.getElementById('connico');
+  var connText = document.getElementById('conntext');
+  var pxBox = document.getElementById('pxbox');
+  var pxAddr = document.getElementById('pxaddr');
+  var pxErr = document.getElementById('pxerr');
+  var pxFix = document.getElementById('pxfix');
+  var pxFixText = document.getElementById('pxfixtext');
+  var pxOk = document.getElementById('pxok');
+
+  function setConn(st) {
+    connBox.setAttribute('data-st', st);
+    if (st === 'checking') {
+      connIco.textContent = '⏳';
+      connText.innerHTML = '正在检查与 Telegram 的连接…';
+      pxBox.hidden = true;
+    } else if (st === 'ok') {
+      connIco.textContent = '✅';
+      connText.innerHTML = '<b>可直连 Telegram</b>，不需要代理。';
+      pxBox.hidden = true;
+    } else if (st === 'proxy') {
+      // 需要代理不是「故障」，所以用 warn 而不是 danger：
+      // 它是一个待配置的前提，用户照着做就能过去
+      connIco.textContent = '🧦';
+      connText.innerHTML = '<b>直连 Telegram 不通，需要配置代理才能继续。</b>'
+        + '这在部分网络环境下是正常的，不代表 omy 或你的网络出了问题。';
+      pxBox.hidden = false;
+    } else {
+      connIco.textContent = '⚠️';
+      connText.innerHTML = '<b>代理地址的格式不对，请先修正下面的地址。</b>';
+      pxBox.hidden = false;
+    }
+    document.documentElement.setAttribute('data-conn', st);
+  }
+
+  /* 代理地址校验：只接受 socks5://主机:端口。
+     校验逻辑要**区分三种不合法**，因为它们的下一步动作不同：
+     - http:// 等其它 scheme → 可以一键改写（同一端口通常两种协议都支持）
+     - socks5h:// → 同样一键改写（去掉那个 h）
+     - 缺端口 → 改写不了，必须用户补一个端口号 */
+  function validateProxy() {
+    var v = pxAddr.value.trim();
+    pxErr.hidden = true; pxFix.hidden = true; pxOk.hidden = true;
+    if (v === '') {
+      pxErr.hidden = false;
+      pxErr.textContent = '请填写代理地址。';
+      document.documentElement.setAttribute('data-px', 'empty');
+      return false;
+    }
+    var m = /^([a-zA-Z0-9+.-]+):\/\/(.+)$/.exec(v);
+    if (!m) {
+      pxErr.hidden = false;
+      pxErr.textContent = '地址要带协议前缀，例如 socks5://127.0.0.1:7897。';
+      document.documentElement.setAttribute('data-px', 'noscheme');
+      return false;
+    }
+    var scheme = m[1].toLowerCase(), rest = m[2];
+    var hasPort = /^[^/]+:\d+$/.test(rest.replace(/\/$/, ''));
+    if (scheme !== 'socks5') {
+      pxErr.hidden = false;
+      // 说的是「要什么」而不是「底层报了什么」
+      pxErr.textContent = '不支持 ' + scheme + ':// 形式，只支持 socks5://。';
+      pxFix.hidden = false;
+      pxFixText.textContent = scheme === 'socks5h'
+        ? 'socks5h:// 也不行（多了一个 h）。'
+        : '系统代理设置里通常写成 ' + scheme + '://，但同一个端口一般也支持 SOCKS5。';
+      document.documentElement.setAttribute('data-px',
+        scheme === 'socks5h' ? 'socks5h' : 'badscheme');
+      return false;
+    }
+    if (!hasPort) {
+      pxErr.hidden = false;
+      pxErr.textContent = '缺少端口号，例如 socks5://127.0.0.1:7897。';
+      document.documentElement.setAttribute('data-px', 'noport');
+      return false;
+    }
+    pxOk.hidden = false;
+    document.documentElement.setAttribute('data-px', 'ok');
+    return true;
+  }
+  pxAddr.addEventListener('input', function () {
+    var good = validateProxy();
+    if (!good && connBox.getAttribute('data-st') !== 'checking') setConn('bad');
+    else if (good) setConn('proxy');
+  });
+
+  // 一键改写：把 scheme 换成 socks5://，主机与端口原样保留
+  document.getElementById('pxfixbtn').addEventListener('click', function () {
+    pxAddr.value = pxAddr.value.trim().replace(/^[a-zA-Z0-9+.-]+:\/\//, 'socks5://');
+    validateProxy();
+    setConn('proxy');
+  });
+
+  // 「从系统设置读取」：演示 omy 读到 http:// 后**自动改写**而非透传
+  document.getElementById('pxsys').addEventListener('click', function () {
+    pxAddr.value = 'socks5://127.0.0.1:7897';
+    validateProxy();
+    setConn('proxy');
+    pxFix.hidden = false;
+    pxFixText.textContent =
+      '系统里读到的是 http://127.0.0.1:7897，已自动改写为 socks5://（不原样透传）。';
+  });
+
+  document.querySelectorAll('#pxmode button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#pxmode button').forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      var direct = b.getAttribute('data-px') === 'direct';
+      document.getElementById('pxaddrrow').hidden = direct;
+      document.getElementById('pxmodedesc').textContent = direct
+        ? '已选直连。若自检显示直连不通，登录会一直超时。'
+        : '直连不通时必须走代理，否则登录会一直超时。';
+      document.documentElement.setAttribute('data-px-mode', direct ? 'direct' : 'proxy');
+    });
+  });
+  document.documentElement.setAttribute('data-px-mode', 'proxy');
+
+  // 自检按钮：checking → 需要代理（演示实测到的那种环境）
+  document.getElementById('connretry').addEventListener('click', function () {
+    setConn('checking');
+    setTimeout(function () { setConn('proxy'); validateProxy(); }, 700);
+  });
+  setConn('checking');
+  setTimeout(function () { setConn('proxy'); validateProxy(); }, 900);
+
+  /* ---------- api_id：可选项，不填就用内置默认值 ----------
+     协议层确实需要 api_id，但不等于必须由用户提供。这里的关键不是那两个
+     输入框，而是**当前用的是哪一份必须显式可见**：内置值会因为别人的滥用
+     被连带封掉，用户有权知道自己处在哪种风险下。 */
+  var ownApi = document.getElementById('ownapi');
+  var apiFields = document.getElementById('apifields');
+  var apiId = document.getElementById('apiid');
+  var apiHash = document.getElementById('apihash');
+  var apiSave = document.getElementById('apisave');
+  var apiErr = document.getElementById('apiiderr');
+  var apiSrc = document.getElementById('apisrc');
+  var apiSrcDesc = document.getElementById('apisrcdesc');
+  var apiSrc1 = document.getElementById('apisrc1');
+  var apiLab = document.getElementById('apilab');
+
+  function applyApiSrc() {
+    // 「已保存自己的」= 勾选了 + 两个字段都填了且合法。只勾不填仍算内置，
+    // 否则会显示成已切换、而实际上连不上时用户查不出原因。
+    var idv = apiId.value.trim(), hv = apiHash.value.trim();
+    var idBad = idv !== '' && !/^\d+$/.test(idv);
+    var own = ownApi.checked && idv !== '' && hv !== '' && !idBad;
+    apiErr.hidden = !idBad;
+    apiSave.disabled = !ownApi.checked || idv === '' || hv === '' || idBad;
+    apiFields.hidden = !ownApi.checked;
+    apiSrc.textContent = own ? '🔑 你自己的 API 凭据' : '🔑 omy 内置的默认凭据';
+    apiSrc.className = own ? 'ctag ok' : 'ctag net';
+    apiSrcDesc.innerHTML = own
+      ? '由你自己在 <code>my.telegram.org</code> 申请。'
+        + '<b>出问题只影响你自己</b>，也不会被别人的滥用连带封掉。'
+      : '无需申请，开箱可用。内置值随源码公开，'
+        + '若被滥用举报会触发 <code>API_ID_PUBLISHED_FLOOD</code>，'
+        + '届时<b>所有使用内置值的用户会同时失效</b>，需改用自己的（见第 7 节）。';
+    apiSrc1.textContent = own ? '你自己的 API 凭据' : 'omy 内置的 API 凭据';
+    apiLab.textContent = '当前：' + (own ? '自己的 api_id' : '内置默认值');
+    document.documentElement.setAttribute('data-api-src', own ? 'own' : 'builtin');
+  }
+  ownApi.addEventListener('change', applyApiSrc);
+  apiId.addEventListener('input', applyApiSrc);
+  apiHash.addEventListener('input', applyApiSrc);
+  document.getElementById('apireset').addEventListener('click', function () {
+    // 明确的「切回内置」动作。让用户靠清空输入框来切，他无法确认自己切没切
+    ownApi.checked = false;
+    apiId.value = '';
+    apiHash.value = '';
+    applyApiSrc();
+  });
+  // 向导里那个折叠入口直接跳到这一节，而不是在向导里再塞一份表单
+  // 错误态横幅上的自救入口：与向导里那个折叠入口去同一个地方。
+  // 两处共用一个处理函数，避免「改了一处忘了另一处」。
+  function jumpToApiSection() {
+    var sec = document.querySelector('[data-apisec]');
+    if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    ownApi.checked = true;
+    applyApiSrc();
+  }
+  document.getElementById('bnApiIdAct').addEventListener('click', jumpToApiSection);
+  // 代理横幅的修正入口：跳到向导那一步并把表单展开、聚焦到地址框。
+  // 只报错不给去处，用户得自己在设置里翻——而他连该翻哪一页都不知道。
+  document.getElementById('bnProxyAct').addEventListener('click', function () {
+    gotoStep(2);
+    setConn('bad');
+    var sec = document.querySelector('.setpane[data-w="2"]');
+    if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    pxAddr.focus();
+  });
+  document.getElementById('apitoggle').addEventListener('click', jumpToApiSection);
+  applyApiSrc();
+
+  /* ---------- 登录方式切换 ---------- */
+  var authLab = { qr: '扫码登录', phone: '手机号 + 验证码',
+    tdata: '复用桌面端登录态', bot: '为何不提供 Bot' };
+  document.querySelectorAll('#authpick .opt').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var k = b.getAttribute('data-a');
+      document.querySelectorAll('#authpick .opt').forEach(function (x) {
+        x.classList.toggle('sel', x === b && k !== 'bot');
+      });
+      document.querySelectorAll('[data-auth]').forEach(function (p) {
+        p.hidden = p.getAttribute('data-auth') !== k;
+      });
+      document.getElementById('authlab').textContent = '当前：' + authLab[k];
+    });
+  });
+
+  /* ---------- tdata 导入 ----------
+     两条前提的处理方式不同：
+     - 客户端在运行 → 指名道姓让用户退出它（不要抛文件锁错误）
+     - 找不到 tdata → **就地给路径选择器**，不要报「未检测到」
+       后者是本设计最要紧的一条：便携版自动发现必然落空，
+       报「未检测到」等于把「需要你补一个信息」说成「不支持」。 */
+  var tdReqs = document.getElementById('tdreqs');
+  var tdRest = document.getElementById('tdrest');
+  var tdReqLab = document.getElementById('tdreqlab');
+  var tdPath = document.getElementById('tdpath');
+
+  function syncTdReqs() {
+    var bad = Array.from(tdReqs.querySelectorAll('.req'))
+      .filter(function (r) { return r.getAttribute('data-ok') !== '1'; });
+    // 前提没满足就不展开后面的表单：让用户填完一堆再说「其实不行」是最糟的顺序
+    tdRest.hidden = bad.length > 0;
+    tdReqLab.textContent = bad.length === 0
+      ? '全部前提已满足' : '还有 ' + bad.length + ' 项前提未满足';
+    document.documentElement.setAttribute('data-td-ready', bad.length === 0 ? '1' : '0');
+  }
+  function markReq(key, okText) {
+    var r = tdReqs.querySelector('[data-req="' + key + '"]');
+    r.setAttribute('data-ok', '1');
+    r.querySelector('.ri').textContent = '✓';
+    r.querySelector('.rt').innerHTML = okText;
+    syncTdReqs();
+  }
+  document.getElementById('tdsimquit').addEventListener('click', function () {
+    markReq('running', 'Telegram Desktop <b>未在运行</b>'
+      + '<span class="sdesc" style="margin:0">可以读取 tdata 了。</span>');
+  });
+  // 手动指定路径就算满足「能定位到 tdata」——这正是那条前提的真实含义
+  tdPath.addEventListener('input', function () {
+    var v = tdPath.value.trim();
+    if (v.length > 0) {
+      markReq('path', '已指定 tdata 路径'
+        + '<span class="sdesc" style="margin:0">' + v + '</span>');
+      document.getElementById('tdpathhint').innerHTML =
+        '<b>已手动指定。</b>自动检测找不到不代表没装——便携版本来就不在固定路径下。';
+    }
+  });
+  document.getElementById('tdbrowse').addEventListener('click', function () {
+    tdPath.value = 'D:\\TelegramDesktop\\tdata';
+    tdPath.dispatchEvent(new Event('input'));
+  });
+  syncTdReqs();
+
+  document.querySelectorAll('#tdaccts .acct').forEach(function (a) {
+    a.addEventListener('click', function () {
+      document.querySelectorAll('#tdaccts .acct').forEach(function (x) {
+        x.classList.toggle('sel', x === a);
+      });
+      document.documentElement.setAttribute('data-td-acct', a.getAttribute('data-acct'));
+    });
+  });
+  document.documentElement.setAttribute('data-td-acct', '0');
+
+  document.querySelectorAll('#tdpassseg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#tdpassseg button').forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      var yes = b.getAttribute('data-tp') === 'yes';
+      document.getElementById('tdpassbox').hidden = !yes;
+      document.documentElement.setAttribute('data-td-pass', yes ? 'yes' : 'no');
+    });
+  });
+  document.documentElement.setAttribute('data-td-pass', 'no');
+
+  var tdLogout = document.getElementById('tdlogout');
+  tdLogout.addEventListener('change', function () {
+    document.documentElement.setAttribute('data-td-logout', tdLogout.checked ? '1' : '0');
+  });
+  document.documentElement.setAttribute('data-td-logout', '0');
+
+  document.getElementById('tdimport').addEventListener('click', function () {
+    var res = document.getElementById('tdresult');
+    res.hidden = false;
+    // 不谎称成功：这条路径尚未真机验证，原型只演示流程走到哪一步
+    res.innerHTML = tdLogout.checked
+      ? '（原型演示）将导入所选账号并<b>登出桌面端</b>——之后桌面客户端需重新登录。'
+      : '（原型演示）将导入所选账号，<b>与桌面端共用同一会话</b>；'
+        + '若出现收不到消息 / 聊天加载不出来，多半就是这个原因。';
+  });
+  document.getElementById('tdcancel').addEventListener('click', function () {
+    var qr = document.querySelector('#authpick [data-a="qr"]');
+    if (qr) qr.click();
+  });
+
+  /* ---------- 二维码：确定性图案 + 真实 30 秒倒计时 ----------
+     官方给的有效期「usually 30 seconds」，过期要自动换一张。
+     界面上这件事必须是无声的：换图，不报错。 */
+  var qr = document.getElementById('qrimg');
+  var qrTtl = document.getElementById('qrttl');
+  var qrSeed = 1;
+  function drawQr(seed) {
+    var html = '';
+    for (var y = 0; y < 21; y++) {
+      for (var x = 0; x < 21; x++) {
+        // 三个定位角按真实二维码的样子固定下来，中间区域由 seed 决定
+        var corner = (x < 7 && y < 7) || (x > 13 && y < 7) || (x < 7 && y > 13);
+        var on;
+        if (corner) {
+          var cx = x < 7 ? x : x - 14, cy = y < 7 ? y : y - 14;
+          var d = Math.max(Math.abs(cx - 3), Math.abs(cy - 3));
+          on = d === 3 || d === 1;
+        } else {
+          on = ((x * 31 + y * 17 + seed * 7) % 5) < 2;
+        }
+        html += on ? '<i class="b"></i>' : '<i></i>';
+      }
+    }
+    qr.innerHTML = html;
+    qr.setAttribute('data-seed', String(seed));
+  }
+  drawQr(qrSeed);
+  var qrLeft = 28;
+  var qrRefresh = document.getElementById('qrrefresh');
+  var qrRefreshCount = 0;
+  // 令牌过期 -> 自动重新导出 -> 换图。三件事是一体的，界面上要能看出来
+  // 发生过：静默换图会让盯着屏幕的人以为卡住，或怀疑刚扫的那张还算不算数。
+  function refreshQr() {
+    qrSeed++;
+    drawQr(qrSeed);
+    qrRefreshCount++;
+    qrRefresh.setAttribute('data-refreshed', String(qrRefreshCount));
+    qrRefresh.innerHTML = '<b>二维码已过期，已自动换一张</b>（第 ' + qrRefreshCount
+      + ' 次）。这是正常的，<b>不是出错</b>——无需手动操作，继续扫新的即可。';
+    qr.classList.remove('refreshed');
+    void qr.offsetWidth;  // 强制回流，让动画能重复触发
+    qr.classList.add('refreshed');
+  }
+  document.getElementById('qrexp').addEventListener('click', function () {
+    qrLeft = 30;
+    refreshQr();
+  });
+  setInterval(function () {
+    if (document.getElementById('qrstate').getAttribute('data-st') !== 'waiting') return;
+    qrLeft--;
+    if (qrLeft <= 0) { qrLeft = 30; refreshQr(); }
+    qrTtl.textContent = '二维码 ' + qrLeft + ' 秒后自动刷新';
+  }, 1000);
+
+  var qrState = document.getElementById('qrstate');
+  function setQrState(st, text) { qrState.setAttribute('data-st', st); qrState.textContent = '状态：' + text; }
+  document.getElementById('qrok').addEventListener('click', function () {
+    // 先走「切换数据中心」这个中间态，再成功——它最容易被错做成失败
+    setQrState('migrating', '正在切换数据中心…（中间态，不是失败）');
+    qr.classList.add('stale');
+    setTimeout(function () { setQrState('done', '已登录'); qrTtl.textContent = '登录完成'; }, 1400);
+  });
+  document.getElementById('qr2fa').addEventListener('click', function () {
+    setQrState('password', '需要云密码 —— 与手机号路径共用同一个子步');
+    qr.classList.add('stale');
+  });
+
+  /* ---------- 验证码形态：数字 / 密语 / 短句 ----------
+     服务端可能返回 sentCodeTypeSmsWord（一个词）或 SmsPhrase（一句话）。
+     把输入区写死成固定格数的数字框，这两种形态直接填不进去——
+     这是「界面替服务端做假设」的典型，与本页其它几处缺陷同源。 */
+  var codeForms = { digits: 'codeDigits', word: 'codeWord', phrase: 'codePhrase' };
+  document.querySelectorAll('#codeform .ctab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#codeform .ctab').forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      var k = b.getAttribute('data-cf');
+      Object.keys(codeForms).forEach(function (kk) {
+        document.getElementById(codeForms[kk]).hidden = kk !== k;
+      });
+      document.documentElement.setAttribute('data-code-form', k);
+    });
+  });
+  document.documentElement.setAttribute('data-code-form', 'digits');
+
+  /* 重发：尊重服务端给的 timeout，并如实显示 next_type 会换成哪一种。
+     写成含糊的「重新发送」等于让用户再赌一次同样的投递方式。 */
+  var codeAgain = document.getElementById('codeagain');
+  var codeLeft = 58;
+  var codeTimer = setInterval(function () {
+    codeLeft--;
+    if (codeLeft <= 0) {
+      clearInterval(codeTimer);
+      codeAgain.disabled = false;
+      codeAgain.textContent = '重新发送（改用短信）';
+      document.documentElement.setAttribute('data-code-resend', 'ready');
+    } else {
+      codeAgain.textContent = '重新发送（' + codeLeft + ' 秒后可用）';
+    }
+  }, 1000);
+  document.documentElement.setAttribute('data-code-resend', 'waiting');
+
+  /* ---------- 手机号流程状态机 ---------- */
+  var ps = 1;
+  var psNames = { 1: '输入手机号', 2: '输入验证码', 3: '输入云密码', 4: '登录完成' };
+  function applyPs() {
+    document.querySelectorAll('[data-ps]').forEach(function (p) {
+      p.hidden = p.getAttribute('data-ps') !== String(ps);
+    });
+    document.getElementById('pslab').textContent = '子步 ' + ps + ' / 4 · ' + psNames[ps];
+    document.getElementById('psback').disabled = ps === 1;
+    document.getElementById('psnext').disabled = ps === 4;
+    document.documentElement.setAttribute('data-phone-step', String(ps));
+  }
+  document.getElementById('psnext').addEventListener('click', function () { if (ps < 4) { ps++; applyPs(); } });
+  document.getElementById('psback').addEventListener('click', function () { if (ps > 1) { ps--; applyPs(); } });
+  // 验证码错误只在本步内报，不退回上一步——否则手机号要重填一遍
+  document.getElementById('codebad').addEventListener('click', function () {
+    document.getElementById('codeerr').hidden = false;
+    document.documentElement.setAttribute('data-code-error', '1');
+  });
+  applyPs();
+
+  /* ---------- 限流：真实倒计时 + 期间禁用按钮 ---------- */
+  var floodBox = document.getElementById('floodbox');
+  var floodSec = document.getElementById('floodsec');
+  var floodTimer = null;
+  function setFloodDisabled(on) {
+    ['psnext', 'codeagain'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.disabled = on || (id === 'psnext' && ps === 4);
+    });
+  }
+  function stopFlood() {
+    if (floodTimer) { clearInterval(floodTimer); floodTimer = null; }
+    floodBox.hidden = true;
+    setFloodDisabled(false);
+    document.documentElement.removeAttribute('data-flood');
+  }
+  document.getElementById('psflood').addEventListener('click', function () {
+    var left = 41;
+    floodSec.textContent = String(left);
+    floodBox.hidden = false;
+    setFloodDisabled(true);
+    document.documentElement.setAttribute('data-flood', '1');
+    if (floodTimer) clearInterval(floodTimer);
+    floodTimer = setInterval(function () {
+      left--;
+      floodSec.textContent = String(left);
+      if (left <= 0) stopFlood();
+    }, 1000);
+  });
+  document.getElementById('floodclear').addEventListener('click', stopFlood);
+
+  var grid = document.getElementById('tgrid');
+
+  /* ---------- 当前对话的可写性：一处 state 驱动所有投影点 ----------
+     与网盘位置的区别是：这个开关代表的是**当前对话**而不是整个位置，
+     因为同一个 Telegram 位置里各对话的可写性不同（见第 9 节）。 */
+  var writable = true;
+  var capBtn = document.getElementById('capbtn');
+  // 上传入口的可见性由两件事共同决定，任一不满足就不出现。
+  // 抽成一个函数是因为可写性与错误态两处都要改它，
+  // 各写一份迟早出现「切了错误态又被可写性覆盖回来」。
+  function syncUpBtn() {
+    document.getElementById('upbtn').hidden =
+      !writable || document.documentElement.getAttribute('data-err') === 'auth';
+  }
+  function applyCap() {
+    ['sv1r', 'rotag', 'sbro'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.hidden = writable;
+    });
+    syncUpBtn();
+    document.getElementById('curchat').textContent = writable ? '🔖 收藏夹' : '📢 某公开资料频道';
+    document.getElementById('lab1').textContent =
+      '💬 我的 Telegram › ' + (writable ? '收藏夹 · 可写' : '某公开资料频道 · 只读');
+    capBtn.textContent = '当前对话：' + (writable ? '可写' : '只读');
+    capBtn.classList.toggle('on', writable);
+    document.documentElement.setAttribute('data-writable', writable ? '1' : '0');
+  }
+  capBtn.addEventListener('click', function () { writable = !writable; applyCap(); });
+
+  /* ---------- 授权范围：动态「全部对话」 vs 静态「手动挑选」 ----------
+     两者的差别不是 UI 偏好，而是**语义**：前者今后新建的对话会自动进来，
+     后者是一次性快照。原文案「从全部 1,382 个对话中添加」两种都读得通，
+     所以必须做成两个并列选项，让用户一眼看出自己选的是哪种。 */
+  var scopeBtns = document.querySelectorAll('#scopepick .opt');
+  scopeBtns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      scopeBtns.forEach(function (x) { x.classList.toggle('sel', x === b); });
+      var mode = b.getAttribute('data-sc');
+      document.getElementById('scopeAllNote').hidden = mode !== 'all';
+      document.getElementById('scopeManual').hidden = mode !== 'manual';
+      document.getElementById('scopelab').textContent =
+        mode === 'all' ? '范围：全部对话（动态）' : '范围：手动挑选（静态快照）';
+      document.documentElement.setAttribute('data-scope', mode);
+    });
+  });
+  document.documentElement.setAttribute('data-scope', 'all');
+
+  /* ---------- 对话列表懒加载 ----------
+     对话数和文件数一样会上万，一次全拉同样会卡住界面。
+     底层是 messages.getDialogs 的 offset 翻页（三元组游标，不是页码），
+     所以界面能给的只有「继续加载」，给不出「跳到第 N 页」。
+
+     终止条件是**满页判定**，不是总数：实测服务端只在未取完时给总数，
+     取完返回 None——用总数判断「还有更多」会在最后一页拿到空值。
+     这里用 PAGE 模拟「请求的 limit」，最后一批故意返回 2 条（不满页）
+     来演示入口收起。单页返回量**不写死**：样本账号只有 4 个对话，
+     测不出真实上限。 */
+  var dlgList = document.getElementById('chatpick');
+  var dlgCount = document.getElementById('dlgcount');
+  var dlgSamples = [
+    ['📢', '摄影素材频道', '12,904 个文件'],
+    ['👥', '同学群', '431 个文件'],
+    ['📢', '某资源分享频道', '41,663 个文件'],
+    ['👤', '张三', '87 个文件'],
+    ['👥', '读书会', '1,205 个文件']
+  ];
+  var dlgBatch = 0;
+  var PAGE = 3;           // 模拟「请求的 limit」
+  var dlgBatchSizes = [3, 3, 2];   // 最后一批不满页 -> 到此为止
+  document.getElementById('moredlg').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    var got = dlgBatchSizes[Math.min(dlgBatch, dlgBatchSizes.length - 1)];
+    // 先插骨架行：翻页要走一次网络往返，直接卡住按钮用户会以为没点上
+    var skels = [];
+    for (var i = 0; i < got; i++) {
+      var row = document.createElement('div');
+      row.className = 'chatrow';
+      row.setAttribute('data-skel', '1');
+      row.innerHTML = '<span class="av">⏳</span><div class="cmid">' +
+        '<div class="cnm"><span class="skel" style="display:block;width:' + (52 + i * 9) + '%"></span></div>' +
+        '<div class="csub"><span class="skel" style="display:block;width:34%"></span></div></div>';
+      dlgList.appendChild(row);
+      skels.push(row);
+    }
+    setTimeout(function () {
+      skels.forEach(function (row, i) {
+        var d = dlgSamples[(dlgBatch * 3 + i) % dlgSamples.length];
+        row.removeAttribute('data-skel');
+        row.innerHTML = '<input type="checkbox" /><span class="av">' + d[0] + '</span>' +
+          '<div class="cmid"><div class="cnm">' + d[1] + '</div>' +
+          '<div class="csub">' + d[2] + '</div></div>';
+      });
+      dlgBatch++;
+      var cur = Number(dlgCount.getAttribute('data-loaded')) + got;
+      dlgCount.setAttribute('data-loaded', String(cur));
+      // 满页判定：返回条数 == 请求的 limit 就假定还有；不满页即到底。
+      // 不用总数——服务端取完时不给总数，拿它判断会在最后一页拿到空值。
+      var more = got === PAGE;
+      dlgCount.setAttribute('data-done', more ? '0' : '1');
+      dlgCount.textContent = more
+        ? '已加载 ' + cur + ' 个对话（可能还有更多）'
+        : '已加载 ' + cur + ' 个对话（已全部列出）';
+      // 不满页就收起入口：留一个点了不再有反应的按钮，用户会反复点
+      btn.hidden = !more;
+      btn.disabled = false;
+    }, 620);
+  });
+
+  /* ---------- 传输管理：过滤、暂停 / 取消 / 重试 ---------- */
+  var xferSeg = document.querySelectorAll('#xferseg button');
+  function xferFilter(f) {
+    document.querySelectorAll('.tsk').forEach(function (t) {
+      var st = t.getAttribute('data-st');
+      var show = f === 'all'
+        || (f === 'active' && st !== 'done')
+        || (f === 'done' && st === 'done');
+      t.hidden = !show;
+    });
+    // 分组标题要跟着隐藏，否则会剩下一个空标题在那儿
+    document.querySelectorAll('.tskgrp').forEach(function (g) {
+      var n = 0, el = g.nextElementSibling;
+      while (el && el.classList.contains('tsk')) {
+        if (!el.hidden) n++;
+        el = el.nextElementSibling;
+      }
+      g.hidden = n === 0;
+    });
+    document.documentElement.setAttribute('data-xfer-filter', f);
+  }
+  xferSeg.forEach(function (b) {
+    b.addEventListener('click', function () {
+      xferSeg.forEach(function (x) { x.classList.toggle('on', x === b); });
+      xferFilter(b.getAttribute('data-f'));
+    });
+  });
+  xferFilter('all');
+
+  function xferSum() {
+    var n = { running: 0, waiting: 0, failed: 0, done: 0, paused: 0 };
+    document.querySelectorAll('.tsk').forEach(function (t) {
+      var st = t.getAttribute('data-st');
+      if (n[st] !== undefined) n[st]++;
+    });
+    var txt = n.running + ' 进行中 · ' + n.waiting + ' 等待 · ' + n.paused + ' 已暂停 · '
+      + n.failed + ' 失败 · ' + n.done + ' 已完成';
+    document.getElementById('xfersum').textContent = txt;
+    document.getElementById('xferlab').textContent = txt;
+    document.getElementById('xferbadge').textContent =
+      String(n.running + n.waiting + n.paused + n.failed);
+  }
+  document.querySelectorAll('.tsk .tbtn2').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var t = b.closest('.tsk');
+      var act = b.getAttribute('data-act');
+      var v = t.querySelector('.tskv');
+      if (act === 'pause') {
+        t.setAttribute('data-st', 'paused');
+        v.textContent = '已暂停';
+        b.setAttribute('data-act', 'resume');
+        b.textContent = '▶';
+        b.title = '继续';
+      } else if (act === 'resume') {
+        t.setAttribute('data-st', 'running');
+        v.textContent = '继续中…';
+        b.setAttribute('data-act', 'pause');
+        b.textContent = '⏸';
+        b.title = '暂停';
+      } else if (act === 'retry') {
+        // 分片过期后只能从头开始，进度必须归零而不是从 71% 接着走——
+        // 显示成接着走是在承诺一个做不到的续传
+        t.setAttribute('data-st', 'running');
+        v.textContent = '重新开始 0%';
+        // 必须在**这一行内**找进度条。从 document 起找会命中另一条任务，
+        // 结果是「点了重试，别人的进度被清零」，而被重试的那条纹丝不动。
+        var bar = t.querySelector('.tskbar > i');
+        if (bar) bar.style.width = '0%';
+        b.setAttribute('data-act', 'pause');
+        b.textContent = '⏸';
+      } else if (act === 'cancel') {
+        t.remove();
+      } else if (act === 'unpin') {
+        // 取消永久后立刻纳入 LRU：必须说出来，否则用户以为只是改了个标记
+        t.setAttribute('data-st', 'done');
+        v.textContent = '已转为临时缓存';
+        var src = t.querySelector('.tsksrc');
+        if (src) src.textContent = '已取消永久 · 已纳入自动清理，可能很快被清除';
+        b.disabled = true;
+      }
+      xferSum();
+    });
+  });
+  document.getElementById('pauseall').addEventListener('click', function () {
+    document.querySelectorAll('.tsk .tbtn2[data-act="pause"]').forEach(function (b) { b.click(); });
+  });
+  document.getElementById('clrdone').addEventListener('click', function () {
+    document.querySelectorAll('.tsk[data-st="done"]').forEach(function (t) { t.remove(); });
+    xferFilter(document.documentElement.getAttribute('data-xfer-filter') || 'all');
+    xferSum();
+  });
+  xferSum();
+
+  /* ---------- 永久缓存：管理列表 + 逐个取消 ---------- */
+  var permList = document.getElementById('permlist');
+  document.getElementById('mgperm').addEventListener('click', function () {
+    permList.hidden = !permList.hidden;
+    this.textContent = permList.hidden ? '管理永久缓存…' : '收起永久缓存列表';
+  });
+  permList.querySelectorAll('[data-unpin]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var row = b.closest('.chatrow');
+      var sub = row.querySelector('.csub');
+      // 同上：取消永久不是「删掉」，而是「交给 LRU」，两者对用户的含义完全不同
+      sub.textContent = '已取消永久 · 已纳入自动清理，可能很快被清除';
+      b.disabled = true;
+      b.textContent = '已取消';
+    });
+  });
+
+  // 详情面板里的永久缓存勾选：勾上即进入传输管理，而不是静默变个标记
+  var pinChk = document.getElementById('pinchk');
+  pinChk.addEventListener('change', function () {
+    document.documentElement.setAttribute('data-pinning', pinChk.checked ? '1' : '0');
+  });
+  document.documentElement.setAttribute('data-pinning', '0');
+
+  /* ---------- 懒加载：骨架先出现，再逐个收敛 ----------
+     不是装饰。列目录很快、逐文件读头部识别慢，先给骨架让界面有内容，
+     否则用户盯着空白等几秒，而第一个文件其实 200ms 就好了。 */
+  var sb = document.getElementById('sbcount');
+  var nextMsg = 4789;
+  var batch = 0;
+  var samples = [
+    ['🎬', '会议录像 0417.mp4', '880 MB'],
+    ['🖼️', '合同扫描.pdf', '24 MB'],
+    ['🎵', '播客 EP12.mp3', '96 MB'],
+    ['📦', '项目归档.tar.omy', '2.1 GB'],
+    ['🎬', '旅行 vlog.mkv', '3.4 GB'],
+    ['📄', '读书笔记.md', '84 KB']
+  ];
+  function bumpCount(n) {
+    var cur = Number(sb.getAttribute('data-loaded')) + n;
+    sb.setAttribute('data-loaded', String(cur));
+    sb.textContent = '已加载 ' + cur + ' 个文件（未列完）';
+  }
+  document.getElementById('loadmore').addEventListener('click', function () {
+    batch++;
+    var made = [];
+    for (var i = 0; i < 6; i++) {
+      var card = document.createElement('div');
+      card.className = 'card probing';
+      card.setAttribute('data-state', 'probing');
+      card.innerHTML =
+        '<div class="thumb">⏳</div>' +
+        '<div class="cname"><span class="skel" style="display:block;width:' + (72 + i * 3) + '%"></span></div>' +
+        '<div class="cmeta">识别中…</div>' +
+        '<div class="corigin">消息 #' + (nextMsg - i) + '</div>';
+      grid.appendChild(card);
+      made.push(card);
+    }
+    nextMsg -= 6;
+    bumpCount(6);
+    // 错开收敛：真实链路就是一个个回来的，同时全变等于又回到「整页转圈」
+    made.forEach(function (card, i) {
+      setTimeout(function () {
+        var s = samples[(batch * 6 + i) % samples.length];
+        var origin = card.querySelector('.corigin').textContent;
+        // 每批留一个「不属于当前密码」，说明这一态不是偶发而是常态
+        if (i === 3) {
+          card.className = 'card locked';
+          card.setAttribute('data-state', 'locked');
+          card.innerHTML = '<div class="thumb">🔒</div><div class="cname">加密文件</div>' +
+            '<div class="cmeta">不属于当前密码</div>' +
+            '<div class="corigin">' + origin + '</div>';
+        } else {
+          card.className = 'card';
+          card.setAttribute('data-state', 'unlocked');
+          card.innerHTML = '<div class="thumb">' + s[0] + '</div>' +
+            '<div class="cname">' + s[1] + '</div><div class="cmeta">' + s[2] + '</div>' +
+            '<div class="corigin">' + origin + '</div>';
+        }
+      }, 420 + i * 260);
+    });
+  });
+
+  /* ---------- 搜索：服务端 vs 本地 ---------- */
+  document.querySelectorAll('#srchseg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var m = b.getAttribute('data-m');
+      document.querySelectorAll('#srchseg button').forEach(function (x) { x.classList.toggle('on', x === b); });
+      var server = m === 'server';
+      document.getElementById('srchLocal').hidden = server;
+      document.getElementById('srchServer').hidden = !server;
+      document.getElementById('resLocal').hidden = server;
+      document.getElementById('resServer').hidden = !server;
+      document.getElementById('srchlab').textContent = '当前：' + (server ? '服务端搜索（搜索词会发出）' : '本地过滤（默认）');
+      document.getElementById('sbsrch').textContent = server
+        ? '服务端搜索 · 范围：整个对话 · ⚠️ 搜索词已发送'
+        : '本地过滤 · 范围：已加载的 36 项';
+      document.documentElement.setAttribute('data-search-mode', m);
+    });
+  });
+  document.documentElement.setAttribute('data-search-mode', 'local');
+
+  /* ---------- 错误态：一处切换，多处投影 ----------
+     这是本页最想说明的一件事：一个错误态要在它影响到的每一处被表达
+     （位置级横幅、状态栏、受影响的卡片），而不是弹一个 toast 就算交代了。 */
+  var banners = { flood: 'bnFlood', auth: 'bnAuth', ref: 'bnRef', net: 'bnNet',
+    apiid: 'bnApiId', proxy: 'bnProxy' };
+  var errText = {
+    none: '当前：<b>正常</b>。切换上面的按钮观察差异。',
+    flood: '当前：<b>限流等待</b>。横幅给出倒计时；卡片转「等待中」；侧栏位置点变黄。' +
+      '<b>不给倒计时用户就会疯狂点刷新，把等待时间越点越长。</b>',
+    auth: '当前：<b>会话失效</b>。横幅带「重新登录」；侧栏位置点变红；上传按钮消失。' +
+      '<b>这一态不可重试</b>——当成可重试错误会让界面无限转圈。',
+    ref: '当前：<b>文件引用过期（自愈中）</b>。这是唯一一个<b>希望用户看不到</b>的态：' +
+      '驱动用 (对话, 消息号) 重取消息换新凭据，几百毫秒内自愈。只在刷新也失败时才转成错误。',
+    net: '当前：<b>网络不可达</b>。横幅说明「已缓存的仍可打开」，并明确<b>与密码无关</b>——' +
+      '把它混进「密码不对」会让用户反复试密码，而真正的问题在网络。',
+    proxy: '当前：<b>代理地址格式不对</b>（只支持 <code>socks5://</code>）。' +
+      '与上一条同类：<b>正确动作是改配置，不是等待或重试</b>。' +
+      '横幅刻意<b>不回显底层错误串</b>——它说的是「scheme 不支持」，' +
+      '而用户会据此去排查一个根本不存在的网络故障。',
+    apiid: '当前：<b>内置 api_id 被封</b>（<code>API_ID_PUBLISHED_FLOOD</code>）。' +
+      '横幅直接给出<b>「填写自己的 api_id…」</b>按钮——这一条<b>等和重试都没用</b>，' +
+      'omy 自己也修不了，换自己的凭据是唯一出路。' +
+      '<b>不给这个按钮，用户就只能卸载。</b>'
+  };
+  var floodBanSec = document.getElementById('bnFloodSec');
+  var banTimer = null;
+  document.querySelectorAll('#errseg .tbtn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var e = b.getAttribute('data-e');
+      document.querySelectorAll('#errseg .tbtn').forEach(function (x) { x.classList.toggle('on', x === b); });
+      Object.keys(banners).forEach(function (k) {
+        document.getElementById(banners[k]).hidden = k !== e;
+      });
+      document.getElementById('errnote').innerHTML = errText[e];
+      document.documentElement.setAttribute('data-err', e);
+
+      // 侧栏连接点：位置级状态必须在侧栏就能看出来——
+      // 用户是在侧栏做决策的，藏在里面会让他以为是网络抖动
+      var d = document.getElementById('sv1d');
+      d.className = 'dot ' + (e === 'auth' || e === 'net' || e === 'apiid'
+        || e === 'proxy' ? 'err'
+        : e === 'flood' ? 'wait' : 'on');
+
+      // 状态栏
+      document.getElementById('sbspeed').textContent =
+        e === 'flood' ? '⏳ 已暂停（限流等待中）'
+        : e === 'auth' ? '🔐 登录已失效'
+        : e === 'apiid' ? '🔑 内置 API 凭据已被限制 · 需改用自己的'
+        : e === 'proxy' ? '🧦 代理地址格式不对 · 需改为 socks5://'
+        : e === 'net' ? '📡 离线 · 仅显示缓存内容'
+        : '🐌 下载速度受限（非会员账号）';
+
+      // 受影响的卡片：限流时未识别完的条目转「等待中」，
+      // 而不是留在「识别中」假装还在动
+      grid.querySelectorAll('.card').forEach(function (c) {
+        var st = c.getAttribute('data-state');
+        if (e === 'flood' && st === 'probing') {
+          c.classList.remove('probing'); c.classList.add('waiting');
+          c.setAttribute('data-state', 'waiting');
+          c.querySelector('.cmeta').textContent = '限流暂停';
+        } else if (e !== 'flood' && st === 'waiting') {
+          c.classList.remove('waiting'); c.classList.add('probing');
+          c.setAttribute('data-state', 'probing');
+          c.querySelector('.cmeta').textContent = '识别中…';
+        }
+      });
+
+      syncUpBtn();
+
+      if (banTimer) { clearInterval(banTimer); banTimer = null; }
+      if (e === 'flood') {
+        var left = 37;
+        floodBanSec.textContent = String(left);
+        banTimer = setInterval(function () {
+          left--;
+          floodBanSec.textContent = String(left);
+          if (left <= 0) { clearInterval(banTimer); banTimer = null; }
+        }, 1000);
+      }
+    });
+  });
+
+  // 先写属性再套投影：断言要能区分「否」与「这段代码根本没跑」
+  document.documentElement.setAttribute('data-err', 'none');
+  applyCap();
+})();
+</script>
+</body>
+</html>
