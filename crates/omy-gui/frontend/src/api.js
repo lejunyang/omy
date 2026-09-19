@@ -431,8 +431,8 @@ export const remoteEffectiveCaps = (placeId, dir) =>
   invoke('remote_effective_caps', { placeId, dir });
 
 /** 重新探测远程目录里的单个文件（「未能读取」条目就地重试，不重载整屏）。 */
-export const remoteProbeEntry = (placeId, id, size) =>
-  invoke('remote_probe_entry', { placeId, id, size });
+export const remoteProbeEntry = (placeId, id, size, name) =>
+  invoke('remote_probe_entry', { placeId, id, size, name: name ?? null });
 
 /**
  * 订阅「边扫边出」：remote_browse 先返回一屏骨架，后台每识别完一个文件
@@ -492,6 +492,26 @@ export const remoteCacheOpenDir = () => invoke('remote_cache_open_dir');
  *  {cached_blocks,total_blocks,cached_bytes,fully_cached}，不下载载荷。 */
 export const remoteCacheFileStat = (placeId, path, size) =>
   invoke('remote_cache_file_stat', {
+    req: { place_id: placeId, path, size },
+  });
+
+/** 把一个远程文件转为永久缓存。
+ *
+ * **这是一次真实的下载任务**：会把整个文件的密文块都取到本地，耗时与文件
+ * 大小成正比。只打标记的话「永久」只是承诺不是事实——下次离线打开照样失败。
+ */
+export const remoteCachePin = (placeId, path, size) =>
+  invoke('remote_cache_pin', {
+    req: { place_id: placeId, path, size },
+  });
+
+/** 取消永久缓存。
+ *
+ * 内容会搬回临时层，也就是**重新计入上限、重新参与淘汰**，可能很快被清掉。
+ * 那正是「取消永久」该有的语义；只改标记的话空间不会真的还回来。
+ */
+export const remoteCacheUnpin = (placeId, path, size) =>
+  invoke('remote_cache_unpin', {
     req: { place_id: placeId, path, size },
   });
 

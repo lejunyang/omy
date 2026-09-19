@@ -228,6 +228,8 @@ pub fn run() {
             place_cmds::remote_place_close,
             place_cmds::remote_decrypt_to_local,
             place_cmds::remote_cache_usage,
+            place_cmds::remote_cache_pin,
+            place_cmds::remote_cache_unpin,
             place_cmds::remote_cache_clear,
             place_cmds::remote_cache_apply,
             place_cmds::remote_cache_open_dir,

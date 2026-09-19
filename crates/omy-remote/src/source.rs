@@ -135,6 +135,33 @@ impl<S: RemoteStore> RemoteSource<S> {
         }
     }
 
+    /// 把整个文件的密文块都取到本地缓存。
+    ///
+    /// 「转为永久」之前必须先做这一步：[`RemoteSource::pin`] 只搬运**已经在
+    /// 临时层里**的块，没取过的块它搬不了。不预热就 pin 的话，永久层里只会有
+    /// 之前碰巧缓存过的那几块，而用户以为整个文件都留下来了——直到离线打开
+    /// 失败才发现。那是承诺与事实不符，比不提供这个功能更糟。
+    ///
+    /// 逐块顺序取而不是并发：并发会同时开多个到同一个服务端的请求，
+    /// 在限流敏感的 Telegram 上很容易换来一次 `FLOOD_WAIT`，
+    /// 结果是「转为永久」整体变慢而不是变快。
+    ///
+    /// 已经缓存的块不会重新下载——`fetch_block` 自己会先查缓存。
+    ///
+    /// # Errors
+    ///
+    /// 任何一块取失败都立刻返回：半个文件的永久缓存没有意义，
+    /// 继续取下去只会让用户等更久才看到同一个失败。
+    pub fn prefetch_all(&self) -> CoreResult<u64> {
+        let total = self.total_ct_blocks();
+        let mut got = 0u64;
+        for b in 0..total {
+            let data = self.fetch_block(b)?;
+            got = got.saturating_add(data.len() as u64);
+        }
+        Ok(got)
+    }
+
     /// 把该文件标记为永久保留，并把已缓存的块搬进永久层。
     ///
     /// 这些永久层操作都由 `RemoteSource` 转发而不是让调用方直接用

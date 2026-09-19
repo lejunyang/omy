@@ -361,18 +361,27 @@ pub async fn remote_probe_entry(
     place_id: String,
     id: String,
     size: u64,
+    name: Option<String>,
 ) -> CmdResult<RemoteEntry> {
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
 
-    // 列表里的 name 是路径最后一段；重试只拿到 id（路径），现解一次。
-    // rsplit 按字符 '/' 切，不会切坏多字节 UTF-8。
-    let name = id
-        .rsplit('/')
-        .find(|seg| !seg.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| id.clone());
+    // 名字优先用调用方给的——它列表里本来就有。
+    //
+    // 早先这里一律从 id 按 '/' 切最后一段，那是**写死了 WebDAV 的路径形状**。
+    // Telegram 的 id 形如 `tg:<对话>:<消息号>`，里面没有斜杠，于是整个 id 被
+    // 当成文件名，界面上显示成「tg:-1003929965717:10」。加密文件平时看不出来
+    // （显示的是解出来的真名），但 plain 模式的文件本来就没有加密文件名、
+    // 要靠磁盘名显示，一走这条路径就露馅。
+    //
+    // 不在这里加 Telegram 特判：那会让「id 长什么样」这件事散落到各处，
+    // 加第三个 provider 时又要改一遍。让调用方传名字才是正解。
+    let name = name.unwrap_or_else(|| {
+        id.rsplit('/')
+            .find(|seg| !seg.is_empty())
+            .map_or_else(|| id.clone(), str::to_string)
+    });
     let base = skeleton_entry(id, name, false, Some(size), false);
     let out = probe_remote_entry(&place.store, state.inner(), thumbs.inner(), base).await;
     Ok(out)
@@ -893,18 +902,81 @@ async fn fetch_full_header(
 /// 远程缓存用量，供设置页显示进度条。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RemoteCacheUsage {
-    /// 已用字节。
+    /// 临时层已用字节。**不含永久层**。
     pub used: u64,
-    /// 上限字节，0 表示不限。
+    /// 临时层上限字节，0 表示不限。
     pub limit: u64,
     /// 缓存根目录（「打开缓存目录」用）。
     pub root: Option<String>,
+    /// 永久层已用字节。
+    ///
+    /// 与 `used` 分开报，因为它**不计入 `limit`、也不参与淘汰**——这正是
+    /// 永久缓存存在的意义。合成一个数字的话，界面只能显示一个「已用」，
+    /// 用户会以为清空缓存能把它降下去，而永久层清不掉。
+    pub pinned_used: u64,
+    /// 永久层里有多少个文件。
+    ///
+    /// 永久层没有分母（不受上限约束），所以界面只能显示绝对值与文件数，
+    /// 不能像临时层那样画一个百分比条。
+    pub pinned_files: u64,
+}
+
+/// 把一个远程文件转为**永久缓存**。
+///
+/// # 这是一次真实的下载任务
+///
+/// 产品上「转为永久」不是打个标记就完事：它要把整个文件的密文块都取到本地，
+/// 否则「永久」只是承诺而不是事实——下次离线打开照样失败。所以这个命令会
+/// 真的把所有块拉下来，耗时与文件大小成正比。
+///
+/// 返回搬进永久层的字节数。
+///
+/// # Errors
+///
+/// 位置不存在、不是 omy 文件、网络失败时返回。
+#[tauri::command]
+pub async fn remote_cache_pin(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    req: RemoteFileRef,
+) -> CmdResult<u64> {
+    let source = build_remote_source(&reg, &cache, &req).await?;
+    // 先确保内容真的在本地：pin 只搬运已有的块，没有的块搬不了。
+    // 不预热的话，「转为永久」会变成「把已经缓存的那几块标成永久」，
+    // 而用户以为整个文件都留下来了——直到离线时才发现不是。
+    tokio::task::block_in_place(|| source.prefetch_all())
+        .map_err(|_| CmdError::code("remote_prefetch_failed"))?;
+    source.pin().map_err(|e| to_cmd_err(&e))
+}
+
+/// 取消永久缓存。
+///
+/// 内容**搬回临时层**而不是原地改个标记——回到临时层就意味着重新计入 `limit`、
+/// 重新参与 LRU，可能很快被清掉。那正是用户点「取消永久」想要的语义；
+/// 只改标记的话空间不会真的还回来。
+///
+/// # Errors
+///
+/// 位置不存在或不是 omy 文件时返回。
+#[tauri::command]
+pub async fn remote_cache_unpin(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    req: RemoteFileRef,
+) -> CmdResult<u64> {
+    let source = build_remote_source(&reg, &cache, &req).await?;
+    source.unpin().map_err(|e| to_cmd_err(&e))
 }
 
 /// 查询远程密文缓存用量。
 #[tauri::command]
 pub fn remote_cache_usage(cache: tauri::State<'_, Arc<RemoteCache>>) -> RemoteCacheUsage {
+    let (pinned_used, pinned_files) = cache
+        .snapshot()
+        .map_or((0, 0), |c| (c.pinned_used(), c.pinned_file_count()));
     RemoteCacheUsage {
+        pinned_used,
+        pinned_files,
         used: cache.used(),
         limit: cache.limit(),
         root: cache.root().map(|p| p.display().to_string()),

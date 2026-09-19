@@ -1841,7 +1841,10 @@ export async function retryRemoteEntry(f) {
   if (!state.remotePlace || state.remoteRetrying.includes(f.id)) return;
   state.remoteRetrying = [...state.remoteRetrying, f.id];
   try {
-    const entry = await api.remoteProbeEntry(state.remotePlace, f.id, f.size || 0);
+    // 把已知的名字一并传过去：后端从 id 猜名字的那条回落路径写死了
+    // WebDAV 的路径形状，对 Telegram 的 id 会猜成整个 id
+    const entry = await api.remoteProbeEntry(
+      state.remotePlace, f.id, f.size || 0, f.name);
     patchRemoteItem(entry);
   } catch (_) {
     state.remoteRetrying = state.remoteRetrying.filter((id) => id !== f.id);
