@@ -53,7 +53,7 @@ pub enum PlaceStore {
     /// 第一个真实的「能力随目录而变」provider（Telegram）落地后，这一支可以
     /// 删掉，把断言搬到那个 provider 自己的测试里。
     #[cfg(test)]
-    VaryingForTest(tests::VaryingStore),
+    VaryingForTest(crate::telegram::TelegramStore),
 }
 
 impl PlaceStore {
@@ -175,52 +175,37 @@ mod tests {
     use super::*;
     use crate::webdav::WebDavConfig;
 
-    /// 一个**能力随目录而变**的假驱动，只在测试里存在。
+    /// 造一个**能力随目录而变**的真实驱动，用来测「外壳有没有转发」。
     ///
-    /// 用它才能测出「外壳忘了转发 `effective_capabilities`」：WebDAV 各目录能力
-    /// 一致，转发与落回默认实现的结果完全相同，缺陷从外部根本看不出来。
+    /// 以前这里有一个手写的假驱动，那是在 Telegram 驱动还不存在时的临时替代。
+    /// 现在 `TelegramStore` 就是真的按对话给能力，于是那份假实现成了同一逻辑的
+    /// 第二处实现——AGENTS.md 明禁，且它还会慢慢和真实行为漂移，
+    /// 到时候测过的东西和跑的东西就不是一回事了。
     ///
-    /// 形状照 Telegram 的真实情形取：位置级是**上界**（能写），具体目录里
-    /// 「自己的收藏夹」可写、「别人的频道」只读。
-    #[derive(Debug)]
-    pub struct VaryingStore;
-
-    impl VaryingStore {
-        /// 可写的那个目录 id。
-        pub const WRITABLE_DIR: &'static str = "saved";
-        /// 只读的那个目录 id。
-        pub const READONLY_DIR: &'static str = "someone-elses-channel";
+    /// 仍然需要**某个**能力随目录而变的驱动：WebDAV 各目录能力一致，
+    /// 转发与落回 trait 默认实现的结果完全相同，缺陷从外部根本看不出来。
+    fn varying() -> PlaceStore {
+        use crate::telegram::{Conversation, TelegramStore};
+        PlaceStore::VaryingForTest(TelegramStore::with_conversations(vec![
+            Conversation {
+                chat: 1,
+                title: String::from("收藏夹"),
+                can_send: true,
+                can_delete: true,
+            },
+            Conversation {
+                chat: 2,
+                title: String::from("别人的频道"),
+                can_send: false,
+                can_delete: false,
+            },
+        ]))
     }
 
-    impl RemoteStore for VaryingStore {
-        fn capabilities(&self) -> Capabilities {
-            // 位置级 = 上界：这个账号在**某些**对话里能写
-            Capabilities::conversation_writable(true, true)
-        }
-
-        async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
-            let upper = self.capabilities();
-            let per_dir = if dir_id == Self::WRITABLE_DIR {
-                Capabilities::conversation_writable(true, true)
-            } else {
-                // 别人的频道：能看能搜，不能写不能删
-                Capabilities::conversation_writable(false, false)
-            };
-            Ok(per_dir.narrowed_to(upper))
-        }
-
-        fn describe(&self) -> String {
-            String::from("varying-test")
-        }
-
-        async fn list(&self, _dir_id: &str) -> Result<Vec<Entry>> {
-            Ok(Vec::new())
-        }
-
-        async fn read_range(&self, _id: &str, _offset: u64, _len: u64) -> Result<Vec<u8>> {
-            Ok(Vec::new())
-        }
-    }
+    /// 可写的那个目录 id（自己的收藏夹）。
+    const WRITABLE_DIR: &str = "tg:1";
+    /// 只读的那个目录 id（别人的频道）。
+    const READONLY_DIR: &str = "tg:2";
 
     fn webdav(writable: bool) -> PlaceStore {
         PlaceStore::WebDav(
@@ -319,17 +304,17 @@ mod tests {
     /// 转发与不转发结果相同，从外部区分不了（上一版就因此是个测不到的缺口）。
     #[test]
     fn effective_capabilities_are_forwarded_per_dir() {
-        let s = PlaceStore::VaryingForTest(VaryingStore);
+        let s = varying();
         let r = rt();
 
         // 位置级是上界：它说「这个位置能写」
         assert!(s.capabilities().any_write(), "位置级上界应当是可写的");
 
         let writable = r
-            .block_on(s.effective_capabilities(VaryingStore::WRITABLE_DIR))
+            .block_on(s.effective_capabilities(WRITABLE_DIR))
             .expect("取有效能力");
         let readonly = r
-            .block_on(s.effective_capabilities(VaryingStore::READONLY_DIR))
+            .block_on(s.effective_capabilities(READONLY_DIR))
             .expect("取有效能力");
 
         // 要害：两个目录必须给出**不同**的结果。外壳一旦不转发，两者都会等于
