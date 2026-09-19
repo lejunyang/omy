@@ -1,12 +1,16 @@
 ---
-title: Remote locations (cloud / WebDAV)
+title: Remote locations (cloud / WebDAV / Telegram)
 ---
 
-# Remote locations (cloud / WebDAV)
+# Remote locations (cloud / WebDAV / Telegram)
 
 Mount a NAS, cloud drive, or any WebDAV-capable service as a **remote location**, browse its `.omy` files like a local folder, and **stream videos and preview images directly — only ciphertext ever leaves the device, and decryption happens on your machine**.
 
-The first supported protocol is **WebDAV**. It is the common standard across most self-hosted NAS (Synology, QNAP, TrueNAS) and aggregators (AList, Nextcloud, ownCloud), so a single WebDAV driver covers a large class of storage without adapting to each vendor.
+Two kinds of remote location are supported today: **WebDAV** and **Telegram**.
+
+WebDAV is the common standard across most self-hosted NAS (Synology, QNAP, TrueNAS) and aggregators (AList, Nextcloud, ownCloud), so a single WebDAV driver covers a large class of storage without adapting to each vendor.
+
+Telegram turns your private chats, groups, and channels into directories — see [Telegram](#telegram) below.
 
 ::: tip Why WebDAV first
 WebDAV is an open standard with uniform semantics for listing directories, random-access reads via `Range`, upload, delete, and rename. Private cloud APIs differ widely in client protocol and token policy, and will be added as separate drivers only when there is a real need.
@@ -61,6 +65,52 @@ A read-only location cannot be rewritten, yet you may still need to bring a file
 - Encrypted folders (containers) cannot yet be decrypted to local from a remote location; handle them locally for now.
 
 Operations that rewrite the remote side (encrypted upload, delete, rename, new folder) do not have an entry point yet. When they arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a note under the item — left-aligned with its label — where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
+
+## Telegram
+
+Mount your Telegram conversations as a remote location: **each conversation is a directory**, and the documents, photos, and videos in it are the entries. `.omy` files are recognized, previewed, and streamed exactly as they are over WebDAV.
+
+### Signing in
+
+Click the Telegram icon in the sidebar. There are two routes:
+
+- **Sign in with a QR code**: scan it with a phone that is already signed in, so you never type a phone number or verification code into omy. The code refreshes itself when it expires, and the interface makes that refresh visible. If your account has two-step verification enabled, omy asks for the cloud password at the point where the server requires it — accounts without it never see that step.
+- **Reuse the desktop sign-in**: read the `tdata` folder of Telegram Desktop on this machine and reuse the sign-in it already has, with no QR code. You must **quit** the desktop client first — closing its window is not enough, it minimises to the tray. The portable build keeps `tdata` next to `Telegram.exe`, where automatic detection usually will not find it, so the interface lets you point to it.
+
+::: warning Reusing the desktop sign-in means sharing one session
+After importing, omy and the desktop client **share a single sign-in session**, not two: signing out in the desktop client ends it in omy as well.
+:::
+
+The sign-in is encrypted and stored on this machine, then reused on the next launch. It follows the same path as WebDAV passwords — the key is held by the system credential store, and **omy never falls back to storing it in plain text** when that store is unavailable. The cost is signing in again on every launch.
+
+::: tip Most networks need a proxy
+Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. The proxy is saved along with the location.
+:::
+
+omy reports itself **honestly as omy** in Telegram's list of active sessions rather than impersonating an official client, so you can always recognise it there and revoke it.
+
+### Browsing and searching
+
+Entering the location shows the conversation list; opening a conversation shows its files. Documents sent as files, images sent as photos, and videos all appear.
+
+Each conversation also has a **message view** that lists messages over time with files as the through-line, so a message carrying a file can be opened directly. Broadcast channels **do not** offer the message view; their file view is unaffected. The reason is below.
+
+Search comes in two forms, and the interface keeps them clearly apart:
+
+- **Filter locally**: narrows the entries already listed. The search term is not sent anywhere.
+- **Search on the server**: Telegram searches server-side and finds history that was never listed. **This sends your search term to Telegram**, so it takes an explicit switch, after which a notice states exactly which term was sent.
+
+Searching on the server from the conversation list searches across all conversations. Conversations you lack access to are skipped silently, but rate limiting and network errors are reported as such — that is a different thing from "nothing was found".
+
+### Uploading
+
+When uploading into a writable conversation, omy always sends **as a file** rather than letting the client classify by content. Sending as a photo makes the server re-encode the data, which is fatal for ciphertext — and the resulting failure points at the key rather than at the upload method.
+
+### Current limitations
+
+- Some groups enable "restrict saving content" (`noforwards`). omy can still read and play those files normally, but **cannot forward** them; that restriction is enforced by the server.
+- A few files are served via a CDN redirect, which this version does not support. It reports a clear error instead of failing silently.
+- **Broadcast channels have no message view.** Telegram's terms require clients that display a message stream to support and faithfully display sponsored messages (ads), and carrying ad delivery and impression reporting inside a local encrypted file manager conflicts directly with what omy is for. This is therefore a **deliberate omission**, not a missing capability. Files in those channels work as usual.
 
 ## Ciphertext cache
 
@@ -169,7 +219,7 @@ tell which server you use.
 ## Current limitations (first iteration)
 
 - **Remote write operations** — encrypted upload, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing, streaming, and decrypt-to-local. Decrypting an encrypted folder (container) from remote to local is not supported yet either.
-- No private (non-WebDAV) cloud drivers yet.
+- No private cloud drivers beyond WebDAV and Telegram yet.
 - No "unlock with fingerprint / face" tier for credential protection yet.
 
-The design and progress notes live in `docs/research/14-remote-locations-cloud.md` in the repository.
+The design and progress notes live in `docs/research/14-remote-locations-cloud.md` in the repository; the Telegram part is in `docs/research/15-telegram-remote.md`.
