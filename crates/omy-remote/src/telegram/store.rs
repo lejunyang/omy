@@ -33,23 +33,65 @@
 //!
 //! # 本模块的完成度（如实标注）
 //!
-//! 结构、id 编解码、分片对齐**已实现并可测**；真正发 RPC 的部分是骨架，
-//! 因为分片的 `offset` / `limit` 真实约束**尚未实测**（缺能收验证码的账号）。
-//! 那几个常量标了 TODO，**不要按官方文档的记载把它们钉死**——那是把推断写成
-//! 事实。见 `docs/research/15-telegram-remote.md` §11.4。
+//! 结构、id 编解码、分片对齐**已实现并可测**；真正发 RPC 的部分仍是骨架。
+//!
+//! 分片的 `offset` / `limit` 约束**已于 2026-09-20 用真实账号实测钉死**，
+//! 见 [`CHUNK`] 上的表格。其中两条与广为流传的文档记载不符：`limit=1024`
+//! 会被拒，越过文件尾返回 0 字节而不是报错。**不要按文档把它们改回去。**
 
 use crate::store::{Entry, RemoteStore};
 use crate::{Capabilities, Error, Result};
 
-/// 分片下载的单片大小。
+/// 分片下载的单片大小。**已由实测钉死，不要凭文档改。**
 ///
-/// TODO(实测后钉死)：**这个值现在是占位**。官方文档记载 `limit` 须为 1 KiB 的
-/// 倍数且能整除 1 MiB、`offset` 须为 `limit` 的倍数，但**我们没有实测过**，
-/// 而探针里正要试出服务端真实接受与拒绝的边界（见 §11.4.6）。
+/// # 实测出的真实约束（2026-09-20，真实账号，经 socks5 代理）
 ///
-/// 选 512 KiB 只是因为它同时满足上述两条记载；**实测结果出来后以实测为准**。
-/// 在那之前不要基于这个值做「已经对齐好了」的推理。
+/// | offset | limit | 结果 |
+/// |---|---|---|
+/// | 0 | 4096 | 接受 |
+/// | 0 | 1024 | **拒绝** `LIMIT_INVALID` |
+/// | 0 | 1 MiB | 接受 |
+/// | 0 | 1 MiB + 1 KiB | 拒绝 `LIMIT_INVALID` |
+/// | 0 | 1000 | 拒绝 `LIMIT_INVALID` |
+/// | 0 | 3072 | 拒绝 `LIMIT_INVALID`（3 KiB 不整除 1 MiB） |
+/// | 1 | 4096 | 拒绝 `OFFSET_INVALID` |
+/// | 4096 | 4096 | 接受 |
+/// | 512 KiB | 512 KiB | 接受（越过文件尾，返回 0 字节） |
+///
+/// # 两条与「文档记载」不符、必须记住的地方
+///
+/// 1. **`limit=1024` 被拒**。广为流传的说法是「limit 为 1 KiB 的倍数即可」，
+///    实测不成立——1 KiB 本身就会收到 `LIMIT_INVALID`。所以不要把下界当成
+///    1 KiB，那会写出一段偶尔报 400 的代码。
+/// 2. **越过文件尾不报错，返回 0 字节**。所以「读到 0 字节」是正常的结束信号，
+///    不是失败；把它当错误会让最后一片总是报错。
+///
+/// 选 [`CHUNK`] = 512 KiB 的理由：实测接受，且同时满足「1 KiB 的倍数」与
+/// 「整除 1 MiB」两条（服务端真正校验的似乎正是后者）。它也足够大，不会让
+/// 一个中等大小的文件被切成上百次请求——而请求数直接关系到会不会撞限流。
 const CHUNK: u64 = 512 * 1024;
+
+/// 服务端接受的最大单片大小：**1 MiB**。实测 1 MiB 接受、1 MiB + 1 KiB 被拒。
+///
+/// 有这个常量是为了让「别把 chunk 调过头」这件事有个可检查的上界，
+/// 而不是等运行时收到 `LIMIT_INVALID` 才发现。
+pub const MAX_CHUNK: u64 = 1024 * 1024;
+
+/// 服务端接受的最小单片大小：**4 KiB**。
+///
+/// 实测 1 KiB 与 1000 都被拒，4 KiB 通过。**不要改成 1024**——那正是文档记载
+/// 与实测不符的地方，改了会得到偶发的 `LIMIT_INVALID`。
+pub const MIN_CHUNK: u64 = 4 * 1024;
+
+/// 这个分片大小服务端会不会接受。
+///
+/// 规则由实测归纳：落在 [`MIN_CHUNK`, `MAX_CHUNK`] 内、且能整除 1 MiB。
+/// 后一条是实测里 3072 被拒而 4096 通过所揭示的——3 KiB 是 1 KiB 的倍数却
+/// 不整除 1 MiB。
+#[must_use]
+pub const fn chunk_is_valid(chunk: u64) -> bool {
+    chunk >= MIN_CHUNK && chunk <= MAX_CHUNK && MAX_CHUNK % chunk == 0
+}
 
 /// 判断对话列表还有没有下一页。
 ///
@@ -449,6 +491,56 @@ mod tests {
         assert!(!has_more_dialogs(0, 20));
         // 边界：只请求 1 条且真回了 1 条，必须继续——实测 limit=1 时确实还有更多
         assert!(has_more_dialogs(1, 1));
+    }
+
+    /// 实测钉下来的分片约束必须被常量如实反映。
+    ///
+    /// 不这样会怎样：这几个数字是花了一次真实账号的实测才拿到的。写错任何一个
+    /// 都会让运行时收到 `LIMIT_INVALID` / `OFFSET_INVALID`——而那两个错误看起来
+    /// 像「服务端出问题了」，没人会想到是自己的常量不对。
+    #[test]
+    fn chunk_constants_match_what_the_server_accepts() {
+        // 实测接受的
+        assert!(chunk_is_valid(4 * 1024), "4 KiB 实测接受");
+        assert!(chunk_is_valid(512 * 1024), "512 KiB 实测接受");
+        assert!(chunk_is_valid(1024 * 1024), "1 MiB 实测接受（上限）");
+        // 默认值必须在接受范围内，否则第一次下载就报 400
+        assert!(chunk_is_valid(CHUNK), "默认分片大小必须是服务端接受的");
+
+        // 实测被拒的
+        assert!(
+            !chunk_is_valid(1024),
+            "1 KiB 实测被拒（LIMIT_INVALID）——文档说「1 KiB 的倍数即可」是错的"
+        );
+        assert!(!chunk_is_valid(1000), "1000 不是 1 KiB 的倍数，实测被拒");
+        assert!(
+            !chunk_is_valid(3072),
+            "3 KiB 是 1 KiB 的倍数但不整除 1 MiB，实测被拒"
+        );
+        assert!(
+            !chunk_is_valid(1024 * 1024 + 1024),
+            "超过 1 MiB 实测被拒"
+        );
+    }
+
+    /// 分片计划算出来的每一个 offset 都必须是服务端接受的。
+    ///
+    /// 不这样会怎样：实测 `offset=1` 直接被拒（OFFSET_INVALID），服务端要求
+    /// offset 是 limit 的倍数。计划里只要有一个没对齐的 offset，那一片就取不
+    /// 回来——而症状是解密报「认证失败」，完全指不到偏移这一步。
+    #[test]
+    fn every_planned_offset_is_aligned() {
+        for (offset, len) in [(0u64, 1u64), (1, 1), (5000, 3000), (1_048_575, 4097)] {
+            let p = plan_chunks(offset, len, CHUNK);
+            for i in 0..p.count {
+                let off = p.start + i * CHUNK;
+                assert_eq!(
+                    off % CHUNK,
+                    0,
+                    "第 {i} 片的 offset {off} 不是 limit 的倍数，服务端会回 OFFSET_INVALID"
+                );
+            }
+        }
     }
 
     /// 对齐不能丢掉请求区间的任何一个字节。
