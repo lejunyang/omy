@@ -318,6 +318,15 @@ pub const fn clamp_to_eof(offset: u64, len: u64, size: u64) -> u64 {
 pub struct TelegramStore {
     /// 已连接的客户端。`None` 表示这是个只用于纯逻辑的实例。
     client: Option<Client>,
+    /// 后台收发任务的句柄。
+    ///
+    /// **必须一直活着**：它被丢弃后所有请求只会排进队列、再也发不出去，
+    /// 而且不会有任何报错——表现是界面一直转圈。
+    ///
+    /// 把它放在 store 里而不是 `mem::forget` 掉，是为了让这条约束由类型系统
+    /// 表达：store 活着连接就活着。用 forget 的话这条约束只存在于注释里，
+    /// 后来的人删掉那行不会有任何编译错误。
+    runner: Option<tokio::task::JoinHandle<()>>,
     /// 已知对话，充当目录表。
     ///
     /// 由 `list("")` 填充。做成缓存而不是每次查，是因为 `getDialogs` 有分页
@@ -340,6 +349,18 @@ pub struct TelegramStore {
     ///
     /// 可配置而不是写死常量，这样实测出真实约束后改一处即可，也便于单测。
     chunk: u64,
+}
+
+impl Drop for TelegramStore {
+    /// 主动停掉后台任务。
+    ///
+    /// 不这样会怎样：位置被移除后那条连接仍在跑，账号的「已登录设备」里留着
+    /// 一条已经没人用的活动会话，而且每次重连都会再多一条。
+    fn drop(&mut self) {
+        if let Some(r) = self.runner.take() {
+            r.abort();
+        }
+    }
 }
 
 impl std::fmt::Debug for TelegramStore {
@@ -390,6 +411,7 @@ impl TelegramStore {
     pub fn new() -> Self {
         Self {
             client: None,
+            runner: None,
             conversations: Mutex::new(Vec::new()),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
@@ -402,6 +424,7 @@ impl TelegramStore {
     pub fn with_conversations(conversations: Vec<Conversation>) -> Self {
         Self {
             client: None,
+            runner: None,
             conversations: Mutex::new(conversations),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
@@ -410,15 +433,47 @@ impl TelegramStore {
     }
 
     /// 用一个已登录的客户端构造，可真正发 RPC。
+    ///
+    /// 只在调用方自己保证后台 runner 活着时用（比如探针）。产品代码走
+    /// [`TelegramStore::from_connection`]，那条路把 runner 一并交给 store，
+    /// 不必靠调用方记得。
     #[must_use]
     pub fn connected(client: Client) -> Self {
         Self {
             client: Some(client),
+            runner: None,
             conversations: Mutex::new(Vec::new()),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
             chunk: CHUNK,
         }
+    }
+
+    /// 用一条已建立的连接构造，**并接管后台任务的生命周期**。
+    ///
+    /// 这是产品代码该走的路：runner 交给 store 持有之后，
+    /// 「连接必须保持活着」这件事由类型系统保证，不再依赖调用方记得
+    /// 别把某个句柄丢掉。
+    #[must_use]
+    pub fn from_connection(client: Client, runner: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            client: Some(client),
+            runner: Some(runner),
+            conversations: Mutex::new(Vec::new()),
+            peers: Mutex::new(std::collections::HashMap::new()),
+            media: Mutex::new(std::collections::HashMap::new()),
+            chunk: CHUNK,
+        }
+    }
+
+    /// 是不是一个已连接的实例。
+    ///
+    /// 从配置恢复出来的位置是未连接占位（恢复流程不碰网络，否则应用会卡在
+    /// 启动那一刻），要能和真连上的区分开——否则用户点进去只会看到一句
+    /// 「尚未登录」，而他明明登录过。
+    #[must_use]
+    pub const fn is_connected(&self) -> bool {
+        self.client.is_some()
     }
 
     /// 当前用的分片大小。

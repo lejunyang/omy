@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use omy_remote::telegram::TelegramStore;
 use omy_remote::webdav::{Vendor, WebDavConfig, WebDavStore};
 use omy_remote::{Capabilities, PlaceStore, RemoteStore};
 
@@ -101,6 +102,52 @@ impl PlaceRegistry {
             o.push(id.clone());
         }
         Ok(id)
+    }
+
+    /// 添加一个 Telegram 位置，返回其 id。
+    ///
+    /// `store` 由调用方建好（它需要一个已连接的客户端，而建连要走网络、
+    /// 属于命令层的事）。注册表只管登记，不碰网络——把建连放进来会让
+    /// 「添加一个位置」这个同步操作变成可能卡几十秒的操作。
+    ///
+    /// # Errors
+    ///
+    /// 注册表锁失效时返回。
+    pub fn add_telegram(&self, name: String, store: TelegramStore) -> omy_remote::Result<String> {
+        let store = Arc::new(PlaceStore::from(store));
+        let id = {
+            let Ok(o) = self.order.lock() else {
+                return Err(omy_remote::Error::Protocol(String::from("注册表锁失效")));
+            };
+            format!("p{}", o.len() + 1)
+        };
+        let place = Arc::new(Place {
+            id: id.clone(),
+            name,
+            kind: String::from(store.kind()),
+            store,
+        });
+        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
+            m.insert(id.clone(), place);
+            o.push(id.clone());
+        }
+        Ok(id)
+    }
+
+    /// 已注册的 Telegram 位置 id（若有）。
+    ///
+    /// 只会有一个：一个 omy 同时只持有一份 Telegram 登录态。查它是为了避免
+    /// 重复添加——重复添加的表现是侧栏里出现两个一模一样的 Telegram，
+    /// 而它们背后其实是同一个账号。
+    #[must_use]
+    pub fn telegram_id(&self) -> Option<String> {
+        let (Ok(m), Ok(o)) = (self.places.lock(), self.order.lock()) else {
+            return None;
+        };
+        o.iter()
+            .filter_map(|id| m.get(id))
+            .find(|p| p.kind == "telegram")
+            .map(|p| p.id.clone())
     }
 
     /// 按 id 取位置。
@@ -219,14 +266,40 @@ impl PlaceRegistry {
             return Err(String::from("注册表锁失效"));
         };
 
-        let saved: Vec<omy_config::SavedPlace> = o
+        let mut saved: Vec<omy_config::SavedPlace> = Vec::new();
+
+        // Telegram：没有 url / username / 密码可存——凭据在单独加密的
+        // session 文件里，这里只记「有这么一个位置」。
+        //
+        // 不能沿用下面 WebDAV 那条链路：它靠 as_webdav() 过滤，
+        // Telegram 会被静默丢掉，表现是「加过的位置重启就没了」而且不报错。
+        for p in o.iter().filter_map(|id| m.get(id)) {
+            if p.kind == "telegram" {
+                saved.push(omy_config::SavedPlace {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    kind: p.kind.clone(),
+                    url: String::new(),
+                    username: String::new(),
+                    vendor: String::new(),
+                    // 能不能写由对话决定（effective_capabilities），
+                    // 位置级这一位对 Telegram 没有意义，存 true 只是别把
+                    // 整个位置钉死成只读
+                    writable: true,
+                    // 凭据不在这里：Telegram 的登录态由
+                    // omy_remote::telegram::session 单独加密落盘
+                    secret: None,
+                });
+            }
+        }
+
+        let webdav_saved: Vec<omy_config::SavedPlace> = o
             .iter()
             .filter_map(|id| m.get(id))
-            // 非 WebDAV 的位置在这里被跳过，而不是存成一条半截记录：
+            // 其余非 WebDAV 的位置在这里被跳过，而不是存成一条半截记录：
             // `SavedPlace` 的 url / username / vendor 都是 WebDAV 专有字段，
             // 用空串凑出来的记录下次恢复会造出一个连不上的位置。
-            // **新增 provider 时要在 omy-config 里给它自己的持久化形状，
-            // 并在这里补一支**，而不是任它静默消失。
+            // **新增 provider 时要在这里补一支**，而不是任它静默消失。
             .filter_map(|p| p.store.as_webdav().map(|w| (Arc::clone(p), w.config())))
             .map(|(p, c)| {
                 // 没有密码就不必造信封；有密码但没有保护密钥时也不存，
@@ -250,6 +323,7 @@ impl PlaceRegistry {
                 }
             })
             .collect();
+        saved.extend(webdav_saved);
 
         let mut cfg = omy_config::Config::load().map_err(|e| e.to_string())?;
         cfg.remote.places = saved;
@@ -271,6 +345,27 @@ impl PlaceRegistry {
         let mut need_login = 0usize;
 
         for sp in &cfg.places {
+            // Telegram 恢复成一个**未连接**的占位。
+            //
+            // 不在这里建连：建连要走网络，可能超时几十秒，而 restore 跑在
+            // 应用启动路径上——放这儿会让整个界面卡在启动那一刻，
+            // 而用户看不出是在等网络。真正的连接推迟到用户点开它时。
+            if sp.kind == "telegram" {
+                let place = Arc::new(Place {
+                    id: sp.id.clone(),
+                    name: sp.name.clone(),
+                    kind: sp.kind.clone(),
+                    store: Arc::new(PlaceStore::from(TelegramStore::new())),
+                });
+                if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
+                    if m.insert(sp.id.clone(), place).is_none() {
+                        o.push(sp.id.clone());
+                    }
+                    total += 1;
+                }
+                continue;
+            }
+
             let password = sp
                 .secret
                 .as_ref()

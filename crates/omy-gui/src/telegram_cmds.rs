@@ -31,7 +31,8 @@ use omy_remote::telegram::appid::AppId;
 use omy_remote::telegram::device::DeviceInfo;
 use omy_remote::telegram::qr::{encode_matrix, QrMatrix};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
-use omy_remote::telegram::{proxy, session as tgsession};
+use omy_remote::telegram::store::TelegramStore;
+use omy_remote::telegram::{connect, proxy, session as tgsession};
 
 use crate::commands::{CmdError, CmdResult};
 
@@ -249,6 +250,74 @@ pub fn telegram_has_session() -> bool {
 #[tauri::command]
 pub fn telegram_forget_session() -> CmdResult<()> {
     tgsession::forget().map_err(|e| CmdError::with("tg_forget_failed", detail(&e.to_string())))
+}
+
+/// 连上 Telegram 并把它注册成一个远程位置，返回位置 id。
+///
+/// # 为什么连接发生在这里而不是注册表里
+///
+/// 建连要走网络、可能几十秒才超时。放进 `PlaceRegistry::add_*` 会让一个
+/// 看起来是「登记一条记录」的同步操作变成能卡住界面的操作；放在命令层，
+/// 前端可以照常显示进行中状态。
+///
+/// # 幂等
+///
+/// 已经连过就直接返回原来那个 id，不再建第二条连接。否则侧栏里会出现两个
+/// 一模一样的 Telegram，而它们背后是同一个账号——用户无从分辨该点哪个。
+///
+/// # Errors
+///
+/// 没有登录态、登录态已失效、网络不通时返回，各自有不同的错误码，
+/// 前端据此决定是引导去扫码还是提示检查网络。
+#[tauri::command]
+pub async fn telegram_place_connect(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    proxy_url: Option<String>,
+) -> CmdResult<String> {
+    // 已经有了就复用，不重复建连
+    if let Some(id) = reg.telegram_id() {
+        // 但只有真的连上的那个才算数：从配置恢复出来的是个未连接占位，
+        // 直接返回它会让用户点进去看到「尚未登录」而不知所措
+        if let Some(p) = reg.get(&id) {
+            if telegram_store_connected(&p.store) {
+                return Ok(id);
+            }
+            // 占位要先摘掉，否则下面注册完会有两条
+            reg.remove(&id);
+        }
+    }
+
+    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
+        Ok(p) => p.map(|p| p.to_string()),
+        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
+    };
+
+    let app = AppId::builtin();
+    let device = DeviceInfo::current();
+    let conn = connect::connect_saved(&app, &device, proxy.as_deref())
+        .await
+        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+
+    // 把 runner 一并交给 store 接管。
+    //
+    // 不能只取 client 然后让 conn 离开作用域：runner 被丢弃后所有请求都会排进
+    // 队列、再也发不出去，而且不报错——表现是界面一直转圈。交给 store 之后
+    // 这条约束由类型系统保证，不靠谁记得。
+    let store = TelegramStore::from_connection(conn.client, conn.runner);
+
+    reg.add_telegram(String::from("Telegram"), store)
+        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))
+}
+
+/// 这个位置是不是一个**已连接**的 Telegram。
+///
+/// 从配置恢复出来的 Telegram 位置是未连接占位（restore 不碰网络），
+/// 要能和真连上的区分开。
+fn telegram_store_connected(store: &omy_remote::PlaceStore) -> bool {
+    match store {
+        omy_remote::PlaceStore::Telegram(t) => t.is_connected(),
+        omy_remote::PlaceStore::WebDav(_) => false,
+    }
 }
 
 /// 把一句说明装进错误参数。

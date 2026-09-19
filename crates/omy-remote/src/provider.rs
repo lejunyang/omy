@@ -31,6 +31,7 @@
 //! 各自的注释里也标了这条。
 
 use crate::store::{Entry, RemoteStore};
+use crate::telegram::TelegramStore;
 use crate::webdav::WebDavStore;
 use crate::{Capabilities, Result};
 
@@ -43,17 +44,13 @@ use crate::{Capabilities, Result};
 pub enum PlaceStore {
     /// WebDAV / NAS / 被中转出来的云盘。
     WebDav(WebDavStore),
-    /// 仅测试可见：一个**能力随目录而变**的假驱动。
+    /// Telegram：对话即目录。
     ///
-    /// 它存在的唯一理由，是让「外壳必须转发 `effective_capabilities`」这条约束
-    /// 真的能被测到。眼下唯一的真实 provider（WebDAV）各目录能力一致，转发与
-    /// 不转发的结果完全相同，缺陷从外部无法区分——而那一支恰恰是最容易在重构中
-    /// 被顺手删掉的。
-    ///
-    /// 第一个真实的「能力随目录而变」provider（Telegram）落地后，这一支可以
-    /// 删掉，把断言搬到那个 provider 自己的测试里。
-    #[cfg(test)]
-    VaryingForTest(crate::telegram::TelegramStore),
+    /// 这是第一个**能力随目录而变**的 provider——同一个账号里，自己的收藏夹
+    /// 可写、别人的频道只读。以前这一位上放的是个假驱动（`VaryingForTest`），
+    /// 因为那时没有真的；现在有了，那个假的已经删掉：用一个与产品不同源的
+    /// 东西去验证产品，通过了也说明不了产品对。
+    Telegram(TelegramStore),
 }
 
 impl PlaceStore {
@@ -65,8 +62,7 @@ impl PlaceStore {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::WebDav(_) => "webdav",
-            #[cfg(test)]
-            Self::VaryingForTest(_) => "test-varying",
+            Self::Telegram(_) => "telegram",
         }
     }
 
@@ -79,8 +75,7 @@ impl PlaceStore {
     pub const fn as_webdav(&self) -> Option<&WebDavStore> {
         match self {
             Self::WebDav(s) => Some(s),
-            #[cfg(test)]
-            Self::VaryingForTest(_) => None,
+            Self::Telegram(_) => None,
         }
     }
 }
@@ -91,12 +86,17 @@ impl From<WebDavStore> for PlaceStore {
     }
 }
 
+impl From<TelegramStore> for PlaceStore {
+    fn from(s: TelegramStore) -> Self {
+        Self::Telegram(s)
+    }
+}
+
 impl RemoteStore for PlaceStore {
     fn capabilities(&self) -> Capabilities {
         match self {
             Self::WebDav(s) => s.capabilities(),
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.capabilities(),
+            Self::Telegram(s) => s.capabilities(),
         }
     }
 
@@ -108,64 +108,56 @@ impl RemoteStore for PlaceStore {
     async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
         match self {
             Self::WebDav(s) => s.effective_capabilities(dir_id).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.effective_capabilities(dir_id).await,
+            Self::Telegram(s) => s.effective_capabilities(dir_id).await,
         }
     }
 
     fn describe(&self) -> String {
         match self {
             Self::WebDav(s) => s.describe(),
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.describe(),
+            Self::Telegram(s) => s.describe(),
         }
     }
 
     async fn list(&self, dir_id: &str) -> Result<Vec<Entry>> {
         match self {
             Self::WebDav(s) => s.list(dir_id).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.list(dir_id).await,
+            Self::Telegram(s) => s.list(dir_id).await,
         }
     }
 
     async fn read_range(&self, id: &str, offset: u64, len: u64) -> Result<Vec<u8>> {
         match self {
             Self::WebDav(s) => s.read_range(id, offset, len).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.read_range(id, offset, len).await,
+            Self::Telegram(s) => s.read_range(id, offset, len).await,
         }
     }
 
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.write(dir_id, name, data).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.write(dir_id, name, data).await,
+            Self::Telegram(s) => s.write(dir_id, name, data).await,
         }
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
         match self {
             Self::WebDav(s) => s.delete(id).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.delete(id).await,
+            Self::Telegram(s) => s.delete(id).await,
         }
     }
 
     async fn rename(&self, id: &str, new_name: &str) -> Result<()> {
         match self {
             Self::WebDav(s) => s.rename(id, new_name).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.rename(id, new_name).await,
+            Self::Telegram(s) => s.rename(id, new_name).await,
         }
     }
 
     async fn create_dir(&self, parent_id: &str, name: &str) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.create_dir(parent_id, name).await,
-            #[cfg(test)]
-            Self::VaryingForTest(s) => s.create_dir(parent_id, name).await,
+            Self::Telegram(s) => s.create_dir(parent_id, name).await,
         }
     }
 }
@@ -186,7 +178,7 @@ mod tests {
     /// 转发与落回 trait 默认实现的结果完全相同，缺陷从外部根本看不出来。
     fn varying() -> PlaceStore {
         use crate::telegram::{Conversation, TelegramStore};
-        PlaceStore::VaryingForTest(TelegramStore::with_conversations(vec![
+        PlaceStore::Telegram(TelegramStore::with_conversations(vec![
             Conversation {
                 chat: 1,
                 title: String::from("收藏夹"),
@@ -251,6 +243,8 @@ mod tests {
     #[test]
     fn kind_strings_are_stable() {
         assert_eq!(webdav(false).kind(), "webdav");
+        // Telegram 的 kind 同样是持久化格式：配置里存着它，改了就恢复不出来
+        assert_eq!(varying().kind(), "telegram");
     }
 
     /// 只读位置的写操作要在发请求之前就被拒绝。

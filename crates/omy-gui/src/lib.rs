@@ -238,6 +238,7 @@ pub fn run() {
             telegram_cmds::telegram_login_start,
             telegram_cmds::telegram_submit_password,
             telegram_cmds::telegram_login_cancel,
+            telegram_cmds::telegram_place_connect,
         ])
         .setup(move |app| {
             #[cfg(target_os = "android")]
