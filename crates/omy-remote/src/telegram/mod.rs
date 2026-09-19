@@ -38,10 +38,12 @@ pub mod appid;
 pub mod device;
 pub mod login;
 pub mod proxy;
+pub mod qr;
 pub mod store;
 
 pub use appid::{AppId, AppIdError, SessionIdentity, SessionMismatch, BUILTIN_API_ID};
 pub use device::{DeviceInfo, DEVICE_MODEL};
 pub use login::{LoginError, LoginFlow, LoginMethod, LoginState};
 pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
+pub use qr::{decide as decide_qr, token_url, QrOutcome, QrStep};
 pub use store::{plan_chunks, ChunkPlan, Conversation, TelegramId, TelegramStore};

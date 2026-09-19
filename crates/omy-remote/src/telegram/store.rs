@@ -51,6 +51,24 @@ use crate::{Capabilities, Error, Result};
 /// 在那之前不要基于这个值做「已经对齐好了」的推理。
 const CHUNK: u64 = 512 * 1024;
 
+/// 判断对话列表还有没有下一页。
+///
+/// # 为什么不能看服务端给的总数
+///
+/// 实测（2026-09-19，真实账号）：`limit=1` 时服务端返回 1 条并声明总数
+/// `Some(4)`；而 `limit=20/100/500` 时都返回 4 条、总数是 **`None`**。
+/// 也就是说**服务端只在还没取完时给总数，取完了就不给**。
+///
+/// 不这样会怎样：按总数判断，取到最后一页会拿到 `None`——把它当 0 则少一页
+/// （对话凭空消失），当「未知」则永远以为还有下一页（翻页翻不到头）。
+/// 两种症状都不指向真正的原因，会让人去查分页偏移、缓存、甚至服务端限流。
+///
+/// 所以唯一可靠的终止条件是**返回条数 < 请求的 limit**。
+#[must_use]
+pub const fn has_more_dialogs(returned: usize, requested: usize) -> bool {
+    returned >= requested
+}
+
 /// 一次 `read_range` 要发的分片请求。
 ///
 /// 把「对齐 + 裁剪」算成数据而不是直接发请求，是为了让这段最容易出错的逻辑
@@ -411,6 +429,26 @@ mod tests {
             "文件 id 不该能当目录 id 解开"
         );
         assert_eq!(Conversation::parse_dir_id(&dir).expect("应能解"), 123);
+    }
+
+    /// 分页终止条件必须看「返回条数 < 请求 limit」，不能看服务端给的总数。
+    ///
+    /// 不这样会怎样：实测发现服务端只在未取完时给总数、取完给 None。按总数判断，
+    /// 把 None 当 0 会少一页（对话凭空消失），当「未知」会永远以为还有下一页
+    /// （翻页翻不到头）。两种症状都不指向真正原因。
+    #[test]
+    fn pagination_stops_on_a_short_page() {
+        // 满页 → 还有更多
+        assert!(has_more_dialogs(20, 20));
+        assert!(has_more_dialogs(100, 100));
+        // 不满 → 到头了。实测就是 limit=20/100/500 都只回 4 条
+        assert!(!has_more_dialogs(4, 20));
+        assert!(!has_more_dialogs(4, 100));
+        assert!(!has_more_dialogs(4, 500));
+        // 一条都没有 → 显然到头
+        assert!(!has_more_dialogs(0, 20));
+        // 边界：只请求 1 条且真回了 1 条，必须继续——实测 limit=1 时确实还有更多
+        assert!(has_more_dialogs(1, 1));
     }
 
     /// 对齐不能丢掉请求区间的任何一个字节。
