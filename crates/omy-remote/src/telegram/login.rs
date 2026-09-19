@@ -101,18 +101,66 @@ pub struct CodeShape {
 
 /// 验证码的送达方式。
 ///
-/// 必须如实显示：写死「短信」会让用户在短信里白找——Telegram 经常发到
-/// 已登录的官方客户端里。
+/// 必须如实显示，而且要显示得**具体**。这不是措辞洁癖，是一次真实踩到的缺陷：
+/// 界面只说「验证码已发送」，用户盯着短信等了很久，而码其实发到了他另一个
+/// 已登录的 Telegram 客户端里。
+///
+/// # 为什么这种情况很常见，而不是边缘案例
+///
+/// **账号只要还有其他活跃 session，Telegram 就会优先发到应用内**
+/// （`auth.sentCodeTypeApp`）而不是发短信。也就是说「已经在用 Telegram 的人」
+/// ——正是我们的目标用户——**默认都收不到短信**。
+///
+/// 而且**没有办法强制走短信**：`force_sms` 在 Layer 100+ 已被官方移除，传了会
+/// 被静默忽略。所以这不是可以绕过的问题，只能如实告诉用户去哪里看。
+///
+/// 这也是扫码该作为主推路径的直接理由：扫码本来就在那个客户端上操作，
+/// 不存在「码发到哪去了」这个问题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeDelivery {
-    /// 发到已登录的官方客户端。
+    /// 发到**其他已登录的** Telegram 客户端（`sentCodeTypeApp`）。
     App,
     /// 短信。
     Sms,
     /// 电话语音播报。
     Call,
-    /// 服务端没说清楚。界面此时应当含糊地说「验证码已发送」而不是猜一种。
+    /// 闪信（来电号码的后几位就是验证码）。
+    FlashCall,
+    /// 服务端没说清楚。此时只能含糊地说「验证码已发送」，不许猜一种。
     Unknown,
+}
+
+impl CodeDelivery {
+    /// 界面该告诉用户去**哪里**找这个验证码。
+    ///
+    /// 返回的是一个 i18n key 而不是成句文案：这一层在 `omy-remote`，拿不到
+    /// 语言设置，硬编码中文会让英文界面里冒出中文。
+    ///
+    /// # 为什么要有这个方法，而不是让界面自己 match
+    ///
+    /// 让界面自己写 match，漏掉一个分支就会退回「验证码已发送」那种笼统提示
+    /// ——而那正是已经踩过的坑。集中在这里，加新的送达方式时编译器会提醒
+    /// 所有调用点。
+    #[must_use]
+    pub const fn guidance_key(&self) -> &'static str {
+        match self {
+            // 这一条是重点：必须明确指向「其他已登录的客户端」
+            Self::App => "tg.code.sentToApp",
+            Self::Sms => "tg.code.sentToSms",
+            Self::Call => "tg.code.sentToCall",
+            Self::FlashCall => "tg.code.sentToFlashCall",
+            Self::Unknown => "tg.code.sentUnknown",
+        }
+    }
+
+    /// 这个送达方式需不需要用户**离开本机去别处取码**。
+    ///
+    /// 界面据此决定要不要额外强调。真为时提示必须显眼——用户的默认预期是
+    /// 「等短信」，而这恰好是最常见的那种情况。
+    #[must_use]
+    pub const fn requires_other_client(&self) -> bool {
+        matches!(self, Self::App)
+    }
 }
 
 /// 登录流程的当前状态。
@@ -558,6 +606,60 @@ mod tests {
             assert_eq!(s.length, len);
             assert_eq!(s.via, via);
         }
+    }
+
+    /// 每种送达方式都要给出**具体**的去处提示，且不能重复。
+    ///
+    /// 不这样会怎样：这是真实踩到的缺陷——界面只说「验证码已发送」，用户盯着
+    /// 短信等了很久，而码发到了他另一个已登录的 Telegram 客户端里。
+    /// key 重复则意味着两种情况会显示同一句话，等于又退回笼统提示。
+    #[test]
+    fn every_delivery_has_its_own_guidance() {
+        let all = [
+            CodeDelivery::App,
+            CodeDelivery::Sms,
+            CodeDelivery::Call,
+            CodeDelivery::FlashCall,
+            CodeDelivery::Unknown,
+        ];
+        let mut keys: Vec<&str> = all.iter().map(CodeDelivery::guidance_key).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "不同送达方式不能共用同一句提示");
+        for k in &keys {
+            assert!(!k.is_empty(), "提示 key 不能是空的");
+        }
+    }
+
+    /// 「发到应用内」必须被标成需要去别的客户端取码。
+    ///
+    /// 不这样会怎样：账号只要还有其他活跃 session，Telegram 就优先发应用内而
+    /// 不发短信——也就是说「已经在用 Telegram 的人」默认都收不到短信。而
+    /// force_sms 在 Layer 100+ 已被移除、无法强制走短信，所以只能如实告诉用户
+    /// 去哪看。不标的话他会一直盯着短信等。
+    #[test]
+    fn app_delivery_is_flagged_as_needing_another_client() {
+        assert!(
+            CodeDelivery::App.requires_other_client(),
+            "发到应用内时必须提示用户去其他客户端查看"
+        );
+        for d in [
+            CodeDelivery::Sms,
+            CodeDelivery::Call,
+            CodeDelivery::FlashCall,
+            CodeDelivery::Unknown,
+        ] {
+            assert!(
+                !d.requires_other_client(),
+                "{d:?} 不该让用户去别的客户端找"
+            );
+        }
+        // 提示里必须真的点明是 App 这条路径，不能和「不清楚」共用
+        assert_ne!(
+            CodeDelivery::App.guidance_key(),
+            CodeDelivery::Unknown.guidance_key()
+        );
     }
 
     /// 限流期间不接受输入，倒计时走完回到被打断的那一步。
