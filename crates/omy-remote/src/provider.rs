@@ -83,6 +83,17 @@ impl RemoteStore for PlaceStore {
         }
     }
 
+    /// 必须转发，不能用 trait 的默认实现。
+    ///
+    /// 默认实现返回位置级能力，而这个外壳一旦包住一个「能力随目录而变」的驱动，
+    /// 不转发就等于把目录级的收窄整个吞掉——症状是进只读对话后删除菜单照样是
+    /// 亮的，点了才报错。**新增 provider 时这一支也要跟着加。**
+    async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
+        match self {
+            Self::WebDav(s) => s.effective_capabilities(dir_id).await,
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             Self::WebDav(s) => s.describe(),
@@ -201,5 +212,36 @@ mod tests {
             !text.contains("pw-CANARY-7f31"),
             "Debug 里不能出现密码：{text}"
         );
+    }
+
+    /// 有效能力经过外壳后仍与位置级一致（WebDAV 各目录能力相同）。
+    ///
+    /// ⚠️ **这条断言目前抓不到「外壳忘了转发 `effective_capabilities`」**，
+    /// 已实测确认：把那一支删掉、落到 trait 的默认实现上，本测试照样通过。
+    /// 原因是眼下唯一的 provider（WebDAV）各目录能力一致，默认实现与转发的
+    /// 结果完全相同，无法从外部区分。
+    ///
+    /// 保留它是因为它验证的是另一件事：**外壳不会在这条路径上改写能力**
+    /// （比如把只读位置的有效能力算成可写）。
+    ///
+    /// 真正能盯住「必须转发」的断言，要等第一个「能力随目录而变」的 provider
+    /// 落地后，写在它自己的测试里：同一位置的两个目录必须给出不同的有效能力。
+    /// **不这样会怎样**：外壳吞掉目录级的收窄，进只读对话后删除菜单照样是亮的，
+    /// 点了才报错。这一条现在是缺口，不是已验证项。
+    #[test]
+    fn effective_capabilities_are_forwarded() {
+        let ro = webdav(false);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+        let eff = rt
+            .block_on(ro.effective_capabilities("/some/dir"))
+            .expect("WebDAV 的默认实现不发请求");
+        assert_eq!(
+            eff,
+            ro.capabilities(),
+            "外壳不能在这条路径上改写能力"
+        );
+        assert!(!eff.any_write(), "只读位置的有效能力也必须没有写");
     }
 }

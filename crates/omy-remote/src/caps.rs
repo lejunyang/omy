@@ -156,11 +156,38 @@ impl Capabilities {
 
     /// 是否有任何写能力。界面据此决定整组写操作是否出现。
     ///
-    /// **`search` 不算在内**：它是读能力。算进来会让一个只读的 Telegram 频道
-    /// 因为「能搜」而被判成可写，整组写菜单都亮起来。
+    /// **`search` 不算在内**：它是读能力。算进来会让一个只读的对话因为「能搜」
+    /// 而被判成可写，整组写菜单都亮起来。
     #[must_use]
     pub const fn any_write(&self) -> bool {
         self.write || self.delete || self.rename || self.create_dir
+    }
+
+    /// 按另一份能力**收窄**自己，返回两者都允许的那部分。
+    ///
+    /// 给 [`crate::RemoteStore::effective_capabilities`] 用：位置级声明是上界，
+    /// 某个目录的实际权限在它之内。用「取交集」而不是直接返回目录级的那一份，
+    /// 是为了让「只能收窄、不能放宽」成为**结构性**保证——驱动若因为某次协议
+    /// 变化多报了一位，也不会突破位置级的声明。
+    ///
+    /// 不这样会怎样：位置级声明不再是上界，那么任何基于它做的粗判断（例如
+    /// 「整个位置只读，不必显示上传入口」）都会与某个目录的实际能力矛盾，
+    /// 表现是「这个目录明明能传，按钮却不出现」或者反过来。
+    ///
+    /// `read` 与 `range_read` 一并取交集：一个连读都读不了的目录不该因为位置级
+    /// 说「能读」就被当成能读。
+    #[must_use]
+    pub const fn narrowed_to(self, limit: Self) -> Self {
+        Self {
+            read: self.read && limit.read,
+            write: self.write && limit.write,
+            delete: self.delete && limit.delete,
+            rename: self.rename && limit.rename,
+            create_dir: self.create_dir && limit.create_dir,
+            random_write: self.random_write && limit.random_write,
+            range_read: self.range_read && limit.range_read,
+            search: self.search && limit.search,
+        }
     }
 }
 
@@ -325,5 +352,87 @@ mod tests {
             ..Capabilities::read_only()
         };
         assert!(!c.any_write(), "search 是读能力，绝不能让 any_write 变真");
+    }
+
+    /// 收窄只能去掉能力，不能加上。
+    ///
+    /// 不这样会怎样：位置级声明不再是能力上界，于是「整个位置只读、不显示上传
+    /// 入口」这类粗判断会与某个目录的实际能力矛盾——表现是这个目录明明能传、
+    /// 按钮却不出现，或者反过来点了才失败。
+    #[test]
+    fn narrowing_can_only_remove_capabilities() {
+        let upper = Capabilities::conversation_writable(true, true);
+
+        // 某个只读对话：写与删都被收掉，读和搜留下
+        let ro = Capabilities::read_only().narrowed_to(upper);
+        assert!(ro.read);
+        assert!(!ro.any_write(), "只读对话不能有写能力");
+        assert!(!ro.search, "上界有 search 但这一份没有，交集应为 false");
+
+        // 反方向：目录级报了位置级没有的能力，必须被压回去
+        let over = Capabilities::local().narrowed_to(Capabilities::read_only());
+        assert!(!over.any_write(), "目录级不能放宽到超出位置级的上界");
+        assert!(!over.random_write, "random_write 同样不能被放宽");
+        assert!(over.read, "两边都允许的读能力要保留");
+
+        // search 也要盯住这个方向。**必须单独构造**：上面几组里 self 的 search
+        // 都是 false，漏掉 `&& limit.search` 也算不出差别——实测确认过，不补这
+        // 一段的话「收窄漏掉 search」这个变异能存活。
+        let search_on = Capabilities {
+            search: true,
+            ..Capabilities::read_only()
+        };
+        let no_search_bound = Capabilities::read_only();
+        assert!(
+            !search_on.narrowed_to(no_search_bound).search,
+            "位置级说没有服务端搜索时，目录级不能自己开出来——那会让搜索框承诺\
+             「搜索整个位置」而实际搜不到"
+        );
+        // 反之：上界允许时要能留住
+        assert!(
+            search_on
+                .narrowed_to(Capabilities::conversation_writable(true, true))
+                .search,
+            "上界允许服务端搜索时不该被收掉"
+        );
+
+        // 与自身收窄是幂等的，否则能力会在多次投影中逐渐丢失
+        let c = Capabilities::conversation_writable(true, false);
+        assert_eq!(c.narrowed_to(c), c, "与自身取交集必须不变");
+    }
+
+    /// 默认的有效能力等于位置级能力，能力一致的驱动不必实现那个方法。
+    ///
+    /// 不这样会怎样：WebDAV 与本地位置会因为一个它们不需要的方法而全部要改，
+    /// 或者更糟——默认实现返回只读，让所有既有位置突然不能写了。
+    #[test]
+    fn effective_capabilities_default_to_place_level() {
+        struct Rw;
+        impl crate::RemoteStore for Rw {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities::cloud_writable()
+            }
+            fn describe(&self) -> String {
+                String::from("rw")
+            }
+            async fn list(&self, _dir: &str) -> crate::Result<Vec<crate::Entry>> {
+                Ok(Vec::new())
+            }
+            async fn read_range(&self, _id: &str, _o: u64, _l: u64) -> crate::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+        let eff = rt
+            .block_on(crate::RemoteStore::effective_capabilities(&Rw, "/any/dir"))
+            .expect("默认实现不发请求，不该失败");
+        assert_eq!(
+            eff,
+            Capabilities::cloud_writable(),
+            "没有目录级差异的驱动，有效能力就等于位置级能力"
+        );
     }
 }
