@@ -123,12 +123,20 @@ pub struct LoginTask {
 
 struct Running {
     /// 后台任务句柄，用于取消。
-    handle: tokio::task::JoinHandle<()>,
+    ///
+    /// 类型是 **Tauri 的** `JoinHandle` 而不是 tokio 的：见 `spawn` 那处的注释，
+    /// 用 `tokio::spawn` 会在没有 reactor 的线程上 panic 并带走整个进程。
+    handle: tauri::async_runtime::JoinHandle<()>,
     /// 用户输入的云密码往这里送。
     ///
     /// 做成通道而不是让前端再调一个命令去碰 `QrSession`：`QrSession` 归后台
     /// 任务独占，两边都能拿到它就要加一把锁，而那把锁会在等更新时被一直持有。
     password_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    /// 后台任务是否已经结束。
+    ///
+    /// Tauri 的 `JoinHandle` 不提供 `is_finished`，而「还忙不忙」必须问得到
+    /// ——问不到就只能一直当成忙，用户登录失败之后再也点不动「开始扫码」。
+    done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LoginTask {
@@ -139,12 +147,19 @@ impl LoginTask {
     }
 
     /// 有没有正在进行的登录。
+    ///
+    /// 看的是 `done` 这个标志而不是句柄——Tauri 的 `JoinHandle` 没有
+    /// `is_finished`。标志由后台任务自己在退出前置位，所以「任务跑完了但
+    /// 句柄还挂着」不会被误判成忙。
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.inner
             .lock()
             .ok()
-            .and_then(|g| g.as_ref().map(|r| !r.handle.is_finished()))
+            .and_then(|g| {
+                g.as_ref()
+                    .map(|r| !r.done.load(std::sync::atomic::Ordering::SeqCst))
+            })
             .unwrap_or(false)
     }
 
@@ -156,6 +171,10 @@ impl LoginTask {
         if let Ok(mut g) = self.inner.lock() {
             if let Some(r) = g.take() {
                 r.handle.abort();
+                // abort 只是请求取消，任务可能还没真的停下。立刻置位是对的：
+                // 这个标志回答的是「还该不该拦下一次登录」，而取消之后显然
+                // 不该再拦——否则用户取消完立刻重开会被拒绝
+                r.done.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
     }
@@ -176,6 +195,7 @@ impl LoginTask {
             // 覆盖前先停掉旧的，否则旧任务还在后台跑、还在往前端推事件
             if let Some(old) = g.take() {
                 old.handle.abort();
+                old.done.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             *g = Some(r);
         }
@@ -229,12 +249,25 @@ fn detail(s: &str) -> serde_json::Value {
 /// [`omy_remote::telegram::proxy::normalize`] 归一化——grammers 只认
 /// `socks5://`，而系统代理给出的通常是 `http://` 形式。
 ///
+/// # 为什么这个命令必须是 `async`
+///
+/// 它内部要 `tokio::spawn` 起后台登录任务。**同步的 Tauri 命令跑在主线程上，
+/// 那里没有 tokio reactor**，`spawn` 会 panic「there is no reactor running」。
+///
+/// 而这个 panic 是在 WebView 的 C++ 回调里冒出来的（`extern "C"` 边界不能
+/// unwind），于是立刻升级成 `panic in a function that cannot unwind` 并带走
+/// 整个进程——现象是点了「开始扫码」之后应用直接消失，前端只看到一句
+/// 「连接断开」。这是端到端实测撞到的，不是理论风险。
+///
+/// 标成 `async` 之后 Tauri 会把它派到自己的 tokio 运行时上跑，`spawn` 就有
+/// reactor 了。**不要因为「反正函数体里没有 await」把它改回同步。**
+///
 /// # Errors
 ///
 /// 已有登录进行中、或代理地址不合法时返回。**代理不合法是配置错误，不是网络
 /// 故障**：正确动作是改地址而不是重试，所以要在这里当场拒绝并说清楚。
 #[tauri::command]
-pub fn telegram_login_start(
+pub async fn telegram_login_start(
     app: tauri::AppHandle,
     task: tauri::State<'_, SharedLogin>,
     proxy_url: Option<String>,
@@ -254,12 +287,28 @@ pub fn telegram_login_start(
 
     let (password_tx, password_rx) = tokio::sync::mpsc::unbounded_channel();
     let emitter = app.clone();
-    let handle = tokio::spawn(async move {
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done_for_task = Arc::clone(&done);
+    // **必须用 tauri::async_runtime::spawn，不能用 tokio::spawn。**
+    //
+    // tokio::spawn 要求调用线程上有 reactor。Tauri 命令并不保证这一点，
+    // 而撞上时不是返回一个错误，是 panic——且那个 panic 发生在 WebView 的
+    // C++ 回调栈里，`extern "C"` 不能 unwind，于是升级成
+    // 「panic in a function that cannot unwind」直接带走进程。
+    // 实测现象：点「开始扫码」后应用消失，前端只看到「连接断开」。
+    //
+    // Tauri 的 spawn 自己持有运行时句柄，从哪个线程调都行。
+    let handle = tauri::async_runtime::spawn(async move {
         run_login(&emitter, proxy, password_rx).await;
+        // 在这里置位而不是靠句柄查：Tauri 的 JoinHandle 没有 is_finished，
+        // 不置位的话这个任务会被永远当成「还在跑」，用户登录失败后
+        // 再也点不动「开始扫码」
+        done_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     task.set(Running {
         handle,
         password_tx,
+        done,
     });
     Ok(())
 }
