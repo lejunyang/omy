@@ -33,11 +33,17 @@
 //!
 //! # 本模块的完成度（如实标注）
 //!
-//! 结构、id 编解码、分片对齐**已实现并可测**；真正发 RPC 的部分仍是骨架。
+//! 结构、id 编解码、分片对齐、以及 `list` / `read_range` 的真实 RPC **均已实现**。
 //!
 //! 分片的 `offset` / `limit` 约束**已于 2026-09-20 用真实账号实测钉死**，
 //! 见 [`CHUNK`] 上的表格。其中两条与广为流传的文档记载不符：`limit=1024`
 //! 会被拒，越过文件尾返回 0 字节而不是报错。**不要按文档把它们改回去。**
+
+use std::sync::Mutex;
+
+use grammers_client::media::{Downloadable, Media};
+use grammers_client::{tl, Client, InvocationError};
+use grammers_session::types::PeerRef;
 
 use crate::store::{Entry, RemoteStore};
 use crate::{Capabilities, Error, Result};
@@ -70,6 +76,12 @@ use crate::{Capabilities, Error, Result};
 /// 「整除 1 MiB」两条（服务端真正校验的似乎正是后者）。它也足够大，不会让
 /// 一个中等大小的文件被切成上百次请求——而请求数直接关系到会不会撞限流。
 const CHUNK: u64 = 512 * 1024;
+
+/// 进一个对话时默认拉多少条带文件的消息。
+///
+/// 不是「全部」：一个活跃群里可能有上万条，全拉会让进目录等很久，也白白占
+/// 限流配额。100 条足够填满一屏并留出滚动余量，不够时再加载更多。
+const DEFAULT_MESSAGE_PAGE: usize = 100;
 
 /// 服务端接受的最大单片大小：**1 MiB**。实测 1 MiB 接受、1 MiB + 1 KiB 被拒。
 ///
@@ -254,23 +266,116 @@ impl Conversation {
     }
 }
 
+/// 一条带媒体的消息在目录里的样子。
+///
+/// 缓存它是为了让 `read_range` 不必为每次读都重新拉一遍消息——那会让一次视频
+/// seek 变成两次请求，而 Telegram 对请求频率很敏感。
+#[derive(Clone)]
+struct CachedMedia {
+    /// 下载位置。**会过期**（`file_reference` 有时效），过期后要重新 list。
+    location: tl::enums::InputFileLocation,
+    /// 字节数。
+    size: u64,
+}
+
+/// 把一次读取收敛到文件尾之内。
+///
+/// 返回实际应该读多少字节；0 表示整段都在文件尾之外、不必发任何请求。
+///
+/// # 为什么要有这一步
+///
+/// 服务端对越过文件尾的请求回 **0 字节而不是报错**（实测）。也就是说发出去
+/// 也「成功」，只是白白花掉一次往返和一次限流配额——而配额是真的会被打光的。
+///
+/// `size == 0` 当作**大小未知**（文档没给 size 时就是这样），此时不做任何
+/// 收敛：猜 0 会把每一次读都判成越界，表现为「文件全是空的」。
+#[must_use]
+pub const fn clamp_to_eof(offset: u64, len: u64, size: u64) -> u64 {
+    if size == 0 {
+        return len;
+    }
+    if offset >= size {
+        return 0;
+    }
+    let left = size - offset;
+    if len < left {
+        len
+    } else {
+        left
+    }
+}
+
 /// Telegram 驱动。
 ///
-/// # 完成度
+/// # 两种构造方式
 ///
-/// 见模块文档：结构与纯逻辑已就绪，RPC 部分是骨架。
-#[derive(Debug)]
+/// [`TelegramStore::new`] / [`with_conversations`](TelegramStore::with_conversations)
+/// 不带客户端，只能用于纯逻辑与单测；[`TelegramStore::connected`] 带客户端，
+/// 才能真正发 RPC。
+///
+/// 分开而不是让 client 变成 `Option` 之外的必填项，是因为「对话即目录」的那套
+/// id 编解码与分片对齐是纯逻辑，值得能在没有账号的情况下测。
 pub struct TelegramStore {
+    /// 已连接的客户端。`None` 表示这是个只用于纯逻辑的实例。
+    client: Option<Client>,
     /// 已知对话，充当目录表。
     ///
     /// 由 `list("")` 填充。做成缓存而不是每次查，是因为 `getDialogs` 有分页
     /// 且会被限流；但**这也意味着它可能过期**，所以 `effective_capabilities`
     /// 查不到对话时必须报错而不是假设可写。
-    conversations: Vec<Conversation>,
+    conversations: Mutex<Vec<Conversation>>,
+    /// 对话号 → 访问该对话所需的引用。
+    ///
+    /// Telegram 的多数请求要的不是裸 id 而是带 `access_hash` 的引用，而那个
+    /// hash 只能从 `getDialogs` / `resolve` 之类的结果里拿到。存下来，
+    /// 这样进目录时不必为了拿 hash 再列一次全部对话。
+    peers: Mutex<std::collections::HashMap<i64, PeerRef>>,
+    /// 文件 id → 下载位置。由 `list` 填充，`read_range` 读。
+    ///
+    /// **不把 `file_reference` 编进 id**：它会过期，编进去会让缓存键随刷新而
+    /// 变，同一个文件被反复重新下载。所以 id 用稳定的 `(对话, 消息号)`，
+    /// 而易变的位置放在这张表里。
+    media: Mutex<std::collections::HashMap<String, CachedMedia>>,
     /// 分片大小。
     ///
     /// 可配置而不是写死常量，这样实测出真实约束后改一处即可，也便于单测。
     chunk: u64,
+}
+
+impl std::fmt::Debug for TelegramStore {
+    /// 不打印 client 与缓存内容：前者没有有意义的 Debug，后者含
+    /// `file_reference`（短期凭据）。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramStore")
+            .field("connected", &self.client.is_some())
+            .field(
+                "conversations",
+                &self.conversations.lock().map(|c| c.len()).unwrap_or(0),
+            )
+            .field("chunk", &self.chunk)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 把 grammers 的错误翻成本 crate 的错误。
+///
+/// `FLOOD_WAIT` 单独归到 [`Error::RateLimited`]：上层据此决定「等一下自动重试」
+/// 而不是「报错让用户重来」，两者对用户的观感差别很大。
+fn map_rpc(e: &InvocationError) -> Error {
+    if let InvocationError::Rpc(r) = e {
+        if r.name.starts_with("FLOOD_WAIT") {
+            return Error::RateLimited;
+        }
+        if r.code == 401 {
+            return Error::Unauthorized;
+        }
+        if r.code == 403 {
+            return Error::Forbidden;
+        }
+        // 只带错误名与代码，不带服务端 message——那里面可能回显请求参数
+        return Error::Protocol(format!("{} ({})", r.name, r.code));
+    }
+    Error::Network(e.to_string())
 }
 
 impl Default for TelegramStore {
@@ -280,20 +385,38 @@ impl Default for TelegramStore {
 }
 
 impl TelegramStore {
-    /// 建一个空的驱动。
+    /// 建一个**不带连接**的驱动，只能用于纯逻辑与单测。
     #[must_use]
     pub fn new() -> Self {
         Self {
-            conversations: Vec::new(),
+            client: None,
+            conversations: Mutex::new(Vec::new()),
+            peers: Mutex::new(std::collections::HashMap::new()),
+            media: Mutex::new(std::collections::HashMap::new()),
             chunk: CHUNK,
         }
     }
 
-    /// 用一组已知对话构造（测试与恢复配置用）。
+    /// 用一组已知对话构造（测试与恢复配置用），仍然不带连接。
     #[must_use]
     pub fn with_conversations(conversations: Vec<Conversation>) -> Self {
         Self {
-            conversations,
+            client: None,
+            conversations: Mutex::new(conversations),
+            peers: Mutex::new(std::collections::HashMap::new()),
+            media: Mutex::new(std::collections::HashMap::new()),
+            chunk: CHUNK,
+        }
+    }
+
+    /// 用一个已登录的客户端构造，可真正发 RPC。
+    #[must_use]
+    pub fn connected(client: Client) -> Self {
+        Self {
+            client: Some(client),
+            conversations: Mutex::new(Vec::new()),
+            peers: Mutex::new(std::collections::HashMap::new()),
+            media: Mutex::new(std::collections::HashMap::new()),
             chunk: CHUNK,
         }
     }
@@ -304,10 +427,193 @@ impl TelegramStore {
         self.chunk
     }
 
-    /// 找一个对话。
+    /// 取客户端；没有连接时报错而不是静默返回空结果。
+    ///
+    /// 静默返回空会让界面显示「这个位置是空的」——而真实情况是根本没连上，
+    /// 两者给用户的下一步动作完全不同。
+    fn client(&self) -> Result<&Client> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| Error::Protocol(String::from("Telegram 尚未登录")))
+    }
+
+    /// 找一个对话（从缓存）。
     #[must_use]
-    pub fn conversation(&self, chat: i64) -> Option<&Conversation> {
-        self.conversations.iter().find(|c| c.chat == chat)
+    pub fn conversation(&self, chat: i64) -> Option<Conversation> {
+        self.conversations
+            .lock()
+            .ok()?
+            .iter()
+            .find(|c| c.chat == chat)
+            .cloned()
+    }
+
+    /// 已缓存的对话数，供界面显示「已加载 N 个对话」。
+    #[must_use]
+    pub fn conversation_count(&self) -> usize {
+        self.conversations.lock().map(|c| c.len()).unwrap_or(0)
+    }
+
+    /// 拉取对话列表并刷新缓存。
+    ///
+    /// # 分页终止条件
+    ///
+    /// **看「这一轮取到的条数」，不看服务端给的总数。** 实测：服务端只在还没
+    /// 取完时给总数，取完返回 `None`。把 `None` 当 0 会少一页（对话凭空消失），
+    /// 当「未知」会永远以为还有下一页。这里用 grammers 的迭代器，它内部已经
+    /// 按这个语义处理，我们只要不自己再用 count 做判断。
+    ///
+    /// # Errors
+    ///
+    /// 网络失败、限流、未登录时返回。
+    async fn refresh_conversations(&self) -> Result<Vec<Conversation>> {
+        let client = self.client()?;
+        let mut it = client.iter_dialogs();
+        let mut out = Vec::new();
+        let mut peers = std::collections::HashMap::new();
+
+        loop {
+            let d = match it.next().await {
+                Ok(Some(d)) => d,
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            };
+            let peer = d.peer();
+            let title = peer.name().unwrap_or("(无标题)").to_string();
+            // 用 bot_api_dialog_id 而**不是** bare_id 当对话号。
+            // bare_id 去掉了类型标记，于是 id 为 123 的用户和 id 为 123 的群
+            // 会得到同一个 "tg:123"——而「对话即目录」的前提正是目录 id 唯一，
+            // 撞了就会出现「点进 A 群却看到 B 私聊的文件」。
+            let Some(chat_id) = peer.id().bot_api_dialog_id() else {
+                // 只有「自己」这个特殊 peer 会没有 id，跳过即可
+                continue;
+            };
+            // 频道默认只读：只有管理员能发，而判断管理员要额外请求。
+            // 拿不到权限时按**不能**处理——猜「能」会让界面点亮一个
+            // 点了才失败的按钮，猜「不能」只是少一个入口，代价不对称。
+            let is_channel = matches!(peer, grammers_client::peer::Peer::Channel(_));
+            let (can_send, can_delete) = if is_channel {
+                (false, false)
+            } else {
+                (true, false)
+            };
+            if let Ok(Some(r)) = peer.to_ref().await {
+                peers.insert(chat_id, r);
+            }
+            out.push(Conversation {
+                chat: chat_id,
+                title,
+                can_send,
+                can_delete,
+            });
+        }
+
+        if let Ok(mut c) = self.conversations.lock() {
+            c.clone_from(&out);
+        }
+        if let Ok(mut p) = self.peers.lock() {
+            *p = peers;
+        }
+        Ok(out)
+    }
+
+    /// 取访问某个对话所需的引用。
+    ///
+    /// 缓存里没有就重新列一次对话——那个 hash 只能从对话列表里拿到，
+    /// 而没有它任何针对该对话的请求都发不出去。
+    async fn peer_ref(&self, chat: i64) -> Result<PeerRef> {
+        if let Some(r) = self.peers.lock().ok().and_then(|p| p.get(&chat).copied()) {
+            return Ok(r);
+        }
+        self.refresh_conversations().await?;
+        self.peers
+            .lock()
+            .ok()
+            .and_then(|p| p.get(&chat).copied())
+            .ok_or_else(|| Error::NotFound(format!("未知对话：tg:{chat}")))
+    }
+
+    /// 列一个对话里带文件的消息。
+    ///
+    /// 用 `Document` 过滤器而不是拉全部消息再本地筛：搜索可下推已实测，
+    /// 让服务端筛能少传绝大部分无关消息，也少占限流配额。
+    async fn list_messages(&self, chat: i64, limit: usize) -> Result<Vec<Entry>> {
+        let client = self.client()?;
+        let peer = self.peer_ref(chat).await?;
+
+        let mut it = client
+            .search_messages(peer)
+            .filter(tl::enums::MessagesFilter::InputMessagesFilterDocument)
+            .limit(limit);
+
+        let mut out = Vec::new();
+        let mut cache = Vec::new();
+        loop {
+            let msg = match it.next().await {
+                Ok(Some(m)) => m,
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            };
+            let Some(media) = msg.media() else { continue };
+            // 只收文档：图片走 Photo 分支、没有文件名，而 omy 关心的是文件
+            let Media::Document(doc) = &media else {
+                continue;
+            };
+            let id = TelegramId {
+                chat,
+                message: msg.id(),
+            };
+            let key = id.encode();
+            let size = u64::try_from(doc.size().unwrap_or(0)).unwrap_or(0);
+            if let Some(loc) = media.to_raw_input_location() {
+                cache.push((
+                    key.clone(),
+                    CachedMedia {
+                        location: loc,
+                        size,
+                    },
+                ));
+            }
+            out.push(Entry {
+                id: key,
+                // 没有文件名的文档用消息号兜底，而不是留空——留空的条目在
+                // 界面上是一行看不出是什么的东西
+                name: doc
+                    .name()
+                    .filter(|n| !n.is_empty())
+                    .map_or_else(|| format!("message-{}", msg.id()), ToString::to_string),
+                is_dir: false,
+                size: Some(size),
+                mtime: None,
+                // 不用 file_reference 当 etag：它会过期，拿它做变更检测会让
+                // 缓存层误以为文件变了，从而反复重新下载
+                etag: None,
+            });
+        }
+
+        if let Ok(mut m) = self.media.lock() {
+            for (k, v) in cache {
+                m.insert(k, v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 取一个文件的下载位置；缓存里没有就重新列一次那个对话。
+    ///
+    /// 会重新列是因为 `file_reference` 有时效：过期后必须靠重新拉消息换新的，
+    /// 这正是 id 用 `(对话, 消息号)` 而不是用引用本身的原因。
+    async fn locate(&self, id: &TelegramId) -> Result<CachedMedia> {
+        let key = id.encode();
+        if let Some(m) = self.media.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return Ok(m);
+        }
+        self.list_messages(id.chat, DEFAULT_MESSAGE_PAGE).await?;
+        self.media
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&key).cloned())
+            .ok_or_else(|| Error::NotFound(format!("找不到消息：{key}")))
     }
 }
 
@@ -334,7 +640,7 @@ impl RemoteStore for TelegramStore {
         }
         let chat = Conversation::parse_dir_id(dir_id)?;
         self.conversation(chat)
-            .map(Conversation::capabilities)
+            .map(|c| c.capabilities())
             .ok_or_else(|| Error::NotFound(format!("未知对话：{dir_id}")))
     }
 
@@ -344,19 +650,26 @@ impl RemoteStore for TelegramStore {
 
     /// 列目录。
     ///
-    /// `dir_id` 为空 → 列对话（`messages.getDialogs`）；
-    /// 否则 → 列该对话里带媒体的消息。
+    /// `dir_id` 为空 → 列对话；否则 → 列该对话里带文件的消息。
+    ///
+    /// # 为什么不用 `resolve_username` 找对话
+    ///
+    /// 它**只认有公开用户名的对话**，而私有群、私聊、收藏夹都没有——那恰恰是
+    /// 用户最可能存文件的地方。实测踩过：一个存在的私有群被报成「找不到」。
+    /// 所以寻址一律基于对话枚举。
     ///
     /// # Errors
     ///
-    /// TODO(实测后完成)：真正的 RPC 还没接。分页行为与单页返回量尚未实测，
-    /// 而分页参数写错的表现是「对话列表只有前几个」——不报错、很难发现。
-    /// 所以先不猜，等 §11.4.6 的探针给出真实数字。
+    /// 未登录、网络失败、限流、对话不存在时返回。
     async fn list(&self, dir_id: &str) -> Result<Vec<Entry>> {
         if dir_id.is_empty() {
-            // 对话即目录：每个对话是一个子目录
-            return Ok(self
-                .conversations
+            // 没有连接时退回缓存（纯逻辑实例与单测走这条）
+            let convs = if self.client.is_some() {
+                self.refresh_conversations().await?
+            } else {
+                self.conversations.lock().map(|c| c.clone()).unwrap_or_default()
+            };
+            return Ok(convs
                 .iter()
                 .map(|c| Entry {
                     id: c.dir_id(),
@@ -372,28 +685,101 @@ impl RemoteStore for TelegramStore {
         }
         // 校验 dir_id 形状：早报错好过带着一个坏 id 去发请求
         let chat = Conversation::parse_dir_id(dir_id)?;
+        if self.client.is_none() {
+            // 纯逻辑实例：保持原来的行为，让单测能区分「对话不存在」与「没接 RPC」
+            if self.conversation(chat).is_none() {
+                return Err(Error::NotFound(format!("未知对话：{dir_id}")));
+            }
+            return Err(Error::Unsupported("telegram list messages"));
+        }
+        // 对话表可能还没拉过（比如从配置恢复后直接进目录），先确保有
+        if self.conversation(chat).is_none() {
+            self.refresh_conversations().await?;
+        }
         if self.conversation(chat).is_none() {
             return Err(Error::NotFound(format!("未知对话：{dir_id}")));
         }
-        Err(Error::Unsupported("telegram list messages"))
+        self.list_messages(chat, DEFAULT_MESSAGE_PAGE).await
     }
 
     /// 读取区间。
     ///
-    /// 分片对齐由 [`plan_chunks`] 算好（已可测），真正取字节的部分待接。
+    /// # 按实测约束发请求（见 [`CHUNK`] 上的表）
+    ///
+    /// - `limit` 必须能整除 1 MiB。实测 `limit=1024` 会被拒 `LIMIT_INVALID`，
+    ///   所以「1 KiB 的倍数即可」那条流传说法**不能**照搬。
+    /// - `offset` 必须是 `limit` 的倍数，否则 `OFFSET_INVALID`。这正是
+    ///   [`plan_chunks`] 存在的理由。
+    /// - **越过文件尾返回 0 字节、不报错**，所以读到空片是正常的结束信号。
+    ///   把它当失败会让每个文件的最后一片都报错。
+    ///
+    /// 拼好分片后**必须**按 `plan.skip` / `plan.take` 裁剪：`RemoteStore` 的
+    /// 契约要求实现方自行裁剪，而我们因为对齐本来就会多取——不裁的话上层会把
+    /// 多出来的字节当成密文的一部分，解出来是一堆认证失败，
+    /// 而那个症状指向密钥、完全指不到偏移。
     ///
     /// # Errors
     ///
-    /// TODO(实测后完成)：`offset` / `limit` 的真实约束未实测，见 [`CHUNK`]。
+    /// 坏 id、未登录、网络失败、限流时返回。
     async fn read_range(&self, id: &str, offset: u64, len: u64) -> Result<Vec<u8>> {
         // 先解 id：坏 id 要在发请求之前就报出来
-        let _tid = TelegramId::decode(id)?;
-        let _plan = plan_chunks(offset, len, self.chunk);
-        // 注意：真正实现时，拼好分片后**必须**按 plan.skip / plan.take 裁剪。
-        // RemoteStore::read_range 的契约要求实现方在服务端给多了时自行裁剪，
-        // 而这里我们本来就会因为对齐而多取——不裁剪的话上层会把多出来的字节
-        // 当成密文的一部分，解出来是一堆认证失败，且症状指向密钥而非偏移。
-        Err(Error::Unsupported("telegram read_range"))
+        let tid = TelegramId::decode(id)?;
+        if len == 0 {
+            // 0 长度不该发任何请求：白占一次限流配额
+            return Ok(Vec::new());
+        }
+        let client = self.client()?;
+        let media = self.locate(&tid).await?;
+        // 收敛到文件尾：越界的部分发出去也只会拿回 0 字节，白花配额
+        let len = clamp_to_eof(offset, len, media.size);
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let plan = plan_chunks(offset, len, self.chunk);
+
+        let limit = i32::try_from(self.chunk)
+            .map_err(|_| Error::Protocol(String::from("分片大小超出 i32")))?;
+        let mut buf = Vec::with_capacity(
+            usize::try_from(plan.count.saturating_mul(self.chunk)).unwrap_or(0),
+        );
+        for i in 0..plan.count {
+            let at = plan.start.saturating_add(i.saturating_mul(self.chunk));
+            let req = tl::functions::upload::GetFile {
+                precise: false,
+                // 明确不支持 CDN 重定向：grammers 在那条分支上 panic，
+                // 而 omy-gui 禁 panic。要支持得自己实现 CDN 下载，本期不做
+                cdn_supported: false,
+                location: media.location.clone(),
+                offset: i64::try_from(at)
+                    .map_err(|_| Error::Protocol(String::from("偏移超出 i64")))?,
+                limit,
+            };
+            match client.invoke(&req).await {
+                Ok(tl::enums::upload::File::File(f)) => {
+                    let n = f.bytes.len();
+                    buf.extend_from_slice(&f.bytes);
+                    // 短片或空片 = 到文件尾了。实测越过尾部返回 0 字节而不报错，
+                    // 所以这是正常的结束信号，继续请求只会白发
+                    if n < usize::try_from(self.chunk).unwrap_or(usize::MAX) {
+                        break;
+                    }
+                }
+                Ok(tl::enums::upload::File::CdnRedirect(_)) => {
+                    return Err(Error::Unsupported("telegram cdn redirect"));
+                }
+                Err(e) => return Err(map_rpc(&e)),
+            }
+        }
+
+        // 按计划裁剪：对齐让我们从更早的位置开始取，多出来的必须切掉
+        let skip = usize::try_from(plan.skip).unwrap_or(usize::MAX);
+        let take = usize::try_from(plan.take).unwrap_or(usize::MAX);
+        if skip >= buf.len() {
+            // 整段都在文件尾之外。返回空而不是报错——调用方据此知道读到头了
+            return Ok(Vec::new());
+        }
+        let end = skip.saturating_add(take).min(buf.len());
+        Ok(buf.get(skip..end).unwrap_or_default().to_vec())
     }
 }
 
@@ -731,16 +1117,52 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("建运行时");
-        // 坏 id：报协议错误（而不是 Unsupported，那意味着已经走到发请求那步）
+        // 坏 id：必须停在**解码**这一步。
+        //
+        // 刻意断言错误正文而不只是 Error::Protocol：「尚未登录」也是
+        // Protocol，只断言变体的话，即使 id 校验被整个拿掉、流程一路走到
+        // 「尚未登录」，断言照样通过——变异测试确认过这一点，
+        // 那样的断言等于没写。
         assert!(matches!(
             rt.block_on(s.read_range("garbage", 0, 1)),
-            Err(Error::Protocol(_))
+            Err(Error::Protocol(ref m)) if m.contains("不是 Telegram 的 id")
         ));
-        // 好 id：走到未实现那一步，说明校验通过了
+        // 好 id：走过了 id 校验，停在「没有连接」上。
+        // 两条错误正文不同，才能证明前一条确实是被 id 校验挡下来的
         assert!(matches!(
             rt.block_on(s.read_range("tg:1:2", 0, 1)),
-            Err(Error::Unsupported("telegram read_range"))
+            Err(Error::Protocol(ref m)) if m.contains("尚未登录")
         ));
+    }
+
+    /// 越过文件尾的读取要被收敛掉，而不是照发。
+    ///
+    /// 不这样会怎样：读文件最后一段时，按分片对齐算出来的请求会伸到文件尾
+    /// 之外。服务端对越界请求回 0 字节而**不报错**，所以这个 bug 不会以异常
+    /// 的形式暴露——只是每个文件的最后一次读都多发一次白跑的请求，
+    /// 在限流敏感的 Telegram 上会累积成真实的卡顿。
+    #[test]
+    fn clamp_to_eof_trims_past_end() {
+        // 完全在范围内：原样返回
+        assert_eq!(clamp_to_eof(0, 100, 1000), 100);
+        // 跨过尾部：截到尾
+        assert_eq!(clamp_to_eof(900, 500, 1000), 100);
+        // 正好到尾：不截
+        assert_eq!(clamp_to_eof(900, 100, 1000), 100);
+        // 起点就在尾之外：一个字节都不该读
+        assert_eq!(clamp_to_eof(1000, 100, 1000), 0);
+        assert_eq!(clamp_to_eof(5000, 100, 1000), 0);
+    }
+
+    /// 大小未知时**不能**收敛。
+    ///
+    /// 不这样会怎样：文档没给 size 时 size 是 0，若把 0 当成「文件长度为 0」，
+    /// 每一次读都会被判成越界返回空——表现是「文件能列出来但内容全是空的」，
+    /// 而这个症状会把人引去查解密和缓存，完全指不到这里。
+    #[test]
+    fn clamp_to_eof_treats_zero_size_as_unknown() {
+        assert_eq!(clamp_to_eof(0, 100, 0), 100);
+        assert_eq!(clamp_to_eof(9999, 100, 0), 100);
     }
 
     /// 列消息时坏 dir_id 也要先被拒。
