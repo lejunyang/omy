@@ -409,6 +409,12 @@ KEK 解」。既然不解密，就不需要 KEK，锁定与否对服务端没有
 | DEC-15 | 局域网只传密文、只读 | ✅ 用户决策 |
 | DEC-16 | 共享方锁屏后继续服务 | 🐛 已修复（原条款前提错误） |
 | DEC-17 | 槽位可管理模式（加密时二选一） | ✅ 已实现；改密码抹掉恢复码是实测到的真缺陷 |
+| DEC-18 | 目录名两层结构，树形支持多密码与恢复码 | ✅ 已实现；`rekey_tree` 写死 `Carry` 是实测到的真缺陷 |
+| DEC-19 | Telegram 接入选 grammers，否决 Bot API | 📋 调研结论，未实现（见 15 号文档） |
+| DEC-20 | 受保护内容：转发服务端拦、下载未见拦截 | ✅ **用户决策：取 C（不做特殊处理）**（见 15 号文档 §5.10） |
+| DEC-21 | api_id 内置默认值 + 允许用户覆盖 | ✅ **用户决策**；推翻 DEC-19 的「让用户自己申请」 |
+| DEC-22 | 内置的那一份取 Telegram Desktop 的 2040 | ✅ **用户决策**；DEC-21 留下的「内置哪一份」由此闭合 |
+| DEC-23 | tdata 导入：不依赖 `grammpars`，倾向自研只读最小实现 | ⏳ 技术判断；`grammpars` 因 bundled SQLite 被否。是否本期做未定 |
 
 
 ## DEC-18：目录名改用两层结构，树形支持多密码与恢复码
@@ -443,3 +449,501 @@ DK 被每把 KEK 各包一份，放进每个密文目录内的 `.omy-keys`。
 函数整个删掉，用户也不会再遇到「改完密码文件夹不见了」。
 
 **不做迁移。** 尚未正式发布，没有存量数据。
+
+---
+## DEC-19：Telegram 远程位置选 grammers，否决 Bot API
+
+**背景。** 需求是把 Telegram 的频道 / 超级群 / 群 / 私聊 / 收藏夹里的文件、
+图片、视频当作远程文件浏览（懒加载 + 搜索）并支持上传。
+完整调研见 [15 号文档](15-telegram-remote.md)。
+
+**结论。** 用 **grammers**（纯 Rust MTProto，MIT OR Apache-2.0）以**用户账号**
+身份接入，作为 `omy-remote` 下与 WebDAV 并列的第二个 `RemoteStore` provider，
+**不另起并行抽象**。
+
+### 为什么不用 Bot API：不是「限制多」，是做不到
+
+Bot API 看上去是更省事的选择——HTTPS REST、不碰用户账号、没有封号风险。
+核实官方文档后这个方向整个塌掉，三条各自独立的致命伤：
+
+| 伤 | 依据 |
+|---|---|
+| 下载 20 MB 上限 | `getFile` 官方描述：「For the moment, bots can download files of up to 20MB in size」 |
+| bot 看不到用户的文件 | bot 只能看到发给它的消息，用户已有频道的历史与它无关 |
+| **没有列目录，也没有搜索** | Bot API 10.3 的 185 个方法里没有 `getDialogs` / `getChats` / `searchMessages` / `getChatHistory` |
+
+第三条最致命：远程位置的第一个动作就是 `list(dir_id)`，而 Bot API 表面上
+根本没有这个动词。自建 Local Bot API Server 能解掉 20 MB（官方 README：
+`--local` 下「Download files without a size limit」「Upload files up to
+2000 MB」），**但动词集合不变**，第二、三条纹丝不动。
+
+**教训：先查「有没有这个 API」，再查「这个 API 有什么限制」。** 一开始盯着
+大小上限找绕法（本地服务器、分卷上传），差点在一个连列目录都做不到的方向上
+把方案设计完。
+
+### 为什么不用 TDLib：Android 是硬伤
+
+TDLib 是 Telegram 官方出品、BSL-1.0 宽松许可、9100 star、持续维护，
+看上去最稳。但它依赖 **C++17 + OpenSSL + zlib + gperf + CMake**，
+而 `tdlib-rs` 的预编译二进制只覆盖 Linux / macOS / Windows，**不含 Android**。
+
+这与 14 号文档 §3.4 为 WebDAV 立的规矩直接撞上：「不能带 native-tls，
+否则拖进 OpenSSL，交叉编译到 Android 会炸」。omy 目前只在 Windows 与 Android
+上实测过，做一个 Android 上用不了的功能不符合项目现状。
+
+同理否决子进程调 Go 实现（`iyear/tdl` 等）：理由与 14 号文档 §3.3 拒绝
+光鸭 Go SDK 逐条相同（移动端不能随意 fork 可执行文件、分发要多带一个二进制、
+交叉编译矩阵翻倍），额外还有 AGPL-3.0 与 GUI 的 GPL-3.0 如何相处的问题。
+
+还排除了一个诱人但不存在的方向：**指望「Telegram 的 WebDAV 中转层」**。
+14 号文档里 WebDAV 能顺带支持光鸭，是因为有 AList / CD2 这类成熟中转，
+rclone 也有对应后端。Telegram 没有——rclone 根本没有 Telegram 后端。
+
+### grammers 的三个核实，两个差点搞错
+
+**① 「已归档」是假象。** GitHub 上 `Lonami/grammers` 的 `archived` 字段确实是
+`true`，按常规判据应当直接出局。实际是**迁移到了 Codeberg**：那边
+`archived=false`，最近提交 2026-09-10，0.10.0 于 2026-07-02 发布。
+线索在 crates.io 的 `repository` 字段指向 Codeberg。
+**只看 GitHub 会得出完全相反的结论。**
+
+**② 许可证 GitHub 报得不全。** GitHub 报 `Apache-2.0`，crates.io 报
+`MIT OR Apache-2.0`。仓库根目录 `LICENSE-APACHE` 与 `LICENSE-MIT` 两个文件
+都在，`Cargo.toml` 写的就是 `MIT OR Apache-2.0`。GitHub 的单值 license 字段
+探测不出双许可——**以仓库文件和 Cargo.toml 为准**。
+
+**③ 🐛 grammers 0.10.0 当前开箱编译不过。** 这条只有真编一次才会发现：
+
+```
+error[E0600]: cannot apply unary operator `!` to type
+              `Result<bool, glass_pumpkin::error::Error>`
+   --> grammers-crypto-0.10.0/src/two_factor_auth.rs:104:8
+```
+
+根因是 `grammers-crypto` 声明 `glass_pumpkin = "^2.0.0-rc0"`，而上游
+`2.0.0-rc1` 改了 `safe_prime::check` 的签名（`bool` → `Result<bool, _>`）
+并换到 `num-bigint 0.5`——**一个已发布的版本被它依赖的预发布版本打穿了**。
+Codeberg 上 2026-09-08 已有 `Update glass_pumpkin` 的修复提交，尚未发版。
+钉 `glass_pumpkin = "=2.0.0-rc0"` 后 `cargo check` 通过。
+
+不构成否决，但改变接入时机的判断：要么钉版本并写明原因（否则后人会当成
+多余约束顺手删掉，然后构建就炸），要么等含修复的新版。它也暴露一个长期
+风险——grammers 依赖了一个**预发布版本**的 crate，不受 semver 稳定性保护，
+这类漂移可能再次发生。`Cargo.lock` 必须提交（本来就提交，07 号文档 §9.1
+的可复现构建要求在这里变得具体）。
+
+### 实测过的（不是推断）
+
+| 问题 | 结论 |
+|---|---|
+| MSRV 冲突（`aes 0.9.3` 要 1.89，omy 锁 1.85） | **可自动规避**：声明 `rust-version` 后 resolver=3 锁到 `aes 0.9.2`，全树无包 MSRV > 1.85 |
+| Android 交叉编译 | **通过**：`cargo check --target aarch64-linux-android` exit=0 |
+| 依赖画像 | 71 个 crate，**无 openssl / ring / bindgen / sqlite**，与现有 reqwest 量级相当 |
+
+MSRV 那条值得记一笔方法学：第一次解析选到了 `aes 0.9.3`（MSRV 1.89），
+看起来是硬冲突；实际是 probe crate 漏写了 `rust-version`。
+**MSRV 感知解析是靠声明驱动的，probe 环境不复制真实约束就会得到假结论。**
+
+### 对既有抽象的影响
+
+三处，均在 15 号文档 §6.2 展开：
+
+1. **GUI 层实际单态化到了 WebDAV。** `Place.store` 是 `Arc<WebDavStore>` 而非
+   `Arc<dyn RemoteStore>`——trait 是有的，但没被当 trait 用。加第二个 provider
+   必须先打开这层（倾向 enum 转发，不引入 `async-trait`；`RemoteStore` 用原生
+   async fn，目前不是 dyn-safe 的）。
+2. **`Capabilities` 要加一位 `search`**（服务端搜索能否下推）。Telegram 有
+   `messages.search` + `MessagesFilter`，本地与 WebDAV 都没有。加字段是破坏性
+   变更，需 `#[serde(default)]` 且默认 `false`；三个构造器与
+   `field_names_are_stable` 测试的字段列表都要同步改——那个测试的存在意义
+   就是拦住「前端读到 undefined」，加字段却不加进列表等于自己留了个测不到的洞。
+3. **`file_reference` 过期要在驱动内部消化**，不上抛。刷新需要
+   `(peer, message_id)`，编码进 `Entry.id` 即可，不改 trait。漏了的症状与
+   14 号文档 §4.3 的直链过期一样：「拖到后面就播不了」，且**无法自愈**。
+
+### 一条守住的红线
+
+**不把真实文件名写进消息 caption 去换服务端可搜。** 这很诱人——Telegram 的
+服务端搜索又快又免费。但 omy 加密了文件名却把它明文发给服务端，比不加密更糟：
+用户以为自己是安全的。上传时同理，只用磁盘上的（可能已是 base32 密文的）名字。
+
+这与 `store.js` 里 `visibleEntries` 已立的规矩是同一条：
+「用磁盘名去匹配等于拿 base32 密文当明文搜，还会泄露信息」。
+
+### 必须如实告知用户的两件事
+
+- 官方 `obtaining_api_id` 明说：用非官方客户端登录的**所有账号**会被自动置于
+  观察状态。这是产品风险，不能只写在文档里。
+- ~~**api_id 让用户自己申请**，不内置。~~ **已被 DEC-21 推翻**，改为「内置默认值 + 允许用户覆盖」。下面这段代价论述仍然成立，只是它论证不出「必须由用户填」：omy 是开源项目，内置的 api_id 必然公开，
+  触发 `API_ID_PUBLISHED_FLOOD` 会让**所有用户同时失效，且 omy 无法自行修复**
+  （只能等解封或发新版换 id）。这与 14 号文档拒绝引入自己控制不了的单点故障
+  是同一判断。
+
+### 未决
+
+`cdn_supported: false` 时服务器是否真会返回 `CdnRedirect`（grammers 在那里
+直接 `panic!`，而 omy-gui 禁用 panic）、二进制体积实测增量、
+grammers 是否已发含 `glass_pumpkin` 修复的新版。
+
+~~**运行层面一个都没验过**~~——**2026-09-19 补记：已部分推翻，但只是部分。**
+
+写下这条时确实一次都没连过。现在的准确状态是：
+**MTProto 握手层与 API 层已实测连通**（grammers 0.10 经
+`socks5://127.0.0.1:7897`，`help.getNearestDc` 与
+`auth.exportLoginToken` 均成功），**但所有需要已登录账号的调用仍未实测**
+——枚举对话、搜索、下载、上传一次都没跑过。
+
+**所以能力结论的来源没变**：仍然全部来自官方文档与库源码。
+改变的只是「通道能不能通」这一层。详见 15 号文档 §8.6，
+完整待核实清单见 §11。
+
+**顺带记一条对实现有直接影响的实测发现**：grammers 0.10 的代理参数
+**只接受 `socks5://`**，传 `http://` 直接报 scheme 不支持。
+而系统代理（Clash 混合口）通常以 `http://` 登记——**不能原样透传**，
+否则启动即失败且错误信息指向别处（15 号文档 §7.6）。
+
+---
+## DEC-20：受保护内容（禁止保存）——服务端只拦转发；**用户决策取 C，不做特殊处理**
+
+**背景。** 追加核实的问题：群组 / 频道里被设为「禁止保存」的资源能否下载，
+以及**这个限制是服务端真的禁用了，还是只是客户端自我约束**。
+完整取证见 [15 号文档 §5.10](15-telegram-remote.md)。
+
+### 定性结论：转发是服务端强制的，禁止保存是客户端契约
+
+该机制官方叫 **Content protection**，协议层标志位是 `noforwards`
+（`channel` flags.27 / `chat` flags.25 / `message` flags.26 / `storyItem`
+flags.10，字段位经 layer 229 schema 与官方页交叉核对）。
+**三条路径必须分开看，混成一句「能不能下载」必然得出错的结论：**
+
+| 路径 | 服务端是否拦 | 证据等级 |
+|---|---|---|
+| 转发 / 复制（`messages.forwardMessages`） | ✅ **拦**，报 `CHAT_FORWARDS_RESTRICTED` | **官方文档明确写明** |
+| 直接取字节（`upload.getFile`） | ❌ **未见拦截** | 官方错误表**反向推断**，非明文承诺 |
+| 取 `file_reference`（`getHistory` / `search`） | ❌ **未见影响** | 同上 |
+
+第二条的证据等级要特别当心：**它是「官方错误表里没有这一项」的反向推断，
+不是官方说「可以下载」。** 真连实测之前只能写「未见服务端拦截」。
+
+### 最有说服力的旁证：官方库 TDLib 自己怎么做的
+
+TDLib 把两件事分得很清楚——**对转发做了客户端前置拦截**
+（`MessagesManager.cpp` 里 `get_dialog_has_protected_content_force()` 命中即
+`Status::Error(400, "Message has protected content and can't be forwarded")`），
+**而下载路径 `add_message_file_to_downloads` 里没有任何 protected 检查**，
+`DownloadManager.cpp` 全文搜 `protected` / `noforwards` / `can_be_saved` 零命中。
+
+TDLib 暴露的是**状态**（`can_be_saved`、`has_protected_content`）而非**阻断**
+——那是给 UI 决定「显不显示保存按钮」用的。官方文档措辞也印证：
+message 级标志写「**clients should** also prevent users from saving attached
+media」，而转发那条写「will emit a `CHAT_FORWARDS_RESTRICTED` RPC error」。
+**一个是对客户端下达的实现要求，一个是服务端行为描述。**
+
+第三方库这边：grammers 的 `files.rs` 全文搜 `noforwards` / `protect`
+**零命中**，无任何强制。Bot API 路线在这个问题上不成立——按 DEC-19，
+bot 连那些历史消息都拿不到。
+
+### 一个实现上极易写错的点
+
+官方专门澄清过：**开了频道级保护时，单条 `message.noforwards` 是 0**
+（该标志「only usable by bots」），但客户端「must still be treated as if」
+它被置位。所以判断依据必须是 `channel.noforwards` / `chat.noforwards`，
+只看 message 级会漏判整个频道。
+
+### 决策：取 C，不做特殊处理
+
+曾给出三个选项：A 完全遵守（标为受保护、只许流式预览）／B 遵守但给默认关闭的
+显式逃生口／C 不做特殊处理。调研当时倾向 A 或 B。
+
+**用户拍板取 C。** 受保护内容按普通文件对待：`noforwards` 不作为能力门、
+不禁用「解密到本地」、不拦 `read_range`。
+
+这推翻了调研时的倾向，理由记在这里以免后人重新纠结：
+
+- 技术事实是**服务端并不在取字节这条路径上拦**（上表第二行）。在服务端不拦的
+  前提下，由 omy 自己加一道拦截，等于**替用户做了一个他没要求的限制**——
+  而用户拿着自己的账号、访问自己能访问的对话，本来就能看到这些内容。
+- 曾用来支持 A / B 的那条「主要用例不受影响」反过来也成立：既然
+  `noforwards` 主要出现在非目标场景，那么**不处理它的代价同样很小**。
+  该论证对两个方向都不构成决定性依据。
+
+**取 C 之后仍然成立的两条：**
+
+1. **转发依然做不到**，而且原因与本决策无关——那是服务端强制的
+   （`CHAT_FORWARDS_RESTRICTED`）。文案上必须与「保存」分开写，否则会把
+   一个确定的服务端事实和一个产品选择混为一谈。
+2. **残留的 ToS 风险如实记着，不当它不存在。** 第 1.3 条要求第三方客户端保证
+   官方基本功能正常，1.4 条禁止 interfere with basic functionality；
+   内容保护算不算 basic feature，**官方 ToS 没有逐项列举，未能核实到明确表态**。
+   后果上限是 api_id 被封 → 所有用户一起受影响（DEC-19 已论证过这条连坐）。
+   列为 15 号文档 §11.2 第 18 项。
+
+**一条前提要盯住**：取 C 建立在「服务端不拦取字节」之上，而那条目前是
+**官方错误表的反向推断，没有真连实测过**（§11.2 第 17 项）。
+若将来实测发现服务端确实会拦，本决策的前提就不成立，需要重新评估。
+
+### UI 侧的落法：低权重，不做醒目标记
+
+取 C 之后，界面**不再**做角标、横幅、五处投影那一套。只在**详情面板**放
+一行低权重的次要文字，说明该内容被所有者标记为禁止保存。
+
+理由是：既然允许下载，醒目警告只会让用户困惑「既然能存，为什么要警告我」。
+但也不能完全不显示——那个标志是客观事实，用户有权知道自己在处理什么。
+**如实、但不喧宾夺主。**
+
+---
+## DEC-21：api_id 内置默认值 + 允许用户覆盖（推翻 DEC-19 的「让用户自己申请」）
+
+**背景。** 用户原话：「我需要能和 tdl 一样，能像它一样使用，api_id 是可选项。」
+完整取证见 [15 号文档 §5.9.1 / §5.9.2](15-telegram-remote.md)。
+
+### 推翻的是什么：一个从对的事实推出的错结论
+
+DEC-19 写着「api_id 让用户自己申请，不内置」。它的**事实前提没错，推理错了**。
+
+核实到的协议层事实**保留、不变**：api_id 是 MTProto 的必需入参，而且是
+**扫码那个接口本身**的参数——`auth.exportLoginToken#b7e085fe api_id:int
+api_hash:string except_ids:Vector<long>`，`initConnection#c1cd5ea9` 的首参
+也是 `api_id`（两条均于 2026-09-19 直连 `core.telegram.org` 复核）。
+所以「扫码登录了就不用 api_id」这个直觉确实是错的。
+
+**错在下一步：从「协议必须有」推出「必须由用户提供」。**
+这两件事之间少了一个环节——**应用可以自己内置**。`iyear/tdl` 的
+`pkg/tclient/app.go` 就是现成先例：它内置了两套（自有的 15055931、
+以及 Telegram Desktop 的 2040），所以用户直接 `tdl login` 就能用。
+
+**教训与 DEC-19 自己记的那条同构**：那里是「先查有没有这个 API，再查它有什么
+限制」；这里是「先分清这个约束落在谁头上，再决定谁来满足它」。
+协议的约束落在**连接**上，不是落在**用户**上。
+
+### 决策
+
+**内置一份默认 api_id / api_hash，用户不填也能直接登录使用；
+设置里提供「使用自己的 api_id」，填了就覆盖默认值。**
+
+### 那条代价没有消失，只是被重新定位了
+
+DEC-19 用来否决内置的论据是真的：**开源项目的 api_id 必然随源码公开，
+可能被举报，届时官方在服务端限制它，所有仍在用内置值的用户同时失效，
+而修复不在 omy 手里**（只能等解封或发新版换值）。
+
+这不是假想。Telegram Desktop 开源代码里那个示例 api_id（17349）正是这么被限的，
+逼得 Debian、Void、openSUSE、Snap/Flatpak 各自申请专用 id；沿用示例 id 的发行版，
+用户真的在登录时撞上 `API_ID_PUBLISHED_FLOOD`。
+
+**但这条代价论证的是「必须给用户一条自救路径」，不是「必须由用户填」。**
+「内置 + 可覆盖」同时满足两者：默认值让绝大多数人不必碰这一步，
+逃生口让失效时不至于全盘卡死。
+
+**由此产生一条对界面的硬要求**：收到 `API_ID_PUBLISHED_FLOOD` 时，错误态必须
+**引导用户去填自己的 api_id**，而不是只报错误码、或当成网络错误去重试——
+那样用户会永远卡在登录页，而真正的出路就在旁边。
+
+### 内置哪一份凭据：已由 DEC-22 闭合
+
+本决策刚做出时这一项还未决，**现已决定取甲（Telegram Desktop 的 2040）**，
+见下方 DEC-22。本文原先建议乙（自行申请专用 id），用户在知悉取舍后选择了甲。
+### 证据等级
+
+- 协议层签名：**官方文档明确写明**，已直连官网复核。
+- tdl 内置两套 api_id：**仓库真实源码**（经 pkg.go.dev 由源码生成的 API 文档）。
+- 「2040 属于 Telegram Desktop」：**第三方公开资料**，非官方公布的清单。
+- 各发行版 api_id 数值、示例 id 被限的经过：**第三方 issue 讨论记录**，未经官方确认。
+- **没有找到「因使用 2040 而被封号」的确证**；Kotatogram 的 FAQ 反而称封号案例
+  出现在「client uses custom API ID and hash」的情况下——**那是项目自述，
+  不是官方口径**，也不构成「用 2040 更安全」的证据，只说明这个方向上公开信息
+  很少且互相矛盾。
+
+---
+## DEC-22：内置的那一份取 Telegram Desktop 的 2040（沿用 `iyear/tdl` 的做法）
+
+**背景。** DEC-21 定了「内置 + 可覆盖」，留下「内置哪一份」未决。
+用户原话：「内置的凭据像 tdl 那样做就行了。」
+完整取证见 [15 号文档 §5.9.2](15-telegram-remote.md)。
+
+### 决策
+
+**内置 Telegram Desktop 官方客户端的凭据（`api_id = 2040` 及其对应
+api_hash）；不另行申请 omy 专用 api_id。**
+
+⚠️ **api_hash 的值不写在任何文档里**，唯一定义在
+`crates/omy-remote/src/telegram/appid.rs` 的 `BUILTIN_API_HASH`。
+（api_id 是公开数字，保留；api_hash 是凭据。）
+
+数值核实自 `iyear/tdl` `master` 分支真实源码 `pkg/tclient/app.go`
+（2026-09-19 取回逐字比对）。**注意 tdl 源码里那行注释把出处指向 `opentele`
+文档——连 tdl 自己引的也是第三方资料**，Telegram 官方从未公布过这个对应关系。
+
+### 否决的替代方案
+
+**乙：omy 自行申请一份专用 api_id 再内置。** 合规上更干净，但**在被限风险上
+反而更差**——专用 id 随开源代码公开后可能被举报限制（各 Linux 发行版正是这么
+被迫各自申请的），而 2040 几乎不会被限，因为限制它等于限制官方客户端自己。
+本文当初建议乙，**用户在知悉这个取舍后选择了甲**：拿合规换可用性。
+
+### 如实记录的三条事实（不展开论证，决策者已知情）
+
+1. 这是**沿用官方客户端的凭据**，与 ToS 2.1「You must obtain your own api_id
+   for your application」的字面要求相抵触。
+2. 与 15 号文档 §12.2.1 的告知口径存在张力：向导里如实告诉用户「omy 是第三方
+   应用」，而对服务器出示的是官方客户端的应用身份。
+3. **DEC-21 的逃生口不因此取消**：`API_ID_PUBLISHED_FLOOD` 的缓解路径仍是
+   「允许用户填自己的 api_id」，错误态仍必须引导用户去填。
+   **甲降低的是这个分支出现的概率，不是把它消掉了。**
+
+### 一条因此升级为优先的待核实项
+
+nixpkgs 的讨论转述称 `my.telegram.org` 页面写有「It is forbidden to pass
+this value to third parties」。**未能核实**（该页需登录，本次无账号）。
+它此前只是「对甲、乙都可能有影响」，**现在直接约束已定行为**——
+内置 2040 并随开源二进制分发算不算 pass to third parties。
+列为 15 号文档 §11.2 第 21 项，已标优先。
+
+### 与之相关但独立的一件事：tdata 导入
+
+核实 tdl 凭据时顺带查清了另一个问题——**tdl 除了内置官方 api_id，
+还能直接导入 Telegram Desktop 的 `tdata`**（`app/login/desktop.go`，
+调 `gotd/td/session/tdesktop` 解密）。这**不是**同一件事：
+前者是「用谁的应用身份」，后者是「用户账号怎么登录」。
+
+**本期做不做见 DEC-23**（此处原写「本期不做」，在补充核实后已不准确）。机制与约束见 15 号文档 §5.9.3。
+但有一条连带结论值得记在这里：**tdata 导入要求配套使用 2040**
+（tdl 在导入后把应用身份也设成 `AppDesktop`，因为 session 是用某个 api_id
+建立的，换一个会不一致）。**所以 DEC-22 选甲，恰好让这条路将来仍然走得通；
+若当初选了乙，tdata 导入会直接不可行。** 这不是选甲的理由，是选甲的一个副产物。
+
+---
+## DEC-23：tdata 导入不依赖 `grammpars`，倾向自研只读最小实现
+
+**背景。** 用户确认 tdl 的「复用官方登录态」确实存在，要求把它从「后续做」
+提为本期候选。前置判断是：**Rust 侧有没有能直接用的现成方案。**
+完整取证见 [15 号文档 §5.9.3](15-telegram-remote.md)。
+
+### 决策
+
+**不把 `grammpars` 作为依赖引入。** 若要做 tdata 导入，
+**自研一个只读最小实现**（`tdata → (auth_key, dc_id)` 单向）。
+**本期做不做，留给产品定**——技术上它是第三种登录入口，不做也不影响完整性。
+
+### 为什么否决 `grammpars`：读了源码，不是看 star 数
+
+**先说它好的一面**，因为这决定了「否决」的理由必须站得住：
+源码真实完整（1498 SLoC），**有三个测试文件**且断言有意义
+（tdata↔Telethon↔grammers 往返、TDF 校验和损坏检测、schema 版本拒绝）；
+**确实能产出 grammers 可加载的 session**（表结构与 `user_version = 1`
+对得上 grammers schema 1）；`Result` 贯穿、`zeroize` 清密钥、原子替换写盘；
+MIT OR Apache-2.0，与 omy 兼容。**比只看「0 star / 22 次下载」得出的印象好得多。**
+
+**否决理由是三条读源码才能发现的问题，第一条是硬阻塞：**
+
+1. 🔴 **它依赖 `rusqlite` 且是 `features = ["bundled"]`，无开关可关。**
+   bundled 要编译 SQLite 的 C 代码。**这与 DEC-19 的核心论据直接冲突**——
+   选 grammers 而非 TDLib，很大程度就是因为它「71 个 crate、无 openssl /
+   ring / bindgen / sqlite、无 C 工具链」，而 TDLib 的 Android + C 依赖是硬伤。
+   引入 `grammpars` **等于把刚从大门赶出去的 C 工具链从窗户请回来**，
+   且已实测通过的 Android 交叉编译要重新验证。
+2. ⚠️ **几乎肯定是 Python `opentele` 的移植，但没有署名。**
+   src 中 opentele 相关标识符出现 75 次（错误类型就叫 `OpenteleError`），
+   而 README / CHANGELOG / SECURITY / docs 零处提及原作者。
+   opentele 是 MIT，**MIT 要求保留版权声明**。对一个正在认真做许可证分层
+   的项目（10 号文档），这是不能忽略的瑕疵。**这是观察，不是法律结论。**
+3. ~~一处密钥派生常数与公开资料对不上~~ **已判定，这条不成立。**
+   **回源读上游后确认：`grammpars` 这部分是对的，本条不成立。**
+   Telegram Desktop 的 `CreateLocalKey` 里 `1`（空密码）与 `100_000`
+   （有密码）本就是同一函数的两条分支，`4` / `4000` + SHA1 则属另一个函数
+   `CreateLegacyLocalKey`（legacy 格式）。**那些「对不上」的数字描述的是三条
+   不同路径，一个都不算错**——问题从来是没人说清自己在讲哪条路径。
+   ⚠️ 本决策记录中一度出现过两种错误表述（先是「要判定谁对」，后是「另外两个
+   数字都不对」），**均已撤回**；教训见 15 号文档 §5.9.3。
+   **否决它的理由自始至终是上面第 1 条（bundled `rusqlite` 带回 C 工具链），
+   与常数对错无关**——写明这点，免得后人误以为当初是嫌它算错了。
+
+### 自研的范围：比 `grammpars` 小得多
+
+omy 只需要**一个方向**：`tdata → (auth_key, dc_id)`。
+不需要写回 tdata、不需要 Telethon 格式、**不需要 SQLite**
+（grammers 自己会建 session）。
+
+🔴 **参考对象的许可证必须分清**（2026-09-19 逐个核实 `LICENSE` 文件）：
+
+- ✅ **`github.com/gotd/td/session/tdesktop` 是 MIT**
+  （`Copyright (c) 2020 Aleksandr Razumov`，v0.162.0 / 2026-09-18）。
+  **真正做 tdata 解码的是它，不是 tdl**——tdl 只是调用方。
+- ✅ `opentele`（Python，MIT）可作旁证。
+- ❌ **`iyear/tdl` 本身是 AGPL-3.0，不要读它的代码来写 omy。**
+
+**所以「参考 tdl」是个错误说法**，正确说法是「参考 `gotd/td/session/tdesktop`」。
+两者许可证天差地别，混着说会让人以为我们打算读 AGPL 代码。
+
+🔴 **若据此自研，必须在代码注释与文档中注明参考来源及版本，并保留 MIT 版权
+声明**——这正是本决策否决 `grammpars` 时用的标准（它移植 `opentele` 却零处
+署名），**omy 自己必须做到**。
+
+**风险要正视**：tdata 是 Telegram Desktop 的内部格式，**官方无稳定性承诺**，
+版本升级可能变；上面第 3 条的迭代次数分歧正说明格式有新旧分支且公开资料
+互相矛盾。**在拿到一份真实 tdata 之前，任何实现都无法验证。**
+
+### 顺带定下的一条：device 参数不伪装
+
+`gotd` 提供 `DeviceTDesktopWindows()`，官方说明是让连接参数
+「indistinguishable from Telegram Desktop from the server's perspective」，
+tdl 用了它。**omy 不用，device 如实报自己。**
+
+理由不是技术上的：`device_model` 会显示在官方客户端的「已登录设备」列表里。
+报 `omy` 用户能认出并随时撤销；伪装成 Telegram Desktop 则**用户无法把这个
+会话与自己真正的桌面端区分开**——对一个做加密与隐私的工具，这说不过去。
+这也比 DEC-22「沿用官方凭据」又前进了一步：从「借用应用身份」变成
+「主动隐藏自己是第三方」，与向导里如实告知的口径冲突更直接。
+
+**未核实**：没有任何官方说明或可靠案例表明「device 与 api_id 不匹配」会触发
+风控。若将来出现证据，这条要重新评估——那时它就变成和 DEC-22 同类的
+「合规 vs 可用」取舍，应交产品拍板。
+
+### 仍待验证
+
+**一处前提更正**：早先记的「本机没有 Telegram Desktop」是错的——只搜了
+`%APPDATA%` / `%LOCALAPPDATA%`，而这台机器用的是**便携版**，tdata 在另一个盘。
+**在只找固定路径的探测器眼里，便携版和「没装」无法区分**，这也正是
+「手动指定路径」必须做成常规入口的现实依据（15 号文档 §5.9.3 前提一）。
+
+样本虽已具备，**但解析与导入本身一次都没做过**，`grammpars` 也只审计未运行。
+`derive_local_key` 那条迭代次数之争由实现线在真实样本上判定。
+清单见 15 号文档 §11.2 第 28–32 项。
+
+**本决策不因「有了样本」而改变**：否决 `grammpars` 的理由是 bundled SQLite
+会把 C 工具链带回来（与 DEC-19 的核心论据冲突），这与有没有样本无关，
+也与有没有参考实现无关。
+
+**但「不引入它」的_代价_已大幅下降**：原先的代价是「要自己摸索整个格式」，
+现在是「照一份 MIT 参考实现用 Rust 重写」。**否决理由不变，代价变小了**
+——这两件事要分开看，否则容易把「代价变小」误读成「当初否决错了」。
+
+**2026-09-19 实测进展**（不改变本决策，但改变了「自研」那一项的风险画像）：
+解密链路前三步——TDF 容器解析、localKey 派生、账号文件解密——**已在真实数据上
+验证通过**；卡在第四步「在明文里定位 `dbiMtpAuthorization`」。
+**也就是说加密层已经不是风险了，剩余的未知是序列化格式走查的广度。**
+
+⚠️ **分寸**：「探针还没跑完」不等于「工作量太大」。
+
+**工作量估算：2–3 天，依据已可追溯到上游源码。**
+
+数字没变，但**依据换了**：不再是「自己摸索格式」（有 MIT 参考实现），
+而是**照抄上游 `_readSetting` 那个大 switch 的长度规则**——
+本文实测计数为 **88 个 `case dbi*` 分支**。账号明文是 `blockId` + payload
+的长链，跳到下一块必须先知道当前块的布局，**这正是「扫描定位」绕不过去的
+原因，现在有源码印证而非推断**。`dbiMtpAuthorization`（id=46）本身的读法
+很简单（一个带长度前缀的 `QByteArray`）——**难的不是读它，是走到它。**
+
+**所以成本的形状是**：写起来不难，但要照抄近百个 case 的长度规则，
+其中大量历史遗留块；**错一个 case 就整条链错位**，而唯一验证手段是真实
+tdata、CI 里没有——这是长期成本，不是一次性投入。
+
+原估算的其余推理仍成立：密码学部分已确定且便宜；
+卡点是**序列化走查且绕不过**——两条捷径均已证伪（顶层 5 个 TDF 里只有账号
+文件能用 localKey 解开，所以不是「换个文件」的事；auth key 是裸 256 字节、
+无长度前缀，所以扫描定位不成立）；此外还要**再走一层文件间接**
+（1076 字节明文装不下几把密钥，授权信息在按账号索引命名的另一层文件里，
+而那个文件名要先解出账号列表才知道）。外加**一套只有真实 tdata 才能跑的验证，
+CI 里没有**——这是长期成本。
+
+**因此「本期不做、留作后续」这个结论维持**，但它现在有依据，不再是开口的。
