@@ -41,12 +41,16 @@ use crate::telegram::appid::AppId;
 use crate::telegram::device::DeviceInfo;
 use crate::telegram::qr::token_url;
 
-/// 等一次 `updateLoginToken` 最多等多久（秒）。
+/// 等一次 `updateLoginToken` 最长等多久（秒）——**兜底上限，不是换图周期**。
 ///
-/// 只是个兜底：正常情况下由令牌自己的过期时间决定何时换图。有它是因为
-/// **服务端不保证一定会推这条更新**（网络抖动、连接被重建都可能让它丢），
-/// 而没有兜底的话界面会永远停在一张早已过期的图上。
-const UPDATE_WAIT_CAP_SECS: u64 = 60;
+/// 正常情况下等多久由令牌自己的过期时间决定（服务端实测给约 30 秒）。有这个
+/// 上限只是因为**服务端不保证一定会推这条更新**（网络抖动、连接被重建都可能
+/// 让它丢），没有兜底的话界面会永远停在一张早已过期的图上。
+///
+/// **不要把它当成换图周期。** 那正是真机实测撞到的缺陷：固定等 60 秒、而令牌
+/// 约 30 秒就过期，于是每张二维码的后半段整整 30 秒是死图——用户在这半分钟里
+/// 怎么扫都没反应，而界面上什么异常都没有。
+const UPDATE_WAIT_CAP_SECS: u64 = 90;
 
 /// 令牌快到期时提前多少秒就主动换图。
 ///
@@ -113,6 +117,12 @@ pub struct QrSession {
     ///
     /// 只在内存里存活到下次换图为止。它等同一次登录凭据，不落盘也不进日志。
     pending: Option<Vec<u8>>,
+    /// 当前这张二维码还有多少秒过期。
+    ///
+    /// 等确认时要按它设超时——用固定值的话，值大于令牌寿命就会让后半段显示
+    /// 一张已作废的死图，值小于寿命则会在用户还来得及扫的时候白换一张
+    /// （而换图要多发一次请求，Telegram 对这个接口限流很紧）。
+    pending_ttl: u32,
     /// 已经换过几张图。
     refreshes: u32,
 }
@@ -243,6 +253,7 @@ impl QrSession {
             updates,
             runner,
             pending: None,
+            pending_ttl: 0,
             refreshes: 0,
         })
     }
@@ -280,13 +291,17 @@ impl QrSession {
         };
 
         // 有令牌 → 等手机端确认。等到了就再导出一次取结果，等不到就换图。
-        if self.wait_for_confirmation().await? {
+        //
+        // 等多久必须按**这张令牌的剩余寿命**算，不能用一个固定值：固定值大于
+        // 令牌寿命时，后半段显示的是一张已经作废的图，用户怎么扫都没反应。
+        if self.wait_for_confirmation(self.pending_ttl).await? {
             // 这一次导出返回的会是 Success（或需要云密码）
             return self.export().await;
         }
         // 没等到：这张过期了，**自动**换一张。计数 +1 让界面能显示换过几次
         drop(token);
         self.pending = None;
+        self.pending_ttl = 0;
         self.refreshes = self.refreshes.saturating_add(1);
         self.export().await
     }
@@ -332,10 +347,14 @@ impl QrSession {
         match res {
             tl::enums::auth::LoginToken::Token(t) => {
                 let url = token_url(&t.token);
+                let ttl = remaining_secs(t.expires);
                 self.pending = Some(t.token);
+                // 与 pending 一起更新：漏掉这里会让等待时长停留在上一张的值，
+                // 而症状是「偶尔有一张图扫不出来」，极难复现
+                self.pending_ttl = ttl;
                 Ok(QrEvent::Token {
                     url,
-                    expires_in_secs: remaining_secs(t.expires),
+                    expires_in_secs: ttl,
                     refresh_index: self.refreshes,
                 })
             }
@@ -382,15 +401,20 @@ impl QrSession {
             .await
             .map_err(|e| QrError::Invocation(e.to_string()))?;
         self.pending = None;
+        self.pending_ttl = 0;
         match res {
             tl::enums::auth::LoginToken::Success(_) => Ok(QrEvent::LoggedIn),
             // 迁移之后又给了一个新令牌：正常，继续显示新图
             tl::enums::auth::LoginToken::Token(t) => {
                 let url = token_url(&t.token);
+                let ttl = remaining_secs(t.expires);
                 self.pending = Some(t.token);
+                // 与 pending 一起更新：漏掉这里会让等待时长停留在上一张的值，
+                // 而症状是「偶尔有一张图扫不出来」，极难复现
+                self.pending_ttl = ttl;
                 Ok(QrEvent::Token {
                     url,
-                    expires_in_secs: remaining_secs(t.expires),
+                    expires_in_secs: ttl,
                     refresh_index: self.refreshes,
                 })
             }
@@ -407,9 +431,11 @@ impl QrSession {
     ///
     /// 服务端**不保证**一定会把这条更新推到。连接被重建、网络抖动都可能让它丢，
     /// 而丢了之后界面会永远停在一张早已过期的死图上——用户反复扫，什么也不发生。
-    async fn wait_for_confirmation(&mut self) -> Result<bool, QrError> {
-        let cap = std::time::Duration::from_secs(UPDATE_WAIT_CAP_SECS);
-        let deadline = tokio::time::Instant::now() + cap;
+    async fn wait_for_confirmation(&mut self, ttl_secs: u32) -> Result<bool, QrError> {
+        // 到点就该换图了，所以等待时长就是这张令牌的剩余寿命。
+        // 上限只防服务端给出离谱值（0 或异常大），正常路径走不到它。
+        let secs = u64::from(ttl_secs).clamp(1, UPDATE_WAIT_CAP_SECS);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
         loop {
             let recv = tokio::time::timeout_at(deadline, self.updates.recv()).await;
             match recv {
@@ -660,6 +686,40 @@ mod tests {
             "应当扣掉提前量，实际 {left}"
         );
         assert!(left >= 20, "也不该扣得离谱，实际 {left}");
+    }
+
+    /// 等确认的时长必须**跟着令牌寿命走**，不能是一个固定值。
+    ///
+    /// 不这样会怎样：这是真机实测撞到的缺陷。原先固定等 60 秒，而服务端给的
+    /// 令牌约 30 秒就过期——于是每张二维码的后半段整整 30 秒是死图，用户在这
+    /// 半分钟里怎么扫都没反应，而界面上倒计时照走、什么异常都没有。
+    ///
+    /// 反方向也要挡住：等待时长明显短于令牌寿命会在用户还来得及扫的时候就白换
+    /// 一张，而换图要多发一次 exportLoginToken，那个接口限流很紧。
+    #[test]
+    fn wait_duration_follows_the_token_lifetime() {
+        // 这里验的是 step() 里那段 clamp 的意图，用同样的算式表达
+        let wait_for = |ttl: u32| u64::from(ttl).clamp(1, UPDATE_WAIT_CAP_SECS);
+
+        // 典型值：服务端给 30 秒，就等 30 秒，不多等
+        assert_eq!(wait_for(30), 30, "必须正好等令牌的剩余寿命");
+        assert_eq!(wait_for(17), 17);
+
+        // 上限只在服务端给出离谱值时才起作用
+        assert_eq!(wait_for(u32::MAX), UPDATE_WAIT_CAP_SECS, "异常大的值要被夹住");
+        // ttl 为 0（令牌已过期）时不能等 0 秒——那会变成一个不睡觉的死循环，
+        // 每一轮都立刻重新导出，瞬间撞上 FLOOD_WAIT
+        assert!(wait_for(0) >= 1, "至少要等 1 秒，否则会变成忙轮询");
+
+        // 兜底上限必须明显大于令牌的典型寿命（约 30 秒），否则它又变回
+        // 「固定换图周期」，死图缺陷原样复发。
+        // 放进 const 块：这是对常量本身的约束，编译期就该拦住
+        const {
+            assert!(
+                UPDATE_WAIT_CAP_SECS > 60,
+                "上限太小就会重新变成换图周期，而那正是死图缺陷的成因"
+            );
+        }
     }
 
     /// `FLOOD_WAIT` 必须被单独识别出来并带上秒数。
