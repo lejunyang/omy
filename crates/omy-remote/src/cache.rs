@@ -94,18 +94,7 @@ impl BlockCache {
     /// 文件系统里（而文件名往往比内容更能说明问题）。
     #[must_use]
     pub fn path_of(&self, place: &str, id: &str, block: u64) -> PathBuf {
-        let mut h = blake2::Blake2bVar::new(16).unwrap_or_else(|_| {
-            // 16 字节在合法范围内，这里不可能失败；给个退路只为避免 unwrap
-            blake2::Blake2bVar::new(16).expect("blake2 16 字节输出合法")
-        });
-        h.update(place.as_bytes());
-        h.update(b"\0");
-        h.update(id.as_bytes());
-        h.update(b"\0");
-        h.update(&block.to_le_bytes());
-        let mut out = [0u8; 16];
-        h.finalize_variable(&mut out).ok();
-        let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
+        let hex = digest_hex(&[place.as_bytes(), b"\0", id.as_bytes(), b"\0", &block.to_le_bytes()]);
         // 分两级目录：单目录几万个文件会让部分文件系统的列举变慢
         let (a, rest) = hex.split_at(2);
         self.root.join(a).join(rest)
@@ -274,6 +263,25 @@ pub fn blocks_for(offset: u64, len: u64) -> std::ops::RangeInclusive<u64> {
     let first = offset / BLOCK_SIZE;
     let last = offset.saturating_add(len).saturating_sub(1) / BLOCK_SIZE;
     first..=last
+}
+
+/// 把若干字节片拼起来算 16 字节 blake2，输出小写十六进制。
+///
+/// 单独抽出来，是为了让缓存键的哈希算法在本文件里只有一处：新增按同样
+/// 规则算路径的调用点时，不必把 `update` 的顺序复制一遍。复制出的第二份
+/// 一旦顺序或分隔符不同，症状是「明明缓存过却永远不命中」——不报错、
+/// 只表现为流量偏高，极难被发现。
+fn digest_hex(parts: &[&[u8]]) -> String {
+    let mut h = blake2::Blake2bVar::new(16).unwrap_or_else(|_| {
+        // 16 字节在合法范围内，这里不可能失败；给个退路只为避免 unwrap
+        blake2::Blake2bVar::new(16).expect("blake2 16 字节输出合法")
+    });
+    for p in parts {
+        h.update(p);
+    }
+    let mut out = [0u8; 16];
+    h.finalize_variable(&mut out).ok();
+    out.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 列出缓存里的所有文件及其大小与访问时间。
