@@ -158,14 +158,18 @@ impl WebDavStore {
             return Err(Error::Protocol(String::from("地址里没有主机名")));
         }
 
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(cfg.timeout)
             // 跟随重定向时 reqwest 会丢掉 Authorization 头（这是正确的
             // 安全行为：不该把凭据发给未知主机）。部分服务端读取时会 302
             // 到另一个域，届时表现为 401——rclone 专门为此有个
             // auth_redirect 选项。这里先保持默认的安全行为。
-            .build()
-            .map_err(|e| Error::Network(e.to_string()))?;
+            ;
+        if is_loopback_host(&parsed) {
+            // 本机地址不走代理，理由见 `is_loopback_host`
+            builder = builder.no_proxy();
+        }
+        let http = builder.build().map_err(|e| Error::Network(e.to_string()))?;
 
         let mut b = reqwest_dav::ClientBuilder::new().set_host(cfg.base_url.clone());
         if !cfg.username.is_empty() {
@@ -174,6 +178,10 @@ impl WebDavStore {
                 cfg.password.clone(),
             ));
         }
+        // 列目录那条链路也必须用同一个客户端，否则代理策略只对 GET 生效，
+        // 而 PROPFIND 仍旧走代理——那才是实际踩到的现象（见 map_dav_err
+        // 上方注释里记的 502）。
+        b = b.set_agent(http.clone());
         let dav = b.build().map_err(|e| Error::Network(e.to_string()))?;
 
         Ok(Self { cfg, http, dav })
@@ -384,6 +392,41 @@ impl RemoteStore for WebDavStore {
     }
 }
 
+/// 这个地址是不是指向本机（或链路本地）。
+///
+/// # 为什么要单独判断，而不是信任系统的「代理例外」
+///
+/// `reqwest` **不会**自动为 `127.0.0.1` 绕过代理。它在 Windows 上读注册表里的
+/// `ProxyEnable` / `ProxyServer` / `ProxyOverride`（经由 `hyper-util`），但
+/// `ProxyOverride` 用的是 WinINET 的通配语法（`127.*`、`<local>`），而
+/// `hyper-util` 的 `NoProxy` 只认精确 IP、CIDR 和域名后缀——`127.*` 和
+/// `<local>` 两种写法它都表达不了，于是对 IP 形式的主机就只查 IP 匹配表，
+/// 本机地址**一个都不在里面**。
+///
+/// 结果是：用户开着系统代理（很常见）去访问局域网或本机的 WebDAV 时，请求会被
+/// 送进代理，而代理连不到那个内网地址，于是回一个**代理自己生成的**错误。
+///
+/// 这个现象极具误导性：我们的集成测试服务端只会回 401 和 207，却出现过一次
+/// 502 —— 502 是代理回的，不是服务端回的。当时的报错是「错误密码应分类为
+/// Unauthorized，实际 502」，看起来像认证分类逻辑坏了，而真正的原因与认证
+/// 毫无关系。用户侧的表现会更糟：他会以为自己的 NAS 或 WebDAV 服务出了问题。
+///
+/// 所以这里显式绕过。判断范围取「本机 + 链路本地」而不是「所有私有网段」：
+/// 企业环境里确实存在需要经代理访问内网的配置，把 `10.0.0.0/8` 一起排除会
+/// 反过来破坏那种场景；而本机地址经代理转发在任何配置下都没有意义。
+fn is_loopback_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // 主机名形式：只认这两个字面量。不做 DNS 解析——构造客户端时
+        // 发同步 DNS 请求会阻塞 UI，而且解析结果还可能变。
+        Some(url::Host::Domain(d)) => {
+            d.eq_ignore_ascii_case("localhost") || d.eq_ignore_ascii_case("localhost.")
+        }
+        None => false,
+    }
+}
+
 /// 把 `reqwest_dav` 的错误映射成分类错误。
 fn map_dav_err(e: reqwest_dav::Error) -> Error {
     // 该库把 HTTP 状态包在 Decode(StatusMismatched) 里，
@@ -474,6 +517,70 @@ mod tests {
             ..WebDavConfig::default()
         })
         .expect("构造客户端")
+    }
+
+    /// 本机地址必须被判成「不走代理」，公网地址必须照常走代理。
+    ///
+    /// 不这样会怎样：reqwest 不会自动为 127.0.0.1 绕过代理（Windows 的
+    /// ProxyOverride 用的是 `127.*`、`<local>` 这类通配语法，hyper-util 的
+    /// NoProxy 表达不了，于是对 IP 主机只查 IP 匹配表，本机地址一个都不在
+    /// 里面）。于是用户开着系统代理访问本机或局域网 WebDAV 时，请求被送进
+    /// 代理，代理连不到那个内网地址，回一个代理自己生成的错误——用户会以为
+    /// 自己的 NAS 坏了。我们的集成测试也因此出现过一次 502，而那个服务端
+    /// 只会回 401/207。
+    ///
+    /// 反向的断言同样重要：**不能为了省事把所有地址都绕过代理**，否则墙后
+    /// 的用户访问公网 WebDAV 会直接连不上。
+    #[test]
+    fn loopback_bypasses_proxy_but_public_hosts_do_not() {
+        for s in [
+            "http://127.0.0.1:8080/dav",
+            "http://127.1.2.3/dav",
+            "http://[::1]:8080/dav",
+            "http://localhost:8080/dav",
+            "http://LOCALHOST/dav",
+            // 链路本地（169.254/16）：DHCP 失败时的自动地址，同样不该经代理
+            "http://169.254.1.2/dav",
+        ] {
+            let u = url::Url::parse(s).expect("合法地址");
+            assert!(is_loopback_host(&u), "{s} 应当绕过代理");
+        }
+
+        for s in [
+            "https://dav.example.com/dav",
+            "https://127.0.0.1.example.com/dav",
+            "https://notlocalhost/dav",
+            "https://localhost.example.com/dav",
+            // 私有网段**不**绕过：企业环境里确实存在经代理访问内网的配置，
+            // 把 10/8 一起排除会反过来破坏那种场景
+            "http://10.0.0.5/dav",
+            "http://192.168.1.10/dav",
+        ] {
+            let u = url::Url::parse(s).expect("合法地址");
+            assert!(!is_loopback_host(&u), "{s} 不该绕过代理");
+        }
+    }
+
+    /// 列目录与读文件必须共用同一个 HTTP 客户端。
+    ///
+    /// 不这样会怎样：代理策略只作用在 GET 上，而列目录走的是 reqwest_dav 自己
+    /// 建的客户端、仍旧经代理——于是「能打开文件但列不出目录」，或者反过来。
+    /// 这正是实际踩到的那个 502：失败的是 PROPFIND，不是 GET。
+    ///
+    /// 这里只能验证「确实调用了 set_agent」这件事的可观察后果：构造一个指向
+    /// 本机的 store 不报错，且它内部两个客户端来自同一次 build。真正的证据是
+    /// tests/webdav_server.rs 在故意设置死代理时仍全部通过。
+    #[test]
+    fn dav_client_shares_the_configured_agent() {
+        let s = WebDavStore::new(WebDavConfig {
+            base_url: String::from("http://127.0.0.1:8080/dav"),
+            username: String::from("u"),
+            password: String::from("p"),
+            ..WebDavConfig::default()
+        })
+        .expect("本机地址应当能构造");
+        // 配置回填必须保留原地址，否则设置界面会显示成另一个地址
+        assert_eq!(s.config().base_url, "http://127.0.0.1:8080/dav");
     }
 
     /// 只读配置必须拒绝所有写操作，而且是在**发请求之前**。
