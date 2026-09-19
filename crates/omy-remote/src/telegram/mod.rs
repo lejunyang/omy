@@ -35,6 +35,7 @@
 //! **不要根据官方文档把这些常量钉死**：那是把推断写成事实。
 
 pub mod appid;
+pub mod auth;
 pub mod device;
 pub mod login;
 pub mod proxy;
@@ -42,6 +43,7 @@ pub mod qr;
 pub mod store;
 
 pub use appid::{AppId, AppIdError, SessionIdentity, SessionMismatch, BUILTIN_API_ID};
+pub use auth::{SendCodeOutcome, SentCodeKind};
 pub use device::{DeviceInfo, DEVICE_MODEL};
 pub use login::{LoginError, LoginFlow, LoginMethod, LoginState};
 pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
