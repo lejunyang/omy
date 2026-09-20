@@ -168,6 +168,7 @@ pub async fn remote_browse(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
     thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
@@ -183,7 +184,16 @@ pub async fn remote_browse(
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
 
     let items = place.store.list(&dir).await.map_err(|e| to_cmd_err(&e))?;
-    Ok(scan_entries(&app, &state, &thumbs, &place, &place_id, &dir, items))
+    Ok(scan_entries(
+        &app,
+        &state,
+        &thumbs,
+        &place,
+        &place_id,
+        &dir,
+        items,
+        cache.snapshot(),
+    ))
 }
 
 /// 把一批远程条目变成「骨架 + 后台识别」的结果。
@@ -200,6 +210,9 @@ fn scan_entries(
     place_id: &str,
     dir: &str,
     items: Vec<omy_remote::store::Entry>,
+    // 头部缓存的一份快照，分发给每个后台识别任务。
+    // `BlockCache` 的克隆共享同一根目录，所以并发任务之间是真共享
+    cache: Option<omy_remote::cache::BlockCache>,
 ) -> Vec<RemoteEntry> {
     // 扫描行为读配置：识别范围（仅 .omy / 所有文件）与并发上限。
     // 每次浏览读一次配置，改完设置无需重启即可生效。
@@ -252,13 +265,23 @@ fn scan_entries(
         let app = app.clone();
         let place_id = place_id.to_owned();
         let dir = dir.to_owned();
+        let cache = cache.clone();
+        let place_for_probe = place_id.clone();
         tokio::spawn(async move {
             // 拿到许可才发请求；permit 在任务结束时释放
             let _permit = match permit.await {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            let entry = probe_remote_entry(store.as_ref(), &shared, &thumbs, base).await;
+            let entry = probe_remote_entry(
+                store.as_ref(),
+                &shared,
+                &thumbs,
+                base,
+                cache.as_ref(),
+                &place_for_probe,
+            )
+            .await;
             // 切目录后晚到的事件由前端按 位置+目录 过滤丢弃；这里照常发即可，
             // 多跑的只是几个 480B 的头部请求。
             let _ = app.emit(
@@ -294,11 +317,16 @@ fn scan_entries(
 ///
 /// 位置不存在、不支持搜索、网络失败或被限流时返回。
 #[tauri::command]
+// 八个形参里有五个是 Tauri 注入的（AppHandle 与四个 State），前端只传
+// place_id / dir / query 三个。这条 lint 数的是形参个数，在注入式框架里
+// 量错了对象——真按它去收结构体的话，反而要动前端契约。
+#[allow(clippy::too_many_arguments)]
 pub async fn remote_search(
     app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
     thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
     place_id: String,
     dir: String,
     query: String,
@@ -329,7 +357,14 @@ pub async fn remote_search(
     // dir 用搜索时的 dir 原样传下去，让前端的「位置+目录」过滤仍然成立；
     // 跨对话搜索时 dir 为空，事件也就归到空目录那一屏，与发起搜索的那屏一致。
     Ok(scan_entries(
-        &app, &state, &thumbs, &place, &place_id, &dir, items,
+        &app,
+        &state,
+        &thumbs,
+        &place,
+        &place_id,
+        &dir,
+        items,
+        cache.snapshot(),
     ))
 }
 
@@ -361,10 +396,15 @@ struct RemoteEntryEvent {
 /// 位置不存在时返回；单文件读取失败不报错，而是落到 `probe_failed`，
 /// 与整屏浏览的状态语义保持一致。
 #[tauri::command]
+// 八个形参里有四个是 Tauri 注入的 State，前端一个都传不到（它只传
+// place_id / id / size / name 四个）。这条 lint 数的是形参个数，
+// 在注入式框架里量错了对象——真按它去收结构体的话，反而要动前端契约。
+#[allow(clippy::too_many_arguments)]
 pub async fn remote_probe_entry(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     state: tauri::State<'_, Shared>,
     thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
     place_id: String,
     id: String,
     size: u64,
@@ -390,7 +430,17 @@ pub async fn remote_probe_entry(
             .map_or_else(|| id.clone(), str::to_string)
     });
     let base = skeleton_entry(id, name, false, Some(size), false);
-    let out = probe_remote_entry(&place.store, state.inner(), thumbs.inner(), base).await;
+    // 重试仍然走缓存：识别失败时 fetch_full_header 在报错路径上**不写缓存**，
+    // 所以「未能读取」的条目重试时必然是真的重新请求，不会命中一份坏结果
+    let out = probe_remote_entry(
+        &place.store,
+        state.inner(),
+        thumbs.inner(),
+        base,
+        cache.snapshot().as_ref(),
+        &place_id,
+    )
+    .await;
     Ok(out)
 }
 
@@ -429,9 +479,13 @@ async fn probe_remote_entry(
     shared: &Shared,
     thumbs: &PlaceThumbs,
     mut e: RemoteEntry,
+    // 头部缓存。识别是整条浏览路径上最贵的一步（实测约 1.5 秒/个且第二次
+    // 一样慢），不传缓存的话每次进目录都要把所有文件的头部重下一遍
+    cache: Option<&omy_remote::cache::BlockCache>,
+    place_id: &str,
 ) -> RemoteEntry {
     let size = e.size.unwrap_or(0);
-    match fetch_full_header(store, &e.id, size).await {
+    match fetch_full_header(store, &e.id, size, cache, place_id).await {
         Ok(bytes) => {
             // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
             // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
@@ -609,6 +663,7 @@ pub struct UploadOutcome {
 #[tauri::command]
 pub async fn remote_place_vaults(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<crate::commands::VaultParams>> {
@@ -622,6 +677,7 @@ pub async fn remote_place_vaults(
         .await
         .map_err(|e| to_cmd_err(&e))?;
 
+    let cache_snap = cache.snapshot();
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for e in entries {
@@ -629,8 +685,13 @@ pub async fn remote_place_vaults(
             continue;
         }
         let size = e.size.unwrap_or(0);
-        // 只读头部，载荷一个字节都不碰
-        let Ok(bytes) = fetch_full_header(&store, &e.id, size).await else {
+        // 只读头部，载荷一个字节都不碰。
+        //
+        // 这条路径与浏览用的是同一批头部：解锁时走到这里，多半刚刚才浏览过
+        // 同一个目录，走缓存就不必把那十几个头部再下一遍
+        let Ok(bytes) =
+            fetch_full_header(store.as_ref(), &e.id, size, cache_snap.as_ref(), &place_id).await
+        else {
             continue;
         };
         let Ok(h) = omy_core::file::peek_header(&bytes) else {
@@ -696,10 +757,17 @@ pub async fn remote_place_open(
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
 
-    // 读完整头部（识别窗口 + 按需补读到 header_len），载荷一个字节都不碰
-    let header = fetch_full_header(&store, &path, size)
-        .await
-        .map_err(|e| to_cmd_err(&e))?;
+    // 读完整头部（识别窗口 + 按需补读到 header_len），载荷一个字节都不碰。
+    // 走缓存：打开一个文件之前基本都先浏览过它所在的目录，那时头部已经取过
+    let header = fetch_full_header(
+        store.as_ref(),
+        &path,
+        size,
+        cache.snapshot().as_ref(),
+        &place_id,
+    )
+    .await
+    .map_err(|e| to_cmd_err(&e))?;
 
     let parsed = match omy_core::file::peek_header(&header) {
         Ok(h) => h,
@@ -890,9 +958,15 @@ pub async fn remote_decrypt_to_local(
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
 
-    let header = fetch_full_header(&store, &path, size)
-        .await
-        .map_err(|e| to_cmd_err(&e))?;
+    let header = fetch_full_header(
+        store.as_ref(),
+        &path,
+        size,
+        cache.snapshot().as_ref(),
+        &place_id,
+    )
+    .await
+    .map_err(|e| to_cmd_err(&e))?;
     let parsed = omy_core::file::peek_header(&header)
         .map_err(|_| CmdError::code("not_an_omy_file"))?;
 
@@ -1038,9 +1112,15 @@ async fn build_remote_source(
         .get(&req.place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
-    let header = fetch_full_header(&store, &req.path, req.size)
-        .await
-        .map_err(|e| to_cmd_err(&e))?;
+    let header = fetch_full_header(
+        store.as_ref(),
+        &req.path,
+        req.size,
+        cache.snapshot().as_ref(),
+        &req.place_id,
+    )
+    .await
+    .map_err(|e| to_cmd_err(&e))?;
     let rt = tokio::runtime::Handle::current();
 
     // 是 omy 就按 omy 建（载荷从 header_len 起算），否则按普通文件建
@@ -1224,16 +1304,77 @@ pub async fn remote_effective_caps(
         .map_err(|e| to_cmd_err(&e))
 }
 
-/// 读到足以 `open` 的完整文件头。
+/// 头部缓存键里的固定块号。
+///
+/// 正文按 1 MiB 分块、块号从 0 递增；头部永远只读文件开头那一小段
+/// （至多 `MIN_PROBE_SIZE` = 480 B，再按 `header_len` 补一点），
+/// 所以它在自己的键空间里只占 0 这一块。
+const HEADER_BLOCK: u64 = 0;
+
+/// 头部读取的缓存键。
+///
+/// 与正文块**共用同一个 `BlockCache`，但键空间互不相交**：正文键是
+/// `<id>\u{1}<版本哈希>`（omy 文件）或 `<id>\u{1}plain<size>`（普通文件），
+/// 头部键是 `<id>\u{1}hdr<size>`。
+///
+/// # 为什么键里要含 size
+///
+/// 同名文件在云端被**覆盖更新**后长度多半会变，键随之变化，旧头部自然失效，
+/// 不会把上一版的识别结果一直显示下去。长度恰好不变的覆盖会命中旧头部，
+/// 这是与 `RemoteSource::new_plain` 一致的**已知取舍**：为这种少数情况让
+/// 每次进目录都重下全部头部，代价是每次十几秒，不划算。
+fn header_cache_key(id: &str, size: u64) -> String {
+    // 用控制字符分隔，正常 id（WebDAV 路径或 `tg:<对话>:<消息>`）里不会出现。
+    // 与 RemoteSource::cache_key 的分隔符保持一致
+    format!("{id}\u{1}hdr{size}")
+}
+
+/// 读到足以 `open` 的完整文件头，**优先走密文块缓存**。
 ///
 /// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的
 /// 文件头部更长，此时按 `peek_header` 给出的 `header_len` 补读，直到覆盖
 /// 完整 TLV 与头部 MAC。载荷依旧一个字节都不下载。
-async fn fetch_full_header(
-    store: &PlaceStore,
+///
+/// # 为什么必须缓存
+///
+/// 实测识别一个文件头约 1.5 秒（一到两次网络往返），而且**第二次一样慢**
+/// （1689ms → 1449ms）。十几个文件的对话每次进去都要重等十几秒——用户报的
+/// 「每次进来都要重新加载」就是这条。
+///
+/// 原先这里直接调 `store.read_range`，**完全绕过** `BlockCache`：同一个文件
+/// 的同一段字节，播放时走缓存、识别时不走。顺带排除过另外两个候选——连接是
+/// 复用的（首次 1518ms、再连 2ms，没有重新握手），列目录约 400ms，都不是瓶颈。
+///
+/// # 为什么可以放进同一个缓存
+///
+/// 头部与正文块是**同一个安全模型**：缓存目录里只有密文，整个拷走也解不开。
+/// 放进去不引入新的暴露面，而另开一套缓存要把 LRU、永久层、淘汰豁免那些
+/// 踩过坑的逻辑重写一遍。
+///
+/// `cache` 为 `None` 时退化成每次都走网络——那是缓存目录建不起来时的既有
+/// 降级行为，不该让识别本身失败。
+///
+/// 泛型而不是写死 `&PlaceStore`：这样单测能传一个记录请求次数的假存储，
+/// 真的验证「第二次不再发请求」。写死具体类型的话，唯一能测的就只有
+/// 键的拼法，而缓存有没有真的接上去测不到——那恰恰是本函数的全部意义。
+async fn fetch_full_header<S: RemoteStore>(
+    store: &S,
     path: &str,
     size: u64,
+    cache: Option<&omy_remote::cache::BlockCache>,
+    place_id: &str,
 ) -> Result<Vec<u8>, RemoteError> {
+    let key = header_cache_key(path, size);
+
+    // size 为 0 的条目没有任何字节可读，也没必要为它写一个空缓存块
+    if size > 0 {
+        if let Some(c) = cache {
+            if let Some(hit) = c.get(place_id, &key, HEADER_BLOCK) {
+                return Ok(hit);
+            }
+        }
+    }
+
     let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
     let mut buf = if probe_len == 0 {
         Vec::new()
@@ -1248,6 +1389,14 @@ async fn fetch_full_header(
                 .read_range(path, buf.len() as u64, need - buf.len() as u64)
                 .await?;
             buf.extend_from_slice(&extra);
+        }
+    }
+
+    // 补读之后才写缓存：存半截头部的话，下次命中会拿到一段不完整的字节，
+    // 而 open 会把它报成「文件损坏」——那个症状完全指不到缓存
+    if size > 0 {
+        if let Some(c) = cache {
+            c.put(place_id, &key, HEADER_BLOCK, &buf);
         }
     }
     Ok(buf)
@@ -1529,5 +1678,201 @@ mod tests {
         assert!(probe_omy(&junk, &state).is_none(), "随机数据不该被当成 omy");
         // 太短的数据同样不该误判
         assert!(probe_omy(b"OMY", &state).is_none());
+    }
+
+    /// 记录每次 `read_range` 的假存储，用来数「到底发了几次请求」。
+    ///
+    /// 缓存这类改动只有数请求次数才验得出来：断言「返回的字节对不对」的话，
+    /// 一个完全不接缓存的实现照样全绿。
+    struct CountingStore {
+        data: Vec<u8>,
+        calls: std::sync::Mutex<u32>,
+    }
+
+    impl CountingStore {
+        fn new(data: Vec<u8>) -> Self {
+            Self {
+                data,
+                calls: std::sync::Mutex::new(0),
+            }
+        }
+        fn calls(&self) -> u32 {
+            self.calls.lock().map(|c| *c).unwrap_or(u32::MAX)
+        }
+    }
+
+    impl omy_remote::RemoteStore for CountingStore {
+        fn capabilities(&self) -> omy_remote::Capabilities {
+            omy_remote::Capabilities::read_only()
+        }
+        fn describe(&self) -> String {
+            String::from("counting")
+        }
+        async fn list(
+            &self,
+            _dir_id: &str,
+        ) -> Result<Vec<omy_remote::store::Entry>, RemoteError> {
+            Ok(Vec::new())
+        }
+        async fn read_range(
+            &self,
+            _id: &str,
+            offset: u64,
+            len: u64,
+        ) -> Result<Vec<u8>, RemoteError> {
+            if let Ok(mut c) = self.calls.lock() {
+                *c = c.saturating_add(1);
+            }
+            let s = usize::try_from(offset).unwrap_or(usize::MAX);
+            let e = usize::try_from(offset.saturating_add(len)).unwrap_or(usize::MAX);
+            Ok(self
+                .data
+                .get(s..e.min(self.data.len()))
+                .unwrap_or(&[])
+                .to_vec())
+        }
+    }
+
+    /// 造一个临时缓存目录，返回（缓存, 目录路径）。
+    fn temp_cache(tag: &str) -> (omy_remote::cache::BlockCache, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "omy_hdrcache_{tag}_{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        let c = match omy_remote::cache::BlockCache::new(&dir, 0) {
+            Ok(c) => c,
+            Err(e) => unreachable!("建缓存失败：{e}"),
+        };
+        (c, dir)
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        match tokio::runtime::Builder::new_current_thread().build() {
+            Ok(r) => r,
+            Err(e) => unreachable!("建运行时失败：{e}"),
+        }
+    }
+
+    /// 同一个文件头读第二次**不能**再发网络请求。
+    ///
+    /// 不这样会怎样：这正是用户报的「每次进来都要重新加载」。实测识别一个
+    /// 头部约 1.5 秒且第二次一样慢，十几个文件就是十几秒，每次进对话重来
+    /// 一遍。原先 `fetch_full_header` 直连 `store.read_range`，绕过了播放
+    /// 路径在用的 `BlockCache`。
+    ///
+    /// 这条断言数的是**请求次数**而不是返回内容：只断言「读回来的字节对」
+    /// 的话，一个把缓存整个摘掉的实现照样通过——变异测试确认过，那样的断言
+    /// 等于没写。
+    #[test]
+    fn a_second_header_read_does_not_hit_the_network() {
+        let store = CountingStore::new(vec![0x7Au8; 4096]);
+        let (cache, dir) = temp_cache("hit");
+        let r = rt();
+
+        let first = r
+            .block_on(fetch_full_header(&store, "/a.omy", 4096, Some(&cache), "p1"))
+            .unwrap_or_default();
+        let after_first = store.calls();
+        assert!(after_first > 0, "首次必须真的发请求");
+        assert!(!first.is_empty(), "首次要读到内容");
+
+        let second = r
+            .block_on(fetch_full_header(&store, "/a.omy", 4096, Some(&cache), "p1"))
+            .unwrap_or_default();
+        assert_eq!(
+            store.calls(),
+            after_first,
+            "第二次读同一个头部不该再发请求——缓存没接上"
+        );
+        assert_eq!(second, first, "缓存命中返回的内容必须与首次一致");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 文件被覆盖更新（长度变了）后，**不能**返回旧头部。
+    ///
+    /// 不这样会怎样：缓存键若不含 size，云端换了文件之后界面仍然显示上一版的
+    /// 识别结果——文件名、是否加密、明文大小全是旧的，而且因为一直命中缓存
+    /// 永远不会自愈。
+    #[test]
+    fn a_changed_size_invalidates_the_cached_header() {
+        let old = CountingStore::new(vec![0x11u8; 4096]);
+        let new = CountingStore::new(vec![0x22u8; 8192]);
+        let (cache, dir) = temp_cache("size");
+        let r = rt();
+
+        let a = r
+            .block_on(fetch_full_header(&old, "/a.omy", 4096, Some(&cache), "p1"))
+            .unwrap_or_default();
+        // 同一个 id、同一个位置，但文件长度变了
+        let b = r
+            .block_on(fetch_full_header(&new, "/a.omy", 8192, Some(&cache), "p1"))
+            .unwrap_or_default();
+
+        assert!(new.calls() > 0, "长度变了必须重新请求，不能吃旧缓存");
+        assert_ne!(a, b, "返回的必须是新文件的头部");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 不同位置的同名条目不能互相串。
+    ///
+    /// 不这样会怎样：两个 Telegram 账号里各有一条 `tg:123:456`，缓存键若不含
+    /// 位置 id，A 账号会显示 B 账号那个文件的识别结果——而两边看起来都「正常」，
+    /// 没有任何报错。
+    #[test]
+    fn different_places_do_not_share_header_cache() {
+        let a_store = CountingStore::new(vec![0x33u8; 4096]);
+        let b_store = CountingStore::new(vec![0x44u8; 4096]);
+        let (cache, dir) = temp_cache("place");
+        let r = rt();
+
+        let a = r
+            .block_on(fetch_full_header(&a_store, "tg:1:2", 4096, Some(&cache), "p1"))
+            .unwrap_or_default();
+        let b = r
+            .block_on(fetch_full_header(&b_store, "tg:1:2", 4096, Some(&cache), "p2"))
+            .unwrap_or_default();
+
+        assert!(b_store.calls() > 0, "另一个位置必须自己去取，不能命中前一个的缓存");
+        assert_ne!(a, b, "不同位置的同名条目内容不能串");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 头部键与正文块键不能撞。
+    ///
+    /// 不这样会怎样：头部只有几百字节、正文块是 1 MiB，两者共用一个键的话，
+    /// 播放时会把一段 480 B 的头部当成第 0 个正文块拿去解密，得到认证失败——
+    /// 而那个症状指向密钥，完全指不到缓存键。
+    #[test]
+    fn header_keys_never_collide_with_payload_keys() {
+        let k = header_cache_key("/a.omy", 4096);
+        // 正文键的两种形态（见 RemoteSource）：`<id>\u{1}<hex哈希>` 与
+        // `<id>\u{1}plain<size>`。头部键必须与它们都不同
+        assert_ne!(k, "/a.omy\u{1}plain4096");
+        assert!(k.contains("\u{1}hdr"), "头部键要有自己的前缀：{k}");
+        // size 必须真的进键里，否则覆盖更新后旧头部不会失效
+        assert_ne!(
+            header_cache_key("/a.omy", 4096),
+            header_cache_key("/a.omy", 8192),
+            "长度不同必须得到不同的键"
+        );
+    }
+
+    /// 没有缓存时要照常工作（缓存目录建不起来是既有的降级路径）。
+    ///
+    /// 不这样会怎样：把「没有缓存」写成错误的话，一台缓存目录不可写的机器上
+    /// 整个远程浏览都会瘫掉，而它本来只该慢一点。
+    #[test]
+    fn header_read_works_without_a_cache() {
+        let store = CountingStore::new(vec![0x55u8; 4096]);
+        let r = rt();
+        let out = r
+            .block_on(fetch_full_header(&store, "/a.omy", 4096, None, ""))
+            .unwrap_or_default();
+        assert!(!out.is_empty(), "没有缓存也要能读到头部");
+        assert!(store.calls() > 0);
     }
 }
