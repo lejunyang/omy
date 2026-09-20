@@ -41,7 +41,7 @@ const error = ref('');
 
 /** 远程密文缓存的真实用量，来自后端（{used,limit,root}）。
  *  配置里的 cache_limit 是「将要保存」的值，这里是「磁盘上现在」的值。 */
-const cacheUsage = ref({ used: 0, limit: 0, root: '' });
+const cacheUsage = ref({ used: 0, limit: 0, root: '', pinned_used: 0, pinned_files: 0 });
 const clearing = ref(false);
 
 /** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
@@ -231,6 +231,16 @@ const usedText = computed(() => {
     return `${i18n.formatSize(used)} / ${i18n.formatSize(limit)}`;
   }
   return `${i18n.formatSize(used)} · ${i18n.t('settings.cache_unlimited')}`;
+});
+
+/** 永久缓存的显示文本：**绝对值 + 文件计数，没有分母**。
+ *
+ * 14 号文档 §8.4.1 明确不要给它画进度条——一旦画了条，用户就会去找
+ * 「那上限是多少」，而答案是没有上限。
+ */
+const pinnedText = computed(() => {
+  const { pinned_used: used, pinned_files: files } = cacheUsage.value;
+  return `${i18n.formatSize(used || 0)}（${i18n.tn('settings.pinned_files', files || 0)}）`;
 });
 
 /** 移动端进入二级页。 */
@@ -551,8 +561,9 @@ async function openCacheDir() {
                 </option>
               </select>
             </div>
+            <!-- 临时层：有分母，画进度条 -->
             <div class="row">
-              <label class="lb">{{ i18n.t('settings.cache_used') }}</label>
+              <label class="lb">{{ i18n.t('settings.cache_temp') }}</label>
               <div class="fld">
                 <div class="cachebar" :class="{ zero: usedPct === 0 }">
                   <div class="cachebar-fill" :style="{ width: usedPct + '%' }"></div>
@@ -566,6 +577,18 @@ async function openCacheDir() {
                 >
                   {{ clearing ? i18n.t('settings.clearing') : i18n.t('settings.cache_clear') }}
                 </button>
+              </div>
+            </div>
+
+            <!-- 永久层：**没有分母，所以不画进度条**（14 号文档 §8.4.1）。
+                 画了条用户就会去找「上限是多少」，而答案是没有上限。
+                 「不占用上面的上限」要直接写出来——那是看到两个数字时的
+                 第一个疑问。 -->
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.cache_pinned') }}</label>
+              <div class="fld">
+                <div class="pinnedval" data-sf="cache_pinned">{{ pinnedText }}</div>
+                <div class="desc">{{ i18n.t('settings.cache_pinned_hint') }}</div>
               </div>
             </div>
             <div class="row">
@@ -818,6 +841,13 @@ async function openCacheDir() {
 </template>
 
 <style scoped>
+/* 永久缓存的数值：与进度条同高，视觉上两行对齐，
+   但**刻意不用进度条**——它没有分母 */
+.pinnedval {
+  font-size: 13px;
+  padding-block: 2px;
+}
+
 .mask {
   position: fixed;
   inset: 0;

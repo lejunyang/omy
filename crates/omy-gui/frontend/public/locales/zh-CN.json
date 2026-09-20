@@ -578,7 +578,12 @@
     "about_license": "开源许可",
     "about_license_value": "omy-core 等核心库采用 MIT OR Apache-2.0；omy-media 采用 LGPL-2.1；本应用采用 GPL-3.0-or-later。",
     "load_failed": "读取设置失败",
-    "save_failed": "保存设置失败"
+    "save_failed": "保存设置失败",
+    "cache_temp": "临时缓存",
+    "cache_pinned": "永久保留",
+    "cache_pinned_hint": "不占用上面的缓存上限，也不会被自动清理。",
+    "pinned_files_one": "1 个文件",
+    "pinned_files_other": "{{count}} 个文件"
   },
   "rplace": {
     "title": "远程位置",
@@ -629,7 +634,7 @@
     "upload_failed": "上传失败。",
     "upload_partial": "已上传 {{ok}} 个，这些没成功：{{names}}",
     "upload_done_one": "已上传 1 个文件",
-    "upload_done_other": "已上传 {{n}} 个文件",
+    "upload_done_other": "已上传 {{count}} 个文件",
     "menu_pin": "转为永久保留",
     "menu_unpin": "取消永久保留",
     "pinned": "已永久保留到本机，可离线打开",
@@ -639,7 +644,7 @@
     "cache_temp": "临时缓存",
     "cache_pinned": "永久保留",
     "cache_pinned_files_one": "1 个文件",
-    "cache_pinned_files_other": "{{n}} 个文件"
+    "cache_pinned_files_other": "{{count}} 个文件"
   },
   "common": {
     "back": "返回",

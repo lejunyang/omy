@@ -578,7 +578,12 @@
     "about_license": "Open-source license",
     "about_license_value": "Core libraries such as omy-core are MIT OR Apache-2.0; omy-media is LGPL-2.1; this app is GPL-3.0-or-later.",
     "load_failed": "Failed to read settings",
-    "save_failed": "Failed to save settings"
+    "save_failed": "Failed to save settings",
+    "cache_temp": "Temporary cache",
+    "cache_pinned": "Kept permanently",
+    "cache_pinned_hint": "This does not count towards the limit above and is never cleared automatically.",
+    "pinned_files_one": "1 file",
+    "pinned_files_other": "{{count}} files"
   },
   "rplace": {
     "title": "Remote locations",
@@ -629,7 +634,7 @@
     "upload_failed": "The upload failed.",
     "upload_partial": "Uploaded {{ok}}. These did not go through: {{names}}",
     "upload_done_one": "Uploaded 1 file",
-    "upload_done_other": "Uploaded {{n}} files",
+    "upload_done_other": "Uploaded {{count}} files",
     "menu_pin": "Keep permanently",
     "menu_unpin": "Stop keeping permanently",
     "pinned": "Kept on this machine; it opens offline now",
@@ -639,7 +644,7 @@
     "cache_temp": "Temporary cache",
     "cache_pinned": "Kept permanently",
     "cache_pinned_files_one": "1 file",
-    "cache_pinned_files_other": "{{n}} files"
+    "cache_pinned_files_other": "{{count}} files"
   },
   "common": {
     "back": "Back",
