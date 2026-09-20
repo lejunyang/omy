@@ -56,7 +56,13 @@ import {
   setRemoteViewMode,
 } from '../store.js';
 
-const emit = defineEmits(['open', 'add']);
+// 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
+// 碰巧也能冒泡，但看声明就不知道这个组件会发什么，
+// 而且一旦事件名与原生事件撞上就会出问题
+const emit = defineEmits([
+  'open', 'add', 'close', 'pick', 'devices', 'lang',
+  'telegram', 'settings', 'lock', 'quick-unlock',
+]);
 
 /** 当前位置元信息。 */
 const currentPlace = computed(() =>
@@ -522,6 +528,8 @@ function rowTitle(f) {
     @settings="$emit('settings')"
     @lock="$emit('lock')"
     @quick-unlock="$emit('quick-unlock')"
+    @files="$emit('close')"
+    @places="leaveToList"
   >
   <div class="main" data-ui="place-browser">
     <div class="crumb">
@@ -1010,6 +1018,15 @@ function rowTitle(f) {
   padding: 3px 10px;
   font-size: 12px;
   min-height: 30px;
+}
+
+/* 窄屏抬到触控下限。同一行里的图标钮已经是 44，只有「进入」是 30，
+   既按不准也显得高度不齐。这条要写在这里而不是全局 app.css：
+   `.rowactions .btn` 特异性更高，全局那条压不住它。 */
+@media (max-width: 768px) {
+  .rowactions .btn {
+    min-height: 44px;
+  }
 }
 /* 不可激活的条目（锁定项、非加密文件、识别失败）降低对比并去掉指点光标 */
 .lrow.off,

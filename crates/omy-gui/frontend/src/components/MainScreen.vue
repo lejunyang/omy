@@ -36,8 +36,6 @@ import EntryCard from './EntryCard.vue';
  * 与桌面共用这一个组件，只换外壳（外壳本身在 AppShell 里）。
  * 复制成两个组件的话，列表渲染、搜索、进度、统计会分叉，修一边漏一边。
  */
-/** 移动端底部导航的当前页。 */
-const tab = ref('files');
 
 /** 移动端「选择模式」：已有选中项时，单击是加选而不是打开。 */
 const selectionActive = computed(() => state.selected.length > 0);
@@ -129,6 +127,7 @@ function onRowMenu(e, ev) {
     @add-place="$emit('add-place')"
     @telegram="$emit('telegram')"
     @places="$emit('places')"
+    @files="() => {}"
     @settings="$emit('settings')"
     @lock="$emit('lock')"
     @quick-unlock="$emit('quick-unlock')"
@@ -319,34 +318,6 @@ function onRowMenu(e, ev) {
        语言与主题原先各占一格，现在收进设置页的「通用」第一组——
        它们原本一点就切换，若收进去还要点两层才够到就是退步，
        所以在设置里放在最上面。 -->
-  <nav v-if="isMobile" class="pnav">
-    <button
-      class="pnavi"
-      :class="{ on: tab === 'files' }"
-      @click="tab = 'files'"
-    >
-      <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
-    </button>
-    <button
-      class="pnavi"
-      :class="{ on: tab === 'remote' }"
-      @click="tab = 'remote'; $emit('places')"
-    >
-      <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
-    </button>
-    <button
-      class="pnavi"
-      :class="{ on: tab === 'devices' }"
-      @click="tab = 'devices'; $emit('devices')"
-    >
-      <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
-      <span v-if="state.pairedCount" class="ndot"></span>
-    </button>
-    <button class="pnavi" @click="$emit('settings')">
-      <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
-    </button>
-  </nav>
-
   <!-- 提示条：成功提示会自动消失，错误留到用户主动关掉。
        错误若也自动消失就等于没报错——用户可能正低头看别处 -->
   <div v-if="state.error || state.notice" class="toast" :class="{ err: !!state.error }">

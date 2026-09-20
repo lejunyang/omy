@@ -240,4 +240,13 @@ select {
   opacity: 0.5;
   cursor: default;
 }
+
+/* 窄屏把按钮抬到触控下限。写在组件自己的 scoped 样式里：
+   scoped 会附加 [data-v-*]，特异性高于 app.css 的全局 `.btn`，
+   全局那条压不住——表现是规则写了但按钮仍是 36px。 */
+@media (max-width: 768px) {
+  .btn {
+    min-height: 44px;
+  }
+}
 </style>

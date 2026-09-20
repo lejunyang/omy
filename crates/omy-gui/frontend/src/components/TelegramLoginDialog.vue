@@ -759,4 +759,15 @@ input[type='password'] {
   opacity: 0.5;
   cursor: default;
 }
+
+/* 窄屏把按钮抬到触控下限。
+   这里必须写在组件自己的 scoped 样式里：scoped 会附加 [data-v-*]
+   属性选择器，特异性高于 app.css 里的全局 `.btn`，
+   全局那条压不住它——表现是「规则写了但按钮还是 36px」。 */
+@media (max-width: 768px) {
+  .btn,
+  .qrbtn {
+    min-height: 44px;
+  }
+}
 </style>

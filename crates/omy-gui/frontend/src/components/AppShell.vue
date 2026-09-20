@@ -33,7 +33,7 @@ defineProps({
 
 const emit = defineEmits([
   'pick', 'devices', 'lang', 'add-place', 'telegram', 'places',
-  'settings', 'lock', 'quick-unlock',
+  'settings', 'lock', 'quick-unlock', 'files',
 ]);
 
 /** 移动端抽屉是否展开。280px 宽度放不下侧栏 + 网格。 */
@@ -160,4 +160,32 @@ function setView(v) {
 
     <slot />
   </div>
+
+  <!-- 移动端底部导航。放在外壳里而不是 MainScreen 里：
+       远程位置走的是另一个内容组件，底栏写在 MainScreen 中的话，
+       一进远程位置这四个入口就全没了——实测 pnav 从 4 变 0，
+       而设置里才有缓存管理，用户在远程位置里根本够不到。 -->
+  <nav v-if="isMobile" class="pnav">
+    <button
+      class="pnavi"
+      :class="{ on: !state.placeBrowserOpen }"
+      @click="emit('files')"
+    >
+      <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
+    </button>
+    <button
+      class="pnavi"
+      :class="{ on: state.placeBrowserOpen }"
+      @click="emit('places')"
+    >
+      <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+    </button>
+    <button class="pnavi" @click="emit('devices')">
+      <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
+      <span v-if="state.pairedCount" class="ndot"></span>
+    </button>
+    <button class="pnavi" @click="emit('settings')">
+      <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
+    </button>
+  </nav>
 </template>
