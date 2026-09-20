@@ -62,8 +62,7 @@ import {
 // 而且一旦事件名与原生事件撞上就会出问题
 const emit = defineEmits([
   'open', 'add', 'close', 'pick', 'devices', 'lang',
-  'telegram', 'settings', 'lock', 'quick-unlock',
-]);
+  'telegram', 'settings', 'lock', 'quick-unlock', 'need-unlock',]);
 
 /** 当前位置元信息。 */
 const currentPlace = computed(() =>
@@ -275,9 +274,17 @@ function activate(f) {
     enterRemoteDir(f.id, displayName(f));
     return;
   }
-  // 未解锁的 omy 打不开（本来就没有密码），其余都交给父组件预览：
-  // 普通文件走原始字节转发，已解锁的 omy 走解密
-  if (f.is_encrypted && !f.unlocked) return;
+  // 锁着的 omy：弹解锁框，而不是什么都不做。
+  //
+  // 原先这里直接 return，注释说「本来就没有密码」——那是首期只做浏览
+  // 点播时的前提，现在远程位置已经有完整的解锁通道了。静默 return 的
+  // 表现是**双击一个带锁标记的文件毫无反应，连错误都没有**，用户只能
+  // 猜是不是坏了；而本地视图在同样情形下是弹框问密码的，两边不一致。
+  if (f.is_encrypted && !f.unlocked) {
+    emit('need-unlock');
+    return;
+  }
+  // 其余都交给父组件预览：普通文件走原始字节转发，已解锁的 omy 走解密
   emit('open', f);
 }
 
@@ -485,7 +492,9 @@ function activatable(f) {
   // 连带影响右键菜单：menuable() 要求 activatable()，所以之前
   // 每一个条目的菜单都被提前拦掉，代码里有 @contextmenu 却什么都不做。
   if (f.is_dir || f.probe_failed) return true;
-  if (f.is_encrypted) return f.unlocked;
+  // 锁着的 omy 也算可激活：点它会弹解锁框。
+  // 若仍返回 false，卡片会带上 off 样式且右键菜单被 menuable() 拦掉，
+  // 用户连「这东西能交互」都看不出来
   return true;
 }
 

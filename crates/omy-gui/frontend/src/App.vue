@@ -685,6 +685,19 @@ function onOpenRemote(f) {
   if (f.unlocked) remotePreview.value = f;
 }
 
+/** 在云盘位置里双击了一个锁着的 omy 文件：弹解锁框。
+ *
+ * 复用本地那一套 UnlockDialog，不另做一个。走 tryUnlock 而不是
+ * tryUnlockRemote——后者是给局域网对端视图用的，云盘位置由
+ * tryUnlock 内部分流到 tryUnlockRemotePlace。
+ */
+function onRemotePlaceUnlock() {
+  unlockForRemote.value = false;
+  unlockError.value = '';
+  refreshDeviceKey();
+  showUnlock.value = true;
+}
+
 /** 在远端视图里点「试密码」。 */
 function onRemoteUnlock() {
   unlockForRemote.value = true;
@@ -838,6 +851,7 @@ onBeforeUnmount(() => {
        与局域网对端 RemoteScreen 互斥，二者都不在时才是本地文件。 -->
   <PlaceBrowser
     v-else-if="state.placeBrowserOpen"
+    @need-unlock="onRemotePlaceUnlock"
     @open="onOpenPlace"
     @add="showAddPlace = true"
     @close="onClosePlaceBrowser"
