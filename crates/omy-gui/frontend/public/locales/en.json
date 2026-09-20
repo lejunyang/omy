@@ -718,7 +718,8 @@
     "tdata_shared": "After importing, omy shares a single sign-in session with the desktop app: signing out there ends it here too.",
     "tdata_import": "Import and connect",
     "tdata_importing": "Importing…",
-    "tdata_use_qr": "Use a QR code instead"
+    "tdata_use_qr": "Use a QR code instead",
+    "proxy_auto": "Filled in from this machine’s proxy settings. Use as is, or change it."
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",

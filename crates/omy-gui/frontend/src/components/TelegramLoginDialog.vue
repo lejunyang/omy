@@ -52,8 +52,11 @@ const errDetail = ref('');
 const sessionSaved = ref(true);
 /** 这台机器能不能保存登录态。扫码**之前**就要知道。 */
 const canPersist = ref(true);
-/** 代理地址。 */
+/** 代理地址。默认值由后端给：已有位置的代理 > 系统代理 > 空。 */
 const proxyUrl = ref('');
+/** 默认值是不是自动填的——是的话在输入框下方说明来源，
+ *  否则用户会疑惑这个地址哪来的、该不该改。 */
+const proxyAuto = ref(false);
 /** 已经点过开始了吗（决定显示前置说明还是登录过程）。 */
 const started = ref(false);
 /** 本机已经有可用的登录态吗。
@@ -301,6 +304,17 @@ async function cancel() {
 onMounted(async () => {
   unlisten = await api.onTelegramLogin(onPhase);
   try {
+    // 先填默认代理再做别的：用户打开对话框第一眼就该看到它，
+    // 而不是在连接失败之后才被告知「你需要配代理」
+    const p = await api.telegramSuggestProxy();
+    if (p) {
+      proxyUrl.value = p;
+      proxyAuto.value = true;
+    }
+  } catch {
+    // 探测失败不影响登录，回落到手工填
+  }
+  try {
     canPersist.value = await api.telegramCanPersist();
   } catch {
     // 问不到就按能存处理：这只影响一句提示，不影响能不能登录
@@ -367,12 +381,16 @@ onBeforeUnmount(() => {
           <span class="fl">{{ i18n.t('tg.proxy') }}</span>
           <input
             v-model="proxyUrl"
+            @input="proxyAuto = false"
             data-tg="proxy"
             type="text"
             placeholder="socks5://127.0.0.1:7897"
             spellcheck="false"
             @keydown.enter="start"
           />
+          <span v-if="proxyAuto" class="d auto" data-tg="proxy-auto">
+            {{ i18n.t('tg.proxy_auto') }}
+          </span>
           <span class="d">{{ i18n.t('tg.proxy_desc') }}</span>
         </label>
 

@@ -305,6 +305,18 @@ impl PlaceRegistry {
         }
     }
 
+    /// 已有 Telegram 位置用的代理地址（任取一个）。
+    ///
+    /// 新建登录拿它当默认值：用户已经用这个地址连通过一次，比系统代理更
+    /// 可信。没有 Telegram 位置或那个位置没配代理时返回 `None`。
+    #[must_use]
+    pub fn telegram_proxy(&self) -> Option<String> {
+        let m = self.places.lock().ok()?;
+        m.values()
+            .find(|p| p.kind == "telegram" && p.proxy.is_some())
+            .and_then(|p| p.proxy.clone())
+    }
+
     /// 列出全部位置，顺序稳定。
     #[must_use]
     pub fn list(&self) -> Vec<PlaceInfo> {

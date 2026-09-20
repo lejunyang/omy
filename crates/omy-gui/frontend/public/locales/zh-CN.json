@@ -718,7 +718,8 @@
     "tdata_shared": "导入后与桌面端共用同一份登录会话：桌面端登出时，omy 这边会一并失效。",
     "tdata_import": "导入并连接",
     "tdata_importing": "正在导入…",
-    "tdata_use_qr": "改用扫码"
+    "tdata_use_qr": "改用扫码",
+    "proxy_auto": "已按本机的代理设置自动填好，可以直接用，也可以改。"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

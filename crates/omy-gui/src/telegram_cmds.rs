@@ -225,6 +225,33 @@ pub type SharedLogin = Arc<LoginTask>;
 ///
 /// 界面要在**开始扫码之前**问它：答案为否时先告诉用户「这台机器上登录态存不住，
 /// 每次启动都要重新扫一次」，而不是等他扫完了才说。
+/// 给代理输入框一个**有依据的默认值**，而不是让用户对着空框猜。
+///
+/// # 为什么需要
+///
+/// 实测过一个让人困惑的组合：用户开了 Clash「全局代理」，已有的 Telegram
+/// 位置一切正常，但新建登录和 tdata 导入都报网络失败。原因是那类工具的
+/// 「全局」是系统代理设置 + 可能的 TUN，没开 TUN 时**不接管应用发起的裸
+/// TCP**，而 MTProto 正是裸 TCP；已有位置之所以能用，是因为它的配置里存着
+/// 之前填过的 socks5 地址，而新建那几条路传空就成了直连。
+///
+/// 三个来源按可信度排序：
+///
+/// 1. **已有 Telegram 位置的代理**——用户已经用它连通过一次，最可信；
+/// 2. **系统代理**——大概率是同一个混合端口，但也可能是个纯 HTTP 端口；
+/// 3. 都没有就返回空，由用户自己填。
+#[tauri::command]
+#[must_use]
+pub fn telegram_suggest_proxy(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+) -> String {
+    // 已有位置优先：它是被验证过能用的那一个
+    if let Some(p) = reg.telegram_proxy() {
+        return p;
+    }
+    proxy::detect_system_proxy().map(|p| p.as_str().to_string()).unwrap_or_default()
+}
+
 #[tauri::command]
 #[must_use]
 pub fn telegram_can_persist() -> bool {

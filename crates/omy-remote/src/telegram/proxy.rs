@@ -154,6 +154,124 @@ pub fn normalize(raw: &str) -> Result<Option<ProxyUrl>, ProxyError> {
     Ok(Some(ProxyUrl(out)))
 }
 
+/// 读系统代理设置，作为代理输入框的默认值。
+///
+/// # 为什么需要它
+///
+/// 用户常以为「开了全局代理」就等于程序能直连。实际上 Clash 那类工具的
+/// 「全局」是**系统代理设置 + 可能的 TUN**：没开 TUN 时它只接管遵循系统
+/// 代理的 HTTP 流量，**不接管应用自己发起的裸 TCP**——而 MTProto 正是裸
+/// TCP。于是会出现「浏览器能上网，omy 却连不上 Telegram」。
+///
+/// 把系统代理读出来当默认值，用户就不必对着一个空输入框猜要填什么。
+///
+/// # 返回值
+///
+/// 已经过 [`normalize`]，所以拿到的一定是 grammers 能接受的 `socks5://`
+/// 形式。读不到、没开、或格式不合法时返回 `None`——**探测是便利而不是
+/// 前提**，失败只意味着回落到「要用户自己填」，不能让登录入口本身消失。
+///
+/// 非 Windows 平台目前一律返回 `None`：那些平台上代理配置的来源不统一
+/// （环境变量、GSettings、各发行版自己的机制），猜错比不猜更糟。
+#[must_use]
+pub fn detect_system_proxy() -> Option<ProxyUrl> {
+    #[cfg(target_os = "windows")]
+    {
+        let raw = windows_system_proxy()?;
+        // 系统代理里常见 `http=127.0.0.1:7897;https=...` 这种按协议分列的
+        // 写法，取第一段就够——同一个混合端口通常同时提供 SOCKS5
+        let first = raw.split(';').next().unwrap_or(&raw).trim().to_string();
+        let addr = first.split_once('=').map_or(first.as_str(), |(_, v)| v);
+        normalize(addr).ok().flatten()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// 从注册表读 Windows 的系统代理，未启用时返回 `None`。
+///
+/// 不引第三方 crate：要的只是两个值，而多一个依赖就多一份供应链面。
+#[cfg(target_os = "windows")]
+fn windows_system_proxy() -> Option<String> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    // winreg 的最小用法：这里只读 HKCU 下的两个值，手写 FFI 比引 crate 划算
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(
+            hkey: isize,
+            lpsubkey: *const u16,
+            lpvalue: *const u16,
+            dwflags: u32,
+            pdwtype: *mut u32,
+            pvdata: *mut core::ffi::c_void,
+            pcbdata: *mut u32,
+        ) -> i32;
+    }
+    const HKEY_CURRENT_USER: isize = -2_147_483_647_i32 as isize;
+    const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    const SUBKEY: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let sub = wide(SUBKEY);
+
+    // ProxyEnable：为 0 就是没开，这时 ProxyServer 里可能还留着旧值，
+    // 照用会把用户引到一个他已经关掉的代理上
+    let name = wide("ProxyEnable");
+    let mut val: u32 = 0;
+    let mut len: u32 = 4;
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            std::ptr::addr_of_mut!(val).cast(),
+            std::ptr::addr_of_mut!(len),
+        )
+    };
+    if rc != 0 || val == 0 {
+        return None;
+    }
+
+    let name = wide("ProxyServer");
+    let mut buf = [0u16; 512];
+    let mut len: u32 = u32::try_from(std::mem::size_of_val(&buf)).ok()?;
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            std::ptr::addr_of_mut!(len),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let chars = (len as usize / 2).saturating_sub(1);
+    let s: String = String::from_utf16_lossy(buf.get(..chars)?);
+    let s = s.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +282,35 @@ mod tests {
             .expect("应当有代理")
             .as_str()
             .to_string()
+    }
+
+    /// 系统代理探测的**输出契约**：要么没有，要么是 grammers 能用的形式。
+    ///
+    /// 不断言具体地址——它随机器而变，写死会让这个测试在别人机器上失败。
+    /// 断言的是「探测到的东西一定已经过 normalize」：如果哪天有人图省事
+    /// 直接把注册表里的 `http://127.0.0.1:7897` 返回出去，grammers 会在
+    /// 连接层拒收，而症状是「填了代理还是连不上」，指不到这里。
+    #[test]
+    fn detected_system_proxy_is_always_usable_by_grammers() {
+        let Some(p) = detect_system_proxy() else {
+            // 没开系统代理的机器上就是 None，这也是合法结果
+            return;
+        };
+        let s = p.as_str();
+        assert!(
+            s.starts_with("socks5://"),
+            "探测结果必须已归一化成 socks5://，实际 {s}"
+        );
+        // 端口必须在：grammers 对缺端口的地址会报一句指不到配置的错误
+        let hostport = s.trim_start_matches("socks5://");
+        let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
+        let (_, port) = hostport
+            .rsplit_once(':')
+            .unwrap_or_else(|| panic!("探测结果缺端口：{s}"));
+        assert!(
+            port.parse::<u16>().is_ok(),
+            "端口必须是合法 u16，实际 {port}"
+        );
     }
 
     /// `http://` 必须被改写成 `socks5://`，不能原样递下去。

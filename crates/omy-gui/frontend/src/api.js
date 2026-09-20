@@ -598,6 +598,13 @@ export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
  * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
 export const TG_PENDING_ACCOUNT = 'pending';
 
+/** 给代理输入框的默认值：已有 Telegram 位置的代理 > 系统代理 > 空。
+ *
+ * 不让用户对着空框猜。开了 Clash 那类「全局代理」的机器上尤其要紧——
+ * 它只接管系统代理层的流量，不接管 MTProto 那种裸 TCP，所以「我开了
+ * 全局代理」并不等于 omy 能直连，而这一点用户没有理由知道。 */
+export const telegramSuggestProxy = () => invoke('telegram_suggest_proxy');
+
 /** 这份登录态可用吗（判的是 auth key 在不在，不是文件在不在）。
  *
  * 多账号之后 session 按账号分别存放，所以必须指明问的是哪一份——
