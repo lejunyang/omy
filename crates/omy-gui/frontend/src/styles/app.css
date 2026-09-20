@@ -1605,6 +1605,12 @@ input {
     padding-inline: calc(var(--sp) * 2);
     font-size: 0;
     gap: 0;
+    /* 只留图标之后实测只有 18x26，几乎点不中——而它是远程位置里
+       **唯一**的解锁入口，点不中等于解不了锁。图标保持原样，
+       只把命中区撑到触控下限 */
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
   }
 
   .titlebar.mob .pill::first-letter {
@@ -1654,11 +1660,25 @@ input {
   }
 
   /* 触摸目标至少 44px：手指不是鼠标指针，28px 的图标按钮在手机上
-     几乎点不中，会被当成「这个按钮坏了」 */
+     几乎点不中，会被当成「这个按钮坏了」。
+     
+     .iconbtn / .crumbbtn 有显式 width/height，所以这里必须连 width
+     一起覆盖——只写 min-* 的话它们仍按 30px/26px 布局。 */
   .iconbtn,
   .crumbbtn {
-    min-width: 40px;
-    min-height: 40px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* 上传、添加这类小按钮实测只有 26px 高；
+     面包屑每一段都是跳目录的入口，实测只有 20px 高 */
+  .btn.small,
+  .crumbseg {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
 
   .sitem {
@@ -2199,6 +2219,16 @@ input {
 .seg button.on {
   background: var(--accent);
   color: #fff;
+}
+
+/* 窄屏把分段控件抬到触控下限。
+   这条必须放在 `.seg button` 之后：特异性相同的两条规则同分时后者胜，
+   写在前面那个 @media 里会被上面的 32px 压掉——CSS 不会报错，
+   只是安静地用了另一条。 */
+@media (max-width: 768px) {
+  .seg button {
+    min-height: 44px;
+  }
 }
 
 /* 提示条。服务端搜索那条用警告色：搜索词已经离开本机，
