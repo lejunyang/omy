@@ -61,7 +61,7 @@ import {
 // 碰巧也能冒泡，但看声明就不知道这个组件会发什么，
 // 而且一旦事件名与原生事件撞上就会出问题
 const emit = defineEmits([
-  'open', 'add', 'close', 'pick', 'devices', 'lang',
+  'open', 'close', 'pick', 'devices', 'lang',
   'telegram', 'settings', 'lock', 'quick-unlock', 'need-unlock',]);
 
 /** 当前位置元信息。 */
@@ -207,6 +207,15 @@ function fmtTime(unixSecs) {
  * 两者相等就说明纯文本消息被漏掉了。此前这个事实只存在于测试输出里。 */
 const messageWithFile = computed(
   () => state.remoteMessages.filter((m) => !!m.file_id).length,
+);
+
+/** 当前打开的是不是 Telegram 位置。
+ *
+ * 用来决定「目录」该显示成什么：Telegram 的根目录列出的是对话，
+ * 不是文件夹。与 hasLocalSession 同一个判据来源（位置的 kind）。
+ */
+const isTelegram = computed(
+  () => state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram',
 );
 
 /** 这个位置有没有「本机登录态」这回事。
@@ -463,7 +472,16 @@ function displayName(f) {
 
 /** 按真实文件名后缀给一个粗图标；识别不了就用通用文件图标。 */
 function icon(f) {
-  if (f.is_dir) return '📁';
+  if (f.is_dir) {
+    // Telegram 位置的根目录列出的**全是对话**，不是文件夹。
+    // 用 📁 会让人以为里面是目录结构，而它其实是一个群/频道/私聊。
+    //
+    // 判据是「在根目录且是目录」而不是某个类型字段：Telegram 的目录层级
+    // 只有「对话 -> 消息」两级，根目录下不存在真正的文件夹。若将来这一点
+    // 变了，这里要跟着改
+    if (isTelegram.value && !state.remoteDir) return '💬';
+    return '📁';
+  }
   if (f.probing || isRetrying(f)) return '⏳';
   if (f.probe_failed) return '⚠️';
   if (f.is_encrypted && !f.unlocked) return '🔒';
@@ -649,9 +667,6 @@ function rowTitle(f) {
           @click="doUpload"
         >
           {{ uploading ? i18n.t('rplace.uploading') : '⬆️ ' + i18n.t('rplace.upload') }}
-        </button>
-        <button class="btn small" data-pb="add" @click="$emit('add')">
-          ＋ {{ i18n.t('rplace.add_short') }}
         </button>
       </div>
     </div>
@@ -915,7 +930,10 @@ function rowTitle(f) {
             </div>
             <div class="cname">{{ displayName(f) }}</div>
             <div class="cmeta">
-              <template v-if="f.is_dir">📁</template>
+              <!-- 目录这里留空：缩略图区已经有图标了，再放一个 📁 等于把同
+                   一件事说两遍（实测卡片文本是「📁omytest📁」）。而且这一行
+                   对文件显示的是大小，对目录塞图标会让两种条目的信息层次错位 -->
+              <template v-if="f.is_dir"></template>
               <template v-else-if="f.probing || isRetrying(f)">{{ i18n.t('rplace.probing') }}</template>
               <template v-else-if="f.probe_failed">
                 <span class="retryhint">{{ i18n.t('rplace.probe_failed_hint') }}</span>

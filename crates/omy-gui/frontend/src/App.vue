@@ -853,7 +853,6 @@ onBeforeUnmount(() => {
     v-else-if="state.placeBrowserOpen"
     @need-unlock="onRemotePlaceUnlock"
     @open="onOpenPlace"
-    @add="showAddPlace = true"
     @close="onClosePlaceBrowser"
     @pick="onPick"
     @devices="showDevices = true"
