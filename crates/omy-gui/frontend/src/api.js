@@ -569,11 +569,32 @@ export const remoteCacheRemoveFile = (placeId, path, size) =>
  */
 export const telegramCanPersist = () => invoke('telegram_can_persist');
 
-/** 已经有可用的登录态了吗（判的是 auth key 在不在，不是文件在不在）。 */
-export const telegramHasSession = () => invoke('telegram_has_session');
+/** 扫码登录时 session 的暂存账号名，必须与后端 `PENDING_ACCOUNT` 一致。
+ *
+ * 扫码**先于位置存在**：用户点「添加」时还没有位置 id，而 session 必须在
+ * 登录成功那一刻立刻落盘（中途任何失败都会让这次已在服务端生效的登录白费，
+ * 重新登录要再扫一次码、还可能撞 FLOOD_WAIT）。后端先落到这个固定名字下，
+ * 等位置建好再改名过去。
+ *
+ * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
+export const TG_PENDING_ACCOUNT = 'pending';
 
-/** 忘掉已保存的登录态（「退出 Telegram 账号」）。 */
-export const telegramForgetSession = () => invoke('telegram_forget_session');
+/** 这份登录态可用吗（判的是 auth key 在不在，不是文件在不在）。
+ *
+ * 多账号之后 session 按账号分别存放，所以必须指明问的是哪一份——
+ * 不分账号地问「有没有登录过」，会让加第二个账号时显示成已登录。 */
+export const telegramHasSession = (placeId) =>
+  invoke('telegram_has_session', { placeId });
+
+/** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
+ *
+ * 用的是 `delete_account` 而非 `detach`：用户点「退出」期望登录态真的没了，
+ * 而 detach 只摘位置、session 还在，下次打开会发现自己还登着。
+ *
+ * 登录对话框传 `TG_PENDING_ACCOUNT`（此时位置尚未创建），
+ * 命令里的 `reg.remove` 那一步对它是空操作。 */
+export const telegramForgetSession = (placeId) =>
+  invoke('telegram_place_delete_account', { placeId });
 
 /** 探测 tdata 导入的前提：客户端在不在跑、有没有自动找到 tdata。
  *

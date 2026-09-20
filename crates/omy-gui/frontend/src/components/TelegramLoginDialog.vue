@@ -275,7 +275,8 @@ async function submitPassword() {
 /** 退出 Telegram 账号：清掉本机保存的登录态。 */
 async function signOut() {
   try {
-    await api.telegramForgetSession();
+    // 这里退的是还没被位置接管的那份登录态（扫码先于位置存在）
+    await api.telegramForgetSession(api.TG_PENDING_ACCOUNT);
     hasSession.value = false;
   } catch (e) {
     errCode.value = api.errCode(e) || 'tg_forget_failed';
@@ -305,7 +306,7 @@ onMounted(async () => {
     // 问不到就按能存处理：这只影响一句提示，不影响能不能登录
   }
   try {
-    hasSession.value = await api.telegramHasSession();
+    hasSession.value = await api.telegramHasSession(api.TG_PENDING_ACCOUNT);
   } catch {
     // 问不到就当没有：多扫一次码总好过让用户以为已登录、然后处处失败
     hasSession.value = false;
