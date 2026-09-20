@@ -1856,8 +1856,20 @@ export const canServerSearch = computed(
  * 只有用户显式切到「搜索整个对话」时才会走到这里——这是把搜索词发出去的
  * 唯一路径，保持它唯一才好确认「发出去」和「告诉用户发出去了」是同步的。
  */
+/** 搜索请求的序号。
+ *
+ * 用于丢弃**已经作废的那一次**的结果。实测过一条竞态：切到「搜索整个
+ * 对话」会自动发起一次搜索，用户在请求飞行途中清空了输入框，清空逻辑
+ * 已经把提示条撤掉，可请求随后回来又把搜索词写了回去——警告条于是挂着
+ * 一个用户已经删掉的词。
+ *
+ * 与 `refreshRemoteDirCaps` 回写前校验位置与目录是同一种做法。 */
+let searchSeq = 0;
+
 export async function runServerSearch() {
   const q = state.query.trim();
+  searchSeq += 1;
+  const seq = searchSeq;
   if (!state.remotePlace || !q) {
     state.searchResults = [];
     state.searchedQuery = '';
@@ -1866,17 +1878,45 @@ export async function runServerSearch() {
   state.searching = true;
   state.placeError = '';
   try {
-    state.searchResults = await api.remoteSearch(state.remotePlace, state.remoteDir, q);
+    const rows = await api.remoteSearch(state.remotePlace, state.remoteDir, q);
+    // 结果回来时若已经不是最新那一次，整份丢弃：用户可能已经清空输入框
+    // 或又搜了别的词，写回去就是把界面拉回一个他已经离开的状态
+    if (seq !== searchSeq) return;
+    state.searchResults = rows;
     // 记下真正搜出去的那个词，而不是读 state.query——用户可能在请求飞行途中
     // 又改了输入框，那样提示条会显示一个其实没发出去的词
     state.searchedQuery = q;
   } catch (e) {
+    // 作废的请求失败了不该清当前状态，更不该弹一条属于旧请求的错误
+    if (seq !== searchSeq) return;
     state.searchResults = [];
     state.searchedQuery = '';
     state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
   } finally {
-    state.searching = false;
+    if (seq === searchSeq) state.searching = false;
   }
+}
+
+/** 输入框清空时，把「已经搜出去的那个词」一并作废。
+ *
+ * 不这样会怎样：实测过——输入 omy、服务端搜一次、再清空输入框，
+ * 那条「搜索词「omy」已发送到 Telegram 服务器」的警告仍挂着。
+ * 这条提示的作用是告诉用户**哪个词离开了本机**，停在一个他已经删掉的
+ * 词上，会让人以为清空动作又发了一次请求。隐私提示给错状态比不给更糟。
+ *
+ * 不在渲染条件里加 `state.query`：那样刚敲第一个字符警告就没了，
+ * 而那一刻上一次搜索的结果还在屏幕上摆着。 */
+export function onSearchQueryCleared(ev) {
+  // 读事件里的 DOM 值，不读 state.query：同一个元素上 v-model 与 @input
+  // 谁先跑不由我们决定，读响应式变量可能拿到上一轮的旧值。实测正是如此
+  // ——直接清空不生效，先敲一个字符再清空却生效，差别只在这个时序上。
+  // ev.target.value 在 input 触发时一定已是新值。
+  const v = ev?.target?.value ?? state.query;
+  if (String(v).trim()) return;
+  // 让飞行中的那次搜索作废，否则它回来会把刚撤掉的提示条又挂回去
+  searchSeq += 1;
+  state.searchResults = [];
+  state.searchedQuery = '';
 }
 
 /** 切换搜索模式。 */

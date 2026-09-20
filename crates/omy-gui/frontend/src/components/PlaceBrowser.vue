@@ -52,6 +52,7 @@ import {
   canServerSearch,
   setSearchMode,
   runServerSearch,
+  onSearchQueryCleared,
   canShowMessages,
   setRemoteViewMode,
 } from '../store.js';
@@ -719,6 +720,7 @@ function rowTitle(f) {
             data-tg="searchinput"
             :placeholder="i18n.t('view.search')"
             :aria-label="i18n.t('view.search')"
+            @input="onSearchQueryCleared($event)"
             @keydown.enter="state.searchMode === 'server' && runServerSearch()"
           />
           <!-- 文件 / 消息 切换。只在**对话内**且是 Telegram 时出现——
