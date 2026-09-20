@@ -231,25 +231,80 @@ pub fn telegram_can_persist() -> bool {
     tgsession::can_persist()
 }
 
-/// 已经有可用的登录态了吗。
+/// 某个**位置**有没有可用的登录态。
 ///
 /// 「有存档」不等于「能免登录」：一份没有 auth key 的存档看着一切正常，载入后
 /// 却仍是未登录。所以这里判的是 auth key 在不在，而不是文件在不在。
+///
+/// # 为什么必须带 place_id
+///
+/// 多账号之后「有没有登录态」不再是一个全局问题。不带位置去问的话，只要有
+/// **任意一个**账号登录过就会答「有」——那正是用户报的「点添加它也展示已登录」：
+/// 界面拿一个全局答案去决定新位置该显示什么，于是第二个账号永远走不到登录页。
 #[tauri::command]
 #[must_use]
-pub fn telegram_has_session() -> bool {
+pub fn telegram_has_session(place_id: String) -> bool {
     let app = AppId::builtin();
-    matches!(tgsession::load(&app), Ok(Some(s)) if tgsession::has_auth_key(&s))
+    matches!(tgsession::load(&app, &place_id), Ok(Some(s)) if tgsession::has_auth_key(&s))
 }
 
-/// 忘掉已保存的登录态（「退出 Telegram 账号」）。
+/// 「从列表移除」：只删位置配置，**保留 session 文件**。
+///
+/// # 为什么与「删除账号」分成两个命令
+///
+/// 两者的后果差得很远：这一条之后用户随时能把账号加回来、不必重新扫码；
+/// 另一条则意味着下次要重新扫码或重新导入 tdata。做成一个带 flag 的命令，
+/// 调用方少传一个参数就会静默走到破坏性更强的那一侧，而那个错误**不可撤销**。
+///
+/// 所以宁可多一个命令：命令名本身就说清了会发生什么。
 ///
 /// # Errors
 ///
-/// 删除失败时返回。文件本来就不存在算成功——用户要的是「别再留着」。
+/// 不返回错误：位置本来就不在也算达成目的（用户要的是「它别在列表里」）。
 #[tauri::command]
-pub fn telegram_forget_session() -> CmdResult<()> {
-    tgsession::forget().map_err(|e| CmdError::with("tg_forget_failed", detail(&e.to_string())))
+pub fn telegram_place_detach(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    place_id: String,
+) {
+    reg.remove(&place_id);
+    // 立刻落盘，否则删掉的位置重启后又回来了
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 保存远程位置失败：{e}");
+    }
+}
+
+/// 「删除账号（含本地登录态）」：位置配置与 session 文件一起删掉。
+///
+/// session 文件按 `omy-secret` 的既有做法**先覆写再删**（见
+/// `telegram::session::forget`），不是简单的 remove_file。
+///
+/// # 这一步不可撤销
+///
+/// 删完之后再想用这个账号，必须重新扫码或重新导入 tdata。界面上必须与
+/// 「从列表移除」明确区分开，并且要让用户看得出差别——这也正是后端把它们
+/// 分成两个命令的原因。
+///
+/// # 顺序：先摘位置，再删文件
+///
+/// 反过来的话，删文件与摘位置之间若出了岔子（进程被杀），会留下一个
+/// 指向不存在 session 的位置——用户点进去只会看到一句「还没有登录」，
+/// 而他明明记得自己登录过。
+///
+/// # Errors
+///
+/// session 文件删除失败时返回。位置**已经摘掉**，所以这个错误的含义是
+/// 「列表里没有了，但本机可能还留着登录态」——必须如实说，不能吞掉。
+#[tauri::command]
+pub fn telegram_place_delete_account(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    place_id: String,
+) -> CmdResult<()> {
+    reg.remove(&place_id);
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 保存远程位置失败：{e}");
+    }
+    tgsession::forget(&place_id)
+        .map_err(|e| CmdError::with("tg_forget_failed", detail(&e.to_string())))
 }
 
 /// tdata 导入的前提探测结果。
@@ -376,27 +431,38 @@ pub async fn telegram_tdata_import(
         .await
         .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
 
-    // 到这里才落盘：服务端已经认了，这份登录态确实能用
-    if let Err(e) = tgsession::save_current(&saved) {
+    // 默认位置名取服务端昵称；取不到就回落，不让它影响导入本身
+    let label = connect::account_label(&conn.client).await;
+
+    // **不再摘掉已有的 Telegram 位置。**
+    //
+    // 早先这里有一句「已有占位就先摘掉，否则侧栏会出现两个 Telegram」，
+    // 那基于「只会有一个账号」的前提。多账号之后两个位置正是**想要**的结果，
+    // 摘掉反而会让用户导入第二个账号时第一个凭空消失。
+    let store = TelegramStore::from_connection(conn.client, conn.runner);
+    let id = reg
+        .add_telegram(label, store, proxy.clone())
+        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
+
+    // 拿到位置 id 之后才落 session：文件名正是按它命名的。
+    //
+    // 顺序不能反——先落盘就得先编一个 id，那会让「session 文件叫什么」
+    // 有两个来源，迟早对不上，而现象是「导入成功但重启后要重新登录」。
+    //
+    // 这一步也让导入的账号**独立持有自己的 session 副本**：此后它与
+    // Telegram Desktop 再无关系，桌面端退出登录或删掉 tdata 都不影响它。
+    if let Err(e) = tgsession::save_current(&saved, &id) {
         // 存不住不该让整件事失败——本次会话里它是好的。
         // 但要说出来，否则用户会以为下次还在
         eprintln!("[omy] 保存 Telegram 登录态失败：{e}");
     }
 
-    // 已有占位就先摘掉，否则侧栏会出现两个 Telegram
-    if let Some(old) = reg.telegram_id() {
-        reg.remove(&old);
-    }
-
-    let store = TelegramStore::from_connection(conn.client, conn.runner);
-    let id = reg
-        .add_telegram(String::from("Telegram"), store, proxy.clone())
-        .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
     if let Err(e) = reg.persist() {
         eprintln!("[omy] 保存 Telegram 位置失败：{e}");
     }
     Ok(id)
 }
+
 
 /// 把 tdata 的错误映射成前端能分支的错误码。
 ///
@@ -415,7 +481,7 @@ fn tdata_code(e: &tdata::TdataError) -> &'static str {
     }
 }
 
-/// 连上 Telegram 并把它注册成一个远程位置，返回位置 id。
+/// 把**刚扫码登录成功**的那个账号注册成一个新的远程位置，返回位置 id。
 ///
 /// # 为什么连接发生在这里而不是注册表里
 ///
@@ -423,10 +489,14 @@ fn tdata_code(e: &tdata::TdataError) -> &'static str {
 /// 看起来是「登记一条记录」的同步操作变成能卡住界面的操作；放在命令层，
 /// 前端可以照常显示进行中状态。
 ///
-/// # 幂等
+/// # 每次调用都新建一个位置，**不再复用已有的**
 ///
-/// 已经连过就直接返回原来那个 id，不再建第二条连接。否则侧栏里会出现两个
-/// 一模一样的 Telegram，而它们背后是同一个账号——用户无从分辨该点哪个。
+/// 早先这里会先查「有没有 Telegram 位置」，有就直接返回那个 id。那基于
+/// 「一个 omy 只持有一份登录态」的前提，而它正是用户报的
+/// 「点添加它也展示已登录」的根因：第二个账号刚要添加就被换成了第一个。
+///
+/// 现在每次都建新位置。想避免把**同一个账号**加两遍，应当由调用方在登录
+/// 之前判断，而不是在这里把所有 Telegram 位置当成同一个。
 ///
 /// # Errors
 ///
@@ -437,19 +507,6 @@ pub async fn telegram_place_connect(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
     proxy_url: Option<String>,
 ) -> CmdResult<String> {
-    // 已经有了就复用，不重复建连
-    if let Some(id) = reg.telegram_id() {
-        // 但只有真的连上的那个才算数：从配置恢复出来的是个未连接占位，
-        // 直接返回它会让用户点进去看到「尚未登录」而不知所措
-        if let Some(p) = reg.get(&id) {
-            if telegram_store_connected(&p.store) {
-                return Ok(id);
-            }
-            // 占位要先摘掉，否则下面注册完会有两条
-            reg.remove(&id);
-        }
-    }
-
     let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
         Ok(p) => p.map(|p| p.to_string()),
         Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
@@ -457,9 +514,14 @@ pub async fn telegram_place_connect(
 
     let app = AppId::builtin();
     let device = DeviceInfo::current();
-    let conn = connect::connect_saved(&app, &device, proxy.as_deref())
+    // 扫码那条路把 session 落在 PENDING_ACCOUNT 下（那时还没有位置 id），
+    // 所以这里从它读回来
+    let conn = connect::connect_saved(&app, &device, proxy.as_deref(), tgsession::PENDING_ACCOUNT)
         .await
         .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+
+    // 默认位置名取服务端昵称，让两个账号在侧栏上一眼能分辨
+    let label = connect::account_label(&conn.client).await;
 
     // 把 runner 一并交给 store 接管。
     //
@@ -469,19 +531,55 @@ pub async fn telegram_place_connect(
     let store = TelegramStore::from_connection(conn.client, conn.runner);
 
     let id = reg
-        .add_telegram(String::from("Telegram"), store, proxy.clone())
+        .add_telegram(label, store, proxy.clone())
         .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
+
+    // 把待收编的那份 session 改名成这个位置自己的。
+    //
+    // 不做这一步的话，下次启动按位置 id 去找必然落空，用户要重新扫码——
+    // 而 pending 那份还躺在磁盘上，成了谁也不认领的孤儿。
+    if let Err(e) = tgsession::adopt_pending(&id) {
+        eprintln!("[omy] 收编 Telegram 登录态失败：{e}");
+    }
 
     // 落盘，否则「加过的位置重启就没了」而且不报错。
     //
-    // places.rs 的 persist 早就支持 Telegram 了，只是这里一直没调用——
-    // WebDAV 那条路径在 add / remove 时都调了，这条漏了。
     // 失败只记日志不报错：位置在本次会话里是好的，为了一个「下次还在不在」
     // 让本次直接失败不划算，而用户此刻要的是先能用。
     if let Err(e) = reg.persist() {
         eprintln!("[omy] 保存 Telegram 位置失败：{e}");
     }
     Ok(id)
+}
+
+/// 给一个远程位置改名。
+///
+/// **只改本地显示名，不碰服务端。** Telegram 上的昵称是账号自己的属性；
+/// 用户在 omy 里给位置起的名字只是本地标签，真去改服务端 profile
+/// 远超「给这个位置起个名」的预期。
+///
+/// # Errors
+///
+/// 位置不存在时返回——静默失败会让用户以为改好了，刷新后发现没变、
+/// 然后反复去试。
+#[tauri::command]
+pub fn telegram_place_rename(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    place_id: String,
+    name: String,
+) -> CmdResult<()> {
+    // 空名字会让侧栏出现一个点不到、也看不出是什么的条目
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(CmdError::code("remote_name_empty"));
+    }
+    if !reg.rename(&place_id, String::from(trimmed)) {
+        return Err(CmdError::code("remote_no_such_place"));
+    }
+    if let Err(e) = reg.persist() {
+        eprintln!("[omy] 保存远程位置失败：{e}");
+    }
+    Ok(())
 }
 
 /// 确保某个 Telegram 位置已连上；已经连上就什么都不做。
@@ -508,7 +606,10 @@ pub async fn ensure_connected(
     let proxy = p.proxy.clone();
     let app = AppId::builtin();
     let device = DeviceInfo::current();
-    let conn = connect::connect_saved(&app, &device, proxy.as_deref())
+    // **按这个位置自己的 session 重连。** 多账号下这一步不能含糊：
+    // 读错文件的表现是用户点开 A 账号却看到 B 账号的对话列表，
+    // 而两边都不会报错
+    let conn = connect::connect_saved(&app, &device, proxy.as_deref(), place_id)
         .await
         .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
     let store = TelegramStore::from_connection(conn.client, conn.runner);
@@ -771,8 +872,15 @@ async fn handle_password(
 /// 那种失败会在下次启动时才暴露，且现象是「会话被吊销」——完全指不到这里。
 async fn finish(app: &tauri::AppHandle, sess: &QrSession, appid: &AppId) {
     // 先存盘再做别的。这次登录在服务端已经生效，之后任何一步失败都会让它白费，
-    // 而重新登录要再扫一次码、还可能撞 FLOOD_WAIT
-    let saved = match tgsession::save(sess.session(), appid) {
+    // 而重新登录要再扫一次码、还可能撞 FLOOD_WAIT。
+    //
+    // 落在 PENDING_ACCOUNT 下而不是某个位置 id 下：此刻位置还不存在
+    // （建位置要先建连，而建连正是下一步 telegram_place_connect 做的事）。
+    // 等位置建好后由 adopt_pending 改名过去。
+    //
+    // 不能为了「有个 id」就在这里先编一个：那会让位置 id 有两个来源，
+    // 迟早对不上，而现象是「登录成功但重启后还要再登一次」。
+    let saved = match tgsession::save(sess.session(), appid, tgsession::PENDING_ACCOUNT) {
         Ok(path) => {
             // 只打目录不打文件名也没必要——这条日志里不含任何凭据，
             // 但也不需要把路径写出去

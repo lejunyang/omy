@@ -81,7 +81,14 @@ pub fn params(device: &DeviceInfo, proxy: Option<&str>) -> ConnectionParams {
     }
 }
 
-/// 用已保存的登录态连上去。
+/// 用**某个账号**已保存的登录态连上去。
+///
+/// `account` 是账号标识（产品里是位置 id，见 `places.rs`）。多账号之后这个
+/// 参数不能省：省了就只能去猜「哪一份 session」，而猜错的表现是用户点开
+/// A 账号却看到 B 账号的内容——两边都不报错。
+///
+/// 按账号找 session 只是一次**纯路径计算**，不额外碰网络，所以连接复用
+/// 那条性质（实测再连约 2ms）不受影响。
 ///
 /// # Errors
 ///
@@ -91,8 +98,9 @@ pub async fn connect_saved(
     app: &AppId,
     device: &DeviceInfo,
     proxy: Option<&str>,
+    account: &str,
 ) -> Result<Connection, ConnectError> {
-    let saved = session::load(app)?.ok_or(ConnectError::NoSession)?;
+    let saved = session::load(app, account)?.ok_or(ConnectError::NoSession)?;
     connect_with(&saved, app, device, proxy).await
 }
 
@@ -134,6 +142,37 @@ pub async fn connect_with(
         Ok(false) => Err(ConnectError::Unauthorized),
         Err(e) => Err(ConnectError::Connect(e.to_string())),
     }
+}
+
+/// 取一个适合当默认位置名的账号昵称。
+///
+/// 优先全名（first_name + last_name），其次 `@username`，都取不到就回落到
+/// 「Telegram」。
+///
+/// # 为什么回落而不是报错
+///
+/// 名字只是个本地标签。为了取不到昵称就让整次登录或 tdata 导入失败，
+/// 代价与收益完全不成比例——而那次登录在服务端已经生效了。
+///
+/// # 这只是默认值
+///
+/// 用户随时可以改（见 GUI 的 `telegram_place_rename`），且改名**只动本地
+/// 显示名、不碰服务端**。也正因为昵称可重复、可随时改，它只能当显示名，
+/// **不能**当 session 文件的账号标识——那个必须用稳定的位置 id。
+///
+/// 取不到时不打日志带出账号信息：昵称与 user id 都属于账号数据。
+pub async fn account_label(client: &Client) -> String {
+    let Ok(me) = client.get_me().await else {
+        return String::from("Telegram");
+    };
+    let full = me.full_name();
+    if !full.trim().is_empty() {
+        return full;
+    }
+    if let Some(u) = me.username().filter(|u| !u.is_empty()) {
+        return format!("@{u}");
+    }
+    String::from("Telegram")
 }
 
 #[cfg(test)]

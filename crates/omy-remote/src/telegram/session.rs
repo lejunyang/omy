@@ -33,6 +33,16 @@
 //! 见 [`SessionIdentity`]：session 与建立它的 api_id 绑定，换了 api_id 之后旧
 //! session 会被服务端拒绝。存着它才能在载入时就说清楚「是你改了 api_id」，
 //! 而不是让用户看到一句「登录已失效」去怀疑账号被盗。
+//!
+//! # 一个账号一个文件
+//!
+//! 文件名是 `telegram-session-<账号标识>.json`。账号标识由调用方给，产品里用
+//! **位置 id**（见 `places.rs`）——不是昵称：昵称可以重复、可以随时改，拿它当
+//! 文件名会让两个账号在改名后突然指向同一个文件。
+//!
+//! 曾经只有一个 `telegram-session.json`。升级上来的用户靠
+//! [`migrate_legacy_to`] 把它迁成第一个账号的文件，**不迁的话登录态直接丢**，
+//! 而现象是「升级完就要重新扫码」，用户会以为是被登出了。
 
 use std::path::{Path, PathBuf};
 
@@ -49,10 +59,20 @@ use crate::telegram::appid::{AppId, SessionIdentity, SessionMismatch};
 const SECRET_SERVICE: &str = "omy-telegram";
 
 /// 保护密钥在凭据库里的 id。
+///
+/// **所有账号共用这一把**。每个账号一条钥匙串记录的话，删账号时漏清就会在
+/// 用户的钥匙串里堆垃圾，而 Linux 的 Secret Service 对条目数也不友好——
+/// 这与 `places.rs` 对多个 WebDAV 位置只用一把密钥是同一条理由。
+/// 隔离由**文件名**保证，不靠密钥。
 const SECRET_KEY_ID: &str = "telegram-session-key-v1";
 
-/// 落盘文件名。
-const FILE_NAME: &str = "telegram-session.json";
+/// 旧的单账号落盘文件名。**只用于一次性迁移**，新代码不要再写它。
+const LEGACY_FILE_NAME: &str = "telegram-session.json";
+
+/// 每账号文件名的前缀与后缀。
+const FILE_PREFIX: &str = "telegram-session-";
+const FILE_SUFFIX: &str = ".json";
+
 
 /// 主数据中心的编号范围。
 ///
@@ -102,16 +122,61 @@ pub enum SessionError {
     /// 读不出内存里的 session 状态（锁中毒）。
     #[error("读取内存中的登录态失败：{0}")]
     Extract(String),
+    /// 账号标识不合法（空，或含会跑出数据目录的字符）。
+    #[error("账号标识不合法")]
+    BadAccount,
 }
 
-/// 登录态文件的完整路径。
+/// 校验账号标识能不能安全地拼进文件名。
+///
+/// # 为什么必须过这一道
+///
+/// 标识会被拼进文件名。不校验的话，一个形如 `../../x` 的标识会让 session
+/// **写到数据目录之外**；Windows 上 `a:b` 之类则会直接写失败。产品里标识是
+/// 我们自己生成的位置 id（`p1`、`p2`），但「现在的调用方很规矩」不足以成为
+/// 把未经校验的字符串拼进路径的理由。
+///
+/// 只放行 ASCII 字母数字、`-` 与 `_`；其余**拒绝**而不是替换成下划线——
+/// 替换会让 `a/b` 与 `a_b` 落到同一个文件，而那正是本模块最不能出的错：
+/// 两个账号写同一份 session。
+fn check_account(account: &str) -> Result<(), SessionError> {
+    if account.is_empty() {
+        return Err(SessionError::BadAccount);
+    }
+    if account
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        Ok(())
+    } else {
+        Err(SessionError::BadAccount)
+    }
+}
+
+/// 某个账号的登录态文件路径。
+///
+/// 这一步是**纯路径计算，不碰网络也不读盘**——多账号化之后「按账号找 session」
+/// 依然是零开销的，连接复用那条性质（实测再连约 2ms）不受影响。
+///
+/// # Errors
+///
+/// 标识不合法时返回 [`SessionError::BadAccount`]；算不出数据目录时返回
+/// [`SessionError::NoDataDir`]。
+pub fn session_path_of(account: &str) -> Result<PathBuf, SessionError> {
+    check_account(account)?;
+    omy_config::data_dir()
+        .map(|d| d.join(format!("{FILE_PREFIX}{account}{FILE_SUFFIX}")))
+        .ok_or(SessionError::NoDataDir)
+}
+
+/// 旧的单账号登录态文件路径。**只用于一次性迁移。**
 ///
 /// # Errors
 ///
 /// 算不出数据目录时返回 [`SessionError::NoDataDir`]。
-pub fn session_path() -> Result<PathBuf, SessionError> {
+pub fn legacy_session_path() -> Result<PathBuf, SessionError> {
     omy_config::data_dir()
-        .map(|d| d.join(FILE_NAME))
+        .map(|d| d.join(LEGACY_FILE_NAME))
         .ok_or(SessionError::NoDataDir)
 }
 
@@ -174,7 +239,7 @@ pub fn has_auth_key(saved: &SavedSession) -> bool {
     saved.dc_options.iter().any(|d| d.auth_key.is_some())
 }
 
-/// 落盘。
+/// 落盘到某个账号的文件。
 ///
 /// **登录一成功就该调用它**，而不是等整趟流程走完。中间任何一步失败
 /// （2FA 输错、用户关窗口、进程崩）都会让这次已经在服务端生效的登录白费——
@@ -182,14 +247,19 @@ pub fn has_auth_key(saved: &SavedSession) -> bool {
 ///
 /// # Errors
 ///
-/// 没有凭据库、算不出目录、加密或写盘失败时返回。**没有凭据库时不写明文**。
-pub fn save(session: &MemorySession, app: &AppId) -> Result<PathBuf, SessionError> {
+/// 没有凭据库、标识不合法、算不出目录、加密或写盘失败时返回。
+/// **没有凭据库时不写明文**。
+pub fn save(
+    session: &MemorySession,
+    app: &AppId,
+    account: &str,
+) -> Result<PathBuf, SessionError> {
     let saved = extract(session, app)?;
-    let path = session_path()?;
+    let path = session_path_of(account)?;
     save_to(&saved, &path)
 }
 
-/// 把一份现成的登录态落到**产品路径**。
+/// 把一份现成的登录态落到某个账号的**产品路径**。
 ///
 /// [`save`] 是从 `MemorySession` 抽取的，而 tdata 导入手里已经是
 /// [`SavedSession`]。用 [`save_to`] 也能写，但那要调用方自己算路径——
@@ -199,8 +269,8 @@ pub fn save(session: &MemorySession, app: &AppId) -> Result<PathBuf, SessionErro
 /// # Errors
 ///
 /// 同 [`save`]。
-pub fn save_current(saved: &SavedSession) -> Result<PathBuf, SessionError> {
-    let path = session_path()?;
+pub fn save_current(saved: &SavedSession, account: &str) -> Result<PathBuf, SessionError> {
+    let path = session_path_of(account)?;
     save_to(saved, &path)
 }
 
@@ -245,16 +315,16 @@ fn seal_and_write(
     Ok(path.to_path_buf())
 }
 
-/// 读回。
+/// 读回某个账号的登录态。
 ///
 /// 返回 `Ok(None)` 表示「没存过」——那是首次使用的正常状态，不是错误。
 /// 与「存了但解不开」必须分开：后者要提示用户重新登录，前者什么都不用说。
 ///
 /// # Errors
 ///
-/// 存档存在但解不开、格式不对、或 api_id 与当前不匹配时返回。
-pub fn load(app: &AppId) -> Result<Option<SavedSession>, SessionError> {
-    let path = session_path()?;
+/// 标识不合法、存档存在但解不开、格式不对、或 api_id 与当前不匹配时返回。
+pub fn load(app: &AppId, account: &str) -> Result<Option<SavedSession>, SessionError> {
+    let path = session_path_of(account)?;
     load_from(&path, app)
 }
 
@@ -308,20 +378,163 @@ pub async fn import_into(
     Ok(())
 }
 
-/// 删除已保存的登录态（用户「退出 Telegram 账号」时）。
+/// 安全删除某个账号的登录态（「删除账号（含本地登录态）」那条路）。
 ///
 /// 文件本来就不存在时算成功：用户要的是「别再留着」，而不是「删掉一个文件」。
 ///
+/// # 为什么要覆写而不是直接 remove_file
+///
+/// 文件里是 auth key 的密文信封。直接删只是摘掉目录项，内容仍在磁盘上，
+/// 而这个 crate 的整条规则就是「auth key 等同账号凭据」。覆写一遍再删，
+/// 与 `omy-core` 的 `TempPlaintext::shred` 是同一条做法。
+///
+/// **效力边界要说清**：SSD 的磨损均衡会让覆写落到别的物理块上，所以这
+/// 不是「不可恢复」的保证，只是把最容易被翻出来的那一份抹掉。真正的保障
+/// 仍然是信封加密 + 机器绑定的保护密钥。
+///
 /// # Errors
 ///
-/// 算不出目录或删除失败时返回。
-pub fn forget() -> Result<(), SessionError> {
-    let path = session_path()?;
-    match std::fs::remove_file(&path) {
+/// 标识不合法、算不出目录或删除失败时返回。覆写失败**不算失败**——
+/// 那时仍然会走删除，能删掉总好过因为覆写不了就把凭据留在盘上。
+pub fn forget(account: &str) -> Result<(), SessionError> {
+    let path = session_path_of(account)?;
+    shred_file(&path)
+}
+
+/// 覆写并删除一个文件；不存在算成功。
+fn shred_file(path: &Path) -> Result<(), SessionError> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() && m.len() > 0 => {
+            // 尽力覆写。失败不中断：删掉永远比留着强
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+                use std::io::Write as _;
+                let mut buf = [0u8; 4096];
+                omy_core::util::fill_random(&mut buf);
+                let mut left = m.len();
+                while left > 0 {
+                    let n = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+                    if f.write_all(buf.get(..n).unwrap_or(&buf)).is_err() {
+                        break;
+                    }
+                    left = left.saturating_sub(n as u64);
+                }
+                let _ = f.sync_all();
+            }
+        }
+        // 不存在就没什么可抹的；其余元信息错误交给下面的 remove 去报
+        _ => {}
+    }
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(SessionError::Io(e.to_string())),
     }
+}
+
+/// 把旧的单文件登录态迁成某个账号的文件。**一次性**。
+///
+/// 返回是否真的迁了（`false` 表示没有旧文件，或目标已存在）。
+///
+/// # 为什么必须有这一步
+///
+/// 旧版本只有一个 `telegram-session.json`。多文件化之后按账号去找必然落空，
+/// 于是升级上来的用户**登录态凭空消失**——现象是「更新完就要重新扫码」，
+/// 他会以为自己被登出了，甚至怀疑账号出了问题。
+///
+/// # 为什么是改名而不是复制
+///
+/// 复制会在磁盘上留下第二份 auth key 密文。改名是原子的，也不留残份。
+///
+/// # 目标已存在时不覆盖
+///
+/// 那说明这个账号已经有自己的 session 了（用户已经重新登录过）。用旧文件
+/// 盖掉它等于把一份更旧的登录态强加回去，可能已经失效。这种情况下**保留
+/// 两者、什么都不做**，把旧文件留在原地由用户或后续清理处置。
+///
+/// # Errors
+///
+/// 标识不合法、算不出目录、或改名失败时返回。
+pub fn migrate_legacy_to(account: &str) -> Result<bool, SessionError> {
+    let target = session_path_of(account)?;
+    let legacy = legacy_session_path()?;
+    migrate_between(&legacy, &target)
+}
+
+/// 迁移的实质逻辑，**路径由调用方给**。
+///
+/// # 为什么要把路径提出去
+///
+/// 产品路径写死在数据目录里，测试碰不到它——于是那两条最要紧的规则
+/// （「要真的迁过去」「不能覆盖已有的」）只能在测试里把判断重抄一遍，
+/// 而抄出来的那份**改坏产品代码也不会失败**。变异测试确认过这一点：
+/// 把「目标存在就不迁」整段删掉，重抄版断言照样通过。
+///
+/// 路径作为参数传进来之后，测试与产品走的就是同一份代码。
+///
+/// # Errors
+///
+/// 建目录或改名失败时返回。
+fn migrate_between(legacy: &Path, target: &Path) -> Result<bool, SessionError> {
+    if !legacy.is_file() {
+        return Ok(false);
+    }
+    if target.exists() {
+        // 已经有自己的 session，不拿旧的去盖
+        return Ok(false);
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| SessionError::Io(e.to_string()))?;
+    }
+    std::fs::rename(legacy, target).map_err(|e| SessionError::Io(e.to_string()))?;
+    Ok(true)
+}
+
+/// 还有没有遗留的单文件登录态待迁移。
+#[must_use]
+pub fn has_legacy_session() -> bool {
+    legacy_session_path().map(|p| p.is_file()).unwrap_or(false)
+}
+
+/// 「刚登录完、还没有位置」的那份登录态用的账号名。
+///
+/// # 为什么需要它
+///
+/// 扫码登录**先于**位置存在：用户点「添加」时还没有位置 id，而 session 必须
+/// 在登录成功那一刻立刻落盘（中途任何失败都会让这次已在服务端生效的登录白费，
+/// 重新登录要再扫一次码、还可能撞 `FLOOD_WAIT`）。
+///
+/// 所以先落到这个固定名字下，等位置建好再用 [`adopt_pending`] 改名过去。
+pub const PENDING_ACCOUNT: &str = "pending";
+
+/// 把 [`PENDING_ACCOUNT`] 那份登录态收编成某个账号的。
+///
+/// 返回是否真的收编了（`false` 表示没有待收编的文件）。
+///
+/// # 为什么是改名而不是复制
+///
+/// 复制会在磁盘上留下第二份 auth key 密文，而且那一份不属于任何位置、
+/// 谁也不会去清理它。改名是原子的，也不留残份。
+///
+/// # Errors
+///
+/// 标识不合法、算不出目录或改名失败时返回。
+pub fn adopt_pending(account: &str) -> Result<bool, SessionError> {
+    let target = session_path_of(account)?;
+    let pending = session_path_of(PENDING_ACCOUNT)?;
+    if !pending.is_file() {
+        return Ok(false);
+    }
+    // 目标已存在就先抹掉再改名：这条路径上「目标」是刚分配的新位置 id，
+    // 按理不该有文件；真有的话是上一次异常留下的残骸，留着只会让新账号
+    // 读到一份属于别人的 session
+    if target.exists() {
+        shred_file(&target)?;
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| SessionError::Io(e.to_string()))?;
+    }
+    std::fs::rename(&pending, &target).map_err(|e| SessionError::Io(e.to_string()))?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -351,6 +564,10 @@ mod tests {
         }
     }
 
+    /// 测试里用的文件名。产品路径由 `session_path_of` 算，这里只要一个
+    /// 落在临时目录里的名字。
+    const TEST_FILE: &str = "telegram-session-test.json";
+
     /// 落盘的文件里**绝不能**出现 auth key 的明文字节。
     ///
     /// 不这样会怎样：auth key 等同账号凭据，拿到它就能以这个账号发请求，
@@ -369,7 +586,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join("omy-tg-session-test-1");
         let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join(FILE_NAME);
+        let path = dir.join(TEST_FILE);
         save_to(&s, &path).expect("写盘");
 
         let bytes = std::fs::read(&path).expect("读回");
@@ -413,7 +630,7 @@ mod tests {
         let s = saved(2040);
         let dir = std::env::temp_dir().join("omy-tg-session-test-2");
         let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join(FILE_NAME);
+        let path = dir.join(TEST_FILE);
         save_to(&s, &path).expect("写盘");
 
         let back = match load_from(&path, &AppId::builtin()) {
@@ -460,7 +677,7 @@ mod tests {
         }
         let dir = std::env::temp_dir().join("omy-tg-session-test-3");
         let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join(FILE_NAME);
+        let path = dir.join(TEST_FILE);
         save_to(&saved(2040), &path).expect("写盘");
 
         let mine = AppId::custom(4242, "0123456789abcdef0123456789abcdef").expect("合法");
@@ -488,7 +705,7 @@ mod tests {
         let dir = std::env::temp_dir().join("omy-tg-session-test-4");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建目录");
-        let path = dir.join(FILE_NAME);
+        let path = dir.join(TEST_FILE);
         std::fs::write(&path, "这不是 JSON").expect("写坏文件");
 
         let Err(err) = load_from(&path, &AppId::builtin()) else {
@@ -529,7 +746,7 @@ mod tests {
     fn without_a_protector_it_refuses_to_write_rather_than_falling_back_to_plaintext() {
         let dir = std::env::temp_dir().join("omy-tg-session-test-5");
         let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join(FILE_NAME);
+        let path = dir.join(TEST_FILE);
 
         let Err(err) = seal_and_write(&saved(2040), &path, None) else {
             panic!("没有保护密钥时必须拒绝写盘");
@@ -552,14 +769,200 @@ mod tests {
     /// （别再留着登录态）其实已经达成了。
     #[test]
     fn forgetting_an_absent_session_succeeds() {
-        // 直接验 remove_file 的分支语义，不碰真实数据目录
         let path = std::env::temp_dir().join("omy-tg-session-absent-4f2a.json");
         let _ = std::fs::remove_file(&path);
-        let r = match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+        assert!(shred_file(&path).is_ok(), "删一个不存在的文件应当算成功");
+    }
+
+    /// **两个账号必须落到两个不同的文件。**
+    ///
+    /// 不这样会怎样：这是多账号改造里最致命、也最难被发现的回归——两个位置
+    /// 写同一份 session，后添加的那个会把前一个的 auth key 覆盖掉，于是
+    /// 「加了第二个账号，第一个就登出了」。而侧栏上两个位置都好端端列着，
+    /// 任何「两个位置都存在」的断言都照样通过。
+    ///
+    /// 所以这里比的是**路径本身**，不是「两个都在」。
+    #[test]
+    fn each_account_gets_its_own_file() {
+        let (Ok(a), Ok(b)) = (session_path_of("p1"), session_path_of("p2")) else {
+            eprintln!("跳过：这台机器算不出数据目录");
+            return;
         };
-        assert!(r.is_ok());
+        assert_ne!(a, b, "两个账号必须落到不同的 session 文件");
+        // 文件名里要真的带上账号标识，否则「不同」可能只是别的原因凑巧造成的
+        let name_a = a.file_name().map(|s| s.to_string_lossy().into_owned());
+        let name_b = b.file_name().map(|s| s.to_string_lossy().into_owned());
+        assert_eq!(name_a.as_deref(), Some("telegram-session-p1.json"));
+        assert_eq!(name_b.as_deref(), Some("telegram-session-p2.json"));
+        // 同一个账号每次都要算出同一个路径，否则重启后找不回自己的 session
+        assert_eq!(session_path_of("p1").ok(), Some(a), "同一账号的路径必须稳定");
+    }
+
+    /// 新的每账号文件名不能与旧的单文件名撞。
+    ///
+    /// 不这样会怎样：撞了的话迁移的源和目标会指向同一个文件，`rename` 要么
+    /// 失败要么变成空操作，而现象是「迁移跑过了但登录态还是丢」。
+    #[test]
+    fn per_account_name_never_equals_the_legacy_name() {
+        for acct in ["p1", "p2", "legacy", "0"] {
+            let Ok(p) = session_path_of(acct) else {
+                continue;
+            };
+            let name = p.file_name().map(|s| s.to_string_lossy().into_owned());
+            assert_ne!(
+                name.as_deref(),
+                Some(LEGACY_FILE_NAME),
+                "账号 {acct} 的文件名与旧单文件名撞了"
+            );
+        }
+    }
+
+    /// 账号标识里的危险字符必须被**拒绝**，而不是被替换。
+    ///
+    /// 不这样会怎样：`../../x` 会让 session 写到数据目录之外；而如果把非法
+    /// 字符替换成下划线，`a/b` 与 `a_b` 会落到同一个文件——那正是「两个账号
+    /// 共用一份 session」这条最致命的回归，只不过换了个入口。
+    #[test]
+    fn dangerous_account_ids_are_refused_not_sanitized() {
+        for bad in ["", "../x", "a/b", "a\\b", "a:b", "a.b", "有 空格", "p1/../p2"] {
+            assert!(
+                matches!(session_path_of(bad), Err(SessionError::BadAccount)),
+                "{bad:?} 必须被拒绝"
+            );
+        }
+        // 正常的位置 id 要放行，否则这条校验就成了「谁都不许用」
+        for ok in ["p1", "p12", "a-b", "a_b", "A1"] {
+            assert!(session_path_of(ok).is_ok(), "{ok:?} 是合法标识，不该被拒");
+        }
+    }
+
+    /// 旧的单文件必须能迁成第一个账号的文件，且**内容一字不差**。
+    ///
+    /// 不这样会怎样：升级上来的用户登录态凭空消失，现象是「更新完就要重新
+    /// 扫码」——他会以为自己被登出了，甚至怀疑账号被盗。
+    ///
+    /// 这条同时守住「迁过去的还能读回来」：只断言「目标文件存在」的话，
+    /// 一个把目标创建成空文件的实现也能通过，而那等于登录态还是丢了。
+    #[test]
+    fn the_legacy_single_file_migrates_into_the_first_account() {
+        if protect_key().is_none() {
+            eprintln!("跳过：当前环境没有可用的凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-session-migrate-1");
+        let _ = std::fs::remove_dir_all(&dir);
+        let legacy = dir.join(LEGACY_FILE_NAME);
+        let target = dir.join("telegram-session-p1.json");
+        save_to(&saved(2040), &legacy).expect("先写一份旧格式的");
+
+        // 调用**产品代码本身**，不在测试里重抄一遍判断
+        assert!(
+            migrate_between(&legacy, &target).expect("迁移不该报错"),
+            "有旧文件且目标为空时必须真的迁"
+        );
+
+        assert!(!legacy.exists(), "迁完不该再留着旧文件——那是第二份 auth key");
+        let back = match load_from(&target, &AppId::builtin()) {
+            Ok(Some(v)) => v,
+            Ok(None) => panic!("迁过去的文件必须读得出内容"),
+            Err(e) => panic!("迁过去的文件读不回来：{e}"),
+        };
+        assert!(
+            has_auth_key(&back),
+            "迁移后 auth key 必须还在，否则等于登录态丢了"
+        );
+        assert_eq!(back.home_dc, 2, "home_dc 也要原样带过去");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目标已经有 session 时，迁移**不能**覆盖它。
+    ///
+    /// 不这样会怎样：用户已经重新登录过，旧文件里那份可能早就失效了。
+    /// 拿它盖掉当前可用的登录态，等于把人从一个好账号里踢出去。
+    #[test]
+    fn migration_never_overwrites_an_existing_session() {
+        if protect_key().is_none() {
+            eprintln!("跳过：当前环境没有可用的凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-session-migrate-2");
+        let _ = std::fs::remove_dir_all(&dir);
+        let legacy = dir.join(LEGACY_FILE_NAME);
+        let target = dir.join("telegram-session-p1.json");
+        save_to(&saved(2040), &legacy).expect("旧文件");
+        let mut newer = saved(2040);
+        newer.home_dc = 4;
+        save_to(&newer, &target).expect("目标已有 session");
+
+        // 调用**产品代码本身**：目标已存在时必须原地不动
+        assert!(
+            !migrate_between(&legacy, &target).expect("不该报错"),
+            "目标已存在时必须不迁移"
+        );
+        assert!(legacy.is_file(), "旧文件应当原样留在原地");
+
+        let back = match load_from(&target, &AppId::builtin()) {
+            Ok(Some(v)) => v,
+            _ => panic!("目标文件应当还在"),
+        };
+        assert_eq!(back.home_dc, 4, "目标里那份必须原封不动，不能被旧文件盖掉");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 删一个账号不能动到另一个账号的文件。
+    ///
+    /// 不这样会怎样：用户删掉账号 B，结果账号 A 也要重新登录——而他完全
+    /// 不知道为什么，只会觉得这个功能不能碰。
+    #[test]
+    fn deleting_one_account_leaves_the_other_intact() {
+        if protect_key().is_none() {
+            eprintln!("跳过：当前环境没有可用的凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-session-two-accounts");
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("telegram-session-p1.json");
+        let b = dir.join("telegram-session-p2.json");
+        save_to(&saved(2040), &a).expect("写 A");
+        let mut other = saved(2040);
+        other.home_dc = 5;
+        save_to(&other, &b).expect("写 B");
+
+        shred_file(&a).expect("删 A");
+
+        assert!(!a.exists(), "A 必须被删掉");
+        assert!(b.is_file(), "B 不能被连带删掉");
+        let back = match load_from(&b, &AppId::builtin()) {
+            Ok(Some(v)) => v,
+            _ => panic!("B 应当仍然可读"),
+        };
+        assert_eq!(back.home_dc, 5, "B 的内容必须原封不动");
+        assert!(has_auth_key(&back), "B 的 auth key 必须还在");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 安全删除要真的把文件删掉。
+    ///
+    /// 不这样会怎样：直接 remove_file 只摘掉目录项，auth key 的密文仍躺在
+    /// 原来的扇区里。覆写不是「不可恢复」的保证（SSD 磨损均衡会让它落到
+    /// 别的物理块），但至少不把最容易被翻出来的那一份留在那儿。
+    #[test]
+    fn shredding_removes_the_file() {
+        let dir = std::env::temp_dir().join("omy-tg-session-shred");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("telegram-session-p9.json");
+        // 内容用算式生成而不是长串重复字节：后者会让本机安全软件把测试
+        // 二进制删掉（AGENTS.md 记过这一条）
+        let marker: Vec<u8> = (0..512).map(|i| ((i % 251) as u8) ^ 0x5B).collect();
+        std::fs::write(&path, &marker).expect("写文件");
+
+        shred_file(&path).expect("安全删除");
+        assert!(!path.exists(), "删完文件不该还在");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

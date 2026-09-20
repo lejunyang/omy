@@ -98,6 +98,29 @@ pub fn run() {
         if n > 0 {
             eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");
         }
+        // 旧版本的单文件 Telegram 登录态迁成「第一个 Telegram 位置」的。
+        //
+        // 必须在 restore 之后：要先知道第一个 Telegram 位置的 id 是什么，
+        // 而 session 文件正是按那个 id 命名的。
+        //
+        // 不迁的话，升级上来的用户按新规则去找必然落空——现象是「更新完
+        // 就要重新扫码」，他会以为自己被登出了，甚至怀疑账号出了问题。
+        // 迁移只在旧文件确实存在时才动，且不覆盖已有的（见 migrate_legacy_to）。
+        if omy_remote::telegram::session::has_legacy_session() {
+            match place_registry.telegram_ids().first() {
+                Some(first) => match omy_remote::telegram::session::migrate_legacy_to(first) {
+                    Ok(true) => eprintln!("[omy] 已把旧版 Telegram 登录态迁移到第一个账号"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[omy] 迁移旧版 Telegram 登录态失败：{e}"),
+                },
+                // 有旧登录态却没有任何 Telegram 位置：配置与数据目录不同步
+                // （比如用户手工删过配置）。留着文件不动，也不报错——
+                // 用户重新添加账号时会走正常的登录流程
+                None => {
+                    eprintln!("[omy] 检测到旧版 Telegram 登录态，但没有对应的位置，暂不迁移");
+                }
+            }
+        }
     }
     // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
     // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
@@ -248,7 +271,9 @@ pub fn run() {
             place_cmds::remote_cache_remove_file,
             telegram_cmds::telegram_can_persist,
             telegram_cmds::telegram_has_session,
-            telegram_cmds::telegram_forget_session,
+            telegram_cmds::telegram_place_detach,
+            telegram_cmds::telegram_place_delete_account,
+            telegram_cmds::telegram_place_rename,
             telegram_cmds::telegram_tdata_probe,
             telegram_cmds::telegram_tdata_check,
             telegram_cmds::telegram_tdata_import,

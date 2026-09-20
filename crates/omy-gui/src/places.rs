@@ -70,6 +70,18 @@ pub struct PlaceRegistry {
     ///
     /// HashMap 的遍历顺序每次都不同，直接用它会让侧栏的位置顺序乱跳。
     order: Mutex<Vec<String>>,
+    /// 下一个位置 id 的序号。**只增不减。**
+    ///
+    /// 不用 `order.len() + 1` 算：那在「加两个 → 删第一个 → 再加一个」之后
+    /// 会重新发出一个已经用过的 id。而 session 文件按位置 id 命名，
+    /// 重发意味着新账号会读到（或覆盖掉）上一个账号的登录态——
+    /// 现象是「加了个新账号，点进去却是刚移除那个人的对话」，
+    /// 或者「加了新账号，另一个账号莫名其妙要重新登录」，两边都不报错。
+    ///
+    /// 做成计数器而不是「扫一遍看哪个没被占用」，是因为「没被占用」
+    /// 依赖当下的内存与磁盘状态，而那两者都可能刚好为空；
+    /// 单调递增则不依赖任何外部事实。
+    next_seq: Mutex<usize>,
 }
 
 impl PlaceRegistry {
@@ -77,6 +89,63 @@ impl PlaceRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 分配一个**从未被用过**的位置 id。
+    ///
+    /// # 为什么不能用 `format!("p{}", len + 1)`
+    ///
+    /// 那种写法在「加两个 → 删第一个 → 再加一个」之后会重新发出 `p2`：
+    /// 删完只剩一个，`len + 1` 又算回 2。撞 id 在多账号下是**致命**的——
+    /// session 文件按位置 id 命名，两个位置拿到同一个 id 就会写同一份
+    /// session，后来的那个把前一个的 auth key 覆盖掉，于是「加了新账号，
+    /// 旧账号却登出了」；而侧栏上两个位置都好端端列着，不会有任何报错。
+    ///
+    /// # 为什么还要额外避开残留的 session 文件
+    ///
+    /// 「从列表移除」会**保留 session 文件**（那正是它与「删除账号」的区别），
+    /// 磁盘上于是留下一个不属于任何位置的 `telegram-session-pN.json`。
+    /// 计数器在同一次运行内不会退回去，但**重启后**它是从配置里的 id 推出来的，
+    /// 而那个被移除的位置已经不在配置里了——于是新账号可能拿到那个 N，
+    /// 然后读到上一个账号的登录态。所以两道都要有：计数器管进程内，
+    /// 文件检查管跨重启。
+    fn next_id(&self, taken: &HashMap<String, Arc<Place>>) -> String {
+        let Ok(mut seq) = self.next_seq.lock() else {
+            // 锁中毒时退回一个几乎不可能撞的名字，而不是硬塞一个可能重复的
+            // ——宁可 id 难看，也不能让两个账号共用一份 session
+            return format!("p{}", taken.len().saturating_add(1_000_000));
+        };
+        loop {
+            *seq = seq.saturating_add(1);
+            let candidate = format!("p{seq}");
+            if taken.contains_key(&candidate) {
+                continue;
+            }
+            // 残留的 session 文件同样算占用，理由见上
+            let has_session = omy_remote::telegram::session::session_path_of(&candidate)
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            if !has_session {
+                return candidate;
+            }
+        }
+    }
+
+    /// 把序号推到至少 `n`，保证之后发出的 id 都大于它。
+    ///
+    /// 恢复配置时用：配置里已经有 `p7` 的话，这次运行必须从 8 开始发，
+    /// 否则新位置会撞上一个已经存在、且可能还带着 session 文件的 id。
+    fn bump_seq_to(&self, n: usize) {
+        if let Ok(mut seq) = self.next_seq.lock() {
+            if *seq < n {
+                *seq = n;
+            }
+        }
+    }
+
+    /// 从一个位置 id 里取出序号（`p7` → 7）。认不出就返回 `None`。
+    fn seq_of(id: &str) -> Option<usize> {
+        id.strip_prefix('p').and_then(|n| n.parse().ok())
     }
 
     /// 添加一个 WebDAV 位置，返回其 id。
@@ -88,12 +157,10 @@ impl PlaceRegistry {
         let store = Arc::new(PlaceStore::from(WebDavStore::new(cfg)?));
         // id 用递增序号而非名字：名字可以重复，也可以带斜杠之类
         // 会破坏后续拼接的字符
-        let id = {
-            let Ok(o) = self.order.lock() else {
-                return Err(omy_remote::Error::Protocol(String::from("注册表锁失效")));
-            };
-            format!("p{}", o.len() + 1)
+        let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) else {
+            return Err(omy_remote::Error::Protocol(String::from("注册表锁失效")));
         };
+        let id = self.next_id(&m);
         let place = Arc::new(Place {
             id: id.clone(),
             name,
@@ -103,10 +170,8 @@ impl PlaceRegistry {
             proxy: None,
             store,
         });
-        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
-            m.insert(id.clone(), place);
-            o.push(id.clone());
-        }
+        m.insert(id.clone(), place);
+        o.push(id.clone());
         Ok(id)
     }
 
@@ -115,6 +180,9 @@ impl PlaceRegistry {
     /// `store` 由调用方建好（它需要一个已连接的客户端，而建连要走网络、
     /// 属于命令层的事）。注册表只管登记，不碰网络——把建连放进来会让
     /// 「添加一个位置」这个同步操作变成可能卡几十秒的操作。
+    ///
+    /// **可以调用多次**：每次都是一个独立账号，各自拿到自己的 id，
+    /// 也就各自对应一份自己的 session 文件。
     ///
     /// # Errors
     ///
@@ -126,12 +194,10 @@ impl PlaceRegistry {
         proxy: Option<String>,
     ) -> omy_remote::Result<String> {
         let store = Arc::new(PlaceStore::from(store));
-        let id = {
-            let Ok(o) = self.order.lock() else {
-                return Err(omy_remote::Error::Protocol(String::from("注册表锁失效")));
-            };
-            format!("p{}", o.len() + 1)
+        let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) else {
+            return Err(omy_remote::Error::Protocol(String::from("注册表锁失效")));
         };
+        let id = self.next_id(&m);
         let place = Arc::new(Place {
             id: id.clone(),
             name,
@@ -139,10 +205,8 @@ impl PlaceRegistry {
             proxy,
             store,
         });
-        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
-            m.insert(id.clone(), place);
-            o.push(id.clone());
-        }
+        m.insert(id.clone(), place);
+        o.push(id.clone());
         Ok(id)
     }
 
@@ -173,21 +237,57 @@ impl PlaceRegistry {
         }
     }
 
-    /// 已注册的 Telegram 位置 id（若有）。
+    /// 已注册的**全部** Telegram 位置 id，按注册顺序。
     ///
-    /// 只会有一个：一个 omy 同时只持有一份 Telegram 登录态。查它是为了避免
-    /// 重复添加——重复添加的表现是侧栏里出现两个一模一样的 Telegram，
-    /// 而它们背后其实是同一个账号。
+    /// # 为什么是复数
+    ///
+    /// 早先这里是 `telegram_id()`，注释写着「只会有一个：一个 omy 同时只持有
+    /// 一份 Telegram 登录态」。那个前提**已经不成立**——用户要能加任意多个
+    /// 账号。而单例版本正是「点添加也显示已登录」的根因：添加流程先查有没有
+    /// 现成的，一查到就直接复用，于是第二个账号根本没有机会登录。
+    ///
+    /// 想判断「这个账号是不是已经加过了」不能再靠「有没有 Telegram 位置」，
+    /// 要按账号自己的标识去比。
     #[must_use]
-    pub fn telegram_id(&self) -> Option<String> {
+    pub fn telegram_ids(&self) -> Vec<String> {
         let (Ok(m), Ok(o)) = (self.places.lock(), self.order.lock()) else {
-            return None;
+            return Vec::new();
         };
         o.iter()
             .filter_map(|id| m.get(id))
-            .find(|p| p.kind == "telegram")
+            .filter(|p| p.kind == "telegram")
             .map(|p| p.id.clone())
+            .collect()
     }
+
+    /// 改一个位置的显示名。
+    ///
+    /// **只动本地显示名，不碰服务端**：Telegram 上的昵称是账号自己的属性，
+    /// 用户在 omy 里给位置起的名字只是本地标签。真去改服务端 profile
+    /// 完全超出「给这个位置起个名」的预期，属于越权。
+    ///
+    /// 返回是否真的改到了（位置不存在时为 `false`）。
+    pub fn rename(&self, id: &str, name: String) -> bool {
+        let Ok(mut m) = self.places.lock() else {
+            return false;
+        };
+        let Some(old) = m.get(id) else {
+            return false;
+        };
+        // Place 里其余字段照搬。这里不能用 Arc::make_mut：store 是
+        // Arc<PlaceStore> 且没有 Clone，硬拆会把已建立的连接弄丢——
+        // 表现是改个名字之后位置突然「未连接」
+        let replaced = Arc::new(Place {
+            id: old.id.clone(),
+            name,
+            kind: old.kind.clone(),
+            proxy: old.proxy.clone(),
+            store: Arc::clone(&old.store),
+        });
+        m.insert(String::from(id), replaced);
+        true
+    }
+
 
     /// 按 id 取位置。
     #[must_use]
@@ -301,45 +401,50 @@ impl PlaceRegistry {
     /// 配置写盘失败时返回。
     pub fn persist(&self) -> Result<(), String> {
         let key = Self::protect_key();
-        let (Ok(m), Ok(o)) = (self.places.lock(), self.order.lock()) else {
-            return Err(String::from("注册表锁失效"));
+        let saved = {
+            let (Ok(m), Ok(o)) = (self.places.lock(), self.order.lock()) else {
+                return Err(String::from("注册表锁失效"));
+            };
+            Self::assemble_saved_places(&m, &o, key.as_ref())
         };
 
-        let mut saved: Vec<omy_config::SavedPlace> = Vec::new();
+        let mut cfg = omy_config::Config::load().map_err(|e| e.to_string())?;
+        cfg.remote.places = saved;
+        cfg.save().map_err(|e| e.to_string())
+    }
 
-        // Telegram：没有 url / username / 密码可存——凭据在单独加密的
-        // session 文件里，这里只记「有这么一个位置」。
+    /// 把注册表里的全部位置组装成可持久化的记录。**纯逻辑，不碰磁盘。**
+    ///
+    /// # 为什么要从 persist 里抽出来
+    ///
+    /// `persist` 还要读写真实配置文件，测试碰不到它。于是「每一类位置都要被
+    /// 存下来」这条只能靠测试重抄一遍转换来验，而抄出来的那份**改坏产品代码
+    /// 也不会失败**——变异测试确认过：把 persist 里拼 Telegram 那一句换成
+    /// `Vec::new()`，重抄版断言照样通过，而实际后果是所有 Telegram 位置
+    /// 重启后凭空消失。
+    ///
+    /// 抽成纯函数之后，测试断言的就是产品真正用来组装的那条路径。
+    fn assemble_saved_places(
+        m: &HashMap<String, Arc<Place>>,
+        o: &[String],
+        key: Option<&omy_secret::ProtectKey>,
+    ) -> Vec<omy_config::SavedPlace> {
+        let mut saved: Vec<omy_config::SavedPlace> = Self::telegram_saved_places(m, o);
+
+        // Telegram 那一段收在 telegram_saved_places 里，见其文档。
+        // 下面是 WebDAV 那条链路。
+        //
+        // 原本这里写的是：没有 url / username / 密码可存——凭据在单独加密的
+        // session 文件里（**按位置 id 一个账号一个文件**），这里只记
+        // 「有这么一个位置、它叫什么」。
         //
         // 不能沿用下面 WebDAV 那条链路：它靠 as_webdav() 过滤，
         // Telegram 会被静默丢掉，表现是「加过的位置重启就没了」而且不报错。
-        for p in o.iter().filter_map(|id| m.get(id)) {
-            if p.kind == "telegram" {
-                saved.push(omy_config::SavedPlace {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
-                    kind: p.kind.clone(),
-                    // 复用 url 字段存代理地址。
-                    //
-                    // 不新增字段：这个字段对 Telegram 本来就空着，而代理**不是
-                    // 凭据**（它是本机地址，不涉及账号），放明文没有问题。
-                    //
-                    // 必须存：本机直连 Telegram 数据中心是超时的，没有代理就连不上。
-                    // 不存的话重启后自动连必然超时，而超时要等很久，
-                    // 用户只看到界面卡住、看不出和代理有关。
-                    url: p.proxy.clone().unwrap_or_default(),
-                    username: String::new(),
-                    vendor: String::new(),
-                    // 能不能写由对话决定（effective_capabilities），
-                    // 位置级这一位对 Telegram 没有意义，存 true 只是别把
-                    // 整个位置钉死成只读
-                    writable: true,
-                    // 凭据不在这里：Telegram 的登录态由
-                    // omy_remote::telegram::session 单独加密落盘
-                    secret: None,
-                });
-            }
-        }
-
+        //
+        // 这里**遍历全部** Telegram 位置而不是只存一个：早先的实现基于
+        // 「只会有一个 Telegram」那个前提，多账号之后必须逐个存，
+        // 否则重启后只剩一个账号，其余的连同它们的名字一起消失
+        // （session 文件还在，但没有位置引用它们，等于登录态被孤立）。
         let webdav_saved: Vec<omy_config::SavedPlace> = o
             .iter()
             .filter_map(|id| m.get(id))
@@ -354,8 +459,7 @@ impl PlaceRegistry {
                 let secret = if c.password.is_empty() {
                     None
                 } else {
-                    key.as_ref()
-                        .and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
+                    key.and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
                         .and_then(|env| toml::Value::try_from(env).ok())
                 };
                 omy_config::SavedPlace {
@@ -371,10 +475,56 @@ impl PlaceRegistry {
             })
             .collect();
         saved.extend(webdav_saved);
+        saved
+    }
 
-        let mut cfg = omy_config::Config::load().map_err(|e| e.to_string())?;
-        cfg.remote.places = saved;
-        cfg.save().map_err(|e| e.to_string())
+    /// 把**全部** Telegram 位置转成可持久化的记录。
+    ///
+    /// # 为什么单独一个函数
+    ///
+    /// `persist` 要读真实配置文件，测试碰不到它——于是「多个账号都要存下来」
+    /// 这条只能在测试里把转换重抄一遍，而抄出来的那份**改坏产品代码也不会
+    /// 失败**。变异测试确认过：给循环加一个 `.take(1)`，重抄版断言照样通过。
+    ///
+    /// 抽出来之后测试直接调它，产品与测试走同一份代码。
+    ///
+    /// # 为什么不能沿用 WebDAV 那条链路
+    ///
+    /// 那条靠 `as_webdav()` 过滤，Telegram 会被静默丢掉，
+    /// 表现是「加过的位置重启就没了」而且不报错。
+    fn telegram_saved_places(
+        m: &HashMap<String, Arc<Place>>,
+        o: &[String],
+    ) -> Vec<omy_config::SavedPlace> {
+        o.iter()
+            .filter_map(|id| m.get(id))
+            .filter(|p| p.kind == "telegram")
+            .map(|p| omy_config::SavedPlace {
+                id: p.id.clone(),
+                // 用户给这个账号起的名字。存它是多账号的必需项——两个
+                // Telegram 位置只能靠名字区分，不存的话重启后会变成两个都叫
+                // 「Telegram」，用户无从分辨哪个是哪个
+                name: p.name.clone(),
+                kind: p.kind.clone(),
+                // 复用 url 字段存代理地址。
+                //
+                // 不新增字段：这个字段对 Telegram 本来就空着，而代理**不是
+                // 凭据**（它是本机地址，不涉及账号），放明文没有问题。
+                //
+                // 必须存：本机直连 Telegram 数据中心是超时的，没有代理就连不上。
+                // 不存的话重启后自动连必然超时，而超时要等很久，
+                // 用户只看到界面卡住、看不出和代理有关。
+                url: p.proxy.clone().unwrap_or_default(),
+                username: String::new(),
+                vendor: String::new(),
+                // 能不能写由对话决定（effective_capabilities），位置级这一位
+                // 对 Telegram 没有意义，存 true 只是别把整个位置钉死成只读
+                writable: true,
+                // 凭据不在这里：Telegram 的登录态由
+                // omy_remote::telegram::session 按位置 id 单独加密落盘
+                secret: None,
+            })
+            .collect()
     }
 
     /// 从配置恢复已保存的位置。
@@ -384,6 +534,15 @@ impl PlaceRegistry {
     ///
     /// 返回成功恢复的位置数与其中缺密码的个数。
     pub fn restore(&self, cfg: &omy_config::Remote) -> (usize, usize) {
+        // 先把序号推过配置里所有已存在的 id。
+        //
+        // 不推的话，这次运行发出的第一个 id 会从 1 开始，直接撞上恢复出来的
+        // p1——而 p1 的 session 文件就在磁盘上，新账号会读到别人的登录态。
+        for sp in &cfg.places {
+            if let Some(n) = Self::seq_of(&sp.id) {
+                self.bump_seq_to(n);
+            }
+        }
         let key = Self::protect_key();
         if key.is_none() {
             eprintln!("[omy] 恢复远程位置：取不到本机保护密钥，所有密码都将为空");
@@ -726,6 +885,185 @@ mod tests {
         assert!(
             !text.contains("secret-pw"),
             "配置里出现了明文密码：\n{text}"
+        );
+    }
+
+    /// 造一个 Telegram 位置（未连接占位，够用来验注册表逻辑）。
+    fn add_tg(r: &PlaceRegistry, name: &str) -> String {
+        r.add_telegram(String::from(name), TelegramStore::new(), None)
+            .expect("添加 Telegram")
+    }
+
+    /// **两个 Telegram 位置能共存，且各自拿到不同的 id。**
+    ///
+    /// 不这样会怎样：这是用户报的那条「点添加也显示已登录」的根因。
+    /// 旧实现认定「只会有一个 Telegram」，第二次添加会复用第一个，
+    /// 于是第二个账号根本没机会登录。
+    ///
+    /// id 必须不同这一半尤其要紧：session 文件按位置 id 命名，
+    /// id 相同就等于两个账号共用一份 session。
+    #[test]
+    fn two_telegram_places_coexist_with_distinct_ids() {
+        let r = PlaceRegistry::new();
+        let a = add_tg(&r, "工作号");
+        let b = add_tg(&r, "私人号");
+
+        assert_ne!(a, b, "两个 Telegram 位置必须拿到不同的 id");
+        assert_eq!(r.telegram_ids(), vec![a.clone(), b.clone()], "两个都要在");
+        // 名字也要各自保留，否则侧栏上两个都叫 Telegram，用户无从分辨
+        let names: Vec<String> = r.list().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["工作号", "私人号"]);
+    }
+
+    /// **位置 id 绝不能被重复发放**，哪怕中间删过位置。
+    ///
+    /// 不这样会怎样：`format!("p{}", len + 1)` 在「加两个 → 删第一个 →
+    /// 再加一个」之后会再发一次 `p2`。而 session 文件按位置 id 命名，
+    /// 于是新账号会写进旧账号那份 session，把它的 auth key 覆盖掉——
+    /// 现象是「加了新账号，另一个账号莫名其妙要重新登录」，
+    /// 而侧栏上两个位置都好端端列着，没有任何报错。
+    ///
+    /// 这条断言直接比 id 本身，不是「有两个位置」——后者抓不到这个缺陷。
+    #[test]
+    fn place_ids_are_never_reused_after_removal() {
+        let r = PlaceRegistry::new();
+        let a = add_tg(&r, "一号");
+        let b = add_tg(&r, "二号");
+        r.remove(&a);
+        let c = add_tg(&r, "三号");
+
+        assert_ne!(c, b, "新位置不能拿到仍在使用的 id");
+        assert_ne!(c, a, "也不该回收刚删掉那个 id：它的 session 文件可能还在");
+
+        // 再删再加一轮，确认不是碰巧
+        r.remove(&b);
+        let d = add_tg(&r, "四号");
+        assert_ne!(d, c, "第二轮同样不能撞");
+        assert_ne!(d, b);
+    }
+
+    /// 删掉一个 Telegram 位置，另一个必须原封不动。
+    ///
+    /// 不这样会怎样：用户删掉账号 B，结果 A 也不见了或变成未连接——
+    /// 而他完全不知道为什么，只会觉得这个功能不敢碰。
+    #[test]
+    fn removing_one_telegram_place_leaves_the_other() {
+        let r = PlaceRegistry::new();
+        let a = add_tg(&r, "留下的");
+        let b = add_tg(&r, "删掉的");
+        r.remove(&b);
+
+        assert!(r.get(&b).is_none(), "被删的必须没了");
+        let left = r.get(&a).expect("另一个必须还在");
+        assert_eq!(left.name, "留下的", "另一个的名字不能被动过");
+        assert_eq!(r.telegram_ids(), vec![a], "只剩一个 Telegram");
+    }
+
+    /// 改名只动显示名，其余一律不动。
+    ///
+    /// 不这样会怎样：改名时若重建了 store，已经建立的连接会被丢掉——
+    /// 表现是「改了个名字，位置突然显示未连接」，而用户完全联系不起来。
+    /// 位置 id 更不能变：它是 session 文件名的来源，变了等于换了个账号。
+    #[test]
+    fn renaming_changes_only_the_display_name() {
+        let r = PlaceRegistry::new();
+        let id = add_tg(&r, "原名");
+        let before = r.get(&id).expect("先取一次");
+        let store_before = Arc::as_ptr(&before.store);
+
+        assert!(r.rename(&id, String::from("新名字")), "改名应当成功");
+
+        let after = r.get(&id).expect("改完还在");
+        assert_eq!(after.name, "新名字");
+        assert_eq!(after.id, id, "位置 id 不能变——它决定了 session 文件名");
+        assert_eq!(after.kind, "telegram");
+        assert!(
+            std::ptr::eq(Arc::as_ptr(&after.store), store_before),
+            "必须复用同一个 store，重建会把已建立的连接弄丢"
+        );
+    }
+
+    /// 给不存在的位置改名要如实返回 false，不能静默成功。
+    ///
+    /// 不这样会怎样：界面以为改成功了、刷新后发现没变，用户会反复试。
+    #[test]
+    fn renaming_a_missing_place_reports_failure() {
+        let r = PlaceRegistry::new();
+        assert!(!r.rename("p404", String::from("x")), "不存在的位置不该改成功");
+    }
+
+    /// **多个 Telegram 位置必须都能存进配置、都能恢复回来。**
+    ///
+    /// 不这样会怎样：旧的 persist 基于「只有一个 Telegram」的前提，
+    /// 多账号时只会存下一个。重启后其余账号连同名字一起消失——而它们的
+    /// session 文件还躺在磁盘上，成了没有位置引用的孤儿：用户既看不到
+    /// 那个账号，也不知道本机还留着它的登录态。
+    #[test]
+    fn all_telegram_places_survive_persist_and_restore() {
+        let r = PlaceRegistry::new();
+        let a = add_tg(&r, "工作号");
+        let b = add_tg(&r, "私人号");
+
+        // 断言 persist 真正用来组装记录的那条路径（assemble_saved_places），
+        // 而不是在测试里重抄一遍转换。抄一遍的话，无论是把循环改坏
+        // （.take(1)）还是让 persist 根本不拼 Telegram 那一段，
+        // 这条断言都不会失败——两种变异都实测确认过。
+        let saved = match (r.places.lock(), r.order.lock()) {
+            (Ok(m), Ok(o)) => PlaceRegistry::assemble_saved_places(&m, &o, None),
+            // 锁取不到时退化成空列表，让下面那条断言去报「少了两条」：
+            // omy-gui 全局禁用 panic，测试代码也不给它开口子
+            _ => Vec::new(),
+        };
+        assert_eq!(saved.len(), 2, "两个 Telegram 位置都要被存下来");
+        assert!(
+            saved.iter().all(|s| s.kind == "telegram"),
+            "这两条都该是 Telegram 记录"
+        );
+
+        let remote = omy_config::Remote {
+            places: saved,
+            ..omy_config::Remote::default()
+        };
+        let restored = PlaceRegistry::new();
+        let (n, _) = restored.restore(&remote);
+        assert_eq!(n, 2, "两个都要恢复出来");
+
+        // id 必须原样保留：它是 session 文件名的来源，变了就找不回登录态
+        assert_eq!(restored.telegram_ids(), vec![a, b], "id 必须原样恢复");
+        let names: Vec<String> = restored.list().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["工作号", "私人号"], "各自的名字也要回来");
+    }
+
+    /// 恢复出来的多个 Telegram 位置，id 不能互相覆盖。
+    ///
+    /// 不这样会怎样：restore 用 `m.insert(id, ...)`，两条记录若 id 相同
+    /// 后一条会把前一条挤掉，于是「配置里有两个账号，启动后只剩一个」。
+    /// 这条守住配置层面那道。
+    #[test]
+    fn restoring_keeps_each_telegram_place_separate() {
+        let mk = |id: &str, name: &str| omy_config::SavedPlace {
+            id: String::from(id),
+            name: String::from(name),
+            kind: String::from("telegram"),
+            url: String::new(),
+            username: String::new(),
+            vendor: String::new(),
+            writable: true,
+            secret: None,
+        };
+        let remote = omy_config::Remote {
+            places: vec![mk("p1", "甲"), mk("p2", "乙"), mk("p3", "丙")],
+            ..omy_config::Remote::default()
+        };
+        let r = PlaceRegistry::new();
+        let (n, _) = r.restore(&remote);
+        assert_eq!(n, 3);
+        assert_eq!(r.telegram_ids(), vec!["p1", "p2", "p3"]);
+        // 恢复之后再加一个，不能撞上已有的任何一个 id
+        let fresh = add_tg(&r, "丁");
+        assert!(
+            !["p1", "p2", "p3"].contains(&fresh.as_str()),
+            "新位置拿到了已被占用的 id：{fresh}"
         );
     }
 }
