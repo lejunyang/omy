@@ -721,7 +721,7 @@
     "tdata_bad_dir": "这个目录里没有 Telegram Desktop 的登录数据，请确认选的是 tdata 文件夹本身。",
     "tdata_passcode": "桌面端本地密码",
     "tdata_passcode_hint": "这是你为 Telegram Desktop 这个程序设的本地密码（打开客户端时要输的那个）。不是两步验证的云密码，也不是短信验证码。",
-    "tdata_shared": "导入后与桌面端共用同一份登录会话：桌面端登出时，omy 这边会一并失效。",
+    "tdata_shared": "导入后与桌面端共用同一份登录会话：任一边登出，两边都会失效。也因此没有「只登出桌面端」这个选项。",
     "tdata_import": "导入并连接",
     "tdata_importing": "正在导入…",
     "tdata_use_qr": "改用扫码",
@@ -820,6 +820,8 @@
     "st_failed": "失败",
     "st_canceled": "已取消",
     "act_cancel": "取消",
-    "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败"
+    "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败",
+    "speed": "{{rate}}/s",
+    "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
   }
 }

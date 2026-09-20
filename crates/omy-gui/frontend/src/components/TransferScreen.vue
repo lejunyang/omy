@@ -92,13 +92,59 @@ function icon(kind) {
   return '📌';
 }
 
+/** 上一次采样：id -> {done, at}。用来算速度。 */
+const lastSample = new Map();
+/** 每个任务的速度（字节/秒）。 */
+const rates = ref(new Map());
+
 async function refresh() {
   try {
-    state.transfers = await api.transferList();
+    const rows = await api.transferList();
+    // 速度在前端按两次快照算，不在后端存时间戳：界面本来就每隔约 1.2 秒
+    // 刷一次，多一个字段只是让后端也要关心「上次是什么时候」
+    const now = Date.now();
+    const next = new Map();
+    for (const t of rows) {
+      const prev = lastSample.get(t.id);
+      if (prev && now > prev.at && t.done >= prev.done) {
+        const bps = ((t.done - prev.done) * 1000) / (now - prev.at);
+        // 平滑一下，否则数字每秒乱跳、读不出来
+        const old = rates.value.get(t.id) || bps;
+        next.set(t.id, old * 0.6 + bps * 0.4);
+      } else if (rates.value.has(t.id)) {
+        next.set(t.id, rates.value.get(t.id));
+      }
+      lastSample.set(t.id, { done: t.done, at: now });
+    }
+    // 结束的任务不再留采样，否则 Map 会一直涨
+    for (const id of [...lastSample.keys()]) {
+      if (!rows.some((t) => t.id === id)) lastSample.delete(id);
+    }
+    rates.value = next;
+    state.transfers = rows;
   } catch {
     // 查不到就保持上一次的快照，不清空——清空会让界面闪一下空态
   }
 }
+
+/** 这个任务当前的速度文本；算不出来就空。 */
+function rateText(t) {
+  const bps = rates.value.get(t.id);
+  if (!bps || t.state !== 'running') return '';
+  return i18n.t('xfer.speed', { rate: i18n.formatSize(Math.round(bps)) });
+}
+
+/** 有没有任务慢到值得提一句「这是服务端限速」。
+ *
+ * 阈值取 256 KB/s：Telegram 对非会员的下载限速通常在这个量级以下。
+ * 只在**真的在传**且确实慢时才说——无条件显示等于噪音，
+ * 而说「你不是会员」是我们无法可靠判断的事，不能替用户下结论。 */
+const slowHint = computed(() =>
+  (state.transfers || []).some(
+    (t) => t.state === 'running' && (rates.value.get(t.id) || 0) > 0
+      && (rates.value.get(t.id) || 0) < 256 * 1024,
+  ),
+);
 
 async function cancel(t) {
   await api.transferCancel(t.id).catch(() => {});
@@ -169,6 +215,13 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <!-- 非会员限速说明。只在真的慢时出现——无条件显示是噪音。
+         不说「你不是会员」：会员身份我们判断不可靠，猜错很尴尬；
+         陈述「Telegram 对非会员有限速」这个事实就够了 -->
+    <div v-if="slowHint" class="slownote" data-xf="slow">
+      {{ i18n.t('xfer.slow_note') }}
+    </div>
+
     <div v-if="!shown.length" class="empty" data-xf="empty">
       <div class="icon" aria-hidden="true">🔀</div>
       <div class="title">{{ i18n.t('xfer.empty') }}</div>
@@ -193,7 +246,10 @@ onBeforeUnmount(() => {
           <div class="tskbarwrap">
             <div class="tskbar"><i :style="{ width: pct(t) + '%' }"></i></div>
           </div>
-          <div class="tskv" data-xf="state">{{ stateText(t) }}</div>
+          <div class="tskv" data-xf="state">
+            {{ stateText(t) }}<template v-if="rateText(t)">
+              · <span data-xf="rate">{{ rateText(t) }}</span></template>
+          </div>
           <div class="tskact">
             <button
               v-if="isActive(t)"
@@ -233,6 +289,12 @@ onBeforeUnmount(() => {
 }
 .spacer {
   flex: 1;
+}
+.slownote {
+  padding: 8px calc(var(--sp) * 3);
+  font-size: 12px;
+  color: var(--fg2);
+  border-bottom: 1px solid var(--border);
 }
 .xlist {
   overflow: auto;

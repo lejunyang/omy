@@ -721,7 +721,7 @@
     "tdata_bad_dir": "This folder holds no Telegram Desktop sign-in data. Check that you picked the tdata folder itself.",
     "tdata_passcode": "Desktop local passcode",
     "tdata_passcode_hint": "This is the local passcode you set for the Telegram Desktop app itself — the one it asks for on launch. It is not your two-step verification cloud password, and not an SMS code.",
-    "tdata_shared": "After importing, omy shares a single sign-in session with the desktop app: signing out there ends it here too.",
+    "tdata_shared": "Importing shares one login session with the desktop app: signing out on either side ends both. That is also why there is no \"sign out the desktop only\" option.",
     "tdata_import": "Import and connect",
     "tdata_importing": "Importing…",
     "tdata_use_qr": "Use a QR code instead",
@@ -820,6 +820,8 @@
     "st_failed": "Failed",
     "st_canceled": "Canceled",
     "act_cancel": "Cancel",
-    "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed"
+    "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed",
+    "speed": "{{rate}}/s",
+    "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
   }
 }
