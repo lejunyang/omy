@@ -663,7 +663,9 @@
     "rename_prompt": "Display name for \"{{name}}\" on this machine",
     "renamed": "Renamed",
     "detached": "Removed from the list; the sign-in is kept",
-    "account_deleted": "Account and local sign-in deleted"
+    "account_deleted": "Account and local sign-in deleted",
+    "detach_note": "The saved login stays on this machine; you can add it back without scanning again.",
+    "delete_account_note": "Also deletes the saved login. You would have to scan or import again."
   },
   "common": {
     "back": "Back",

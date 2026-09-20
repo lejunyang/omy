@@ -663,7 +663,9 @@
     "rename_prompt": "给「{{name}}」起个本机显示名",
     "renamed": "已重命名",
     "detached": "已从列表移除，登录态仍保留",
-    "account_deleted": "账号与本地登录态已删除"
+    "account_deleted": "账号与本地登录态已删除",
+    "detach_note": "本机登录态保留，之后可以直接加回来。",
+    "delete_account_note": "连本机登录态一起删除，下次要重新扫码或导入。"
   },
   "common": {
     "back": "返回",

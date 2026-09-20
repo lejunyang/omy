@@ -1,9 +1,20 @@
 <script setup>
 /** 侧栏：位置 + 附近设备。 */
 
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import * as i18n from '../i18n.js';
-import { closePlaceBrowser, state, navigate, grantStorageAccess, openPlaceBrowserAt } from '../store.js';
+import {
+  closePlaceBrowser,
+  state,
+  navigate,
+  grantStorageAccess,
+  openPlaceBrowserAt,
+  renameTelegramPlace,
+  detachTelegramPlace,
+  deleteTelegramAccount,
+  removeRemotePlace,
+} from '../store.js';
+import ContextMenu from './ContextMenu.vue';
 
 defineProps({
   /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
@@ -38,6 +49,86 @@ function go(path) {
   closePlaceBrowser();
   navigate(path);
   emit('navigate');
+}
+
+/** 右键菜单：`{ place, x, y }`，没有就是不显示。 */
+const rmenu = ref(null);
+
+/** 这个位置有没有「本机登录态」这回事。
+ *
+ * 只有 Telegram 分得出「摘掉位置」与「删掉登录态」；WebDAV 的凭据跟着
+ * 位置配置走，摘掉就没了，给它一个「删除账号」纯属多余且会让人误解。
+ * 与 PlaceBrowser 里同名判断保持一致。 */
+function hasLocalSession(p) {
+  return p.kind === 'telegram';
+}
+
+/** 右键菜单的条目。
+ *
+ * 两种删除**分开列出并各自写明后果**，不合并成一个含糊的「删除」：
+ * 一个保留登录态、可以直接加回来，另一个要重新扫码，代价差得远。
+ * note 显示在标签下方，让用户在点之前就看到区别。 */
+const rmenuItems = computed(() => {
+  const p = rmenu.value?.place;
+  if (!p) return [];
+  const tg = hasLocalSession(p);
+  const items = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
+  if (tg) {
+    items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: '✏️' });
+  }
+  items.push({ key: 'sep' });
+  items.push({
+    key: 'detach',
+    label: tg ? i18n.t('rplace.detach') : i18n.t('rplace.remove'),
+    icon: '➖',
+    note: tg ? i18n.t('rplace.detach_note') : undefined,
+  });
+  if (tg) {
+    items.push({
+      key: 'delacct',
+      label: i18n.t('rplace.delete_account'),
+      icon: '🗑️',
+      danger: true,
+      note: i18n.t('rplace.delete_account_note'),
+    });
+  }
+  return items;
+});
+
+function onPlaceContext(p, ev) {
+  rmenu.value = { place: p, x: ev.clientX, y: ev.clientY };
+}
+
+async function onPlaceMenuPick(key) {
+  const p = rmenu.value?.place;
+  rmenu.value = null;
+  if (!p) return;
+  if (key === 'open') {
+    await goRemote(p);
+    return;
+  }
+  if (key === 'rename') {
+    const next = window.prompt(
+      i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
+    if (next === null) return;
+    await renameTelegramPlace(p.id, next);
+    return;
+  }
+  if (key === 'detach') {
+    // 即便菜单里已写明后果，仍然确认一次：它与「删除账号」相邻，
+    // 点错的代价不对称
+    if (hasLocalSession(p)) {
+      if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
+      await detachTelegramPlace(p.id);
+    } else {
+      await removeRemotePlace(p.id);
+    }
+    return;
+  }
+  if (key === 'delacct') {
+    if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
+    await deleteTelegramAccount(p.id);
+  }
 }
 
 /** 进入一个远程位置。抽屉同样要收起。 */
@@ -142,6 +233,7 @@ function iconOf(place) {
       :data-rp="p.id"
       :title="p.name"
       @click="goRemote(p)"
+      @contextmenu.prevent="onPlaceContext(p, $event)"
     >
       <span aria-hidden="true">☁️</span>
       <span class="stext">{{ p.name }}</span>
@@ -181,7 +273,16 @@ function iconOf(place) {
       <span aria-hidden="true">🟢</span>
       <span class="stext">{{ i18n.t('device.sharing_now') }}</span>
     </button>
-  </aside>
+  
+  <ContextMenu
+    v-if="rmenu"
+    :items="rmenuItems"
+    :x="rmenu.x"
+    :y="rmenu.y"
+    @pick="onPlaceMenuPick"
+    @close="rmenu = null"
+  />
+</aside>
 </template>
 
 <style scoped>
