@@ -583,7 +583,17 @@
     "cache_pinned": "永久保留",
     "cache_pinned_hint": "不占用上面的缓存上限，也不会被自动清理。",
     "pinned_files_one": "1 个文件",
-    "pinned_files_other": "{{count}} 个文件"
+    "pinned_files_other": "{{count}} 个文件",
+    "pinned_manage": "管理永久保留…",
+    "pinned_title": "永久保留的文件",
+    "pinned_empty": "还没有永久保留的文件",
+    "pinned_empty_hint": "在远程文件上右键选「转为永久保留」，文件会完整留在本机，不受缓存上限限制。",
+    "pinned_unpin": "取消永久",
+    "pinned_unpinned": "已取消永久保留，释放 {{size}}",
+    "pinned_unpin_failed": "取消永久保留失败",
+    "pinned_gone_place": "已移除的位置",
+    "pinned_list_failed": "读取永久保留清单失败",
+    "pinned_loading": "正在读取…"
   },
   "rplace": {
     "title": "远程位置",

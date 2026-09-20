@@ -24,7 +24,7 @@ import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
 import { theme, setTheme } from '../theme.js';
 import * as api from '../api.js';
-import { state, setNotice } from '../store.js';
+import { state, setNotice, reloadRemotePlaces } from '../store.js';
 
 const emit = defineEmits(['close', 'lang', 'lock', 'devices']);
 
@@ -212,6 +212,71 @@ async function clearCache() {
     error.value = i18n.te(api.errCode(e), 'settings.cache_clear_failed');
   } finally {
     clearing.value = false;
+  }
+}
+
+/** 永久保留清单。进入该页时拉一次，取消后就地去掉那一行。 */
+const pinned = ref([]);
+const pinnedLoading = ref(false);
+const unpinning = ref('');
+
+/** 把位置 id 换成用户看得懂的名字。
+ *
+ * **查不到是正常情况**：`PinnedFile.place` 记的是打 pin 那一刻的位置 id，
+ * 用户之后把位置「从列表移除」，这条永久记录仍然在、文件也仍然占着磁盘。
+ * 那时必须显示成「已移除的位置」并保持可取消——否则就成了最糟的组合：
+ * 空间占着、用户想清、界面上却点不动。 */
+function placeName(id) {
+  const p = (state.remotePlaces || []).find((x) => x.id === id);
+  return p ? p.name : i18n.t('settings.pinned_gone_place');
+}
+
+/** 永久清单里一行的标识：位置 + 键。单用 key 不够——
+ *  两个位置上完全可能存在内容相同、因而版本哈希也相同的文件。 */
+function pinnedRowId(f) {
+  return `${f.place}\u0000${f.key}`;
+}
+
+async function openPinnedPane() {
+  if (isMobile.value) mobilePane.value = 'pinned';
+  else pane.value = 'pinned';
+  pinnedLoading.value = true;
+  try {
+    // 先刷新位置列表再列清单：名字映射要对着当前真相。
+    // 不刷的话，设置页在位置列表从未加载过时打开（比如启动后直接进设置），
+    // placeName 会把**每一行**都回落成「已移除的位置」——
+    // 那比不显示名字更糟，用户会以为自己的位置全丢了
+    await reloadRemotePlaces();
+    pinned.value = await api.remoteCacheListPinned();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.pinned_list_failed');
+  } finally {
+    pinnedLoading.value = false;
+  }
+}
+
+/** 取消一个文件的永久保留。释放的字节数由后端返回，用来更新那两个数字。 */
+async function unpinOne(f) {
+  const rid = pinnedRowId(f);
+  if (unpinning.value) return;
+  unpinning.value = rid;
+  try {
+    const freed = await api.remoteCacheUnpinByKey(f.place, f.key, f.total_blocks);
+    pinned.value = pinned.value.filter((x) => pinnedRowId(x) !== rid);
+    // 永久层的用量与文件数要跟着变，否则用户清完回上一页
+    // 还看到原来那个数字，会以为没清掉
+    const u = cacheUsage.value;
+    cacheUsage.value = {
+      ...u,
+      pinned_used: Math.max(0, (u.pinned_used || 0) - (Number(freed) || 0)),
+      pinned_files: Math.max(0, (u.pinned_files || 0) - 1),
+    };
+    setNotice(i18n.t('settings.pinned_unpinned',
+      { size: i18n.formatSize(Number(freed) || 0) }));
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.pinned_unpin_failed');
+  } finally {
+    unpinning.value = '';
   }
 }
 
@@ -539,6 +604,59 @@ async function openCacheDir() {
             </button>
           </template>
 
+          <!-- 永久保留清单：缓存页的下一级。
+               没有这个入口，用户要取消某个文件的永久保留，只能回到它原来
+               所在的位置、在目录里翻出来再右键——而 Telegram 上那条消息
+               可能早就找不到了，结果永久层只进不出。 -->
+          <template v-else-if="(isMobile ? mobilePane : pane) === 'pinned'">
+            <div class="panehead">
+              <button
+                class="iconbtn"
+                type="button"
+                data-si="pinned-back"
+                :aria-label="i18n.t('common.back')"
+                @click="isMobile ? (mobilePane = 'cache') : (pane = 'cache')"
+              >
+                ←
+              </button>
+              <span class="panetitle">{{ i18n.t('settings.pinned_title') }}</span>
+            </div>
+
+            <div v-if="pinnedLoading" class="row">
+              <div class="fld desc">{{ i18n.t('settings.pinned_loading') }}</div>
+            </div>
+            <div v-else-if="!pinned.length" class="row">
+              <div class="fld">
+                <div>{{ i18n.t('settings.pinned_empty') }}</div>
+                <div class="desc">{{ i18n.t('settings.pinned_empty_hint') }}</div>
+              </div>
+            </div>
+            <div
+              v-for="f in pinned"
+              v-else
+              :key="pinnedRowId(f)"
+              class="row pinnedrow"
+              data-sf="pinned_row"
+            >
+              <div class="fld pinnedinfo">
+                <div class="pinnedplace">{{ placeName(f.place) }}</div>
+                <!-- key 含版本哈希、不是路径，所以只当标识显示，
+                     宽度收住、不让它把行撑破 -->
+                <div class="desc pinnedkey" :title="f.key">{{ f.key }}</div>
+              </div>
+              <div class="pinnedsize">{{ i18n.formatSize(f.used_bytes) }}</div>
+              <button
+                type="button"
+                class="btn small"
+                :data-sf-unpin="f.key"
+                :disabled="unpinning === pinnedRowId(f)"
+                @click="unpinOne(f)"
+              >
+                {{ i18n.t('settings.pinned_unpin') }}
+              </button>
+            </div>
+          </template>
+
           <!-- 密文缓存：「远程位置」的二级页，左列仍高亮远程位置 -->
           <template v-else-if="(isMobile ? mobilePane : pane) === 'cache'">
             <div v-if="!isMobile" class="panehead">
@@ -589,6 +707,19 @@ async function openCacheDir() {
               <div class="fld">
                 <div class="pinnedval" data-sf="cache_pinned">{{ pinnedText }}</div>
                 <div class="desc">{{ i18n.t('settings.cache_pinned_hint') }}</div>
+              </div>
+            </div>
+            <div class="row">
+              <label class="lb"></label>
+              <div class="fld">
+                <button
+                  type="button"
+                  class="btn small"
+                  data-sf="pinned_manage"
+                  @click="openPinnedPane"
+                >
+                  {{ i18n.t('settings.pinned_manage') }}
+                </button>
               </div>
             </div>
             <div class="row">

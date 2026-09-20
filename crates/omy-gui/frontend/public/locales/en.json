@@ -583,7 +583,17 @@
     "cache_pinned": "Kept permanently",
     "cache_pinned_hint": "This does not count towards the limit above and is never cleared automatically.",
     "pinned_files_one": "1 file",
-    "pinned_files_other": "{{count}} files"
+    "pinned_files_other": "{{count}} files",
+    "pinned_manage": "Manage permanent files…",
+    "pinned_title": "Permanently kept files",
+    "pinned_empty": "No files are kept permanently yet",
+    "pinned_empty_hint": "Right-click a remote file and choose \"Keep permanently\" to store it in full on this machine, outside the cache limit.",
+    "pinned_unpin": "Stop keeping",
+    "pinned_unpinned": "No longer kept permanently; {{size}} freed",
+    "pinned_unpin_failed": "Could not stop keeping this file",
+    "pinned_gone_place": "Removed location",
+    "pinned_list_failed": "Could not read the list of permanent files",
+    "pinned_loading": "Loading…"
   },
   "rplace": {
     "title": "Remote locations",

@@ -569,6 +569,25 @@ export const remoteCacheRemoveFile = (placeId, path, size) =>
  */
 export const telegramCanPersist = () => invoke('telegram_can_persist');
 
+/** 列出所有被转为「永久保留」的文件。
+ *
+ * 返回 `PinnedFile[]`，字段 `place` / `key` / `total_blocks` / `used_bytes`。
+ * `place` 就是位置 id（与 `remote_browse` 用的是同一个值），可以直接拿去
+ * `remotePlaceList` 里查名字——但**查不到是正常情况**：位置被移除后这条
+ * 永久记录仍在，界面要按「已移除的位置」显示，不能空着。
+ *
+ * `key` 含文件版本哈希，是缓存里的身份、不是能拿去浏览的路径，
+ * 界面当成不透明标识即可。 */
+export const remoteCacheListPinned = () => invoke('remote_cache_list_pinned');
+
+/** 取消某个文件的永久保留并把它占的空间释放掉，返回释放的字节数。
+ *
+ * 按缓存键操作、不碰网络，所以离线时、甚至那个远程位置已经被删掉之后，
+ * 依然能清。这里是直接删而不是搬回临时层：从「管理永久缓存」点取消的
+ * 动机基本只有腾空间，搬回临时层磁盘一个字节都没少。 */
+export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
+  invoke('remote_cache_unpin_by_key', { place, key, totalBlocks });
+
 /** 扫码登录时 session 的暂存账号名，必须与后端 `PENDING_ACCOUNT` 一致。
  *
  * 扫码**先于位置存在**：用户点「添加」时还没有位置 id，而 session 必须在
