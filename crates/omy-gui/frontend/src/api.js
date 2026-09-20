@@ -546,6 +546,14 @@ export const remoteCacheUnpin = (placeId, path, size) =>
     req: { place_id: placeId, path, size },
   });
 
+/** 上传一批本地文件到远程目录。
+ *
+ * 逐个返回成败：部分成功是常态，压成一个布尔的话用户不知道哪些传上去了，
+ * 再传一次就产生重复文件。
+ */
+export const remoteUpload = (placeId, dir, paths) =>
+  invoke('remote_upload', { placeId, dir, paths });
+
 /** 删除单个远程文件的本地密文块，返回 {freed_bytes}；只读位置也允许。 */
 export const remoteCacheRemoveFile = (placeId, path, size) =>
   invoke('remote_cache_remove_file', {

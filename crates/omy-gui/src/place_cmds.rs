@@ -483,6 +483,111 @@ pub struct OpenPlaceResult {
     pub encrypted_size: u64,
 }
 
+/// 上传一批本地文件到远程目录。
+///
+/// # 用的是磁盘上的文件名，不是解密后的真名
+///
+/// 这不是偷懒。用户开了文件名加密，磁盘上就是那串密文名；omy 若
+/// 「贴心地」用解密后的真名上传，**等于把加密掉的文件名主动交给服务端**，
+/// 前面的加密全白做。原名只显示给用户自己看。
+///
+/// # 逐个上传而不是并发
+///
+/// 并发会同时开多个到同一服务端的请求，在限流敏感的 Telegram 上很容易
+/// 换来一次 `FLOOD_WAIT`，结果是整体更慢而不是更快。这与 `prefetch_all`
+/// 的取舍一致。
+///
+/// # 一个失败不影响其余
+///
+/// 逐个记录成败后一起返回。中途 `?` 掉的话，前 N 个已经传上去了而调用方
+/// 只看到一个错误，界面上会显示成「全部失败」——与事实不符，
+/// 而用户再传一次就会产生重复文件。
+///
+/// # Errors
+///
+/// 位置不存在、或目标目录不可写时返回。单个文件的失败不算错误，
+/// 在返回值里如实标注。
+#[tauri::command]
+pub async fn remote_upload(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    place_id: String,
+    dir: String,
+    paths: Vec<String>,
+) -> CmdResult<Vec<UploadOutcome>> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = Arc::clone(&place.store);
+
+    // 先问能力位图。不问的话，只读对话上会发一次注定失败的请求，
+    // 错误还只有一句 provider 的原始报错
+    let caps = store.effective_capabilities(&dir).await.map_err(|e| to_cmd_err(&e))?;
+    if !caps.write {
+        return Err(CmdError::code("remote_readonly"));
+    }
+
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let path = std::path::PathBuf::from(&p);
+        // 磁盘文件名 —— 见函数文档，绝不能换成解密后的真名
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| String::from("file"));
+
+        let data = match tokio::fs::read(&path).await {
+            Ok(d) => d,
+            Err(e) => {
+                out.push(UploadOutcome {
+                    path: p,
+                    name,
+                    ok: false,
+                    id: None,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        match store.write(&dir, &name, &data).await {
+            Ok(entry) => out.push(UploadOutcome {
+                path: p,
+                name,
+                ok: true,
+                id: Some(entry.id),
+                error: None,
+            }),
+            Err(e) => out.push(UploadOutcome {
+                path: p,
+                name,
+                ok: false,
+                id: None,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+    Ok(out)
+}
+
+/// 单个文件的上传结果。
+///
+/// 成败逐个返回而不是整体一个布尔：部分成功是常态（网络抖动、个别文件
+/// 超限），压成一个布尔的话界面只能说「失败了」，用户不知道哪些传上去了，
+/// 再传一次就产生重复文件。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UploadOutcome {
+    /// 本地路径（前端据此对应回它自己的列表）。
+    pub path: String,
+    /// 上传时用的名字（磁盘名）。
+    pub name: String,
+    /// 成功与否。
+    pub ok: bool,
+    /// 成功时的远程条目 id。
+    pub id: Option<String>,
+    /// 失败原因。
+    pub error: Option<String>,
+}
+
 /// 取当前远程目录里所有加密文件的 vault 参数（用于解锁）。
 ///
 /// # 为什么需要这条命令
@@ -916,8 +1021,14 @@ pub async fn remote_decrypt_to_local(
 ///
 /// 与播放/解密不同，这里不需要 KEK：缓存里只有密文，统计覆盖情况、删除本地
 /// 密文块都不触及明文，因此锁定（未解锁）的文件也允许查/移除它的缓存。
-/// 构造后调用方只能用不发起网络载荷请求的方法（`cache_stat` /
-/// `remove_cached_blocks`），它们只做本地 metadata 查询与删除。
+///
+/// # 普通文件同样适用
+///
+/// 远程位置里普通文件是主体内容（Telegram 频道里的图片、视频、文档），
+/// 它们走同一套块缓存，也同样值得永久保留——离线看视频正是最典型的场景。
+/// 原先这里对非 omy 文件一律返回 `not_an_omy_file`，于是 pin / unpin /
+/// 缓存统计 / 清除四条命令**全都拒绝普通文件**，界面上那几个菜单项
+/// 对它们永远不出现。
 async fn build_remote_source(
     reg: &tauri::State<'_, Arc<PlaceRegistry>>,
     cache: &tauri::State<'_, Arc<RemoteCache>>,
@@ -931,16 +1042,29 @@ async fn build_remote_source(
         .await
         .map_err(|e| to_cmd_err(&e))?;
     let rt = tokio::runtime::Handle::current();
-    RemoteSource::new(
-        store,
+
+    // 是 omy 就按 omy 建（载荷从 header_len 起算），否则按普通文件建
+    // （整个文件都是载荷）。判据是头部能不能解析，与「解不解得开」无关——
+    // 缓存操作本来就不需要密码。
+    match RemoteSource::new(
+        Arc::clone(&store),
         req.place_id.clone(),
         req.path.clone(),
         &header,
         req.size,
         cache.snapshot(),
-        rt,
-    )
-    .map_err(|_| CmdError::code("not_an_omy_file"))
+        rt.clone(),
+    ) {
+        Ok(src) => Ok(src),
+        Err(_) => Ok(RemoteSource::new_plain(
+            store,
+            req.place_id.clone(),
+            req.path.clone(),
+            req.size,
+            cache.snapshot(),
+            rt,
+        )),
+    }
 }
 
 /// 列出一个**远程**目录容器里的条目。

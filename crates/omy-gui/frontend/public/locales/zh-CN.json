@@ -78,7 +78,9 @@
     "file_of": "第 {{i}} / {{n}} 个",
     "reencrypting": "正在重新加密…",
     "restoring": "正在还原…",
-    "waiting_hello": "正在等待确认…"
+    "waiting_hello": "正在等待确认…",
+    "uploading": "正在上传…",
+    "pinning": "正在下载整个文件以便永久保留…"
   },
   "notice": {
     "encrypted_one": "已加密 {{count}} 个文件",
@@ -620,7 +622,24 @@
     "menu_remove_cache": "从缓存中移除",
     "removed_cache": "已从缓存移除，释放 {{size}}",
     "remove_cache_failed": "移除缓存失败",
-    "vendor_telegram": "Telegram"
+    "vendor_telegram": "Telegram",
+    "upload": "上传",
+    "uploading": "上传中…",
+    "upload_pick_title": "选择要上传的文件",
+    "upload_failed": "上传失败。",
+    "upload_partial": "已上传 {{ok}} 个，这些没成功：{{names}}",
+    "upload_done_one": "已上传 1 个文件",
+    "upload_done_other": "已上传 {{n}} 个文件",
+    "menu_pin": "转为永久保留",
+    "menu_unpin": "取消永久保留",
+    "pinned": "已永久保留到本机，可离线打开",
+    "unpinned": "已取消永久保留，内容重新计入缓存上限",
+    "pin_failed": "转为永久保留失败。",
+    "unpin_failed": "取消永久保留失败。",
+    "cache_temp": "临时缓存",
+    "cache_pinned": "永久保留",
+    "cache_pinned_files_one": "1 个文件",
+    "cache_pinned_files_other": "{{n}} 个文件"
   },
   "common": {
     "back": "返回",

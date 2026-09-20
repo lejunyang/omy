@@ -78,7 +78,9 @@
     "file_of": "File {{i}} of {{n}}",
     "reencrypting": "Re-encrypting...",
     "restoring": "Restoring…",
-    "waiting_hello": "Waiting for confirmation…"
+    "waiting_hello": "Waiting for confirmation…",
+    "uploading": "Uploading…",
+    "pinning": "Downloading the whole file so it can be kept permanently…"
   },
   "notice": {
     "encrypted_one": "Encrypted {{count}} file",
@@ -620,7 +622,24 @@
     "menu_remove_cache": "Remove from cache",
     "removed_cache": "Removed from cache, freed {{size}}",
     "remove_cache_failed": "Failed to remove cached blocks",
-    "vendor_telegram": "Telegram"
+    "vendor_telegram": "Telegram",
+    "upload": "Upload",
+    "uploading": "Uploading…",
+    "upload_pick_title": "Choose files to upload",
+    "upload_failed": "The upload failed.",
+    "upload_partial": "Uploaded {{ok}}. These did not go through: {{names}}",
+    "upload_done_one": "Uploaded 1 file",
+    "upload_done_other": "Uploaded {{n}} files",
+    "menu_pin": "Keep permanently",
+    "menu_unpin": "Stop keeping permanently",
+    "pinned": "Kept on this machine; it opens offline now",
+    "unpinned": "No longer kept permanently; it counts towards the cache limit again",
+    "pin_failed": "Could not keep it permanently.",
+    "unpin_failed": "Could not stop keeping it permanently.",
+    "cache_temp": "Temporary cache",
+    "cache_pinned": "Kept permanently",
+    "cache_pinned_files_one": "1 file",
+    "cache_pinned_files_other": "{{n}} files"
   },
   "common": {
     "back": "Back",

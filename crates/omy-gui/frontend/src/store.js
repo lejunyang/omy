@@ -2068,7 +2068,10 @@ function remoteFileCacheKey(placeId, path) {
  * 列目录不逐文件查：一部几 GB 的电影有数千块，逐文件 stat 会拖慢整屏扫描。
  */
 export async function requestRemoteFileCache(f) {
-  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return;
+  // 普通文件也要查：远程位置里它们是主体内容，同样走块缓存、
+  // 同样值得永久保留（离线看视频）。原先这里排除非加密文件，
+  // 于是普通文件的右键菜单里永远没有「转为永久」，而后端明明支持。
+  if (!state.remotePlace || !f || f.is_dir) return;
   try {
     const stat = await api.remoteCacheFileStat(state.remotePlace, f.id, f.size || 0);
     const key = remoteFileCacheKey(state.remotePlace, f.id);
@@ -2084,9 +2087,106 @@ export function remoteFileCache(f) {
   return state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] || null;
 }
 
+/** 选本地文件上传到当前远程目录。
+ *
+ * 上传用的是**磁盘上的文件名**（后端保证）。用户开了文件名加密时磁盘上
+ * 就是那串密文名——用解密后的真名上传等于把加密掉的文件名主动交给服务端。
+ *
+ * 部分成功是常态（网络抖动、个别文件超限），所以逐个报而不是一句
+ * 「失败了」：不区分的话用户不知道哪些传上去了，再传一次就产生重复文件。
+ */
+export async function uploadToRemote() {
+  if (!state.remotePlace || !state.remoteDir) return false;
+  let paths;
+  try {
+    paths = await api.pickFiles(i18n.t('rplace.upload_pick_title'));
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.upload_failed'));
+    return false;
+  }
+  if (!paths || !paths.length) return false; // 用户取消
+
+  state.busy = true;
+  state.busyKey = 'busy.uploading';
+  state.error = '';
+  state.notice = '';
+  try {
+    const res = await api.remoteUpload(state.remotePlace, state.remoteDir, paths);
+    const ok = res.filter((r) => r.ok).length;
+    const bad = res.filter((r) => !r.ok);
+    // 传完必须重新列目录，否则用户看不到刚传上去的东西、以为失败了
+    await reloadRemoteDir();
+    if (bad.length && ok) {
+      // 部分成功要说清哪些没成——只说「部分失败」的话，
+      // 用户只能整批重传，于是产生重复文件
+      state.error = i18n.t('rplace.upload_partial', {
+        ok,
+        names: bad.map((b) => b.name).join('、'),
+      });
+    } else if (bad.length) {
+      state.error = i18n.t('rplace.upload_failed');
+    } else {
+      setNotice(i18n.tn('rplace.upload_done', ok));
+    }
+    return ok > 0;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.upload_failed'));
+    return false;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
+/** 把一个远程文件转为**永久缓存**。
+ *
+ * 先把整个文件预热到本地再标记。不预热的话永久层里只有碰巧缓存过的
+ * 那几块，而用户以为整个文件都留下了——直到离线打开失败才发现。
+ * 那是承诺与事实不符，比不提供这个功能更糟。
+ *
+ * 预热要下整个文件，所以走 busy 态而不是静默进行。
+ */
+export async function pinRemoteFile(f) {
+  if (!state.remotePlace || !f || f.is_dir) return false;
+  state.busy = true;
+  state.busyKey = 'busy.pinning';
+  state.error = '';
+  try {
+    const stat = await api.remoteCachePin(state.remotePlace, f.id, f.size || 0);
+    state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] = stat;
+    setNotice(i18n.t('rplace.pinned'));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.pin_failed'));
+    return false;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
+/** 取消永久缓存。
+ *
+ * 内容会搬回临时层，也就是**重新计入上限、重新参与淘汰**，可能很快被清掉。
+ * 那正是「取消永久」该有的语义；只改标记的话空间不会真的还回来。
+ */
+export async function unpinRemoteFile(f) {
+  if (!state.remotePlace || !f || f.is_dir) return false;
+  try {
+    const stat = await api.remoteCacheUnpin(state.remotePlace, f.id, f.size || 0);
+    state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] = stat;
+    setNotice(i18n.t('rplace.unpinned'));
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.unpin_failed'));
+    return false;
+  }
+}
+
 /** 删除单个远程文件的本地密文块。只读位置也允许：只清本机缓存，绝不写云端。 */
 export async function removeRemoteFileCache(f) {
-  if (!state.remotePlace || !f || f.is_dir || !f.is_encrypted) return false;
+  // 同 requestRemoteFileCache：普通文件也有缓存块要清
+  if (!state.remotePlace || !f || f.is_dir) return false;
   try {
     const r = await api.remoteCacheRemoveFile(state.remotePlace, f.id, f.size || 0);
     const key = remoteFileCacheKey(state.remotePlace, f.id);

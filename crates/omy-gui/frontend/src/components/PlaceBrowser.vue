@@ -12,11 +12,15 @@
  * 所以它比 RemoteScreen 多一层「位置列表」：没进入某个位置时先列出
  * 已保存的位置，点进去才是目录浏览。
  *
- * # 只读能力投影
+ * # 能力位图投影
  *
- * 首期所有云盘位置都只做浏览/点播，不渲染任何上传、新建、删除、重命名
- * 按钮——后端写命令也还没接。`caps` 已经在状态栏如实显示「只读/可写」，
- * 写链路在只读浏览稳定后再开，避免放出点了却报错的按钮。
+ * 写类操作（上传等）按**能力位图**渲染，不给某个 provider 写特判。
+ * 能力由后端按**目标目录**的真实情况给出：同一个 Telegram 位置里，
+ * 根目录（对话列表）不可写、只读频道不可写、自己的群可写——所以判据必须是
+ * 当前目录的 effective caps；用位置级的会在只读对话上放出一个点了必然
+ * 失败的按钮。
+ *
+ * 不支持的能力**整项不出现而非置灰**：灰按钮会让人去找怎么启用它。
  */
 
 import { computed, ref } from 'vue';
@@ -36,6 +40,9 @@ import {
   retryRemoteEntry,
   decryptRemoteToLocal,
   requestRemoteFileCache,
+  uploadToRemote,
+  pinRemoteFile,
+  unpinRemoteFile,
   remoteFileCache,
   removeRemoteFileCache,
   placeThumbUrl,
@@ -271,14 +278,33 @@ const rmenuItems = computed(() => {
       label: i18n.t('rplace.menu_decrypt_local'),
     });
   }
-  // 缓存状态是打开菜单时异步查的，查到非零块前这一项不出现（避免空操作）
-  const cstat = !f.is_dir && f.is_encrypted ? remoteFileCache(f) : null;
-  if (cstat && cstat.cached_blocks > 0) {
-    items.push({
-      key: 'remove-cache',
-      icon: '🗄️',
-      label: i18n.t('rplace.menu_remove_cache'),
-    });
+  // 缓存相关。状态是打开菜单时异步查的，查到之前不出现（避免空操作）。
+  //
+  // 「转为永久」在产品上是**一次真实的下载任务**（要先把整个文件预热到
+  // 本地），不是一个点完就静默生效的开关——不预热的话永久层里只有碰巧
+  // 缓存过的那几块，而用户以为整个文件都留下了，直到离线打开失败才发现。
+  const cstat = !f.is_dir ? remoteFileCache(f) : null;
+  if (cstat) {
+    if (cstat.pinned) {
+      items.push({
+        key: 'unpin',
+        icon: '📌',
+        label: i18n.t('rplace.menu_unpin'),
+      });
+    } else {
+      items.push({
+        key: 'pin',
+        icon: '📌',
+        label: i18n.t('rplace.menu_pin'),
+      });
+    }
+    if (cstat.cached_blocks > 0) {
+      items.push({
+        key: 'remove-cache',
+        icon: '🗄️',
+        label: i18n.t('rplace.menu_remove_cache'),
+      });
+    }
   }
   return items;
 });
@@ -293,6 +319,31 @@ async function onMenuPick(key) {
     await decryptRemoteToLocal(f);
   } else if (key === 'remove-cache') {
     await removeRemoteFileCache(f);
+  } else if (key === 'pin') {
+    await pinRemoteFile(f);
+  } else if (key === 'unpin') {
+    await unpinRemoteFile(f);
+  }
+}
+
+/** 当前目录可写吗（决定上传按钮出不出现）。
+ *
+ * 用**当前目录**的能力而不是位置级能力：同一个 Telegram 位置里，
+ * 根目录（对话列表）不可写、只读频道不可写、自己的群可写。
+ * 用位置级的会在只读对话上放出一个点了必然失败的按钮。
+ */
+const canWrite = computed(() => !!currentCaps.value?.write && !!state.remoteDir);
+
+const uploading = ref(false);
+
+/** 选本地文件上传到当前对话。 */
+async function doUpload() {
+  if (uploading.value) return;
+  uploading.value = true;
+  try {
+    await uploadToRemote();
+  } finally {
+    uploading.value = false;
   }
 }
 
@@ -475,6 +526,19 @@ function rowTitle(f) {
       </nav>
 
       <div class="vtoggle">
+        <!-- 上传按钮按**能力位图**出现，不给 Telegram 写特判。
+             同一个位置里根目录（对话列表）与只读频道都不可写，
+             所以判据必须是当前目录的 effective caps 而非位置级 caps。
+             不支持就整个不出现而非置灰——灰按钮会让人去找怎么启用。 -->
+        <button
+          v-if="canWrite"
+          class="btn small"
+          data-pb="upload"
+          :disabled="uploading"
+          @click="doUpload"
+        >
+          {{ uploading ? i18n.t('rplace.uploading') : '⬆️ ' + i18n.t('rplace.upload') }}
+        </button>
         <button class="btn small" data-pb="add" @click="$emit('add')">
           ＋ {{ i18n.t('rplace.add_short') }}
         </button>
