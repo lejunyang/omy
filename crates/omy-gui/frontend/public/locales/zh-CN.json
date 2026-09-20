@@ -734,7 +734,12 @@
     "conn_check": "检查连接",
     "proxy_from_system": "从系统设置读取",
     "proxy_scheme_hint": "只支持 socks5://。http:// 会按同端口的 SOCKS5 尝试。",
-    "proxy_scheme_fix": "改为 socks5://"
+    "proxy_scheme_fix": "改为 socks5://",
+    "req_running_ok": "Telegram Desktop 没有运行",
+    "req_running_bad": "Telegram Desktop 正在运行，需要先退出",
+    "req_path_ok": "已找到 tdata 目录",
+    "req_path_bad": "还没有指定有效的 tdata 目录",
+    "browse": "浏览…"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

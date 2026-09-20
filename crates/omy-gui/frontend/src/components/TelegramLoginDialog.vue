@@ -292,6 +292,23 @@ async function openTdata() {
   }
 }
 
+/** 打开目录选择器挑 tdata。
+ *
+ * 手输一个深路径既容易打错、也没法确认自己选对了。复用既有的
+ * pickFolder（tauri dialog 插件本来就在用）。 */
+async function browseTdata() {
+  try {
+    const dir = await api.pickFolder(i18n.t('tg.tdata_path'));
+    if (dir) {
+      tdPath.value = dir;
+      tdAuto.value = false;
+      await checkTdPath();
+    }
+  } catch {
+    // 用户取消或没有选择器，维持原样
+  }
+}
+
 /** 路径变了就即时校验，让「选错目录」当场可见。 */
 async function checkTdPath() {
   const p = tdPath.value.trim();
@@ -523,10 +540,25 @@ onBeforeUnmount(() => {
           <div class="sgh" data-tg="td-title">{{ i18n.t('tg.tdata_title') }}</div>
           <p class="lead">{{ i18n.t('tg.tdata_desc') }}</p>
 
-          <!-- 前提①：客户端在跑就占着 tdata。指名道姓说清「关窗口不够，
-               要从托盘退出」，而不是抛一个文件锁错误让人去查磁盘权限 -->
-          <div v-if="tdRunning" class="warnbox" data-tg="td-running">
-            {{ i18n.t('tg.tdata_running') }}
+          <!-- 前提检查清单。
+               原来这两条前提是散开的：客户端在跑是个 warnbox，路径没找到
+               是输入框下面一行小字——长得不一样、位置也不一样，用户看不出
+               「我还差几件事才能继续」。做成逐项打勾就一眼可见。 -->
+          <div class="reqs" data-tg="td-reqs">
+            <div class="req" :data-ok="tdRunning ? 0 : 1" data-req="running">
+              <span class="ri" aria-hidden="true">{{ tdRunning ? '✕' : '✓' }}</span>
+              <span class="rt">
+                <b>{{ i18n.t(tdRunning ? 'tg.req_running_bad' : 'tg.req_running_ok') }}</b>
+                <span v-if="tdRunning" class="d">{{ i18n.t('tg.tdata_running') }}</span>
+              </span>
+            </div>
+            <div class="req" :data-ok="tdPathOk ? 1 : 0" data-req="path">
+              <span class="ri" aria-hidden="true">{{ tdPathOk ? '✓' : '✕' }}</span>
+              <span class="rt">
+                <b>{{ i18n.t(tdPathOk ? 'tg.req_path_ok' : 'tg.req_path_bad') }}</b>
+                <span v-if="!tdPathOk" class="d">{{ i18n.t('tg.tdata_not_found') }}</span>
+              </span>
+            </div>
           </div>
 
           <!-- 前提②⑤：找不到就**就地**给输入框。显示「未检测到」等于把
@@ -541,6 +573,9 @@ onBeforeUnmount(() => {
               spellcheck="false"
               @input="checkTdPath"
             />
+            <button class="btn" data-tg="td-browse" @click="browseTdata">
+              {{ i18n.t('tg.browse') }}
+            </button>
             <span v-if="tdAuto && tdPathOk" class="d" data-tg="td-auto">
               {{ i18n.t('tg.tdata_autofound') }}
             </span>
@@ -718,6 +753,48 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 前提检查清单：逐项打勾，一眼看出还差什么。
+   散在各处的提示做不到这件事——用户得自己把它们拼起来 */
+.reqs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+.req {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 9px;
+  border-radius: var(--r-s);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.req[data-ok='1'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+.req[data-ok='0'] {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.req .ri {
+  flex: 0 0 auto;
+  line-height: 1.5;
+}
+.req[data-ok='1'] .ri {
+  color: var(--ok);
+}
+.req[data-ok='0'] .ri {
+  color: var(--warn);
+}
+.req .rt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* 连通性自检行：一行状态 + 两个小按钮。
    它出现在登录按钮之前，所以不能太重——是给用户定心的，不是报警。 */
 .conn {

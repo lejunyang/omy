@@ -734,7 +734,12 @@
     "conn_check": "Check connection",
     "proxy_from_system": "Read from system settings",
     "proxy_scheme_hint": "Only socks5:// is supported. http:// is retried as SOCKS5 on the same port.",
-    "proxy_scheme_fix": "Change to socks5://"
+    "proxy_scheme_fix": "Change to socks5://",
+    "req_running_ok": "Telegram Desktop is not running",
+    "req_running_bad": "Telegram Desktop is running — quit it first",
+    "req_path_ok": "tdata folder found",
+    "req_path_bad": "No valid tdata folder selected yet",
+    "browse": "Browse…"
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",
