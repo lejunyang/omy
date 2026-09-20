@@ -268,6 +268,25 @@ pub struct Remote {
     /// 解开需要本机凭据库里的密钥。配置文件本身被拷走也用不了。
     #[serde(default)]
     pub places: Vec<SavedPlace>,
+    /// 用户自己的 Telegram `api_id`；`None` 表示用内置那一份。
+    ///
+    /// # 为什么要给这个口子
+    ///
+    /// 内置的是 Telegram Desktop 的 2040（DEC-22）。它一旦触发
+    /// `API_ID_PUBLISHED_FLOOD`，**所有用户同时连不上，而且没有任何自救
+    /// 办法**——只能等我们发新版本。让用户能填自己申请的那一对，
+    /// 就是这条逃生口。
+    #[serde(default)]
+    pub telegram_api_id: Option<i32>,
+    /// 与 [`Self::telegram_api_id`] 配对的 `api_hash`（密文信封）。
+    ///
+    /// **它是凭据，不是配置项**，所以和 [`SavedPlace::secret`] 一样经
+    /// `omy-secret` 加密后存放，不明文躺在配置文件里。
+    ///
+    /// 两个字段要么都有要么都没有：只填一半时按「没填」处理并报错，
+    /// 而不是静默回落到内置值——那会让用户以为自己那对生效了。
+    #[serde(default)]
+    pub telegram_api_hash: Option<String>,
 }
 
 /// 一个持久化的远程位置。
@@ -323,6 +342,9 @@ impl Default for Remote {
             scan_concurrency: 8,
             scan_omy_only: true,
             places: Vec::new(),
+            // 默认用内置 api_id。填自己那一对是逃生口，不是常规配置
+            telegram_api_id: None,
+            telegram_api_hash: None,
         }
     }
 }

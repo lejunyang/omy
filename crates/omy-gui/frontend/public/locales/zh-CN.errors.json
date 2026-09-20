@@ -113,5 +113,6 @@
   "tg_tdata_unsupported": "无法解析这份 tdata，它的格式与预期不同。可以改用扫码登录。",
   "tg_tdata_io": "读取 tdata 失败，请检查这些文件是否可以访问。",
   "tg_tdata_failed": "导入过程出错。",
-  "tg_connect_no_proxy": "直连 Telegram 数据中心超时，且没有配置代理。请在代理地址里填一个 socks5:// 地址后重试。"
+  "tg_connect_no_proxy": "直连 Telegram 数据中心超时，且没有配置代理。请在代理地址里填一个 socks5:// 地址后重试。",
+  "tg_bad_api_id": "api_id 或 api_hash 格式不对。api_id 是一串数字，api_hash 是 32 位十六进制。两项都要填。"
 }

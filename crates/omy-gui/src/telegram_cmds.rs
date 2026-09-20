@@ -371,6 +371,104 @@ async fn probe_via_socks5(proxy: &str, target: (&str, u16)) -> bool {
     rep[1] == 0x00
 }
 
+/// 当前用的是哪一份应用身份。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApiIdStatus {
+    /// 是不是内置那一份。
+    pub builtin: bool,
+    /// 当前生效的 `api_id`。公开信息，可以显示。
+    pub id: i32,
+    /// 用户是否已保存过自己的一对。
+    ///
+    /// 与 `builtin` 分开：保存过但凭据库暂时打不开时，`builtin` 是
+    /// `true`（实际回落了）而这里仍是 `true`——界面要能说清
+    /// 「你填过，但这次没读出来」，而不是让它看起来像没填过。
+    pub configured: bool,
+}
+
+/// 查当前的应用身份。
+///
+/// **不返回 `api_hash`**：它是凭据，界面没有任何需要显示它的理由。
+#[tauri::command]
+#[must_use]
+pub fn telegram_api_id_status() -> ApiIdStatus {
+    // 与 settings.rs 的 config_get / config_set 走同一条路：配置按需读写，
+    // 不做成常驻 state。多一种访问方式就多一处会不同步的地方
+    let (id, hash) = omy_config::Config::load()
+        .map(|c| (c.remote.telegram_api_id, c.remote.telegram_api_hash.clone()))
+        .unwrap_or((None, None));
+    let configured = id.is_some() && hash.is_some();
+    // 解不开信封时回落到内置：连不上比「用错身份」更糟
+    let app = AppId::from_config(id, hash.as_deref()).unwrap_or_else(|_| AppId::builtin());
+    ApiIdStatus {
+        builtin: app.is_builtin(),
+        id: app.id(),
+        configured,
+    }
+}
+
+/// 保存用户自己的 api_id / api_hash。
+///
+/// # 为什么要有这条逃生口
+///
+/// 内置的是 Telegram Desktop 的 2040。它一旦触发
+/// `API_ID_PUBLISHED_FLOOD`，所有用户同时连不上而**没有任何自救办法**
+/// ——只能等我们发新版本。
+///
+/// # Errors
+///
+/// 格式不合法时返回 `tg_bad_api_id`。在这里拦住是为了让用户当场知道
+/// 填错了：放过去的话服务端只回一句 `CONNECTION_API_ID_INVALID`，
+/// 而界面上会显示成「登录失败」，指不到「你那两个字段填错了」。
+#[tauri::command]
+pub fn telegram_api_id_save(api_id: i32, api_hash: String) -> CmdResult<()> {
+    // 校验走已有的 AppId::from_config，不另写一套规则——两套规则迟早
+    // 会不一致，而不一致的那一侧会放进一个连不上的身份
+    AppId::from_config(Some(api_id), Some(&api_hash))
+        .map_err(|e| CmdError::with("tg_bad_api_id", detail(&e.to_string())))?;
+
+    let mut c = omy_config::Config::load()
+        .map_err(|e| CmdError::with("config_read_failed", detail(&e.to_string())))?;
+    c.remote.telegram_api_id = Some(api_id);
+    c.remote.telegram_api_hash = Some(api_hash);
+    c.save()
+        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
+    Ok(())
+}
+
+/// 恢复使用内置的那一份。
+///
+/// # Errors
+///
+/// 配置写入失败时返回。
+#[tauri::command]
+pub fn telegram_api_id_reset() -> CmdResult<()> {
+    // **不能只把字段设成 None 再 save。**
+    //
+    // `Config::save_to` 是合并写入而不是整体覆盖——那是为了保留更高版本
+    // 写入的、本版本不认识的键（否则新旧版本来回切一次，新版本的设置就
+    // 悄悄丢了）。代价是 `Option` 字段设成 `None` 时序列化后**根本不产生
+    // 这个键**，合并时老值原封不动留着。
+    //
+    // 实测过这个后果：点「恢复内置」毫无反应，配置里仍是用户那一对，
+    // 而界面状态文案也不变——两处都指不到「保存其实没写进去」。
+    //
+    // 所以这里显式把键从文件里删掉。不去改 merge_into 的语义：那会波及
+    // 所有配置项，风险远大于收益。
+    let path = omy_config::config_path().ok_or_else(|| CmdError::code("config_no_path"))?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut table = text.parse::<toml::Table>().unwrap_or_default();
+    if let Some(toml::Value::Table(remote)) = table.get_mut("remote") {
+        remote.remove("telegram_api_id");
+        remote.remove("telegram_api_hash");
+    }
+    let out = toml::to_string_pretty(&table)
+        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
+    omy_core::fsatomic::write_atomic(&path, out.as_bytes())
+        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
+    Ok(())
+}
+
 #[tauri::command]
 #[must_use]
 pub fn telegram_can_persist() -> bool {

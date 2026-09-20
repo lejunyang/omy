@@ -611,6 +611,16 @@ export const transferPauseAll = (paused) =>
 /** 清除已结束的任务（完成 / 失败 / 取消）。 */
 export const transferClearDone = () => invoke('transfer_clear_done');
 
+/** 当前用的是内置 api_id 还是用户自己的。不返回 api_hash（它是凭据）。 */
+export const telegramApiIdStatus = () => invoke('telegram_api_id_status');
+
+/** 保存用户自己的 api_id / api_hash。格式不合法时报 tg_bad_api_id。 */
+export const telegramApiIdSave = (apiId, apiHash) =>
+  invoke('telegram_api_id_save', { apiId, apiHash });
+
+/** 恢复使用内置的那一份。 */
+export const telegramApiIdReset = () => invoke('telegram_api_id_reset');
+
 /** 登录之前先自检能不能连到 Telegram。
  *
  * 返回 `{status, elapsed_ms, via_proxy}`（snake_case，同本仓库其它命令），status 是

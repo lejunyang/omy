@@ -739,7 +739,21 @@
     "req_running_bad": "Telegram Desktop 正在运行，需要先退出",
     "req_path_ok": "已找到 tdata 目录",
     "req_path_bad": "还没有指定有效的 tdata 目录",
-    "browse": "浏览…"
+    "browse": "浏览…",
+    "api_builtin": "当前使用 omy 内置的 API 凭据。",
+    "api_mine": "当前使用你自己的 api_id（{{id}}）。",
+    "api_custom": "改用自己的 api_id",
+    "api_id_label": "api_id",
+    "api_hash_label": "api_hash",
+    "api_save": "保存并重连",
+    "api_reset": "恢复内置",
+    "api_hint": "在 my.telegram.org 申请。两项都要填。",
+    "api_saved": "已保存，下次连接生效。",
+    "risk_title": "用第三方客户端登录的风险",
+    "risk_1": "账号可能被 Telegram 置于观察状态，严重时被限制或封禁。",
+    "risk_2": "omy 会以「omy」的名义出现在你的「已登录设备」列表里，你可以随时在那里终止它。",
+    "risk_ack": "我了解上述风险，继续登录",
+    "risk_next": "继续"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

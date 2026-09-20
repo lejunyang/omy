@@ -65,6 +65,66 @@ const tdPlaceholder = computed(() =>
     : '~/.local/share/TelegramDesktop/tdata',
 );
 
+/** 是否还没通过风险告知那一步。
+ *
+ * 只在**首次登录**时拦一次——已经有 Telegram 位置的用户再加一个账号时
+ * 不重复拦，那只是摩擦。
+ *
+ * 判据用「本机有没有 Telegram 位置」而不是 localStorage 里的一个标记：
+ * 后者在换机器或清数据之后就不再提示了，而那时恰恰是一次真正的首次登录。
+ */
+const needRisk = ref(false);
+/** 风险告知的勾选。 */
+const riskAck = ref(false);
+
+/** api_id 状态：{builtin, id, configured}。 */
+const apiStatus = ref(null);
+/** api_id 面板展开着吗。 */
+const apiOpen = ref(false);
+const apiId = ref('');
+const apiHash = ref('');
+const apiSaved = ref(false);
+const apiErr = ref('');
+
+async function loadApiStatus() {
+  try {
+    apiStatus.value = await api.telegramApiIdStatus();
+  } catch {
+    apiStatus.value = null;
+  }
+}
+
+async function saveApiId() {
+  apiErr.value = '';
+  apiSaved.value = false;
+  const n = Number.parseInt(apiId.value.trim(), 10);
+  if (!Number.isFinite(n)) {
+    apiErr.value = i18n.te('tg_bad_api_id');
+    return;
+  }
+  try {
+    await api.telegramApiIdSave(n, apiHash.value.trim());
+    apiSaved.value = true;
+    apiHash.value = '';
+    await loadApiStatus();
+  } catch (e) {
+    apiErr.value = i18n.te(api.errCode(e) || 'tg_bad_api_id');
+  }
+}
+
+async function resetApiId() {
+  apiErr.value = '';
+  apiSaved.value = false;
+  try {
+    await api.telegramApiIdReset();
+    apiId.value = '';
+    apiHash.value = '';
+    await loadApiStatus();
+  } catch (e) {
+    apiErr.value = i18n.te(api.errCode(e));
+  }
+}
+
 /** 连通性自检：null=没查过，否则 {status, elapsed_ms, via_proxy}。
  *
  * 字段是 snake_case——Rust 那边没加 serde rename，而本仓库其它命令
@@ -398,6 +458,21 @@ async function cancel() {
 
 onMounted(async () => {
   unlisten = await api.onTelegramLogin(onPhase);
+  // 首次登录才拦一次风险告知。判据是本机有没有 Telegram 位置——
+  // 用 localStorage 标记的话，换机器或清数据之后就不再提示了，
+  // 而那时恰恰是一次真正的首次登录
+  try {
+    // 用 remotePlaceList（已注册的远程位置），不是 listPlaces——
+    // 后者返回的是本地侧栏起点（主目录、磁盘根），里面永远没有
+    // kind==='telegram'，于是每次都会拦，而不是只拦首次
+    const places = await api.remotePlaceList();
+    needRisk.value = !places.some((p) => p.kind === 'telegram');
+  } catch {
+    // 查不到就当作首次：多问一次好过漏掉告知
+    needRisk.value = true;
+  }
+  void loadApiStatus();
+
   try {
     // 先填默认代理再做别的：用户打开对话框第一眼就该看到它，
     // 而不是在连接失败之后才被告知「你需要配代理」
@@ -468,6 +543,34 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
+      <!-- 首次登录先过风险告知。这一条有事实基础而非形式主义：
+           官方明确写着用非官方客户端登录会让账号被置于观察状态，
+           而用户一旦登录就无法撤销。只拦首次，不重复打扰 -->
+      <template v-else-if="needRisk">
+        <div class="sgh" data-tg="risk-title">{{ i18n.t('tg.risk_title') }}</div>
+        <ul class="risklist" data-tg="risk-list">
+          <li>{{ i18n.t('tg.risk_1') }}</li>
+          <li>{{ i18n.t('tg.risk_2') }}</li>
+        </ul>
+        <label class="chk">
+          <input v-model="riskAck" type="checkbox" data-tg="risk-ack" />
+          {{ i18n.t('tg.risk_ack') }}
+        </label>
+        <div class="act">
+          <button class="btn" data-tg="cancel" @click="emit('cancel')">
+            {{ i18n.t('common.cancel') }}
+          </button>
+          <button
+            class="btn pri"
+            data-tg="risk-next"
+            :disabled="!riskAck"
+            @click="needRisk = false"
+          >
+            {{ i18n.t('tg.risk_next') }}
+          </button>
+        </div>
+      </template>
+
       <!-- 开始之前：说明 + 代理 + 「存不存得住」的前置告知 -->
       <template v-else-if="!started">
         <!-- 只在扫码那一支显示。放在外层的话 tdata 面板上方也会顶着
@@ -499,6 +602,44 @@ onBeforeUnmount(() => {
           <button class="btn" data-tg="px-fixbtn" @click="fixProxyScheme">
             {{ i18n.t('tg.proxy_scheme_fix') }}
           </button>
+        </div>
+
+        <!-- 内置 api_id 说明 + 改用自己的那一对。
+             这是一条逃生口：内置的是 Telegram Desktop 的 2040，它一旦触发
+             API_ID_PUBLISHED_FLOOD，所有用户同时连不上而没有自救办法 -->
+        <div class="apibox" data-tg="apibox">
+          <span class="d" data-tg="api-status">
+            {{ apiStatus && !apiStatus.builtin
+              ? i18n.t('tg.api_mine', { id: apiStatus.id })
+              : i18n.t('tg.api_builtin') }}
+          </span>
+          <button class="btn" data-tg="api-toggle" @click="apiOpen = !apiOpen">
+            {{ i18n.t(apiStatus && !apiStatus.builtin ? 'tg.api_reset' : 'tg.api_custom') }}
+          </button>
+        </div>
+        <div v-if="apiOpen" class="apifields" data-tg="apifields">
+          <label class="f">
+            <span class="fl">{{ i18n.t('tg.api_id_label') }}</span>
+            <input v-model="apiId" data-tg="api-id" type="text" spellcheck="false" />
+          </label>
+          <label class="f">
+            <span class="fl">{{ i18n.t('tg.api_hash_label') }}</span>
+            <input v-model="apiHash" data-tg="api-hash" type="password"
+                   autocomplete="off" spellcheck="false" />
+          </label>
+          <span class="d">{{ i18n.t('tg.api_hint') }}</span>
+          <span v-if="apiErr" class="d warn" data-tg="api-err">{{ apiErr }}</span>
+          <span v-if="apiSaved" class="d ok" data-tg="api-saved">
+            {{ i18n.t('tg.api_saved') }}
+          </span>
+          <div class="act">
+            <button class="btn" data-tg="api-reset" @click="resetApiId">
+              {{ i18n.t('tg.api_reset') }}
+            </button>
+            <button class="btn pri" data-tg="api-save" @click="saveApiId">
+              {{ i18n.t('tg.api_save') }}
+            </button>
+          </div>
         </div>
 
         <!-- 连通性自检。放在登录之前，把「连不上」的归因先定下来 -->
@@ -753,6 +894,50 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.risklist {
+  margin: 8px 0 14px;
+  padding-inline-start: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg2);
+}
+.chk {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.apibox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+.apibox .d {
+  flex: 1;
+}
+.apibox .btn,
+.apifields .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.apifields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--bg2);
+}
+.apifields .ok {
+  color: var(--ok);
+}
+
 /* 前提检查清单：逐项打勾，一眼看出还差什么。
    散在各处的提示做不到这件事——用户得自己把它们拼起来 */
 .reqs {

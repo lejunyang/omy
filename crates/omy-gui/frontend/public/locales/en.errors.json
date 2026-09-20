@@ -113,5 +113,6 @@
   "tg_tdata_unsupported": "That tdata could not be parsed; its format is not what omy expects. You can sign in with a QR code instead.",
   "tg_tdata_io": "Reading the tdata folder failed. Check that those files are accessible.",
   "tg_tdata_failed": "The import failed.",
-  "tg_connect_no_proxy": "Timed out connecting directly to Telegram, and no proxy is configured. Enter a socks5:// address in the proxy field and try again."
+  "tg_connect_no_proxy": "Timed out connecting directly to Telegram, and no proxy is configured. Enter a socks5:// address in the proxy field and try again.",
+  "tg_bad_api_id": "Malformed api_id or api_hash. api_id is a number and api_hash is 32 hex characters. Both are required."
 }
