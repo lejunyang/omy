@@ -244,11 +244,35 @@ impl<S: RemoteStore> RemoteSource<S> {
     /// 任何一块取失败都立刻返回：半个文件的永久缓存没有意义，
     /// 继续取下去只会让用户等更久才看到同一个失败。
     pub fn prefetch_all(&self) -> CoreResult<u64> {
+        self.prefetch_all_with_progress(&mut |_| true)
+    }
+
+    /// 同 [`Self::prefetch_all`]，但能报进度、也能被中止。
+    ///
+    /// `on_progress` 每取完一块调用一次，参数是**累计已取字节**；返回
+    /// `false` 表示请求中止，函数随即返回已取到的量。
+    ///
+    /// # 为什么在分片边界判断中止
+    ///
+    /// 从外面直接 abort 掉这个任务会在缓存里留下半个文件，而半个文件
+    /// 看起来和完整的一模一样——下次读到缺块的位置才会失败，那时已经
+    /// 指不到「上次取消过」这件事。让循环自己退出就没有这个问题。
+    ///
+    /// # Errors
+    ///
+    /// 取块失败（网络、限流、分片过期）时返回。
+    pub fn prefetch_all_with_progress(
+        &self,
+        on_progress: &mut dyn FnMut(u64) -> bool,
+    ) -> CoreResult<u64> {
         let total = self.total_ct_blocks();
         let mut got = 0u64;
         for b in 0..total {
             let data = self.fetch_block(b)?;
             got = got.saturating_add(data.len() as u64);
+            if !on_progress(got) {
+                break;
+            }
         }
         Ok(got)
     }

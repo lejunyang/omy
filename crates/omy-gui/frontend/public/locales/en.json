@@ -32,7 +32,8 @@
     "pick_folder": "Open folder…",
     "menu": "Menu",
     "tab_files": "Files",
-    "tab_devices": "Devices"
+    "tab_devices": "Devices",
+    "global": "Global"
   },
   "unlock": {
     "title": "Unlock",
@@ -774,5 +775,27 @@
     "today": "Today",
     "yesterday": "Yesterday",
     "stat": "{{total}} messages on this screen — {{files}} with files, {{texts}} text-only"
+  },
+  "xfer": {
+    "title": "Transfers",
+    "filter_all": "All",
+    "filter_active": "Active",
+    "filter_done": "Finished",
+    "pause_all": "Pause all",
+    "resume_all": "Resume all",
+    "clear_done": "Clear finished",
+    "empty": "No transfers.",
+    "empty_hint": "Uploads and files you keep permanently show up here.",
+    "group_upload": "Uploads",
+    "group_download": "Downloads",
+    "group_pin": "Keep permanently",
+    "st_waiting": "Waiting",
+    "st_waiting_secs": "Rate limited, {{n}}s",
+    "st_running": "Running",
+    "st_done": "Done",
+    "st_failed": "Failed",
+    "st_canceled": "Canceled",
+    "act_cancel": "Cancel",
+    "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed"
   }
 }

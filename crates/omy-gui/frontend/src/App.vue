@@ -77,6 +77,7 @@ import {
   // 而 onCtxPick 的异常没人接——表现就是「点了完全没反应」。
   keyManageable,
   revealEntry,
+  closeTransfers,
 } from './store.js';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
@@ -90,6 +91,7 @@ import PreviewOverlay from './components/PreviewOverlay.vue';
 import DevicePanel from './components/DevicePanel.vue';
 import RemoteScreen from './components/RemoteScreen.vue';
 import PlaceBrowser from './components/PlaceBrowser.vue';
+import TransferScreen from './components/TransferScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
@@ -849,6 +851,19 @@ onBeforeUnmount(() => {
 
   <!-- 云盘（WebDAV 等远程位置）：位置列表 + 目录浏览 + 点播。
        与局域网对端 RemoteScreen 互斥，二者都不在时才是本地文件。 -->
+  <TransferScreen
+    v-else-if="state.transfersOpen"
+    @pick="onPick"
+    @devices="showDevices = true"
+    @lang="switchLanguage"
+    @telegram="showTelegramLogin = true"
+    @settings="showSettings = true"
+    @lock="doLock"
+    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @files="closeTransfers()"
+    @places="closeTransfers()"
+  />
+
   <PlaceBrowser
     v-else-if="state.placeBrowserOpen"
     @need-unlock="onRemotePlaceUnlock"

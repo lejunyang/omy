@@ -13,6 +13,7 @@ import {
   detachTelegramPlace,
   deleteTelegramAccount,
   removeRemotePlace,
+  openTransfers,
 } from '../store.js';
 import ContextMenu from './ContextMenu.vue';
 
@@ -53,6 +54,16 @@ function go(path) {
 
 /** 右键菜单：`{ place, x, y }`，没有就是不显示。 */
 const rmenu = ref(null);
+
+/** 未结束的任务数，用于角标。
+ *
+ * 只数未结束的——完成的也算进去的话，数字只增不减，用户会以为有一堆
+ * 任务卡着。0 时整个角标不渲染，而不是显示一个「0」。 */
+const activeTransfers = computed(
+  () => (state.transfers || []).filter(
+    (t) => t.state === 'running' || t.state === 'waiting',
+  ).length,
+);
 
 /** 这个位置有没有「本机登录态」这回事。
  *
@@ -250,6 +261,22 @@ function iconOf(place) {
     <!-- Telegram 单独一个入口，不混进「连接远程位置」那个 WebDAV 表单：
          它的登录方式完全不同（扫码，不是填地址和密码），塞进同一个表单
          只能做成一个选了之后大半字段都灰掉的下拉，反而更难懂。 -->
+    <!-- 传输管理与文件浏览并列，是一个顶层入口而非某个位置的子页：
+         任务跨对话、跨位置，挂在某个位置下面用户切走就找不到了 -->
+    <div class="sgrp">{{ i18n.t('nav.global') }}</div>
+    <button
+      class="sitem"
+      :class="{ sel: state.transfersOpen }"
+      data-side="transfers"
+      @click="openTransfers(); emit('navigate')"
+    >
+      <span aria-hidden="true">🔀</span>
+      <span class="stext">{{ i18n.t('xfer.title') }}</span>
+      <span v-if="activeTransfers" class="badge" data-side="xferbadge">
+        {{ activeTransfers }}
+      </span>
+    </button>
+
     <button class="sitem" data-tg="entry" @click="$emit('telegram')">
       <span aria-hidden="true">✈️</span>
       <span class="stext">{{ i18n.t('tg.login_title') }}</span>

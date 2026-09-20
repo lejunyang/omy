@@ -54,6 +54,10 @@ export const state = reactive({
    * 错误的能力——而用户完全可能在那一瞬间点下去。
    */
   remoteDirCaps: null,
+  /** 传输任务快照（下载 / 上传 / 永久保留三类汇总）。 */
+  transfers: [],
+  /** 传输管理页是否打开。它是顶层页，与文件浏览、云盘并列。 */
+  transfersOpen: false,
   /** 当前对话是否开了「受保护内容」。只用于显示一行低权重告知。 */
   remoteProtected: false,
   /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
@@ -2276,7 +2280,15 @@ export async function pinRemoteFile(f) {
   state.busyKey = 'busy.pinning';
   state.error = '';
   try {
-    const stat = await api.remoteCachePin(state.remotePlace, f.id, f.size || 0);
+    // 带上列表里显示的那个名字。不传的话后端只能从 id 猜，而 Telegram
+    // 的 id 是 tg:<对话>:<消息号>，猜出来是个数字——传输列表里就会
+    // 出现一行「6」，用户不知道那是哪个文件（实测过）
+    const stat = await api.remoteCachePin(
+      state.remotePlace,
+      f.id,
+      f.size || 0,
+      f.real_name || f.name || null,
+    );
     state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] = stat;
     setNotice(i18n.t('rplace.pinned'));
     return true;
@@ -2336,17 +2348,33 @@ export async function removeRemoteFileCache(f) {
 
 /** 打开云盘浏览器（停在位置列表）。 */
 export async function openPlaceBrowser() {
+  state.transfersOpen = false;
   state.placeBrowserOpen = true;
   await reloadRemotePlaces();
 }/** 打开云盘浏览器并直接进入某个已保存位置（桌面侧栏入口）。
  *  必须同时置 placeBrowserOpen，否则只加载了目录数据、视图却还停在本地，
  *  表现为点侧栏云盘项「没反应」。 */
 export async function openPlaceBrowserAt(id) {
+  state.transfersOpen = false;
   state.placeBrowserOpen = true;
   await openRemotePlace(id);
 }
 
 /** 关闭云盘浏览器，回到本地文件，并退出当前位置。 */
+/** 打开传输管理页。
+ *
+ * 它是顶层入口而不是某个位置的子页：任务本身跨对话、跨位置，
+ * 挂在某个位置下面的话，用户切走就找不到了。 */
+export function openTransfers() {
+  state.transfersOpen = true;
+  state.placeBrowserOpen = false;
+}
+
+/** 关闭传输管理页，回到文件浏览。 */
+export function closeTransfers() {
+  state.transfersOpen = false;
+}
+
 export function closePlaceBrowser() {
   state.placeBrowserOpen = false;
   leaveRemotePlace();

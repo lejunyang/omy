@@ -531,9 +531,9 @@ export const remoteListContainer = (token) =>
  * **这是一次真实的下载任务**：会把整个文件的密文块都取到本地，耗时与文件
  * 大小成正比。只打标记的话「永久」只是承诺不是事实——下次离线打开照样失败。
  */
-export const remoteCachePin = (placeId, path, size) =>
+export const remoteCachePin = (placeId, path, size, name) =>
   invoke('remote_cache_pin', {
-    req: { place_id: placeId, path, size },
+    req: { place_id: placeId, path, size, name },
   });
 
 /** 取消永久缓存。
@@ -597,6 +597,19 @@ export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
  *
  * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
 export const TG_PENDING_ACCOUNT = 'pending';
+
+/** 当前全部传输任务（下载 / 上传 / 永久保留三类汇总）。 */
+export const transferList = () => invoke('transfer_list');
+
+/** 取消一条任务。执行体会在下一个分片边界干净退出。 */
+export const transferCancel = (id) => invoke('transfer_cancel', { id });
+
+/** 全部暂停 / 全部继续。 */
+export const transferPauseAll = (paused) =>
+  invoke('transfer_pause_all', { paused });
+
+/** 清除已结束的任务（完成 / 失败 / 取消）。 */
+export const transferClearDone = () => invoke('transfer_clear_done');
 
 /** 登录之前先自检能不能连到 Telegram。
  *

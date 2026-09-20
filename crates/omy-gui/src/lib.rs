@@ -36,6 +36,7 @@
 // 不是问题——否则每次构建都多一条噪音。
 #![allow(linker_messages)]
 
+pub mod transfers;
 mod browse;
 mod citem;
 mod commands;
@@ -137,6 +138,11 @@ pub fn run() {
         Arc::new(place_files::PlaceContainers::new());
     let for_protocol_containers = Arc::clone(&place_containers);
 
+    // 传输任务表：下载 / 上传 / 永久保留三类共用一张。
+    // 任务是跨对话的——用户可能同时在往一个对话传文件、从另一个缓存视频，
+    // 分散在各个位置里显示的话，他一切走就看不到也管不了了
+    let transfers = Arc::new(transfers::Transfers::default());
+
     // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
     // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
     let telegram_login: telegram_cmds::SharedLogin = Arc::new(telegram_cmds::LoginTask::new());
@@ -165,6 +171,7 @@ pub fn run() {
         .manage(Arc::clone(&place_files))
         .manage(Arc::clone(&place_thumbs))
         .manage(Arc::clone(&place_containers))
+        .manage(Arc::clone(&transfers))
         .manage(Arc::clone(&telegram_login))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
@@ -254,6 +261,10 @@ pub fn run() {
             place_cmds::remote_search,
             place_cmds::remote_messages,
             place_cmds::remote_dir_protected,
+            place_cmds::transfer_list,
+            place_cmds::transfer_cancel,
+            place_cmds::transfer_pause_all,
+            place_cmds::transfer_clear_done,
             place_cmds::remote_effective_caps,
             place_cmds::remote_probe_entry,
             place_cmds::remote_upload,

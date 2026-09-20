@@ -934,6 +934,12 @@ pub struct RemoteFileRef {
     pub place_id: String,
     pub path: String,
     pub size: u64,
+    /// 显示名，只用于传输列表。
+    ///
+    /// 由调用方给而不是从 `path` 猜：Telegram 的条目 id 形如
+    /// `tg:<对话>:<消息号>`，切出来是个数字，用户看不懂。
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// 「解密到本地」结果。
@@ -965,7 +971,8 @@ pub async fn remote_decrypt_to_local(
     req: RemoteFileRef,
     dest_dir: String,
 ) -> CmdResult<RemoteDecryptResult> {
-    let RemoteFileRef { place_id, path, size } = req;
+    // name 只给传输列表显示用，这条路径用不到，显式忽略
+    let RemoteFileRef { place_id, path, size, .. } = req;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1497,17 +1504,116 @@ pub struct RemoteCacheUsage {
 /// 位置不存在、不是 omy 文件、网络失败时返回。
 #[tauri::command]
 pub async fn remote_cache_pin(
+    app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     req: RemoteFileRef,
 ) -> CmdResult<u64> {
+    use crate::transfers::{TaskKind, TaskState};
+
     let source = build_remote_source(&reg, &cache, &req).await?;
+
+    // 进传输管理页。「转为永久」在产品上就是一次真实的下载任务——
+    // 有进度、可取消、失败可重试——所以它和上传、下载同表。
+    //
+    // 不登记会怎样：用户点完「转为永久」界面上什么都没有，而预热一个
+    // 几 MB 的文件要好几秒，看起来像没点上。
+    // 总量用前端给的 size：RemoteSource 自己不知道明文大小，
+    // 而这个值本来就是列表里显示的那个，两处一致
+    let total = req.size;
+    // 显示名由调用方给。
+    //
+    // 不在这里按分隔符切 id 去猜：Telegram 的条目 id 形如
+    // `tg:<对话>:<消息号>`，按 ':' 取最后一段会得到「6」这样的消息号，
+    // 用户在传输列表里看到一行「6」根本不知道是哪个文件（实测过）。
+    // 这和当初 remote_probe_entry 按 '/' 猜名字是同一个错误——
+    // **让调用方传名字，不要在后端猜 id 的形状。**
+    //
+    // 调用方给的是列表里显示的那个名字：未解锁时是磁盘名，已解锁时是
+    // 解密后的真名。后者确实是明文，但它本来就已经显示在用户自己的
+    // 屏幕上了，传输列表不构成新的泄露面。
+    let name = req.name.clone().unwrap_or_else(|| req.path.clone());
+    let target = reg
+        .get(&req.place_id)
+        .map_or_else(|| req.place_id.clone(), |p| p.name.clone());
+    let h = xfer.start(&app, TaskKind::Pin, name, target, total);
+
     // 先确保内容真的在本地：pin 只搬运已有的块，没有的块搬不了。
     // 不预热的话，「转为永久」会变成「把已经缓存的那几块标成永久」，
     // 而用户以为整个文件都留下来了——直到离线时才发现不是。
-    tokio::task::block_in_place(|| source.prefetch_all())
-        .map_err(|_| CmdError::code("remote_prefetch_failed"))?;
-    source.pin().map_err(|e| to_cmd_err(&e))
+    let h2 = Arc::clone(&h);
+    let app2 = app.clone();
+    let xfer2 = Arc::clone(&xfer);
+    let pre = tokio::task::block_in_place(|| {
+        source.prefetch_all_with_progress(&mut |done| {
+            h2.set_done(done);
+            xfer2.tick(&app2, &h2);
+            // 返回 false 表示要中止。在**分片边界**检查而不是直接 abort：
+            // 中途砍掉会留下半个文件，而它看起来和完整的一样
+            !h2.is_canceled()
+        })
+    });
+    if let Err(e) = pre {
+        xfer.finish(
+            &app,
+            h.id(),
+            TaskState::Failed { code: String::from("remote_prefetch_failed") },
+        );
+        drop(e);
+        return Err(CmdError::code("remote_prefetch_failed"));
+    }
+    if h.is_canceled() {
+        return Err(CmdError::code("remote_canceled"));
+    }
+    let r = source.pin().map_err(|e| to_cmd_err(&e));
+    match &r {
+        Ok(_) => xfer.finish(&app, h.id(), TaskState::Done),
+        Err(e) => xfer.finish(
+            &app,
+            h.id(),
+            TaskState::Failed { code: e.code.clone() },
+        ),
+    }
+    r
+}
+
+/// 当前全部传输任务。
+#[tauri::command]
+#[must_use]
+pub fn transfer_list(
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+) -> Vec<crate::transfers::Task> {
+    xfer.list()
+}
+
+/// 取消一条任务。执行体会在下一个分片边界干净退出。
+#[tauri::command]
+pub fn transfer_cancel(
+    app: tauri::AppHandle,
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    id: u64,
+) {
+    xfer.cancel(&app, id);
+}
+
+/// 全部暂停 / 全部继续。
+#[tauri::command]
+pub fn transfer_pause_all(
+    app: tauri::AppHandle,
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    paused: bool,
+) {
+    xfer.pause_all(&app, paused);
+}
+
+/// 清除已结束的任务（完成 / 失败 / 取消）。
+#[tauri::command]
+pub fn transfer_clear_done(
+    app: tauri::AppHandle,
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+) {
+    xfer.clear_done(&app);
 }
 
 /// 取消永久缓存。
