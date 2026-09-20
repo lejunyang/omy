@@ -644,7 +644,16 @@
     "cache_temp": "临时缓存",
     "cache_pinned": "永久保留",
     "cache_pinned_files_one": "1 个文件",
-    "cache_pinned_files_other": "{{count}} 个文件"
+    "cache_pinned_files_other": "{{count}} 个文件",
+    "detach": "从列表移除",
+    "detach_confirm": "把「{{name}}」从列表里移除？本机的登录态会保留，之后可以直接加回来、不用重新扫码。已转为永久保留的文件也会留在磁盘上，要清理请去设置里的永久缓存。",
+    "delete_account": "删除账号（含本地登录态）",
+    "delete_account_confirm": "删除「{{name}}」并清掉本机保存的登录态？下次要重新扫码或重新导入 tdata 才能再用这个账号。此操作不可撤销。",
+    "rename": "重命名",
+    "rename_prompt": "给「{{name}}」起个本机显示名",
+    "renamed": "已重命名",
+    "detached": "已从列表移除，登录态仍保留",
+    "account_deleted": "账号与本地登录态已删除"
   },
   "common": {
     "back": "返回",

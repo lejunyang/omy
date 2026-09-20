@@ -2282,8 +2282,43 @@ export function closePlaceBrowser() {
 /** 移除一个远程位置；若正在浏览它，先退回到位置列表。 */
 export async function removeRemotePlace(id) {
   await api.remotePlaceRemove(id);
+  await afterPlaceGone(id);
+}
+
+/** 位置消失后的统一收尾：正在浏览它就先退出，然后刷新列表。
+ *
+ * 三个入口（通用移除、Telegram 摘除、删除账号）共用这一份。分别写的话，
+ * 少写一次 leaveRemotePlace 的那个入口会把用户留在一个已经不存在的位置里，
+ * 而那时任何操作都只会报「位置不存在」。 */
+async function afterPlaceGone(id) {
   if (state.remotePlace === id) leaveRemotePlace();
   await reloadRemotePlaces();
+}
+
+/** Telegram：只把位置从列表摘掉，保留本机登录态（之后可直接加回来）。 */
+export async function detachTelegramPlace(id) {
+  await api.telegramPlaceDetach(id);
+  await afterPlaceGone(id);
+  setNotice(i18n.t('rplace.detached'));
+}
+
+/** Telegram：删除账号，连本机登录态一起清掉。**不可撤销。** */
+export async function deleteTelegramAccount(id) {
+  await api.telegramPlaceDeleteAccount(id);
+  await afterPlaceGone(id);
+  setNotice(i18n.t('rplace.account_deleted'));
+}
+
+/** Telegram：改这个位置在本机的显示名。
+ *
+ * 空名字直接不改：留一个没有名字的位置，侧栏上就只剩一个云图标，
+ * 多账号时完全分不清谁是谁。 */
+export async function renameTelegramPlace(id, name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return;
+  await api.telegramPlaceRename(id, trimmed);
+  await reloadRemotePlaces();
+  setNotice(i18n.t('rplace.renamed'));
 }
 
 /** 进入远程子目录。 */

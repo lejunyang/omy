@@ -37,6 +37,9 @@ import {
   enterRemoteDir,
   remoteGoUp,
   removeRemotePlace,
+  detachTelegramPlace,
+  deleteTelegramAccount,
+  renameTelegramPlace,
   retryRemoteEntry,
   decryptRemoteToLocal,
   requestRemoteFileCache,
@@ -145,9 +148,37 @@ async function jump(c) {
   await enterRemoteDir(c.dir);
 }
 
+/** 这个位置有没有「本机登录态」这回事。
+ *
+ * 只有 Telegram 才分得出「摘掉位置」与「删掉登录态」；WebDAV 的凭据跟着
+ * 位置配置走，摘掉就没了，给它一个「删除账号」纯属多余且会让人误解。 */
+function hasLocalSession(p) {
+  return p.kind === 'telegram';
+}
+
 async function remove(p) {
-  // 只删注册信息，不碰云端任何文件，所以不需要二次确认
+  // 原本这里不做确认（只删注册信息、不碰云端文件）。多账号之后它与
+  // 「删除账号」并排出现，点错的代价不对称，所以也确认一次，并顺便说清
+  // 登录态和永久缓存都还在——否则用户以为摘掉位置就干净了
+  if (hasLocalSession(p)) {
+    if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
+    await detachTelegramPlace(p.id);
+    return;
+  }
   await removeRemotePlace(p.id);
+}
+
+/** 删除账号：连本机登录态一起清掉，下次要重新扫码或导入 tdata。 */
+async function deleteAccount(p) {
+  if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
+  await deleteTelegramAccount(p.id);
+}
+
+/** 改本机显示名。两个账号昵称相同时，这是唯一能分辨它们的办法。 */
+async function rename(p) {
+  const next = window.prompt(i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
+  if (next === null) return;
+  await renameTelegramPlace(p.id, next);
 }
 
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
@@ -580,12 +611,33 @@ function rowTitle(f) {
               {{ i18n.t('rplace.enter') }}
             </button>
             <button
+              v-if="hasLocalSession(p)"
               class="iconbtn"
-              :aria-label="i18n.t('rplace.remove')"
-              :title="i18n.t('rplace.remove')"
+              :data-pb-rename="p.id"
+              :aria-label="i18n.t('rplace.rename')"
+              :title="i18n.t('rplace.rename')"
+              @click.stop="rename(p)"
+            >
+              ✎
+            </button>
+            <button
+              class="iconbtn"
+              :data-pb-detach="p.id"
+              :aria-label="hasLocalSession(p) ? i18n.t('rplace.detach') : i18n.t('rplace.remove')"
+              :title="hasLocalSession(p) ? i18n.t('rplace.detach') : i18n.t('rplace.remove')"
               @click.stop="remove(p)"
             >
               ✕
+            </button>
+            <button
+              v-if="hasLocalSession(p)"
+              class="iconbtn danger"
+              :data-pb-delacct="p.id"
+              :aria-label="i18n.t('rplace.delete_account')"
+              :title="i18n.t('rplace.delete_account')"
+              @click.stop="deleteAccount(p)"
+            >
+              🗑️
             </button>
           </span>
         </div>
@@ -941,6 +993,12 @@ function rowTitle(f) {
 /* 位置行：让操作按钮靠右排成一组 */
 .placerow {
   cursor: pointer;
+}
+/* 删除账号不可撤销，要和旁边的「移除」在视觉上区分开——
+   两个相邻的灰图标，点错的代价却差很远 */
+.iconbtn.danger:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
 }
 .rowactions {
   margin-left: auto;

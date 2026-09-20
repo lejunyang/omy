@@ -644,7 +644,16 @@
     "cache_temp": "Temporary cache",
     "cache_pinned": "Kept permanently",
     "cache_pinned_files_one": "1 file",
-    "cache_pinned_files_other": "{{count}} files"
+    "cache_pinned_files_other": "{{count}} files",
+    "detach": "Remove from list",
+    "detach_confirm": "Remove \"{{name}}\" from the list? The sign-in stays on this machine, so you can add it back without scanning again. Files kept permanently also stay on disk — clear them from the permanent cache in Settings.",
+    "delete_account": "Delete account (including local sign-in)",
+    "delete_account_confirm": "Delete \"{{name}}\" and erase the sign-in saved on this machine? You will have to scan a QR code or import tdata again to use this account. This cannot be undone.",
+    "rename": "Rename",
+    "rename_prompt": "Display name for \"{{name}}\" on this machine",
+    "renamed": "Renamed",
+    "detached": "Removed from the list; the sign-in is kept",
+    "account_deleted": "Account and local sign-in deleted"
   },
   "common": {
     "back": "Back",

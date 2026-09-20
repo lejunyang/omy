@@ -586,6 +586,25 @@ export const TG_PENDING_ACCOUNT = 'pending';
 export const telegramHasSession = (placeId) =>
   invoke('telegram_has_session', { placeId });
 
+/** 只把位置从列表里摘掉，**保留本机登录态**：之后可以直接加回来、不必重扫。
+ *
+ * 与 `telegramPlaceDeleteAccount` 的区别是后者不可撤销，所以分成两个命令、
+ * 界面上也分成两个入口——做成一个带开关的入口，少点一下就会走到
+ * 破坏性更强的那一侧。 */
+export const telegramPlaceDetach = (placeId) =>
+  invoke('telegram_place_detach', { placeId });
+
+/** 删除账号：摘掉位置**并**删掉本机登录态，下次要重新扫码或导入 tdata。 */
+export const telegramPlaceDeleteAccount = (placeId) =>
+  invoke('telegram_place_delete_account', { placeId });
+
+/** 改这个位置在本机的显示名。只改本地，不动服务端的账号资料。
+ *
+ * 默认名取服务端昵称，但两个账号完全可能同名（同一个人的大小号），
+ * 那时侧栏上就分不清谁是谁，所以必须允许改。 */
+export const telegramPlaceRename = (placeId, name) =>
+  invoke('telegram_place_rename', { placeId, name });
+
 /** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
  *
  * 用的是 `delete_account` 而非 `detach`：用户点「退出」期望登录态真的没了，
