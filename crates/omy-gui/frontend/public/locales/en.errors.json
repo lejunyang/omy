@@ -112,5 +112,6 @@
   "tg_tdata_no_account": "That tdata holds no account data; the desktop app may never have been signed in.",
   "tg_tdata_unsupported": "That tdata could not be parsed; its format is not what omy expects. You can sign in with a QR code instead.",
   "tg_tdata_io": "Reading the tdata folder failed. Check that those files are accessible.",
-  "tg_tdata_failed": "The import failed."
+  "tg_tdata_failed": "The import failed.",
+  "tg_connect_no_proxy": "Timed out connecting directly to Telegram, and no proxy is configured. Enter a socks5:// address in the proxy field and try again."
 }

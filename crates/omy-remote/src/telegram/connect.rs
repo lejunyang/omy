@@ -31,6 +31,18 @@ pub enum ConnectError {
     /// 网络层失败。
     #[error("连接失败：{0}")]
     Connect(String),
+    /// 连不上，**而且没有配代理**。
+    ///
+    /// 与 [`Self::Connect`] 分开，因为用户要做的事完全不同：这一条是
+    /// 「去填一个代理」，那一条是「你填的代理或网络有问题」。
+    ///
+    /// 为什么值得单独一个码：很多人以为开了系统级的「全局代理」就能直连。
+    /// 但那类工具代理的是系统代理设置（HTTP 层）与可选的 TUN，没开 TUN
+    /// 时**不接管应用自己发起的裸 TCP**，而 MTProto 正是裸 TCP。于是出现
+    /// 「浏览器能上网，omy 却连不上 Telegram」，而一句笼统的「请检查网络
+    /// 或代理设置」指不到这个真正的原因。
+    #[error("直连 Telegram 数据中心失败，且未配置代理：{0}")]
+    ConnectNoProxy(String),
     /// 服务端不认这份登录态（被撤销、过期、换了账号）。
     #[error("登录态已失效，需要重新登录")]
     Unauthorized,
@@ -47,6 +59,7 @@ impl ConnectError {
             Self::NoSession => "tg_no_session",
             Self::Session(_) => "tg_session_unreadable",
             Self::Connect(_) => "tg_connect_failed",
+            Self::ConnectNoProxy(_) => "tg_connect_no_proxy",
             Self::Unauthorized => "tg_session_expired",
         }
     }
@@ -140,6 +153,9 @@ pub async fn connect_with(
     match client.is_authorized().await {
         Ok(true) => Ok(Connection { client, runner }),
         Ok(false) => Err(ConnectError::Unauthorized),
+        // 没配代理时单独报。这台机器很可能直连不通，而那恰好是用户能
+        // 动手解决的事；混进一句「请检查网络或代理设置」等于没说
+        Err(e) if proxy.is_none() => Err(ConnectError::ConnectNoProxy(e.to_string())),
         Err(e) => Err(ConnectError::Connect(e.to_string())),
     }
 }
@@ -187,6 +203,17 @@ mod tests {
     fn error_codes_are_stable() {
         assert_eq!(ConnectError::NoSession.code(), "tg_no_session");
         assert_eq!(ConnectError::Unauthorized.code(), "tg_session_expired");
+        assert_ne!(
+            ConnectError::Connect(String::new()).code(),
+            ConnectError::ConnectNoProxy(String::new()).code(),
+            "「连不上」与「连不上且没配代理」必须是不同的码：\
+             前者让用户检查已填的代理，后者让他去填一个。\
+             合成一个码的话，界面只能给一句放之四海皆准的提示"
+        );
+        assert_eq!(
+            ConnectError::ConnectNoProxy(String::new()).code(),
+            "tg_connect_no_proxy"
+        );
         assert_eq!(
             ConnectError::Connect(String::new()).code(),
             "tg_connect_failed"
