@@ -259,6 +259,21 @@ pub struct Conversation {
     /// [`TelegramStore::messages`] 上关于 ToS 3.3 的说明。
     /// 超级群（megagroup）不算——它在协议里也是 Channel，但不是广播频道。
     pub broadcast: bool,
+    /// 这个对话是否开了「受保护内容」（`noforwards`）。
+    ///
+    /// # 必须从对话上读，不能从消息上读
+    ///
+    /// 实测结论（见本模块文档第 8 条）：频道级保护开着时，单条消息上的
+    /// `noforwards` 是 **0**。按消息级判断会得出「没开保护」的错误结论，
+    /// 而界面上那行告知就永远不出现。
+    ///
+    /// # 它不影响读取
+    ///
+    /// 同样是实测：`noforwards` 拦的是转发，**不拦 `upload.getFile`**，
+    /// 取文件字节与 `file_reference` 都正常。所以界面上这是一行低权重的
+    /// 事实告知而不是警告——用户要知道的是「这个群开了保护，但不影响你
+    /// 在这里打开文件」，而不是以为有什么坏了。
+    pub protected: bool,
     /// 对话类型：`user` | `group` | `channel`。
     ///
     /// 界面用它选图标。**对话不是文件夹**，用 📁 表示会让人以为里面是
@@ -770,6 +785,40 @@ impl TelegramStore {
             .cloned()
     }
 
+    /// 这个目录（对话）是否开了「受保护内容」。
+    ///
+    /// 根目录返回 `false`——它不是对话。
+    ///
+    /// 读的是**对话级**标记。消息级那个在频道保护开启时是 0，
+    /// 见本模块文档第 8 条。
+    ///
+    /// # 为什么查不到要先刷新，而不是直接答 `false`
+    ///
+    /// 对话表是 `list("")` 填的缓存。用户从配置恢复后**直接进入某个对话**
+    /// （比如上次就停在那儿）时它还是空的，这时直接答 `false` 会让那行
+    /// 告知在最该出现的时候不出现，而且完全看不出是错的——实测过：冷启动
+    /// 问受保护的群得到 `false`，先 `browse` 一次再问才得到 `true`。
+    ///
+    /// 与本文件里 `list` / `effective_capabilities` 的做法一致：
+    /// `conversation(chat)` 为 `None` 时先 `refresh_conversations()`。
+    ///
+    /// # Errors
+    ///
+    /// 不返回错误：刷新失败时按「没开保护」处理。这只是一行提示，
+    /// 不该因为它让整个目录打不开。
+    pub async fn dir_protected(&self, dir_id: &str) -> bool {
+        let Ok(chat) = Conversation::parse_dir_id(dir_id) else {
+            return false;
+        };
+        if let Some(c) = self.conversation(chat) {
+            return c.protected;
+        }
+        if self.client.is_some() && self.refresh_conversations().await.is_err() {
+            return false;
+        }
+        self.conversation(chat).is_some_and(|c| c.protected)
+    }
+
     /// 已缓存的对话数，供界面显示「已加载 N 个对话」。
     #[must_use]
     pub fn conversation_count(&self) -> usize {
@@ -842,6 +891,19 @@ impl TelegramStore {
             if let Ok(Some(r)) = peer.to_ref().await {
                 peers.insert(chat_id, r);
             }
+            // 从**对话**上读受保护标记。消息级的那个在频道保护开启时是 0，
+            // 见本模块文档第 8 条
+            let protected = match peer {
+                grammers_client::peer::Peer::Channel(ch) => ch.raw.noforwards,
+                grammers_client::peer::Peer::Group(g) => match &g.raw {
+                    grammers_client::tl::enums::Chat::Chat(c) => c.noforwards,
+                    // 超级群在协议里也是 Channel
+                    grammers_client::tl::enums::Chat::Channel(c) => c.noforwards,
+                    _ => false,
+                },
+                // 私聊没有这个概念
+                grammers_client::peer::Peer::User(_) => false,
+            };
             let kind = match peer {
                 grammers_client::peer::Peer::User(_) => "user",
                 grammers_client::peer::Peer::Group(_) => "group",
@@ -862,6 +924,7 @@ impl TelegramStore {
                 broadcast,
                 kind,
                 avatar,
+                protected,
             });
         }
 
@@ -1466,6 +1529,7 @@ mod tests {
             broadcast: false,
             kind: "group",
             avatar: None,
+            protected: false,
         }
     }
 
@@ -1880,6 +1944,7 @@ mod tests {
                 broadcast: true,
                 kind: "channel",
                 avatar: None,
+                protected: false,
             },
         ]);
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1920,6 +1985,7 @@ mod tests {
             broadcast: true,
             kind: "channel",
             avatar: None,
+            protected: false,
         }]);
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()

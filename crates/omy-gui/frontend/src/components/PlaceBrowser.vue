@@ -791,6 +791,13 @@ function rowTitle(f) {
 
         <!-- 两种语义各自的提示条。服务端那条是警告色：
              搜索词已经离开本机，这件事必须显眼 -->
+        <!-- 受保护内容：低权重一行，不是警告。
+             实测 noforwards 拦的是转发、不拦取字节（DEC-20），
+             所以读取与播放都正常，用 .d 这一档而不是 .warnbox——
+             做成警告样式会让用户以为有什么坏了。 -->
+        <div v-if="state.remoteProtected" class="d protnote" data-pb="protected">
+          🔒 {{ i18n.t('rplace.protected_note') }}
+        </div>
         <div
           v-if="state.query.trim() && canServerSearch && state.searchMode === 'local'"
           class="banner info"
@@ -1003,6 +1010,46 @@ function rowTitle(f) {
 </template>
 
 <style scoped>
+/* 受保护内容告知：刻意做得低权重。
+   它说的是「这个群开了保护，但不影响你在这里用」，不是出错也不是风险，
+   所以没有底色和边框——给它警告样式会让用户以为有什么坏了。 */
+.protnote {
+  display: block;
+  padding: calc(var(--sp) * 1.5) 0;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+/* 受保护内容告知：刻意做得低权重。
+   它说的是「这个群开了保护，但不影响你在这里用」，不是出错也不是风险，
+   所以没有底色和边框——给它警告样式会让用户以为有什么坏了。 */
+.protnote {
+  display: block;
+  padding: calc(var(--sp) * 1.5) 0;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+/* 受保护内容告知：刻意做得低权重。
+   它说的是「这个群开了保护，但不影响你在这里用」，不是出错也不是风险，
+   所以没有底色和边框——给它警告样式会让用户以为有什么坏了。 */
+.protnote {
+  display: block;
+  padding: calc(var(--sp) * 1.5) 0;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+/* 受保护内容告知：刻意做得低权重。
+   它说的是「这个群开了保护，但不影响你在这里用」，不是出错也不是风险，
+   所以没有底色和边框——给它警告样式会让用户以为有什么坏了。 */
+.protnote {
+  display: block;
+  padding: calc(var(--sp) * 1.5) 0;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
 /* ---------- 密度：与原型（appendix/telegram-remote-prototype.html）对齐 ----------
  *
  * 只在这里覆盖，不动全局 app.css：`.grid` / `.card` / `.thumb` 本地文件

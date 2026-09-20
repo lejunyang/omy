@@ -598,6 +598,12 @@ export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
  * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
 export const TG_PENDING_ACCOUNT = 'pending';
 
+/** 当前对话是否开了「受保护内容」。
+ *
+ * 只影响是否显示一行告知。非 Telegram 位置恒为 false。 */
+export const remoteDirProtected = (placeId, dir) =>
+  invoke('remote_dir_protected', { placeId, dir });
+
 /** 给代理输入框的默认值：已有 Telegram 位置的代理 > 系统代理 > 空。
  *
  * 不让用户对着空框猜。开了 Clash 那类「全局代理」的机器上尤其要紧——

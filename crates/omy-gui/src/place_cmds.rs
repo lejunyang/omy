@@ -1240,6 +1240,44 @@ pub async fn remote_list_container(
 /// # Errors
 ///
 /// 位置不存在、不是 Telegram、是广播频道、网络失败或限流时返回。
+/// 当前目录（对话）是否开了「受保护内容」。
+///
+/// 界面据此显示一行低权重告知。**不是警告**：实测 `noforwards` 拦的是
+/// 转发，不拦 `upload.getFile`，读取与播放都正常（DEC-20）。用户需要
+/// 知道的是「这个群开了保护，但不影响你在这里打开文件」。
+///
+/// 非 Telegram 位置一律 `false`——那些位置没有这个概念。
+#[tauri::command]
+pub async fn remote_dir_protected(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    place_id: String,
+    dir: String,
+) -> CmdResult<bool> {
+    // 先确保连上。冷启动时 session 恢复是惰性的，store 里还没有 client，
+    // 于是对话表既查不到也刷新不了，只能答 false——而那正是告知最该出现
+    // 的时候（用户从配置恢复后直接进了某个受保护的群）。
+    //
+    // 实测过这个差别：冷启动直接问受保护的群得到 false，
+    // 先 browse 一次再问才得到 true。界面上碰巧总是先 browse，
+    // 但命令本身要自洽，不能要求调用方记住这个顺序。
+    if crate::telegram_cmds::ensure_connected(&reg, &place_id)
+        .await
+        .is_err()
+    {
+        // 连不上就不显示告知。这只是一行提示，不该因为它报错
+        return Ok(false);
+    }
+    let Some(place) = reg.get(&place_id) else {
+        // 位置不在了就不显示告知，而不是报错：这只是一行提示，
+        // 不该因为它挡住整个目录
+        return Ok(false);
+    };
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        return Ok(false);
+    };
+    Ok(tg.dir_protected(&dir).await)
+}
+
 #[tauri::command]
 pub async fn remote_messages(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,

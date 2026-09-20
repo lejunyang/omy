@@ -54,6 +54,8 @@ export const state = reactive({
    * 错误的能力——而用户完全可能在那一瞬间点下去。
    */
   remoteDirCaps: null,
+  /** 当前对话是否开了「受保护内容」。只用于显示一行低权重告知。 */
+  remoteProtected: false,
   /** 正在单独重试探测的远程条目 id 集合（「未能读取」点击重试中转 ⏳）。 */
   remoteRetrying: [],
   /**
@@ -1954,6 +1956,7 @@ export function leaveRemotePlace() {
   state.remoteRetrying = [];
   // 能力必须跟着清：留着会让下次进另一个位置时先按上一个位置的能力渲染一帧
   state.remoteDirCaps = null;
+  state.remoteProtected = false;
   // 搜索态也要清：回到本地后还留着「服务端搜索」模式的话，界面会显示一个
   // 本地位置根本不支持的模式，而那批结果也已经不属于眼前这个位置了
   state.searchMode = 'local';
@@ -1979,6 +1982,7 @@ export async function reloadRemoteDir() {
   // 先作废上一个目录的能力再去查：留着旧值会让新目录短暂显示错误的能力，
   // 而用户完全可能在那一瞬间点下去
   state.remoteDirCaps = null;
+  state.remoteProtected = false;
   // 换目录就清掉上一个对话的消息，否则切到消息视图会先闪一屏别的对话的内容
   state.remoteMessages = [];
   state.remoteViewMode = 'files';
@@ -2001,6 +2005,31 @@ export async function reloadRemoteDir() {
   }
 }
 
+/** 查「受保护内容」标记，查到后写回 `state.remoteProtected`。
+ *
+ * 与 `refreshRemoteDirCaps` 一样不 await、一样在回写前校验位置与目录
+ * 仍是当前这一个——用户可能在请求飞行途中已经切走，那时把旧对话的结果
+ * 写上去，界面显示的就是上一个对话的状态。
+ *
+ * 取不到时按「没开保护」处理：这只是一行提示，不该因为它报错或挡住目录。
+ */
+function refreshProtected(placeId, dir) {
+  if (!placeId || !dir) {
+    state.remoteProtected = false;
+    return;
+  }
+  api
+    .remoteDirProtected(placeId, dir)
+    .then((v) => {
+      if (state.remotePlace !== placeId || state.remoteDir !== dir) return;
+      state.remoteProtected = !!v;
+    })
+    .catch(() => {
+      if (state.remotePlace !== placeId || state.remoteDir !== dir) return;
+      state.remoteProtected = false;
+    });
+}
+
 /** 查当前远程目录的有效能力，查到后写回 `state.remoteDirCaps`。
  *
  * 不 await：能力查询不该拖慢列目录（对某些 provider 它是一次网络请求）。
@@ -2010,6 +2039,10 @@ export async function reloadRemoteDir() {
  * 否则会把上一个目录的能力贴到新目录上。
  */
 function refreshRemoteDirCaps(placeId, dir) {
+  // 「受保护内容」跟着对话走，与能力同一时机刷新。不在这里刷的话，
+  // 从一个受保护的群退回对话列表时那行告知会留着，变成「在没开保护
+  // 的地方显示着上一个对话的告知」
+  refreshProtected(placeId, dir);
   api
     .remoteEffectiveCaps(placeId, dir)
     .then((caps) => {

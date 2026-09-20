@@ -665,7 +665,8 @@
     "detached": "已从列表移除，登录态仍保留",
     "account_deleted": "账号与本地登录态已删除",
     "detach_note": "本机登录态保留，之后可以直接加回来。",
-    "delete_account_note": "连本机登录态一起删除，下次要重新扫码或导入。"
+    "delete_account_note": "连本机登录态一起删除，下次要重新扫码或导入。",
+    "protected_note": "这个对话开启了「受保护内容」。在 omy 里打开和播放不受影响，但在 Telegram 里无法转发或另存。"
   },
   "common": {
     "back": "返回",

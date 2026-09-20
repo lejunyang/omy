@@ -196,6 +196,7 @@ mod tests {
                 broadcast: false,
                 kind: "group",
                 avatar: None,
+                protected: false,
             },
             Conversation {
                 chat: 2,
@@ -205,6 +206,7 @@ mod tests {
                 broadcast: true,
                 kind: "channel",
                 avatar: None,
+                protected: false,
             },
         ]))
     }
