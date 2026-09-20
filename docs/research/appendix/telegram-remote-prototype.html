@@ -287,6 +287,19 @@ input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid 
 .mbody{font-size:13px;color:var(--fg);line-height:1.6;word-break:break-word}
 .mfile{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);
   border-radius:var(--r-s);background:var(--bg);padding:6px 10px;font-size:12px}
+/* 时间分组：粘顶的轻量分隔，不用重色块——它是导航辅助，不是内容 */
+.mday{position:sticky;top:0;z-index:2;align-self:flex-start;margin:6px 0 2px;
+  padding:3px 9px;border-radius:999px;background:var(--bg3);color:var(--fg2);
+  font-size:11px;font-weight:600;border:1px solid var(--border)}
+.mthumb{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:44px;height:44px;border-radius:var(--r-s);background:var(--bg3);
+  border:1px solid var(--border);font-size:19px;margin-inline-end:8px;vertical-align:middle}
+.mdur{position:absolute;inset-block-end:1px;inset-inline-end:2px;background:rgba(0,0,0,.66);
+  color:#fff;font-size:9px;padding:0 3px;border-radius:3px;font-family:var(--mono)}
+.mcount{margin-bottom:10px;padding:7px 11px;border:1px dashed var(--border);
+  border-radius:var(--r-s);background:var(--bg2);color:var(--fg2);font-size:12px}
+.mcount b{color:var(--fg)}
+.mchint{color:var(--fg3)}
 .searchbar{display:flex;gap:9px;align-items:center;padding:9px 12px;background:var(--bg2);
   border-block-end:1px solid var(--border);flex-wrap:wrap}
 .sinput{flex:1;min-width:150px}
@@ -1359,32 +1372,65 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
                 照搬文件视图的过滤逻辑，消息视图就会退化成文件视图 ——
                 两边都能正常渲染，只有对着一个以文字为主的对话才看得出来。
               </div>
+              <!-- 这条计数把「两个视图判据相反」从说明文字变成可观察的事实：
+                   两个数字不相等，就是消息视图没退化成文件视图的证据。
+                   实现侧用的也是这个办法（实测 13 条消息 / 12 条带文件）。 -->
+              <div class="mcount" id="mcount">
+                本屏 <b><span id="mcTotal">8</span></b> 条消息，其中
+                <b><span id="mcFile">5</span></b> 条带文件、
+                <b><span id="mcText">3</span></b> 条纯文本 ——
+                <span class="mchint">两个数不相等，才说明没套用文件视图的过滤判据</span>
+              </div>
               <div class="msgs" id="msglist">
+                <div class="mday">今天</div>
                 <div class="msg" data-kind="text">
-                  <div class="mhead"><b>我</b><span class="mtime">2026-03-14 09:12</span>
+                  <div class="mhead"><b>我</b><span class="mtime">09:12</span>
                     <span class="mid">#4819</span></div>
                   <div class="mbody">下面这份扫描件记得存一下，原件我就丢了。</div>
                 </div>
                 <div class="msg" data-kind="file">
-                  <div class="mhead"><b>我</b><span class="mtime">2026-03-14 09:12</span>
+                  <div class="mhead"><b>我</b><span class="mtime">09:12</span>
                     <span class="mid">#4821</span></div>
                   <div class="mbody"><span class="mfile">🖼️ 扫描件.pdf · 18 MB
                     <span class="pinbadge">📌 永久</span></span></div>
                 </div>
+                <!-- 图片 / 视频用服务端随消息送来的缩略图；
+                     .omy 文件不用（那是密文的缩略图，毫无意义，见上一节） -->
+                <div class="msg" data-kind="photo">
+                  <div class="mhead"><b>我</b><span class="mtime">08:47</span>
+                    <span class="mid">#4818</span></div>
+                  <div class="mbody"><span class="mthumb">🖼️</span>
+                    <span class="mfile">IMG_2026.jpg · 3.2 MB</span></div>
+                </div>
+
+                <div class="mday">昨天</div>
+                <div class="msg" data-kind="video">
+                  <div class="mhead"><b>我</b><span class="mtime">21:05</span>
+                    <span class="mid">#4801</span></div>
+                  <div class="mbody"><span class="mthumb">🎬<span class="mdur">4:12</span></span>
+                    <span class="mfile">现场录像.mp4 · 210 MB</span></div>
+                </div>
                 <div class="msg" data-kind="text">
-                  <div class="mhead"><b>我</b><span class="mtime">2026-03-12 22:40</span>
+                  <div class="mhead"><b>我</b><span class="mtime">20:58</span>
+                    <span class="mid">#4800</span></div>
+                  <div class="mbody">这段视频后半段才是重点。</div>
+                </div>
+
+                <div class="mday">2026-03-12</div>
+                <div class="msg" data-kind="text">
+                  <div class="mhead"><b>我</b><span class="mtime">22:40</span>
                     <span class="mid">#4790</span></div>
                   <div class="mbody">会议录音在下一条，重点在 12 分 30 秒之后。</div>
                 </div>
                 <div class="msg" data-kind="file">
-                  <div class="mhead"><b>我</b><span class="mtime">2026-03-12 22:41</span>
-                    <span class="mid">#4790</span></div>
+                  <div class="mhead"><b>我</b><span class="mtime">22:41</span>
+                    <span class="mid">#4791</span></div>
                   <div class="mbody"><span class="mfile">🎵 录音 0312.m4a · 42 MB</span></div>
                 </div>
-                <div class="msg" data-kind="text">
-                  <div class="mhead"><b>我</b><span class="mtime">2026-02-28 18:03</span>
-                    <span class="mid">#4655</span></div>
-                  <div class="mbody">备份密码换了，用新的那一套。</div>
+                <div class="msg" data-kind="file">
+                  <div class="mhead"><b>我</b><span class="mtime">22:39</span>
+                    <span class="mid">#4789</span></div>
+                  <div class="mbody"><span class="mfile">📦 项目归档.tar.omy · 2.1 GB</span></div>
                 </div>
               </div>
               <div style="display:flex;justify-content:center;margin-top:14px">
@@ -1393,7 +1439,13 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
 
               <!-- 广播频道：刻意不做，不是错误态。
                    「不支持 / 暂未支持」暗示以后会做，「加载失败」让用户去重试一个
-                   永远不会成功的操作 —— 三种说法都不对。 -->
+                   永远不会成功的操作 —— 三种说法都不对。
+
+                   位置也有讲究：它是**切过来之后**才出现在内容区，
+                   而不是把「消息」这个选项灰掉。§7.9 的规则是「先判不随状态变化
+                   的事实」——实现侧就因为把顺序弄反，出现过同一个频道
+                   断线时说「尚未登录」、连上后才说「不提供消息视图」。
+                   入口灰掉是同一个毛病的界面版：用户看不出到底是不支持还是没连上。 -->
               <div class="note" id="msgbcast" hidden style="margin-top:12px">
                 <b>这个频道不提供消息视图。</b>
                 omy 的消息视图<b>不覆盖广播频道</b>，这是一个明确的决定，
@@ -2285,33 +2337,55 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
           </div>
           <div class="mbody">
             <div class="msgs">
+              <div class="mday">今天</div>
               <div class="msg" data-kind="text">
-                <div class="mhead"><b>我</b><span class="mtime">03-14 09:12</span>
+                <div class="mhead"><b>我</b><span class="mtime">09:12</span>
                   <span class="mid">#4819</span></div>
                 <div class="mbody" style="padding:0">下面这份扫描件记得存一下，原件我就丢了。</div>
               </div>
               <div class="msg" data-kind="file">
-                <div class="mhead"><b>我</b><span class="mtime">03-14 09:12</span>
+                <div class="mhead"><b>我</b><span class="mtime">09:12</span>
                   <span class="mid">#4821</span></div>
                 <div class="mbody" style="padding:0">
                   <span class="mfile">🖼️ 扫描件.pdf · 18 MB <span class="pinbadge">📌</span></span></div>
               </div>
+              <div class="msg" data-kind="photo">
+                <div class="mhead"><b>我</b><span class="mtime">08:47</span>
+                  <span class="mid">#4818</span></div>
+                <div class="mbody" style="padding:0"><span class="mthumb">🖼️</span>
+                  <span class="mfile">IMG_2026.jpg · 3.2 MB</span></div>
+              </div>
+              <div class="mday">昨天</div>
+              <div class="msg" data-kind="video">
+                <div class="mhead"><b>我</b><span class="mtime">21:05</span>
+                  <span class="mid">#4801</span></div>
+                <div class="mbody" style="padding:0">
+                  <span class="mthumb">🎬<span class="mdur">4:12</span></span>
+                  <span class="mfile">现场录像.mp4 · 210 MB</span></div>
+              </div>
               <div class="msg" data-kind="text">
-                <div class="mhead"><b>我</b><span class="mtime">03-12 22:40</span>
+                <div class="mhead"><b>我</b><span class="mtime">22:40</span>
                   <span class="mid">#4790</span></div>
                 <div class="mbody" style="padding:0">会议录音在下一条，重点在 12 分 30 秒之后。</div>
               </div>
               <div class="msg" data-kind="file">
-                <div class="mhead"><b>我</b><span class="mtime">03-12 22:41</span>
-                  <span class="mid">#4790</span></div>
+                <div class="mhead"><b>我</b><span class="mtime">22:41</span>
+                  <span class="mid">#4791</span></div>
                 <div class="mbody" style="padding:0">
                   <span class="mfile">🎵 录音 0312.m4a · 42 MB</span></div>
               </div>
+              <!-- 移动端触底自动加载，所以这里是骨架行而不是按钮：
+                   小屏上一个常驻按钮会一直占掉本就不多的高度 -->
+              <div class="msg" data-kind="loading">
+                <div class="mhead"><b>我</b><span class="mtime">——</span></div>
+                <div class="mbody" style="padding:0">
+                  <span class="skel" style="display:block;width:64%"></span></div>
+              </div>
             </div>
-            <div class="sdesc" style="text-align:center;margin-top:10px">向上滚动加载更早的消息</div>
+            <div class="sdesc" style="text-align:center;margin-top:10px">向上滚动继续加载更早的消息</div>
           </div>
           <div class="statusbar" style="font-size:10.5px">
-            <span>消息视图 · 只读</span><span class="spacer"></span><span>已加载 4 条</span></div>
+            <span>7 条 · 4 带文件 / 3 纯文本</span><span class="spacer"></span><span>只读</span></div>
           <div class="mbar">
             <button class="mtab"><i>📁</i>文件</button><button class="mtab on"><i>☁️</i>远程</button>
             <button class="mtab"><i>📡</i>设备</button><button class="mtab"><i>⚙️</i>设置</button></div>
@@ -3693,6 +3767,80 @@ pre.fsm{background:var(--bg2);border:1px solid var(--border);border-radius:var(-
     msgMore.hidden = on;
     document.documentElement.setAttribute('data-broadcast', on ? '1' : '0');
   }
+  /* ---------- 消息视图：加载更早 ----------
+     与文件网格同一套懒加载语义：先出骨架、按钮禁用、错开收敛。
+     方向相反：消息是往**更早**翻，新内容追加在列表**末尾**
+     （时间线由新到旧）。做成插到顶部会把用户的滚动位置顶飞。 */
+  var msgBatch = 0;
+  var msgSamples = [
+    ['text', '上次那个压缩包我重新传过一次，用新的。'],
+    ['file', '\ud83d\udcc4 会议纪要 0228.pdf \u00b7 1.1 MB'],
+    ['photo', '\u73b0\u573a\u5408\u5f71.jpg \u00b7 4.8 MB'],
+    ['text', '密码我私发你，别贴在这里。'],
+    ['file', '\ud83c\udfb5 \u5f55\u97f3 0227.m4a \u00b7 31 MB'],
+    ['video', '\u5f00\u573a\u7247\u6bb5.mp4 \u00b7 88 MB']
+  ];
+  function msgRecount() {
+    var all = msglistEl.querySelectorAll('.msg');
+    var f = msglistEl.querySelectorAll('.msg[data-kind="file"],.msg[data-kind="photo"],'
+      + '.msg[data-kind="video"]').length;
+    document.getElementById('mcTotal').textContent = String(all.length);
+    document.getElementById('mcFile').textContent = String(f);
+    document.getElementById('mcText').textContent = String(all.length - f);
+  }
+  var msglistEl = document.getElementById('msglist');
+  msgMore.addEventListener('click', function () {
+    if (msgMore.disabled) { return; }
+    msgBatch++;
+    msgMore.disabled = true;
+    msgMore.textContent = '正在取更早的消息…';
+    // 先插一条日期分隔，再插骨架行：让「还在加载」这件事占位，而不是整屏空着
+    var day = document.createElement('div');
+    day.className = 'mday';
+    day.textContent = msgBatch === 1 ? '2026-02-28' : '2026-02-2' + (8 - msgBatch);
+    msglistEl.appendChild(day);
+    var made = [];
+    for (var i = 0; i < 4; i++) {
+      var sk = document.createElement('div');
+      sk.className = 'msg';
+      sk.setAttribute('data-kind', 'loading');
+      sk.innerHTML = '<div class="mhead"><b>\u6211</b>'
+        + '<span class="mtime">\u2014\u2014</span></div>'
+        + '<div class="mbody"><span class="skel" style="display:block;width:'
+        + (58 + i * 9) + '%"></span></div>';
+      msglistEl.appendChild(sk);
+      made.push(sk);
+    }
+    made.forEach(function (el, i) {
+      setTimeout(function () {
+        var sp = msgSamples[(msgBatch * 4 + i) % msgSamples.length];
+        var kind = sp[0];
+        var mid = '#' + (4650 - msgBatch * 10 - i);
+        var body;
+        if (kind === 'text') {
+          body = sp[1];
+        } else if (kind === 'photo') {
+          body = '<span class="mthumb">\ud83d\uddbc\ufe0f</span>'
+            + '<span class="mfile">' + sp[1] + '</span>';
+        } else if (kind === 'video') {
+          body = '<span class="mthumb">\ud83c\udfac<span class="mdur">1:36</span></span>'
+            + '<span class="mfile">' + sp[1] + '</span>';
+        } else {
+          body = '<span class="mfile">' + sp[1] + '</span>';
+        }
+        el.setAttribute('data-kind', kind);
+        el.innerHTML = '<div class="mhead"><b>\u6211</b><span class="mtime">'
+          + (20 - i) + ':0' + i + '</span><span class="mid">' + mid + '</span></div>'
+          + '<div class="mbody">' + body + '</div>';
+        msgRecount();
+        if (i === made.length - 1) {
+          msgMore.disabled = false;
+          msgMore.textContent = '加载更早的消息';
+        }
+      }, 400 + i * 240);
+    });
+  });
+
   var bcastBtn = document.getElementById('bcastbtn');
   bcastBtn.addEventListener('click', function () {
     var on = document.documentElement.getAttribute('data-broadcast') !== '1';
