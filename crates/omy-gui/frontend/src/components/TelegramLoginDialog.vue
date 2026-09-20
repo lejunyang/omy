@@ -388,7 +388,10 @@ onBeforeUnmount(() => {
 
       <!-- 开始之前：说明 + 代理 + 「存不存得住」的前置告知 -->
       <template v-else-if="!started">
-        <p class="lead">{{ i18n.t('tg.qr_why') }}</p>
+        <!-- 只在扫码那一支显示。放在外层的话 tdata 面板上方也会顶着
+             这句「用手机扫码」，而那条路根本不扫码——两种方式显示同一句
+             说明，等于没有区分 -->
+        <p v-if="!tdataMode" class="lead">{{ i18n.t('tg.qr_why') }}</p>
 
         <label class="f">
           <span class="fl">{{ i18n.t('tg.proxy') }}</span>
