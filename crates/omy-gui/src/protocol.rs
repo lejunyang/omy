@@ -1076,7 +1076,24 @@ fn serve_place_thumb(
     thumbs: &PlaceThumbs,
     token: &str,
 ) -> Response<Vec<u8>> {
-    // 缩略图表只登记文件头：列表浏览时已取回完整头部，这里不再发任何网络请求。
+    // 先看是不是「已经就绪的图片字节」。
+    //
+    // 那是服务端随消息送来的内嵌缩略图（Telegram 的图片 / 视频），本身就是
+    // 公开内容、不涉及任何密钥，所以**不经过解锁检查**直接返回。
+    // 把它也拿去 peek_header 的话必然解析失败，表现是图永远不出来且不报错。
+    if let Some(bytes) = thumbs.get_image(token) {
+        return with_common_headers(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, sniff_image_mime(&bytes))
+                .header(header::CONTENT_LENGTH, bytes.len().to_string()),
+        )
+        .body(bytes)
+        .unwrap_or_else(|_| Response::new(Vec::new()));
+    }
+
+    // 其余是 omy 加密文件的文件头：列表浏览时已取回完整头部，
+    // 这里不再发任何网络请求，但要用会话密钥解开才拿得到缩略图。
     let Some(header) = thumbs.get(token) else {
         return bare(StatusCode::NOT_FOUND);
     };

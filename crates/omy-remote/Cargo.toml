@@ -76,3 +76,10 @@ http = "1.5.0"
 hyper = { version = "1.11.1", features = ["server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "time", "io-util"] }
+# 只给测试用：验证内嵌缩略图**真的能被解码器接受**。
+#
+# 光验魔数（FF D8 FF）不够——Telegram 的 stripped 缩略图去掉了标准量化表，
+# 一段只补了头两个字节的残缺 JPEG 照样能通过魔数检查，却永远解不开，
+# 而界面上只是图不出来、不报任何错。这个依赖让那条断言能停在
+# 「真的能解码」而不是「看起来像 JPEG」。
+image = { workspace = true }

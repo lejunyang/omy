@@ -326,11 +326,32 @@ fn token_for_place_item(file_token: &str, inner_path: &str) -> String {
     h.iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
+/// 一个缩略图 token 背后的东西。
+///
+/// # 为什么要分两种
+///
+/// 两条来源的处理方式**完全不同**：
+///
+/// - omy 加密文件：存的是文件头，缩略图在 TLV 里，要用会话密钥解开才拿得到，
+///   没解锁就不该给图；
+/// - 远程普通文件（Telegram 的图片 / 视频）：存的是**服务端随消息送来的
+///   缩略图字节本身**，它本来就是公开内容，不涉及任何密钥。
+///
+/// 混成一种（比如都当文件头）会让普通文件的字节被拿去 `peek_header`，
+/// 必然失败、于是永远不出图——而那是一条**静默失败**：界面只是回退成
+/// 类型图标，没有任何报错。
+pub enum ThumbSource {
+    /// omy 加密文件的完整文件头，缩略图要解密才拿得到。
+    OmyHeader(Vec<u8>),
+    /// 已经可以直接返回的图片字节（服务端给的内嵌缩略图）。
+    Image(Vec<u8>),
+}
+
 /// 与 [`PlaceFiles`] 分开：缩略图只服务当前这一屏列表，刷新目录即清空，
 /// 不与播放句柄（要跨多次 Range 请求、锁定才清）混在同一张表里。
 #[derive(Default)]
 pub struct PlaceThumbs {
-    thumbs: Mutex<HashMap<String, Vec<u8>>>,
+    thumbs: Mutex<HashMap<String, ThumbSource>>,
     seq: Mutex<u64>,
 }
 
@@ -343,18 +364,43 @@ impl PlaceThumbs {
 
     /// 登记一份完整文件头用于取缩略图，返回不透明 token。
     pub fn insert(&self, header: Vec<u8>) -> Option<String> {
+        self.put(ThumbSource::OmyHeader(header))
+    }
+
+    /// 登记一份**已经可以直接返回**的图片字节（服务端内嵌缩略图）。
+    ///
+    /// 与 [`PlaceThumbs::insert`] 分成两个入口而不是加个 flag：两者背后是
+    /// 不同的东西（文件头 vs 图片），合成一个入口迟早有人传错，
+    /// 而传错的表现是「图永远不出来、且不报错」。
+    pub fn insert_image(&self, bytes: Vec<u8>) -> Option<String> {
+        self.put(ThumbSource::Image(bytes))
+    }
+
+    fn put(&self, src: ThumbSource) -> Option<String> {
         let mut seq = self.seq.lock().ok()?;
         *seq += 1;
         let token = format!("pt{seq}");
         let mut thumbs = self.thumbs.lock().ok()?;
-        thumbs.insert(token.clone(), header);
+        thumbs.insert(token.clone(), src);
         Some(token)
     }
 
-    /// 按 token 取文件头字节。
+    /// 按 token 取 omy 文件头字节；这个 token 若是图片则返回 `None`。
     #[must_use]
     pub fn get(&self, token: &str) -> Option<Vec<u8>> {
-        self.thumbs.lock().ok()?.get(token).cloned()
+        match self.thumbs.lock().ok()?.get(token)? {
+            ThumbSource::OmyHeader(h) => Some(h.clone()),
+            ThumbSource::Image(_) => None,
+        }
+    }
+
+    /// 按 token 取已经可直接返回的图片字节；是文件头则返回 `None`。
+    #[must_use]
+    pub fn get_image(&self, token: &str) -> Option<Vec<u8>> {
+        match self.thumbs.lock().ok()?.get(token)? {
+            ThumbSource::Image(b) => Some(b.clone()),
+            ThumbSource::OmyHeader(_) => None,
+        }
     }
 
     /// 刷新目录或锁定时清空：上一屏的缩略图 token 全部失效。

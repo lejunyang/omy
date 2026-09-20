@@ -3627,6 +3627,7 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "image",
  "md-5",
  "omy-config",
  "omy-core",

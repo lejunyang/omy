@@ -273,6 +273,8 @@ impl RemoteStore for WebDavStore {
                         size: u64::try_from(f.content_length).ok(),
                         mtime: Some(f.last_modified.timestamp()),
                         etag: Some(f.tag.unwrap_or_default()).filter(|s| !s.is_empty()),
+                        // WebDAV 没有「随目录列举一起送来的缩略图」这个概念
+                        thumb: None,
                     });
                 }
                 reqwest_dav::list_cmd::ListEntity::Folder(d) => {
@@ -287,6 +289,7 @@ impl RemoteStore for WebDavStore {
                         size: None,
                         mtime: Some(d.last_modified.timestamp()),
                         etag: None,
+                        thumb: None,
                     });
                 }
             }
@@ -356,6 +359,7 @@ impl RemoteStore for WebDavStore {
             size: Some(data.len() as u64),
             mtime: None,
             etag: None,
+            thumb: None,
         })
     }
 
@@ -388,6 +392,7 @@ impl RemoteStore for WebDavStore {
             size: None,
             mtime: None,
             etag: None,
+            thumb: None,
         })
     }
 }

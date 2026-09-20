@@ -41,7 +41,7 @@
 
 use std::sync::Mutex;
 
-use grammers_client::media::{Downloadable, Media};
+use grammers_client::media::{Downloadable, Media, PhotoSize};
 use grammers_client::message::InputMessage;
 use grammers_client::{tl, Client, InvocationError};
 use grammers_session::types::PeerRef;
@@ -351,6 +351,105 @@ fn is_migrated_away(peer: &grammers_client::peer::Peer) -> bool {
 /// 「未知」从而不做收敛，猜一个数则会把文件在那个位置截断。
 fn media_size(m: &Media) -> u64 {
     u64::try_from(Downloadable::size(m).unwrap_or(0)).unwrap_or(0)
+}
+
+/// 取一个媒体**随消息一起送来**的内嵌缩略图，转成可直接解码的图片字节。
+///
+/// # 零额外请求
+///
+/// Telegram 的消息对象里本来就带着若干档缩略图。其中 `Stripped` 与 `Cached`
+/// 两档的字节**就在消息里**，取它们不发任何请求——这正是「列目录顺便出图、
+/// 且不下载原图」的依据。其余档（`Size` / `Progressive`）只有下载位置，
+/// 要另发请求才拿得到，所以一概跳过：为一屏几十个文件各发一次请求，
+/// 既慢又容易撞 `FLOOD_WAIT`，与这条优化的本意相反。
+///
+/// # 为什么用 `to_data()` 而不是自己拼 JPEG 头
+///
+/// `Stripped` 档在协议里是**去掉了标准量化表的残缺 JPEG**（3 字节头 + 熵编码
+/// 数据），直接喂给 `<img>` 会得到一张永远加载失败、且不报任何错的图。
+///
+/// 补头这件事 grammers 已按 Telegram 文档做好（那段头含量化表与霍夫曼表，
+/// 还要把宽高回填到固定偏移），并通过**公开的** `Downloadable::to_data()`
+/// 暴露出来。`StrippedSize::data()` 确实是私有的，但不该因此手抄一份：
+/// 抄错一个字节就是一张解不开的图，而且上游改了格式我们不会跟着变。
+/// 要用的是它的公开出口。
+///
+/// # 返回 `None` 是正常情况
+///
+/// 纯文档（zip、pdf 之类）本来就没有内嵌缩略图，界面据此回退类型图标。
+/// 这段字节像不像一张**结构完整、解码器不会当场拒绝**的图片。
+///
+/// # 为什么需要这道关
+///
+/// Telegram 的 stripped 缩略图是**去掉了标准量化表的残缺 JPEG**。它有正确的
+/// JPEG 魔数，却缺少解码必需的 DQT（量化表）与 DHT（霍夫曼表）——把它直接交
+/// 给 `<img>`，得到的是一张**永远加载失败、且不抛任何错**的图。界面上只会
+/// 悄悄回退成类型图标，没人看得出这里坏了。
+///
+/// 所以「只验魔数」是不够的：那正好是残缺数据能通过的那一关。这里要求段齐全，
+/// 让「补头这一步有没有真的做」成为一件能当场发现的事，而不是等用户报
+/// 「图不出来」。
+///
+/// # 这不是完整的 JPEG 校验
+///
+/// 真正判定能否解码要跑一遍解码器，那对列目录这条路径太重（一屏几十张）。
+/// 这里只挡住**最可能出现且最难察觉**的那种坏法：段缺失。
+/// 单元测试里另有一条真的走解码器的断言。
+///
+/// WebP / PNG 不做逐段检查：它们不存在「被剥掉一部分再传过来」这种约定，
+/// 认出魔数即可。
+fn is_complete_image(b: &[u8]) -> bool {
+    if b.is_empty() {
+        return false;
+    }
+    // WebP：RIFF....WEBP，两段都要看，只看 RIFF 会把 wav / avi 也认进来
+    if b.starts_with(b"RIFF") && b.get(8..12) == Some(&b"WEBP"[..]) {
+        return true;
+    }
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return true;
+    }
+    if !b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return false;
+    }
+    // JPEG：必须带量化表与霍夫曼表，并以 EOI 收尾。
+    // 这三样正是 stripped 缩略图缺的东西
+    let has = |marker: u8| b.windows(2).any(|w| w == [0xFF, marker]);
+    has(0xDB) && has(0xC4) && b.ends_with(&[0xFF, 0xD9])
+}
+
+fn embedded_thumb(m: &Media) -> Option<Vec<u8>> {
+    let sizes = match m {
+        Media::Photo(p) => p.thumbs(),
+        Media::Document(d) => d.thumbs(),
+        // 其余媒体（投票、位置、联系人）没有缩略图这个概念
+        _ => return None,
+    };
+
+    // 只认字节已经在手里的那两档。
+    //
+    // 不直接靠「to_data() 返回 Some」来筛：结果虽然一样，但意图不明显——
+    // 读代码的人会以为其余档只是碰巧没有数据，进而在某次重构里给它们
+    // 补上一次下载，而那正是这里要避免的。
+    let mut best: Option<Vec<u8>> = None;
+    for s in sizes {
+        if !matches!(s, PhotoSize::Stripped(_) | PhotoSize::Cached(_)) {
+            continue;
+        }
+        // to_data() 负责把 stripped 补成完整 JPEG，见上面的说明。
+        //
+        // 补完仍要过一道 is_complete_image：那条是本函数最要紧的保证，
+        // 而它失效时**没有任何报错**——界面只是回退成类型图标
+        let Some(bytes) = s.to_data().filter(|b| is_complete_image(b)) else {
+            continue;
+        };
+        // 有多档内嵌时取字节最多的那一档：Cached 通常比 Stripped 清楚，
+        // 而两者都很小（几百字节到几 KB），不必为省这点流量牺牲清晰度
+        if best.as_ref().is_none_or(|b| bytes.len() > b.len()) {
+            best = Some(bytes);
+        }
+    }
+    best
 }
 
 /// 一个媒体在文件列表里显示的名字。
@@ -823,6 +922,8 @@ impl TelegramStore {
                 // 不用 file_reference 当 etag：它会过期，拿它做变更检测会让
                 // 缓存层误以为文件变了，从而反复重新下载
                 etag: None,
+                // 内嵌缩略图就在这条消息里，取它不发任何请求
+                thumb: embedded_thumb(&media),
             });
         }
 
@@ -1033,6 +1134,8 @@ impl RemoteStore for TelegramStore {
                     // 硬塞最后一条消息的时间会让缓存层误以为能检测变化。
                     mtime: None,
                     etag: None,
+                    // 对话（目录）没有缩略图。头像是另一回事，不在本期范围
+                    thumb: None,
                 })
                 .collect());
         }
@@ -1186,6 +1289,8 @@ impl RemoteStore for TelegramStore {
             size: Some(data.len() as u64),
             mtime: None,
             etag: None,
+            // 刚上传完的文件，服务端还没回缩略图；下次列目录时会有
+            thumb: None,
         })
     }
 
@@ -1864,5 +1969,174 @@ mod tests {
             rt.block_on(s.list("tg:1")),
             Err(Error::Unsupported("telegram list messages"))
         ));
+    }
+    /// 残缺的 stripped 载荷必须被挡住，而不是当成一张图交给界面。
+    ///
+    /// 不这样会怎样：Telegram 的 stripped 缩略图是去掉了标准量化表的残缺
+    /// JPEG。它**有正确的 JPEG 魔数**，所以任何「只验魔数」的检查都会放它
+    /// 过去；而浏览器拿到它只会得到一张永远加载失败、且不抛错的图——
+    /// 界面悄悄回退成类型图标，没人看得出这里坏了。
+    ///
+    /// 这条断言的要害是「魔数对但段不全 → 必须拒绝」。
+    #[test]
+    fn incomplete_jpeg_is_rejected_even_though_its_magic_is_right() {
+        // 补了 JPEG 头两个字节、但没有量化表/霍夫曼表/EOI 的残缺数据。
+        // 用算式生成而不是长串重复字节（AGENTS.md 记过那会让本机安全软件
+        // 删掉测试二进制）
+        let mut fake = vec![0xFF, 0xD8, 0xFF];
+        fake.extend((0..128).map(|i| ((i * 37 + 11) % 251) as u8));
+
+        assert!(
+            fake.starts_with(&[0xFF, 0xD8, 0xFF]),
+            "夹具本身要能通过魔数检查，否则这条断言就没在测该测的东西"
+        );
+        assert!(
+            !is_complete_image(&fake),
+            "魔数对但缺 DQT/DHT/EOI 的残缺 JPEG 必须被拒"
+        );
+
+        // 空字节同样要拒：登记一个 0 字节的缩略图 token，界面请求到的是
+        // 空响应——比「没有缩略图」更难查，后者至少会老实回退类型图标
+        assert!(!is_complete_image(&[]), "空字节不是图片");
+        // 完全不是图片的东西也要拒
+        assert!(!is_complete_image(b"not an image at all"));
+    }
+
+    /// **每一段各缺一次**：只缺 DQT、只缺 DHT、只缺 EOI 都必须被拒。
+    ///
+    /// 不这样会怎样：这条是上一条的补强，而它的必要性是变异测试逼出来的。
+    /// 上一条的夹具三样全缺，于是「把 DQT 那一项检查删掉」时它仍被另外两项
+    /// 拒下——断言照样通过，缺陷溜过去。
+    ///
+    /// 要抓「少查了某一段」，夹具就必须**只缺那一段**。这正是
+    /// 「断言必须落在差异真正出现的那一点」。
+    #[test]
+    fn each_missing_jpeg_segment_is_caught_on_its_own() {
+        // 拿一张真 JPEG 当底，逐段破坏，保证每个夹具只差一样东西
+        use image::{ImageFormat, RgbImage};
+        let img = RgbImage::from_fn(16, 12, |x, y| {
+            image::Rgb([
+                ((x * 19 + y * 5) % 251) as u8,
+                ((x * 3 + y * 23) % 251) as u8,
+                ((x * 29 + y * 7) % 251) as u8,
+            ])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Jpeg).expect("编码");
+        let good = buf.into_inner();
+        assert!(is_complete_image(&good), "底图本身必须通过");
+
+        // 把某一种段标记**全部**打坏。
+        //
+        // 真实 JPEG 通常有两张量化表（亮度 / 色度）与四张霍夫曼表，
+        // 只改第一个的话另一个还在，夹具就不是「缺这一段」——
+        // 第一版就栽在这里，断言失败的是夹具而不是产品
+        let strip = |src: &[u8], marker: u8| -> Vec<u8> {
+            let mut out = src.to_vec();
+            let mut i = 0;
+            while i + 1 < out.len() {
+                if out.get(i) == Some(&0xFF) && out.get(i + 1) == Some(&marker) {
+                    if let Some(b) = out.get_mut(i + 1) {
+                        *b = 0xEE; // 换成一个无意义的段标记
+                    }
+                }
+                i += 1;
+            }
+            out
+        };
+
+        // ① 只缺量化表
+        let no_dqt = strip(&good, 0xDB);
+        assert!(
+            !no_dqt.windows(2).any(|w| w == [0xFF, 0xDB]),
+            "夹具本身要真的一个 DQT 都不剩，否则测的不是「缺这一段」"
+        );
+        assert!(
+            no_dqt.windows(2).any(|w| w == [0xFF, 0xC4]),
+            "这个夹具只该缺 DQT，霍夫曼表要留着"
+        );
+        assert!(
+            !is_complete_image(&no_dqt),
+            "只缺量化表也必须被拒——那正是 stripped 缩略图缺的东西"
+        );
+
+        // ② 只缺霍夫曼表
+        let no_dht = strip(&good, 0xC4);
+        assert!(
+            !no_dht.windows(2).any(|w| w == [0xFF, 0xC4]),
+            "夹具本身要真的一个 DHT 都不剩"
+        );
+        assert!(
+            no_dht.windows(2).any(|w| w == [0xFF, 0xDB]),
+            "这个夹具只该缺 DHT，量化表要留着"
+        );
+        assert!(!is_complete_image(&no_dht), "只缺霍夫曼表也必须被拒");
+
+        // ③ 只去掉结尾的 EOI
+        let mut no_eoi = good.clone();
+        no_eoi.truncate(no_eoi.len().saturating_sub(2));
+        assert!(
+            !is_complete_image(&no_eoi),
+            "缺 EOI 的 JPEG 会被解码器当成截断文件"
+        );
+    }
+
+    /// 一张**真的能被解码器接受**的 JPEG 必须通过。
+    ///
+    /// 不这样会怎样：上一条只保证「坏的被拒」。若这条不在，一个「一律返回
+    /// false」的实现也能让上一条全绿——而那会让所有缩略图都消失，
+    /// 同样是静默的。
+    ///
+    /// 这里刻意真的编码一张图再验，而不是手搓一段看起来像 JPEG 的字节：
+    /// 手搓的那种只能证明「我的检查认得我手搓的格式」。
+    #[test]
+    fn a_real_decodable_jpeg_passes() {
+        use image::{ImageFormat, RgbImage};
+
+        // 造一张小图，像素用算式生成
+        let img = RgbImage::from_fn(16, 12, |x, y| {
+            image::Rgb([
+                ((x * 17 + y * 3) % 251) as u8,
+                ((x * 7 + y * 29) % 251) as u8,
+                ((x * 13 + y * 11) % 251) as u8,
+            ])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Jpeg).expect("编码 JPEG");
+        let bytes = buf.into_inner();
+
+        assert!(
+            is_complete_image(&bytes),
+            "一张真的 JPEG 必须通过，否则缩略图会全部消失"
+        );
+
+        // 自证这张图确实解得开——否则上面那条断言可能只是碰巧成立
+        assert!(
+            image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).is_ok(),
+            "夹具本身必须是能解码的，不然这条测试没有意义"
+        );
+    }
+
+    /// PNG 与 WebP 认魔数即可，不要求 JPEG 那几个段。
+    ///
+    /// 不这样会怎样：拿 JPEG 的段要求去卡 PNG，会把本来好好的 PNG 缩略图
+    /// 全部挡掉——又是一次「图莫名其妙不出来」。
+    #[test]
+    fn png_and_webp_are_accepted_by_magic() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend((0..64).map(|i| (i % 251) as u8));
+        assert!(is_complete_image(&png), "PNG 应当通过");
+
+        let mut webp = Vec::from(*b"RIFF");
+        webp.extend(1000u32.to_le_bytes());
+        webp.extend_from_slice(b"WEBP");
+        webp.extend((0..64).map(|i| ((i * 5) % 251) as u8));
+        assert!(is_complete_image(&webp), "WebP 应当通过");
+
+        // 只有 RIFF 不算：wav / avi 也是 RIFF 开头
+        let mut wav = Vec::from(*b"RIFF");
+        wav.extend(1000u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        assert!(!is_complete_image(&wav), "RIFF+WAVE 不是图片");
     }
 }

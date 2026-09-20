@@ -232,7 +232,20 @@ fn scan_entries(
     // 边扫边出与单条目重试走同一条识别路径，不允许出现两套结果。
     let mut entries: Vec<RemoteEntry> = items
         .iter()
-        .map(|it| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, false))
+        .map(|it| {
+            let mut e =
+                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, false);
+            // 服务端随消息送来的内嵌缩略图：**列目录时就已经在手里**，
+            // 不需要任何额外请求，也不必等后台识别。
+            //
+            // 后台那条识别路径是给 omy 加密文件用的（要读头部、要解密），
+            // 普通图片视频根本不走它——早先只在那条路径上登记缩略图，
+            // 于是普通文件的 thumb_token 恒为 null，界面上永远只有类型图标。
+            if let Some(bytes) = it.thumb.clone() {
+                e.thumb_token = thumbs.insert_image(bytes);
+            }
+            e
+        })
         .collect();
 
     // 信号量限流：不为每个文件都 spawn 一个不受控请求
