@@ -846,6 +846,98 @@ function rowTitle(f) {
 </template>
 
 <style scoped>
+/* ---------- 密度：与原型（appendix/telegram-remote-prototype.html）对齐 ----------
+ *
+ * 只在这里覆盖，不动全局 app.css：`.grid` / `.card` / `.thumb` 本地文件
+ * 视图也在用，而原型那套尺寸是给远程场景定的。改全局会把本地一起改掉。
+ *
+ * 数值逐项对照原型：网格 minmax(122px)/gap 10px、缩略图 72px/26px、
+ * 卡片 padding 9px、名字 12px、元信息 10.5px。
+ */
+.grid {
+  grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
+  gap: 10px;
+}
+.card {
+  padding: 9px;
+}
+.card .thumb {
+  /* 原来 104px，卡片整体 156px 高——一个文件夹图标就占掉半屏 */
+  height: 72px;
+  font-size: 26px;
+  margin-bottom: 7px;
+}
+.cname {
+  font-size: 12px;
+  margin-block-start: 0;
+}
+.cmeta {
+  font-size: 10.5px;
+}
+
+/* ---------- 搜索栏 ----------
+ *
+ * 原先 `.searchbar` / `.sinput` **完全没有样式**：输入框是浏览器原生外观、
+ * 整行铺开，与周围组件不是一套视觉。
+ */
+.searchbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px 10px;
+}
+.sinput {
+  /* 不铺满整行：搜索框占满一行会让它看起来像页面主体，
+     而它只是一个过滤器。给一个上限，剩下的留白 */
+  flex: 1;
+  max-width: 320px;
+  min-width: 140px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  min-height: 32px;
+}
+.sinput:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---------- 说明条 ----------
+ *
+ * 原型里这类说明是**低权重的一行**（`.note`：左侧一条 3px 竖线 + 灰字），
+ * 不是通栏彩底。通栏蓝底长文字会把一句辅助说明做成页面最抢眼的东西，
+ * 而它的重要性低于下面的文件列表。
+ *
+ * 唯一例外是服务端搜索那条：搜索词已经离开本机，那件事该显眼，
+ * 所以 `.warn` 保留彩底。
+ */
+.banner {
+  padding: 7px 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  border-block-end: 0;
+  border-inline-start: 3px solid var(--border);
+  border-radius: 0 var(--r-s) var(--r-s) 0;
+  margin: 0 2px 8px;
+  background: var(--bg2);
+  color: var(--fg2);
+}
+.banner.info {
+  border-inline-start-color: var(--accent);
+  background: var(--bg2);
+  color: var(--fg2);
+}
+/* 服务端搜索保持醒目：搜索词离开本机这件事不能低调处理 */
+.banner.warn {
+  border-inline-start-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg2));
+  color: var(--fg);
+}
+
 /* 位置行：让操作按钮靠右排成一组 */
 .placerow {
   cursor: pointer;
