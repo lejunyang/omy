@@ -215,6 +215,14 @@ export const vaultParamsOf = (dir) => invoke('vault_params_of', { dir });
 export const unlock = (label, password, vaults) =>
   invoke('unlock', { label, password, vaults });
 
+/** 取远程位置当前目录里所有加密文件的 vault 参数。
+ *
+ * 远程没有本地目录可探测，所以不能走 `unlockDirectory`——
+ * 那条路径要求 `state.cwd`，在远程位置里它是空的。
+ */
+export const remotePlaceVaults = (placeId, dir) =>
+  invoke('remote_place_vaults', { placeId, dir });
+
 /** 对一个目录直接试密码：探测 vault + 派生，一步到位。 */
 export const unlockDirectory = (dir, password) =>
   invoke('unlock_directory', { dir, password });

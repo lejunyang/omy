@@ -232,6 +232,7 @@ pub fn run() {
             place_cmds::remote_messages,
             place_cmds::remote_effective_caps,
             place_cmds::remote_probe_entry,
+            place_cmds::remote_place_vaults,
             place_cmds::remote_place_open,
             place_cmds::remote_place_close,
             place_cmds::remote_decrypt_to_local,

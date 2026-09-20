@@ -1541,7 +1541,55 @@ export async function tryDeviceUnlock() {
   }
 }
 
+/** 在**远程位置**里试密码。
+ *
+ * 与局域网那条 `unlockRemote` 同构：远端没有「目录」可探测 vault，
+ * 所以先从当前远程目录的文件头里收集 vault 参数，再派生。
+ *
+ * 成功后要重新识别当前目录——解锁改变的是**识别结果**（真实文件名、
+ * 缩略图、可否播放），不重新识别的话界面上一切照旧，
+ * 用户会以为密码没生效。
+ */
+async function tryUnlockRemotePlace(password) {
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const vaults = await api.remotePlaceVaults(state.remotePlace, state.remoteDir || '');
+    if (!vaults.length) {
+      // 这个目录里没有加密文件，谈不上解锁。与「密码不对」分开说：
+      // 前者是「这儿没东西要解」，后者是「你输错了」
+      state.error = i18n.te('no_vault_found');
+      return false;
+    }
+    const r = await api.unlock('main', password, vaults);
+    state.credentials = r.credentials;
+    await reloadRemoteDir();
+    const opened = state.remoteItems.filter((f) => f.is_encrypted && f.unlocked).length;
+    if (opened > 0) {
+      setNotice(i18n.tn('notice.unlocked', opened));
+    } else {
+      // 派生几乎总会「成功」，真正的判据是有没有东西被解开
+      state.error = i18n.te('wrong_password');
+    }
+    return opened > 0;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return false;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
 export async function tryUnlock(password) {
+  // 在远程位置里走远程那条：它没有本地目录，unlockDirectory 用不了。
+  //
+  // 不分流会怎样：下面那句 `if (!state.cwd)` 直接 return false，
+  // 于是用户在远程位置里输密码**什么都不会发生，连错误都没有**，
+  // 看到的是「密码输了没反应，文件一直锁着」。
+  if (state.remotePlace) return tryUnlockRemotePlace(password);
   if (!state.cwd) return false;
   state.busy = true;
   state.busyKey = 'busy.deriving';

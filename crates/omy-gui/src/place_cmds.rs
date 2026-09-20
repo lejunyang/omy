@@ -483,6 +483,67 @@ pub struct OpenPlaceResult {
     pub encrypted_size: u64,
 }
 
+/// 取当前远程目录里所有加密文件的 vault 参数（用于解锁）。
+///
+/// # 为什么需要这条命令
+///
+/// 顶栏的密码入口走 `unlock_directory`，它要一个**本地目录**去探测 vault。
+/// 远程位置没有本地目录，于是 `tryUnlock` 第一行的 `if (!state.cwd)` 直接
+/// 返回——用户在远程位置里输密码**什么都不会发生，连错误都没有**，
+/// 看到的是「密码输了没反应，文件一直锁着」。
+///
+/// 局域网那条线早就有对应的 `remote_vaults`，云盘这条漏了。
+///
+/// 去重按 salt：同一个 vault 里所有文件的 salt 相同，重复派生纯属浪费
+/// （Argon2 每次都要几百毫秒）。
+///
+/// # Errors
+///
+/// 位置不存在时返回。读不到头部的条目直接跳过而不是报错——
+/// 那些文件的失败已经由 `probe_failed` 表达过了。
+#[tauri::command]
+pub async fn remote_place_vaults(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    place_id: String,
+    dir: String,
+) -> CmdResult<Vec<crate::commands::VaultParams>> {
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = Arc::clone(&place.store);
+
+    let entries = store
+        .list(&dir)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for e in entries {
+        if e.is_dir {
+            continue;
+        }
+        let size = e.size.unwrap_or(0);
+        // 只读头部，载荷一个字节都不碰
+        let Ok(bytes) = fetch_full_header(&store, &e.id, size).await else {
+            continue;
+        };
+        let Ok(h) = omy_core::file::peek_header(&bytes) else {
+            continue;
+        };
+        let salt = crate::commands::hex_of(&h.vault_salt);
+        if seen.insert(salt.clone()) {
+            out.push(crate::commands::VaultParams {
+                salt,
+                m_kib: h.argon2_m_kib,
+                t: h.argon2_t,
+                p: h.argon2_p,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// 「要打开哪个远程条目」。
 ///
 /// 四个字段描述的是同一件事，收成结构体而不是平铺成参数。
