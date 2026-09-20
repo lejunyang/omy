@@ -3,7 +3,7 @@
 
 import { ref } from 'vue';
 import * as i18n from '../i18n.js';
-import { state, navigate, grantStorageAccess, openPlaceBrowserAt } from '../store.js';
+import { closePlaceBrowser, state, navigate, grantStorageAccess, openPlaceBrowserAt } from '../store.js';
 
 defineProps({
   /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
@@ -30,8 +30,12 @@ async function onGrant() {
   }
 }
 
-/** 进入某个位置，并通知父组件（抽屉据此收起）。 */
+/** 进入某个本地位置，并通知父组件（抽屉据此收起）。 */
 function go(path) {
+  // 关掉云盘视图：它是整屏覆盖的，不关的话本地目录已经载入、界面却
+  // 还停在远程那一屏，侧栏同时高亮两个位置。用户看到的是「点了本地
+  // 盘符没反应」，而实际上导航已经发生了，只是被盖住
+  closePlaceBrowser();
   navigate(path);
   emit('navigate');
 }

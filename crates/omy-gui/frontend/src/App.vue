@@ -647,7 +647,12 @@ async function onPick() {
     state.error = i18n.te(api.errCode(e));
     return;
   }
-  if (dir) await navigate(dir);
+  if (dir) {
+    // 同上：用户挑了个本地文件夹，就该落到本地视图，
+    // 不能把它载入到一个被云盘视图盖住的地方
+    closePlaceBrowser();
+    await navigate(dir);
+  }
 }
 
 async function doLock() {
