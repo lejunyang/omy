@@ -22,6 +22,7 @@
 import { computed, ref } from 'vue';
 import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
+import AppShell from './AppShell.vue';
 import ContextMenu from './ContextMenu.vue';
 import {
   state,
@@ -405,6 +406,20 @@ function rowTitle(f) {
 </script>
 
 <template>
+  <!-- 活在主界面外壳里，侧栏常驻。
+       原先这是一个整屏组件、与 MainScreen 互斥替换，进远程位置后侧栏
+       整个消失，用户没法在位置之间切换，只能先退回去。 -->
+  <AppShell
+    :search="false"
+    @pick="$emit('pick')"
+    @devices="$emit('devices')"
+    @lang="$emit('lang')"
+    @add-place="$emit('add')"
+    @telegram="$emit('telegram')"
+    @settings="$emit('settings')"
+    @lock="$emit('lock')"
+    @quick-unlock="$emit('quick-unlock')"
+  >
   <div class="main" data-ui="place-browser">
     <div class="crumb">
       <button
@@ -742,6 +757,7 @@ function rowTitle(f) {
       @close="rmenu = null"
     />
   </div>
+  </AppShell>
 </template>
 
 <style scoped>

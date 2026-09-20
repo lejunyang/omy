@@ -832,6 +832,13 @@ onBeforeUnmount(() => {
     @open="onOpenPlace"
     @add="showAddPlace = true"
     @close="onClosePlaceBrowser"
+    @pick="onPick"
+    @devices="showDevices = true"
+    @lang="switchLanguage"
+    @telegram="showTelegramLogin = true"
+    @settings="showSettings = true"
+    @lock="doLock"
+    @quick-unlock="((unlockError = ''), (showUnlock = true))"
   />
 
   <MainScreen
