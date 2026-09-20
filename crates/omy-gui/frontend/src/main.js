@@ -13,7 +13,7 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import * as api from './api.js';
 import * as i18n from './i18n.js';
-import { initTheme } from './theme.js';
+import { initTheme, syncThemeFromConfig } from './theme.js';
 import { state } from './store.js';
 import './styles/app.css';
 
@@ -26,6 +26,16 @@ async function boot() {
   const saved = localStorage.getItem('omy.lang');
   const lang = saved || (await api.getLanguage().catch(() => 'en'));
   await i18n.load(lang);
+
+  // 配置文件是权威来源，用它校正 initTheme 那一步用的本地副本。
+  // 两者平时一致，但配置从别处来时会分叉——那时界面会出现「设置里写着
+  // 跟随系统、实际却固定深色」这种自相矛盾的状态
+  try {
+    const cfg = await api.configGet();
+    syncThemeFromConfig(cfg?.ui?.theme);
+  } catch {
+    // 读不到配置就沿用本地副本，不影响启动
+  }
 
   // 会话里可能已经有凭据（比如上一次没锁就关了窗口）
   state.credentials = await api.credentialCount().catch(() => 0);

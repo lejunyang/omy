@@ -53,6 +53,28 @@ export function initTheme() {
   });
 }
 
+/** 用配置文件里的值校正主题。
+ *
+ * # 为什么需要单独一步
+ *
+ * `initTheme` 必须在首帧之前跑完，否则会闪一下白底；而配置要走 IPC 读，
+ * 那时页面已经渲染了。所以启动分两步：先用 `localStorage` 里的副本即时
+ * 应用，拿到配置后再用这里校正。
+ *
+ * # 不这样会怎样
+ *
+ * 两者平时总是一起写所以看不出问题，但配置从别处来时就会分叉——同步过来、
+ * 外部编辑、或者换台机器带着配置。实测过的分叉表现是：配置里写着 `auto`、
+ * `localStorage` 里是 `dark`，于是**设置页下拉框显示「跟随系统」，界面却
+ * 是深色且系统切换时不跟随**。用户看到的是「选了跟随系统，没用」，而下拉
+ * 框本身显示得没错，从界面上根本看不出是两个来源在打架。
+ */
+export function syncThemeFromConfig(pref) {
+  if (pref !== 'auto' && pref !== 'dark' && pref !== 'light') return;
+  if (pref === themePref.value) return;
+  setTheme(pref);
+}
+
 /** 设置主题偏好。 */
 export function setTheme(pref) {
   themePref.value = pref === 'light' || pref === 'dark' ? pref : 'auto';
