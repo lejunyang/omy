@@ -194,6 +194,8 @@ mod tests {
                 can_send: true,
                 can_delete: true,
                 broadcast: false,
+                kind: "group",
+                avatar: None,
             },
             Conversation {
                 chat: 2,
@@ -201,6 +203,8 @@ mod tests {
                 can_send: false,
                 can_delete: false,
                 broadcast: true,
+                kind: "channel",
+                avatar: None,
             },
         ]))
     }

@@ -259,6 +259,40 @@ pub struct Conversation {
     /// [`TelegramStore::messages`] 上关于 ToS 3.3 的说明。
     /// 超级群（megagroup）不算——它在协议里也是 Channel，但不是广播频道。
     pub broadcast: bool,
+    /// 对话类型：`user` | `group` | `channel`。
+    ///
+    /// 界面用它选图标。**对话不是文件夹**，用 📁 表示会让人以为里面是
+    /// 目录结构；拿不到头像时按类型给 Telegram 风格的图标才说得通。
+    pub kind: &'static str,
+    /// 头像原始字节（JPEG），拿不到就是 `None`。
+    ///
+    /// 用的是服务端已有的头像文件（`Peer::photo(false)` 给出小尺寸），
+    /// 不是下载什么大图再缩——列表里够用，也省流量。
+    pub avatar: Option<Vec<u8>>,
+}
+
+/// 把一个可下载对象整体读成字节。
+///
+/// 只用于头像这类**很小**的东西。大文件走 `read_range` 的分块路径，
+/// 不要用这个——它会把整个内容读进内存。
+async fn download_bytes<D: grammers_client::media::Downloadable>(
+    client: &grammers_client::Client,
+    d: &D,
+) -> Option<Vec<u8>> {
+    let mut it = client.iter_download(d);
+    let mut buf = Vec::new();
+    loop {
+        match it.next().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    if buf.is_empty() {
+        None
+    } else {
+        Some(buf)
+    }
 }
 
 impl Conversation {
@@ -808,12 +842,26 @@ impl TelegramStore {
             if let Ok(Some(r)) = peer.to_ref().await {
                 peers.insert(chat_id, r);
             }
+            let kind = match peer {
+                grammers_client::peer::Peer::User(_) => "user",
+                grammers_client::peer::Peer::Group(_) => "group",
+                grammers_client::peer::Peer::Channel(_) => "channel",
+            };
+            // 头像取小尺寸：列表里只占几十像素，大图纯属浪费流量。
+            // 任何一步失败都按「没有头像」处理——头像是锦上添花，
+            // 不能因为取不到就让整个对话列表失败
+            let avatar = match peer.photo(false).await {
+                Ok(Some(p)) => download_bytes(client, &p).await,
+                _ => None,
+            };
             out.push(Conversation {
                 chat: chat_id,
                 title,
                 can_send,
                 can_delete,
                 broadcast,
+                kind,
+                avatar,
             });
         }
 
@@ -1134,8 +1182,13 @@ impl RemoteStore for TelegramStore {
                     // 硬塞最后一条消息的时间会让缓存层误以为能检测变化。
                     mtime: None,
                     etag: None,
-                    // 对话（目录）没有缩略图。头像是另一回事，不在本期范围
-                    thumb: None,
+                    // 对话的「缩略图」就是它的头像。复用这条既有通道而不是
+                    // 另加字段：GUI 那边 thumb -> thumb_token -> <img> 已经
+                    // 打通，多一条并行路径只会多一处会不一致的地方。
+                    //
+                    // 没有头像时为 None，界面回落到按 kind 给的类型图标——
+                    // 对话不是文件夹，不该显示 📁
+                    thumb: c.avatar.clone(),
                 })
                 .collect());
         }
@@ -1411,6 +1464,8 @@ mod tests {
             can_send: send,
             can_delete: del,
             broadcast: false,
+            kind: "group",
+            avatar: None,
         }
     }
 
@@ -1823,6 +1878,8 @@ mod tests {
                 can_send: false,
                 can_delete: false,
                 broadcast: true,
+                kind: "channel",
+                avatar: None,
             },
         ]);
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1861,6 +1918,8 @@ mod tests {
             can_send: false,
             can_delete: false,
             broadcast: true,
+            kind: "channel",
+            avatar: None,
         }]);
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
