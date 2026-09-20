@@ -154,6 +154,61 @@ async function jump(c) {
   await enterRemoteDir(c.dir);
 }
 
+/** 消息按日期分组，组内由新到旧。
+ *
+ * 每行都带完整日期是冗余噪声，而没有分组时长列表里又失去时间锚点。
+ * 所以日期提到组标题上，组内只显示时刻。
+ *
+ * 分组键用**本地日期**而不是 UTC：用户看到的「今天」得是他自己的今天。 */
+const messageGroups = computed(() => {
+  const out = [];
+  let cur = null;
+  for (const m of state.remoteMessages) {
+    const key = dayKey(m.date);
+    if (!cur || cur.key !== key) {
+      cur = { key, label: dayLabel(m.date), rows: [] };
+      out.push(cur);
+    }
+    cur.rows.push(m);
+  }
+  return out;
+});
+
+/** 本地日期的分组键（同一天的消息归一组）。 */
+function dayKey(unixSecs) {
+  const d = new Date((unixSecs || 0) * 1000);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+/** 组标题：当天与昨天给相对说法，更早给日期。
+ *
+ * 相对说法只用在这两天：再往前用「3 天前」还要用户自己换算，
+ * 不如直接给日期。 */
+function dayLabel(unixSecs) {
+  const d = new Date((unixSecs || 0) * 1000);
+  const today = new Date();
+  const same = (a, b) => dayKey(a.getTime() / 1000) === dayKey(b.getTime() / 1000);
+  if (same(d, today)) return i18n.t('msgs.today');
+  const y = new Date(today.getTime() - 86400000);
+  if (same(d, y)) return i18n.t('msgs.yesterday');
+  return d.toLocaleDateString();
+}
+
+/** 组内每行只显示时刻——日期已经在组标题上了。 */
+function fmtTime(unixSecs) {
+  return new Date((unixSecs || 0) * 1000)
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** 本屏消息里带文件的条数。
+ *
+ * 把它显示出来，是为了让「筛选判据有没有退化成文件视图」这件事
+ * **从界面上就能看出来**（§7.8）：消息数应当大于带文件数，
+ * 两者相等就说明纯文本消息被漏掉了。此前这个事实只存在于测试输出里。 */
+const messageWithFile = computed(
+  () => state.remoteMessages.filter((m) => !!m.file_id).length,
+);
+
 /** 这个位置有没有「本机登录态」这回事。
  *
  * 只有 Telegram 才分得出「摘掉位置」与「删掉登录态」；WebDAV 的凭据跟着
@@ -749,16 +804,28 @@ function rowTitle(f) {
             <div class="title">{{ i18n.t('msgs.empty') }}</div>
           </div>
           <div v-else class="msglist" data-tg="msglist">
-            <div
-              v-for="m in state.remoteMessages"
-              :key="m.message"
-              class="msgrow"
-              :class="{ out: m.outgoing, hasfile: !!m.file_id }"
-              data-tg="msgrow"
-            >
+            <!-- 本屏统计。消息数与带文件数的差值就是纯文本消息数——
+                 把它显示出来，用户才能看出筛选判据没有退化成文件视图 -->
+            <div class="msgstat" data-tg="msgstat">
+              {{ i18n.t('msgs.stat', {
+                total: state.remoteMessages.length,
+                files: messageWithFile,
+                texts: state.remoteMessages.length - messageWithFile,
+              }) }}
+            </div>
+            <template v-for="g in messageGroups" :key="g.key">
+              <div class="msggroup" data-tg="msggroup">{{ g.label }}</div>
+              <div
+                v-for="m in g.rows"
+                :key="m.message"
+                class="msgrow"
+                :class="{ out: m.outgoing, hasfile: !!m.file_id }"
+                data-tg="msgrow"
+                :data-msgid="m.message"
+              >
               <div class="msgmeta">
                 <span class="msgid">#{{ m.message }}</span>
-                <span class="msgdate">{{ fmtDate(m.date) }}</span>
+                <span class="msgdate">{{ fmtTime(m.date) }}</span>
                 <span v-if="m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
               </div>
               <!-- 带文件的消息：点它就打开那个文件，走与文件视图完全相同的
@@ -778,7 +845,8 @@ function rowTitle(f) {
               <div v-else-if="!m.file_id" class="msgtext dim">
                 {{ i18n.t('msgs.no_file') }}
               </div>
-            </div>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -1007,6 +1075,23 @@ function rowTitle(f) {
 .iconbtn.danger:hover {
   background: #fee2e2;
   border-color: #fca5a5;
+}
+/* 组标题粘顶：长列表滚动时始终知道正在看哪一天 */
+.msggroup {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+.msgstat {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--fg2);
 }
 .rowactions {
   margin-left: auto;

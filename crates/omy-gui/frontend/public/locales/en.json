@@ -755,6 +755,9 @@
     "loading": "Loading messages…",
     "empty": "No messages in this conversation",
     "no_file": "(no file)",
-    "outgoing": "Sent by me"
+    "outgoing": "Sent by me",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "stat": "{{total}} messages on this screen — {{files}} with files, {{texts}} text-only"
   }
 }

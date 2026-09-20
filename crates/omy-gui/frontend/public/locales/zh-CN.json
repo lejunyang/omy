@@ -755,6 +755,9 @@
     "loading": "正在加载消息…",
     "empty": "这个对话里没有消息",
     "no_file": "（无文件）",
-    "outgoing": "我发的"
+    "outgoing": "我发的",
+    "today": "今天",
+    "yesterday": "昨天",
+    "stat": "本屏 {{total}} 条消息，其中 {{files}} 条带文件、{{texts}} 条纯文本"
   }
 }
