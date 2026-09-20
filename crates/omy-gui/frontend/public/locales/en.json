@@ -774,7 +774,10 @@
     "outgoing": "Sent by me",
     "today": "Today",
     "yesterday": "Yesterday",
-    "stat": "{{total}} messages on this screen — {{files}} with files, {{texts}} text-only"
+    "stat": "{{total}} messages on this screen — {{files}} with files, {{texts}} text-only",
+    "load_more": "Load earlier messages",
+    "loading_more": "Loading…",
+    "no_more": "No earlier messages"
   },
   "xfer": {
     "title": "Transfers",

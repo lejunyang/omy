@@ -513,8 +513,8 @@ export const remoteCacheFileStat = (placeId, path, size) =>
  * 广播频道没有这个视图（ToS 3.3 的 sponsored messages 要求），
  * 后端会回 `tg_broadcast_no_messages`。
  */
-export const remoteMessages = (placeId, dir) =>
-  invoke('remote_messages', { placeId, dir });
+export const remoteMessages = (placeId, dir, before = null) =>
+  invoke('remote_messages', { placeId, dir, before });
 
 /** 列出一个远程目录容器里的条目。
  *

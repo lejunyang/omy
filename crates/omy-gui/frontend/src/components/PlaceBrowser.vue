@@ -55,6 +55,7 @@ import {
   onSearchQueryCleared,
   canShowMessages,
   setRemoteViewMode,
+  loadMoreMessages,
 } from '../store.js';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -205,6 +206,23 @@ function fmtTime(unixSecs) {
  * 把它显示出来，是为了让「筛选判据有没有退化成文件视图」这件事
  * **从界面上就能看出来**（§7.8）：消息数应当大于带文件数，
  * 两者相等就说明纯文本消息被漏掉了。此前这个事实只存在于测试输出里。 */
+/** 缩略图字节转 data URL。
+ *
+ * 后端给的是 Vec<u8>，序列化成 JS 数组。几 KB 的小图，内联开销可以忽略。 */
+function thumbUrl(bytes) {
+  if (!bytes || !bytes.length) return '';
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return `data:image/jpeg;base64,${btoa(bin)}`;
+}
+
+/** 秒数转 m:ss。 */
+function fmtDur(secs) {
+  const s = Math.max(0, Math.round(secs));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+
 const messageWithFile = computed(
   () => state.remoteMessages.filter((m) => !!m.file_id).length,
 );
@@ -869,7 +887,18 @@ function rowTitle(f) {
                 :data-tg-file="m.file_id"
                 @click="openFromMessage(m)"
               >
-                <span aria-hidden="true">📎</span>
+                <!-- 有缩略图就用图，没有回落到回形针。
+                     缩略图是服务端已有的小图（几 KB），直接内联；
+                     不为它再建一套 token 通道——那是文件视图那条路径的做法，
+                     在这里只会多一处要维护的东西 -->
+                <span v-if="!m.thumb" aria-hidden="true">📎</span>
+                <span v-else class="mfthumb" data-tg="msgthumb">
+                  <img :src="thumbUrl(m.thumb)" alt="" loading="lazy" />
+                  <!-- 时长角标压在缩略图右下角，与各家客户端一致 -->
+                  <i v-if="m.duration" class="mfdur" data-tg="msgdur">
+                    {{ fmtDur(m.duration) }}
+                  </i>
+                </span>
                 <span class="mfname">{{ m.file_name }}</span>
                 <span class="mfsize">{{ i18n.formatSize(m.file_size || 0) }}</span>
               </button>
@@ -880,6 +909,27 @@ function rowTitle(f) {
               </div>
               </div>
             </template>
+
+            <!-- 加载更早。桌面给显式按钮，移动端靠滚动触底——
+                 小屏上常驻按钮会一直吃掉可视高度 -->
+            <div v-if="state.hasMoreMessages" class="msgmore">
+              <button
+                v-if="!isMobile"
+                class="btn small"
+                data-tg="msgmore"
+                :disabled="state.loadingMore"
+                @click="loadMoreMessages"
+              >
+                {{ i18n.t(state.loadingMore ? 'msgs.loading_more' : 'msgs.load_more') }}
+              </button>
+              <span v-else class="d" data-tg="msgmore-auto">
+                {{ i18n.t(state.loadingMore ? 'msgs.loading_more' : 'msgs.load_more') }}
+              </span>
+            </div>
+            <div v-else-if="state.remoteMessages.length" class="msgmore d"
+                 data-tg="msgnomore">
+              {{ i18n.t('msgs.no_more') }}
+            </div>
           </div>
         </template>
 
@@ -1010,6 +1060,41 @@ function rowTitle(f) {
 </template>
 
 <style scoped>
+/* 消息缩略图：小方图 + 右下角时长角标，与各家客户端一致 */
+.mfthumb {
+  position: relative;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-s);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.mfthumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mfdur {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  padding: 0 3px;
+  border-radius: 3px;
+  /* 固定深色底 + 白字：它压在缩略图上，而缩略图的明暗不可预测，
+     跟着主题走反而会在浅色图上看不清 */
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.5;
+}
+.msgmore {
+  display: flex;
+  justify-content: center;
+  padding: calc(var(--sp) * 2) 0;
+}
+
 /* 受保护内容告知：刻意做得低权重。
    它说的是「这个群开了保护，但不影响你在这里用」，不是出错也不是风险，
    所以没有底色和边框——给它警告样式会让用户以为有什么坏了。 */

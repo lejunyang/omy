@@ -286,6 +286,56 @@ pub struct Conversation {
     pub avatar: Option<Vec<u8>>,
 }
 
+/// 取媒体的缩略图字节。
+///
+/// # 为什么要挑尺寸而不是拿第一个
+///
+/// `thumbs()` 里可能有 `StrippedSize`——它的 `bytes` **不是完整 JPEG**：
+/// Telegram 裁掉了标准量化表与霍夫曼表以省几十字节，要还原得自己拼回去。
+/// 直接把它交给 `<img>` 会得到一张**永远加载失败、而且不报错**的图，
+/// 界面上表现为「缩略图位置一直空着」，完全看不出原因。
+///
+/// 所以这里跳过它，取一个能直接渲染的尺寸；没有就返回 `None`，
+/// 界面回落到类型图标。
+async fn thumb_bytes(
+    client: &grammers_client::Client,
+    media: &grammers_client::media::Media,
+) -> Option<Vec<u8>> {
+    use grammers_client::media::Media;
+
+    let thumbs = match media {
+        Media::Photo(p) => p.thumbs(),
+        Media::Document(d) => d.thumbs(),
+        Media::Sticker(s) => s.document.thumbs(),
+        _ => return None,
+    };
+    // 按面积挑一个最小但仍可直接渲染的。太大的没必要——列表里只占几十像素
+    let mut best: Option<grammers_client::media::PhotoSize> = None;
+    for t in thumbs {
+        // StrippedSize 的 photo_type 是 "i"，它不是完整 JPEG，跳过
+        if t.photo_type() == "i" {
+            continue;
+        }
+        let better = best.as_ref().is_none_or(|b| t.size() < b.size());
+        if better {
+            best = Some(t);
+        }
+    }
+    let t = best?;
+    download_bytes(client, &t).await
+}
+
+/// 视频时长（秒）。非视频返回 `None`。
+fn media_duration(media: &grammers_client::media::Media) -> Option<u32> {
+    use grammers_client::media::Media;
+    match media {
+        // grammers 给的是 f64 秒。向下取整——「1 分 30 秒」比
+        // 「1 分 30.7 秒」更像时长角标
+        Media::Document(d) => d.duration().map(|x| x.max(0.0) as u32),
+        _ => None,
+    }
+}
+
 /// 把一个可下载对象整体读成字节。
 ///
 /// 只用于头像这类**很小**的东西。大文件走 `read_range` 的分块路径，
@@ -585,6 +635,17 @@ pub struct MessageRow {
     pub file_name: Option<String>,
     /// 文件字节数。
     pub file_size: Option<u64>,
+    /// 缩略图原始字节（JPEG），没有就是 `None`。
+    ///
+    /// 用的是服务端已有的小尺寸缩略图，不下载原图再缩——消息列表里
+    /// 一屏可能有几十条，拉原图既慢又费流量。
+    ///
+    /// **只取能直接渲染的尺寸**：`StrippedSize` 那种的字节不是完整 JPEG
+    /// （Telegram 裁掉了标准量化表与霍夫曼表），直接交给 `<img>` 会得到
+    /// 一张永远加载失败、而且不报错的图。
+    pub thumb: Option<Vec<u8>>,
+    /// 视频时长（秒），非视频为 `None`。界面用它画时长角标。
+    pub duration: Option<u32>,
 }
 
 /// Telegram 驱动。
@@ -1073,7 +1134,12 @@ impl TelegramStore {
     /// # Errors
     ///
     /// 未登录、对话不存在、是广播频道、网络失败或限流时返回。
-    pub async fn messages(&self, dir_id: &str, limit: usize) -> Result<Vec<MessageRow>> {
+    pub async fn messages(
+        &self,
+        dir_id: &str,
+        limit: usize,
+        before: Option<i32>,
+    ) -> Result<Vec<MessageRow>> {
         let chat = Conversation::parse_dir_id(dir_id)?;
 
         // 先判**不随状态变化的事实**，再判依赖运行时状态的。
@@ -1098,7 +1164,14 @@ impl TelegramStore {
         }
 
         let peer = self.peer_ref(chat).await?;
+        // `before` 是「从这条消息之前开始取」。Telegram 的消息号在对话内
+        // 单调递增，所以「加载更早」就是拿当前最老那条的号再要一页。
+        //
+        // 不用 offset_date：同一秒里可能有多条消息，按日期翻页会重复或漏掉。
         let mut it = client.iter_messages(peer).limit(limit);
+        if let Some(off) = before {
+            it = it.offset_id(off);
+        }
         let mut out = Vec::new();
         let mut cache = Vec::new();
         loop {
@@ -1135,6 +1208,12 @@ impl TelegramStore {
                 },
                 None => (None, None, None),
             };
+            // 缩略图与时长：用服务端已有的小图，不下载原图再缩。
+            // 一屏可能有几十条消息，拉原图既慢又费流量
+            let (thumb, duration) = match msg.media() {
+                Some(m) => (thumb_bytes(client, &m).await, media_duration(&m)),
+                None => (None, None),
+            };
             out.push(MessageRow {
                 message: msg.id(),
                 text: msg.text().to_string(),
@@ -1143,6 +1222,8 @@ impl TelegramStore {
                 file_id,
                 file_name,
                 file_size,
+                thumb,
+                duration,
             });
         }
         // 顺带把下载位置也缓存了：用户多半会从消息视图直接点开那个文件，
@@ -1887,6 +1968,8 @@ mod tests {
             file_id: Some(String::from("tg:1:7")),
             file_name: Some(String::from("a.omy")),
             file_size: Some(42),
+            thumb: None,
+            duration: None,
         };
         let j = serde_json::to_value(&r).expect("序列化");
         for k in [
@@ -1917,6 +2000,8 @@ mod tests {
             file_id: None,
             file_name: None,
             file_size: None,
+            thumb: None,
+            duration: None,
         };
         // 没有文件不代表这一行无效：它有文字、有时间、有消息号
         assert!(r.file_id.is_none());
@@ -1954,7 +2039,7 @@ mod tests {
         // 广播频道：必须以「不支持」拒掉，且理由要能被界面区分出来
         assert!(
             matches!(
-                rt.block_on(s.messages("tg:2", 10)),
+                rt.block_on(s.messages("tg:2", 10, None)),
                 Err(Error::Unsupported(w)) if w == BROADCAST_NO_MESSAGES
             ),
             "广播频道不该有消息视图，且要给出专门的标记而不是笼统的不支持"
@@ -1964,7 +2049,7 @@ mod tests {
         // 而不是停在「不支持」——两者必须能区分开
         assert!(
             matches!(
-                rt.block_on(s.messages("tg:1", 10)),
+                rt.block_on(s.messages("tg:1", 10, None)),
                 Err(Error::Protocol(ref m)) if m.contains("尚未登录")
             ),
             "普通群的消息视图不该被广播频道那条规则挡掉"

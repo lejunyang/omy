@@ -118,6 +118,10 @@ export const state = reactive({
   /** 消息视图的数据。与 remoteItems 分开：一个是「这个对话里有哪些文件」，
    *  一个是「这个对话里发生过什么」，来源和生命周期都不同。 */
   remoteMessages: [],
+  /** 还有没有更早的消息可加载。取回的条数少于一页就说明到头了。 */
+  hasMoreMessages: false,
+  /** 正在加载更早。 */
+  loadingMore: false,
   /** 消息视图正在加载。 */
   loadingMessages: false,
   /** 服务端搜索返回的候选集。与 remoteItems 分开存。
@@ -1791,7 +1795,11 @@ export async function setRemoteViewMode(mode) {
   state.loadingMessages = true;
   state.placeError = '';
   try {
-    state.remoteMessages = await api.remoteMessages(state.remotePlace, state.remoteDir);
+    const rows = await api.remoteMessages(state.remotePlace, state.remoteDir);
+    state.remoteMessages = rows;
+    // 取满一页就假定还有更早的。少于一页说明到头了——不能靠「下一次返回
+    // 空」来判断，那要多发一次必然为空的请求
+    state.hasMoreMessages = rows.length >= 80;
   } catch (e) {
     state.remoteMessages = [];
     // 广播频道那条要给专门的话：用户需要知道这是「omy 不为频道做这个视图」，
@@ -2006,6 +2014,43 @@ export async function reloadRemoteDir() {
   } finally {
     state.busy = false;
     state.busyKey = '';
+  }
+}
+
+/** 加载更早的消息。
+ *
+ * 用当前最老那条的消息号作 offset。Telegram 的消息号在对话内单调递增，
+ * 所以「更早」就是号更小的那些。
+ *
+ * # 两件必须做对的事
+ *
+ * 1. **全部追加，不能只追加带文件的。** §7.8 要求消息视图包含纯文本
+ *    消息，界面上那行「N 条消息，其中 M 条带文件」正是用来暴露判据有没有
+ *    退化成文件视图的；只追加带文件的话翻几页后两个数字就相等了。
+ * 2. **按消息号去重。** offset_id 理论上是严格早于，但网络重试或消息被删
+ *    都可能让边界错位。重复一条在界面上表现为同一个文件出现两次，
+ *    用户会以为自己传了两遍。
+ */
+export async function loadMoreMessages() {
+  if (state.loadingMore || !state.hasMoreMessages) return;
+  if (!state.remotePlace || !state.remoteDir) return;
+  const oldest = state.remoteMessages.at(-1);
+  if (!oldest) return;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  state.loadingMore = true;
+  try {
+    const rows = await api.remoteMessages(place, dir, oldest.message);
+    // 回写前校验还在同一个对话：用户可能在请求飞行途中切走了
+    if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    const seen = new Set(state.remoteMessages.map((m) => m.message));
+    const fresh = rows.filter((m) => !seen.has(m.message));
+    state.remoteMessages = [...state.remoteMessages, ...fresh];
+    state.hasMoreMessages = rows.length >= 80 && fresh.length > 0;
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
+  } finally {
+    state.loadingMore = false;
   }
 }
 

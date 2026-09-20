@@ -1290,6 +1290,7 @@ pub async fn remote_messages(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     place_id: String,
     dir: String,
+    before: Option<i32>,
 ) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
     crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
     let place = reg
@@ -1300,7 +1301,9 @@ pub async fn remote_messages(
         // 界面也不该显示那个切换——这里是最后一道
         return Err(CmdError::code("remote_no_messages"));
     };
-    tg.messages(&dir, MESSAGE_PAGE)
+    // `before` 为 None 是首屏；给了消息号就是「加载更早」——
+    // 从那条之前再要一页
+    tg.messages(&dir, MESSAGE_PAGE, before)
         .await
         .map_err(|e| to_cmd_err(&e))
 }
