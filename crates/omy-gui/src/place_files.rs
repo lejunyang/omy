@@ -140,7 +140,19 @@ impl RemoteCache {
 /// 预览类别在打开命令的返回值里给前端，播放阶段用不到。
 pub struct OpenPlaceFile {
     /// 完整文件头（密文）。每次请求据此重新 `open`，不长期持有 payload key。
+    ///
+    /// **普通文件（非 omy）这里是空的**，见 [`Self::plain`]。
     pub header: Vec<u8>,
+    /// 这是一个**未加密的普通文件**吗。
+    ///
+    /// 远程位置里普通文件是主体内容（Telegram 频道里的图片、视频、文档），
+    /// 它们没有 omy 头部，也不需要解密——直接把远程字节按 Range 转出去。
+    ///
+    /// 用一个字段而不是另开一张句柄表：两张表意味着锁定时要记得清两处，
+    /// 漏一处就是「锁定后仍能凭旧 token 读到内容」的安全缺口。
+    ///
+    /// `Some(总字节数)` 表示普通文件；`None` 表示 omy 文件。
+    pub plain: Option<u64>,
     /// 接好缓存与网络的密文来源。
     ///
     /// 泛型参数用 [`PlaceStore`]（各 provider 的统一外壳）而不是某个具体驱动：
@@ -554,6 +566,7 @@ mod tests {
 
         OpenPlaceFile {
             header: enc.bytes,
+            plain: None,
             source,
             mime: String::from("text/plain; charset=utf-8"),
         }

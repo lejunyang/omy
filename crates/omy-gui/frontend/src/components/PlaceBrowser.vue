@@ -172,9 +172,10 @@ function activate(f) {
     enterRemoteDir(f.id, displayName(f));
     return;
   }
-  if (f.is_encrypted && f.unlocked) {
-    emit('open', f);
-  }
+  // 未解锁的 omy 打不开（本来就没有密码），其余都交给父组件预览：
+  // 普通文件走原始字节转发，已解锁的 omy 走解密
+  if (f.is_encrypted && !f.unlocked) return;
+  emit('open', f);
 }
 
 /** 该条目是否正处于单条目重试中（此时显示 ⏳ 且不可再点）。 */
@@ -307,9 +308,12 @@ function icon(f) {
   if (f.is_dir) return '📁';
   if (f.probing || isRetrying(f)) return '⏳';
   if (f.probe_failed) return '⚠️';
-  if (!f.is_encrypted) return '📄';
-  if (!f.unlocked) return '🔒';
-  const n = (f.real_name || '').toLowerCase();
+  if (f.is_encrypted && !f.unlocked) return '🔒';
+  // 普通文件按**磁盘名**判类型，已解锁的 omy 按解密出的真实名。
+  //
+  // 原先普通文件在这里直接 return '📄'，于是 jpg 和 mp4 长得一模一样——
+  // 用户报的「视频图片文件都是一个图标」就是这条。
+  const n = (f.is_encrypted ? f.real_name || '' : f.name || '').toLowerCase();
   if (/\.(mp4|mkv|webm|mov|avi|m4v|flv|wmv|ts)$/.test(n)) return '🎬';
   if (/\.(mp3|flac|aac|m4a|ogg|opus|wav|wma)$/.test(n)) return '🎵';
   if (/\.(png|jpe?g|gif|webp|bmp|avif|svg|heic|heif)$/.test(n)) return '🖼️';
@@ -321,7 +325,17 @@ function icon(f) {
  *  失败条目可点（=重试）；重试中转 ⏳ 暂时不可点；锁定项/普通文件不可点。 */
 function activatable(f) {
   if (f.probing || isRetrying(f)) return false;
-  return f.is_dir || f.probe_failed || (f.is_encrypted && f.unlocked);
+  // 普通文件也可打开。
+  //
+  // 原先这里只让目录与已解锁的 omy 文件可点，那是首期给网盘定的前提
+  // （网盘里普通文件不是 omy 的事）。但远程位置的主体内容恰恰是普通文件
+  // ——Telegram 频道里的图片、视频、文档——这个前提在那里是反的。
+  //
+  // 连带影响右键菜单：menuable() 要求 activatable()，所以之前
+  // 每一个条目的菜单都被提前拦掉，代码里有 @contextmenu 却什么都不做。
+  if (f.is_dir || f.probe_failed) return true;
+  if (f.is_encrypted) return f.unlocked;
+  return true;
 }
 
 // 加载失败的缩略图 token：回退到类型图标，不留一块破图。

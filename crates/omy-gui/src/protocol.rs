@@ -916,6 +916,16 @@ fn serve_place_file(
         // 锁定后句柄表被清空，旧 token 一律 404
         return bare(StatusCode::NOT_FOUND);
     };
+
+    // 普通文件（非 omy）：不解密，原样按 Range 转发。
+    //
+    // 远程位置里普通文件是主体内容（Telegram 频道里的图片、视频、文档），
+    // 走 omy 解密路径的话 peek_header 必然失败、一律 403，
+    // 表现就是「所有文件都打不开」。
+    if let Some(total) = f.plain {
+        return serve_plain_remote(&f, request, total);
+    }
+
     let Some(opened) = open_place(state, &f) else {
         // token 还在但当前会话解不开（已锁定 / 换了密码库）：这是凭据问题，
         // 回 403 而不是 500，前端据此引导重新解锁
@@ -967,6 +977,77 @@ fn serve_place_file(
     let data = match omy_core::source::read_source_range(&f.source, &opened, start, length) {
         Ok(d) => d,
         // 上游 WebDAV 读取失败属于「网关错误」，与本地解密失败区分开
+        Err(_) => return bare(StatusCode::BAD_GATEWAY),
+    };
+
+    let mut b = with_common_headers(
+        Response::builder()
+            .header(header::CONTENT_TYPE, f.mime.clone())
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, data.len().to_string()),
+    );
+    b = if is_partial {
+        b.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end_inclusive}/{total}"),
+        )
+    } else {
+        b.status(StatusCode::OK)
+    };
+    b.body(data).unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// 按 Range 转发一个**未加密**的远程文件。
+///
+/// 与 [`serve_place_file`] 的加密分支共用同一套块缓存（`RemoteSource` 内部），
+/// 所以拖动播放不会把同一段重复下载。
+///
+/// 这里不做任何解密：内容本来就是明文，硬套 omy 的解密路径只会在
+/// `peek_header` 处失败，表现为「文件打不开」。
+fn serve_plain_remote(
+    f: &crate::place_files::OpenPlaceFile,
+    request: &Request<Vec<u8>>,
+    total: u64,
+) -> Response<Vec<u8>> {
+    let range_header = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok());
+
+    let (start, end_inclusive, is_partial) = match range_header {
+        Some(h) => match parse_range(h, total) {
+            Some(r) => (r.0, r.1, true),
+            None => {
+                return with_common_headers(
+                    Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+                )
+                .body(Vec::new())
+                .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+        },
+        None => (0u64, total.saturating_sub(1), false),
+    };
+
+    let end_inclusive = if is_partial {
+        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
+    } else {
+        end_inclusive
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+
+    // 与加密分支同理：不带 Range 的首个请求也要截断，
+    // 否则一个几百 MB 的视频会被整片拉进内存
+    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
+    } else {
+        (length, is_partial, end_inclusive)
+    };
+
+    let data = match f.source.read_plain_range(start, length) {
+        Ok(d) => d,
+        // 上游读取失败属于网关错误，与本地解密失败区分开
         Err(_) => return bare(StatusCode::BAD_GATEWAY),
     };
 

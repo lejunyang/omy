@@ -468,8 +468,10 @@ export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
 export const remoteSearch = (placeId, dir, query) =>
   invoke('remote_search', { placeId, dir, query });
 
-export const remotePlaceOpen = (placeId, path, size) =>
-  invoke('remote_place_open', { placeId, path, size });
+export const remotePlaceOpen = (placeId, path, size, name) =>
+  invoke('remote_place_open', {
+    target: { placeId, path, size, name: name ?? null },
+  });
 
 /** 关闭一个远程播放来源（播放结束时调用）。 */
 export const remotePlaceClose = (token) =>

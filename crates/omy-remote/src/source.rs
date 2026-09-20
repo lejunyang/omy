@@ -30,7 +30,11 @@ pub struct RemoteSource<S: RemoteStore> {
     place: String,
     /// 条目 id。
     id: String,
-    header: FixedHeader,
+    /// omy 文件头。**普通文件为 `None`**——不伪造一个假头部：
+    /// `FixedHeader` 里有 argon2 参数、cipher_id 这些只对加密文件有意义的
+    /// 字段，硬填假值等于在类型上声称「这是个 omy 文件」，
+    /// 哪天有人顺着它去解密会拿到一组编造的参数，而错误出现在很远的地方。
+    header: Option<FixedHeader>,
     payload_start: u64,
     payload_len: u64,
     /// 缓存键里的「文件版本」：完整密文头部 + 密文大小的 blake2 哈希（十六进制）。
@@ -85,7 +89,7 @@ impl<S: RemoteStore> RemoteSource<S> {
             id: id.into(),
             payload_start: hlen,
             payload_len: total_size.saturating_sub(hlen),
-            header,
+            header: Some(header),
             cache_version,
             cache,
             rt,
@@ -97,6 +101,93 @@ impl<S: RemoteStore> RemoteSource<S> {
     fn cache_key(&self) -> String {
         // 用控制字符分隔，正常 URL/路径里不会出现，避免 id 与版本号粘连
         format!("{}\u{1}{}", self.id, self.cache_version)
+    }
+
+    /// 为一个**未加密的普通文件**构造来源。
+    ///
+    /// # 远程位置里普通文件是主体内容
+    ///
+    /// Telegram 位置的全部意义就是「把频道里的文件、图片、视频当远程文件
+    /// 用」，它们没有 omy 头部。原先只能构造 omy 来源，于是这些文件在界面上
+    /// 既打不开也没有右键菜单。
+    ///
+    /// # 为什么复用本结构而不是另写一个来源
+    ///
+    /// 块对齐、缓存键、LRU 逐块淘汰、永久层搬运都在这里，而且都是踩过坑才
+    /// 写对的（淘汰时序、豁免本次已取块、缓存键含文件版本）。另写一份等于
+    /// 把这些坑重新踩一遍，还会出现「omy 文件修了、普通文件还是老样子」。
+    ///
+    /// 实现上普通文件就是 `payload_start = 0`、`payload_len = 文件全长`：
+    /// `fetch_block` 本就不关心内容是不是密文，只按偏移取字节。
+    ///
+    /// # 缓存键
+    ///
+    /// 普通文件没有头部可以哈希，改用 `id ‖ 总长度`。云端同名文件被覆盖后
+    /// 长度多半会变，旧块随之失效；长度恰好相同的覆盖会命中旧缓存，
+    /// 这是**已知取舍**——为此每次都重下整个文件代价过高，而 omy 文件
+    /// （真正在意完整性的那些）本来就有头部哈希兜底。
+    #[must_use]
+    pub fn new_plain(
+        store: Arc<S>,
+        place: impl Into<String>,
+        id: impl Into<String>,
+        total_size: u64,
+        cache: Option<BlockCache>,
+        rt: tokio::runtime::Handle,
+    ) -> Self {
+        let id = id.into();
+        Self {
+            store,
+            place: place.into(),
+            cache_version: format!("plain{total_size}"),
+            id,
+            payload_start: 0,
+            payload_len: total_size,
+            header: None,
+            cache,
+            rt,
+        }
+    }
+
+    /// 读一个**普通文件**的任意区间（不解密，原样返回）。
+    ///
+    /// 与 `BlockSource::read_ct` 分开命名是有意的：后者的语义是「读密文」，
+    /// 对普通文件调用它会让读代码的人以为那是密文、进而以为下游要解密。
+    ///
+    /// 走的是同一套按块取 + 缓存 + 逐块淘汰。
+    ///
+    /// # Errors
+    ///
+    /// 区间越过文件尾、或网络请求失败时返回。
+    pub fn read_plain_range(&self, offset: u64, len: u64) -> CoreResult<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let end = offset.saturating_add(len).min(self.payload_len);
+        if offset >= self.payload_len {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(usize::try_from(end - offset).unwrap_or(0));
+        let mut used: Vec<u64> = Vec::new();
+        for b in blocks_for(offset, end - offset) {
+            let data = self.fetch_block(b)?;
+            used.push(b);
+            // 与 read_ct 同样逐块淘汰并豁免本次已取的块：不豁免的话，
+            // 读一个比上限还大的文件会一边下一边把刚下的删掉，永远不前进
+            if let Some(c) = &self.cache {
+                let key = self.cache_key();
+                let keep: Vec<_> = used.iter().map(|n| c.path_of(&self.place, &key, *n)).collect();
+                c.evict(&keep);
+            }
+            let bs = b.saturating_mul(BLOCK_SIZE);
+            let from = offset.saturating_sub(bs).min(data.len() as u64);
+            let to = end.saturating_sub(bs).min(data.len() as u64);
+            let (Ok(f), Ok(t)) = (usize::try_from(from), usize::try_from(to)) else {
+                return Err(CoreError::ChunkOutOfRange { index: offset, total: self.payload_len });
+            };
+            out.extend_from_slice(data.get(f..t).unwrap_or(&[]));
+        }
+        Ok(out)
     }
 
     /// 密文载荷按块大小向上取整的总块数。
@@ -248,9 +339,42 @@ impl<S: RemoteStore> RemoteSource<S> {
     }
 }
 
+/// 普通文件在 `BlockSource::header()` 上的兜底返回值。
+///
+/// 见 `header()` 的说明：正常分流下取不到它。`plaintext_size = 0`
+/// 使得万一取到，表现为「读到空内容」而不是解出一堆乱码。
+static EMPTY_HEADER: FixedHeader = FixedHeader {
+    version_major: 0,
+    version_minor: 0,
+    header_len: 0,
+    file_uuid: [0u8; 16],
+    vault_salt: [0u8; 16],
+    flags: 0,
+    cipher_id: omy_core::crypto::CipherId::ChaCha20Poly1305,
+    kdf_id: 0,
+    argon2_m_kib: 0,
+    argon2_t: 0,
+    argon2_p: 0,
+    compress_id: 0,
+    slot_count: 0,
+    chunk_size: 0,
+    plaintext_size: 0,
+    base_nonce: [0u8; 7],
+    chunk_version: 0,
+    tlv_len: 0,
+};
+
 impl<S: RemoteStore> BlockSource for RemoteSource<S> {
     fn header(&self) -> &FixedHeader {
-        &self.header
+        // 普通文件不实现 BlockSource 的解密语义：协议层按
+        // `OpenPlaceFile::plain` 分流，普通文件走 read_plain_range，
+        // 根本不会调到这里。
+        //
+        // 真被调到说明分流写错了，那是编程错误而非运行时状况——
+        // 但 omy-gui 禁 panic，所以返回一个静态的零值头部让调用方
+        // 自己发现不对（plaintext_size = 0 会让它读到空内容），
+        // 而不是把整个应用带崩。
+        self.header.as_ref().unwrap_or(&EMPTY_HEADER)
     }
 
     fn read_ct(&self, offset: u64, len: u64) -> CoreResult<Vec<u8>> {

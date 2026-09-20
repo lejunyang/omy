@@ -229,7 +229,10 @@ async function onOpenPlace(f) {
     return;
   }
   try {
-    const r = await api.remotePlaceOpen(state.remotePlace, f.id, size);
+    // 名字要一起传：普通文件的 MIME 靠它推，而 Telegram 的 id
+    // （tg:<对话>:<消息>）里没有扩展名
+    const r = await api.remotePlaceOpen(
+      state.remotePlace, f.id, size, f.real_name || f.name);
     if (r.token) {
       placePreview.value = {
         id: r.token,
@@ -239,11 +242,12 @@ async function onOpenPlace(f) {
       };
       return;
     }
-    if (r.not_encrypted) {
-      state.error = i18n.t('rplace.err_not_encrypted');
-    } else {
-      state.error = i18n.t('rplace.err_locked');
-    }
+    // 走到这里说明没拿到 token。普通文件现在也会有 token，
+    // 所以 not_encrypted 已不再是「打不开」的理由——真到这一步
+    // 多半是后端登记失败
+    state.error = r.not_encrypted
+      ? i18n.t('rplace.open_failed')
+      : i18n.t('rplace.err_locked');
   } catch (e) {
     state.error = i18n.te(api.errCode(e), 'rplace.open_failed');
   }

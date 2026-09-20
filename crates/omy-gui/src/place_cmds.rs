@@ -483,6 +483,26 @@ pub struct OpenPlaceResult {
     pub encrypted_size: u64,
 }
 
+/// 「要打开哪个远程条目」。
+///
+/// 四个字段描述的是同一件事，收成结构体而不是平铺成参数。
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenTarget {
+    /// 远程位置 id。
+    pub place_id: String,
+    /// 条目 id（WebDAV 是路径，Telegram 是 `tg:<对话>:<消息>`）。
+    pub path: String,
+    /// 条目字节数。
+    pub size: u64,
+    /// 条目显示名。
+    ///
+    /// 普通文件靠它推 MIME——Telegram 的 id 里没有扩展名，
+    /// 只看 id 的话每个文件都会被判成 `application/octet-stream`，
+    /// 图片视频统统不预览。
+    pub name: Option<String>,
+}
+
 /// 打开一个远程 `.omy`，登记可播放来源并返回令牌。
 ///
 /// # Errors
@@ -494,10 +514,17 @@ pub async fn remote_place_open(
     files: tauri::State<'_, Arc<PlaceFiles>>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     state: tauri::State<'_, Shared>,
-    place_id: String,
-    path: String,
-    size: u64,
+    target: OpenTarget,
 ) -> CmdResult<OpenPlaceResult> {
+    // 收成一个结构体而不是四个平铺参数：它们本来就是一组——
+    // 都在描述「要打开哪个条目」。顺带让参数个数回到 clippy 的限制内，
+    // 那个限制在这里提示的是真实问题，不该用 allow 盖过去。
+    let OpenTarget {
+        place_id,
+        path,
+        size,
+        name,
+    } = target;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -511,14 +538,42 @@ pub async fn remote_place_open(
     let parsed = match omy_core::file::peek_header(&header) {
         Ok(h) => h,
         Err(_) => {
+            // 不是 omy 文件 —— 在远程位置里这是**正常情况而不是错误**。
+            //
+            // Telegram 位置的全部意义就是「把频道里的文件、图片、视频当远程
+            // 文件用」，普通文件才是主体内容。原先这里直接返回「不是加密文件」
+            // 且不给 token，于是界面上所有普通文件都打不开、右键也没有菜单
+            // （菜单要求条目可激活）。
+            //
+            // 普通文件不需要解密，按原始字节转发即可。
+            // 用调用方给的名字推 MIME。不能只看 id：Telegram 的 id 形如
+            // `tg:<对话>:<消息>`，里面根本没有扩展名，光靠它每个文件都会被判成
+            // application/octet-stream，于是图片视频统统不预览。
+            let label = name.clone().unwrap_or_else(|| path.clone());
+            let (kind, mime) = crate::mime::by_extension(&label);
+            let rt = tokio::runtime::Handle::current();
+            let source = RemoteSource::new_plain(
+                Arc::clone(&store),
+                place_id.clone(),
+                path.clone(),
+                size,
+                cache.snapshot(),
+                rt,
+            );
+            let token = files.insert(OpenPlaceFile {
+                header: Vec::new(),
+                plain: Some(size),
+                source,
+                mime: mime.clone(),
+            });
             return Ok(OpenPlaceResult {
-                token: None,
-                unlocked: false,
+                token,
+                unlocked: true,
                 not_encrypted: true,
                 name: None,
-                kind: None,
-                mime: None,
-                size: None,
+                kind: Some(kind.to_owned()),
+                mime: Some(mime),
+                size: Some(size),
                 encrypted_size: size,
             });
         }
@@ -589,6 +644,7 @@ pub async fn remote_place_open(
 
     let holder = OpenPlaceFile {
         header: header.clone(),
+        plain: None,
         source,
         mime: mime.clone(),
     };
