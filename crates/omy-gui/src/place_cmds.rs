@@ -1491,6 +1491,65 @@ pub async fn remote_cache_unpin(
     source.unpin().map_err(|e| to_cmd_err(&e))
 }
 
+/// 列出所有**永久保留**的文件，供设置页的「管理永久缓存」。
+///
+/// # 为什么这条入口必须存在
+///
+/// 没有它，用户要取消某个文件的永久保留，只能回到那个文件原来所在的位置、
+/// 在目录里把它找出来再右键——而 Telegram 这类位置上，那条消息可能早就
+/// 翻不到了（对话里几千条消息，或者他根本不记得是在哪个频道）。
+/// 结果就是永久层只进不出，占了空间也清不掉。
+///
+/// 后端的 `list_pinned` 早就实现了、也有单测，只是一直没有命令暴露出来。
+///
+/// # 返回的是键而不是路径
+///
+/// `key` 含文件版本哈希（见 `RemoteSource::cache_version`），它是缓存里的
+/// 身份，**不是**能拿去浏览的路径。界面把它当成不透明标识，
+/// 配合 [`remote_cache_unpin_by_key`] 使用即可。
+#[tauri::command]
+#[must_use]
+pub fn remote_cache_list_pinned(
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+) -> Vec<omy_remote::cache::PinnedFile> {
+    cache.snapshot().map(|c| c.list_pinned()).unwrap_or_default()
+}
+
+/// 按缓存键取消永久保留**并删掉那些块**，返回释放的字节数。
+///
+/// # 为什么不复用 `remote_cache_unpin`
+///
+/// 那一条要 `place_id + path + size`，因为它得先建一个 `RemoteSource`
+/// （而建它要读文件头、要发网络请求）。从「管理永久缓存」列表点过来时
+/// 这三样都拿不到：`key` 里带着版本哈希，前端拼不回 `path`，`size` 更无从
+/// 得知。硬要复用就得让界面先去原位置把文件找回来——那正是这个列表要免掉的事。
+///
+/// 这条直接按缓存键操作，**不碰网络**，所以离线时、甚至那个远程位置已经
+/// 被删掉之后，依然能把占的空间清出来。
+///
+/// # 为什么是 drop 而不是搬回临时层
+///
+/// 用户从「管理永久缓存」里点取消，动机基本只有一个：**腾空间**。
+/// 搬回临时层的话磁盘一个字节都没少，而他明确要的是少。想「留着但不永久」
+/// 的人会在文件自己的右键菜单里操作，那条路走 `remote_cache_unpin`。
+///
+/// # Errors
+///
+/// 本机没有可用的缓存目录、或标记删除失败时返回。
+#[tauri::command]
+pub fn remote_cache_unpin_by_key(
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    place: String,
+    key: String,
+    total_blocks: u64,
+) -> CmdResult<u64> {
+    let Some(c) = cache.snapshot() else {
+        return Err(CmdError::code("remote_cache_unavailable"));
+    };
+    c.unpin_and_drop(&place, &key, total_blocks)
+        .map_err(|e| to_cmd_err(&e))
+}
+
 /// 查询远程密文缓存用量。
 #[tauri::command]
 pub fn remote_cache_usage(cache: tauri::State<'_, Arc<RemoteCache>>) -> RemoteCacheUsage {

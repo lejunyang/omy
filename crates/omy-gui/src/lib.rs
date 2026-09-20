@@ -269,6 +269,8 @@ pub fn run() {
             place_cmds::remote_cache_open_dir,
             place_cmds::remote_cache_file_stat,
             place_cmds::remote_cache_remove_file,
+            place_cmds::remote_cache_list_pinned,
+            place_cmds::remote_cache_unpin_by_key,
             telegram_cmds::telegram_can_persist,
             telegram_cmds::telegram_has_session,
             telegram_cmds::telegram_place_detach,

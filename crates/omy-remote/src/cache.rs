@@ -1293,6 +1293,45 @@ mod tests {
         std::fs::remove_dir_all(&d).ok();
     }
 
+    /// `list_pinned` 列出来的每一项，都必须能**原样**拿去取消并真的释放空间。
+    ///
+    /// 不这样会怎样：这是「管理永久缓存」能不能用的全部意义。列表给的是
+    /// `(place, key, total_blocks)`，而 key 里含文件版本哈希、界面拼不回
+    /// 原始路径，size 也无从得知——若取消那条路要求路径或大小，列表里每一项
+    /// 就都点不动，用户还是只能回原位置一个个找，而 Telegram 上那条消息
+    /// 可能根本找不回来了。
+    ///
+    /// 所以这条断言刻意**只用列表项里有的字段**去取消，并检查空间真的被释放。
+    /// 只断言「列表非空」抓不到这个——那正是「断言停在差异出现之前」。
+    #[test]
+    fn every_listed_pin_can_be_cancelled_with_only_its_own_fields() {
+        let (d, c) = cache2("actionable");
+        let chunk: Vec<u8> = (0..900u32).map(|i| (i % 233) as u8).collect();
+        c.put("tg", "tg:-100123:77\u{1}v3", 0, &chunk);
+        c.put("tg", "tg:-100123:77\u{1}v3", 1, &chunk);
+        c.pin_file("tg", "tg:-100123:77\u{1}v3", 2).expect("标记");
+
+        let before = c.pinned_used();
+        assert!(before > 0, "夹具本身要真的占了空间，否则后面什么都没测");
+
+        let list = c.list_pinned();
+        let [item] = list.as_slice() else {
+            panic!("应当正好列出一项，实际 {list:?}");
+        };
+
+        // 关键：**只用列表项自己带的三个字段**，不借助任何外部信息
+        let freed = c
+            .unpin_and_drop(&item.place, &item.key, item.total_blocks)
+            .expect("列出来的项必须能直接取消");
+
+        assert!(freed > 0, "取消必须真的释放字节，而不是只摘掉标记");
+        assert_eq!(freed, before, "释放的字节数要与它原本占的一致");
+        assert_eq!(c.pinned_used(), 0, "永久层应当真的空了");
+        assert!(c.list_pinned().is_empty(), "取消之后不该还在清单里");
+
+        std::fs::remove_dir_all(&d).ok();
+    }
+
     /// 坏掉的标记文件要被跳过，不能变成一条谁也取消不掉的僵尸记录。
     ///
     /// 不这样会怎样：这份文件在用户能碰到的目录里，写坏或被手动改过之后，
