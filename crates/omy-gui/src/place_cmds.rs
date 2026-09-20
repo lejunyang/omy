@@ -1247,6 +1247,67 @@ pub async fn remote_list_container(
 /// # Errors
 ///
 /// 位置不存在、不是 Telegram、是广播频道、网络失败或限流时返回。
+/// 列一个对话里的文件，支持翻页。
+///
+/// `before` 为 `None` 是首屏；给了消息号就是「加载更多」——从那条之前
+/// 再取一页。
+///
+/// # 为什么要分页
+///
+/// 固定拉一页的话，活跃群里**第 N+1 个文件之后永远看不到，而且界面上
+/// 没有任何迹象**，用户会以为那些文件不在这个群里。
+///
+/// # Errors
+///
+/// 位置不存在、不是 Telegram 位置、或列目录失败时返回。
+#[tauri::command]
+// Tauri 命令的参数就是它的接口：每个 State 都是一次依赖注入。
+// 打包成结构体只会多一层壳，反而更难看出这个命令依赖什么。
+// 同文件里另外三处（scan_entries 等）出于同样理由也这么标
+#[allow(clippy::too_many_arguments)]
+pub async fn remote_browse_more(
+    app: tauri::AppHandle,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    place_id: String,
+    dir: String,
+    before: i32,
+) -> CmdResult<Vec<RemoteEntry>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        // 只有「对话即目录」的位置有这种分页。WebDAV 的 PROPFIND 一次列全
+        return Err(CmdError::code("remote_no_messages"));
+    };
+    let items = tg
+        .list_more(&dir, Some(before))
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+    // 走与首屏**完全相同**的 scan_entries，不另写一份识别流程——
+    // 两份迟早不一致，而表现会是「翻页之后 omy 文件突然不识别了」
+    Ok(scan_entries(
+        &app,
+        &state,
+        &thumbs,
+        &place,
+        &place_id,
+        &dir,
+        items,
+        cache.snapshot(),
+    ))
+}
+
+/// 一页多少条。界面据它判断还有没有更多。
+#[tauri::command]
+#[must_use]
+pub const fn remote_page_size() -> usize {
+    omy_remote::telegram::store::TelegramStore::page_size()
+}
+
 /// 当前目录（对话）是否开了「受保护内容」。
 ///
 /// 界面据此显示一行低权重告知。**不是警告**：实测 `noforwards` 拦的是

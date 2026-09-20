@@ -14,6 +14,7 @@ import App from './App.vue';
 import * as api from './api.js';
 import * as i18n from './i18n.js';
 import { initTheme, syncThemeFromConfig } from './theme.js';
+import * as store from './store.js';
 import { state } from './store.js';
 import './styles/app.css';
 
@@ -39,6 +40,9 @@ async function boot() {
 
   // 会话里可能已经有凭据（比如上一次没锁就关了窗口）
   state.credentials = await api.credentialCount().catch(() => 0);
+
+  // 分页大小是编译期常量，启动时问一次即可
+  void store.loadPageSize?.();
 
   createApp(App).mount('#app');
 }

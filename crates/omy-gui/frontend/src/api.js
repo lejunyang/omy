@@ -628,6 +628,13 @@ export const telegramApiIdReset = () => invoke('telegram_api_id_reset');
 export const telegramCheckConnection = (proxyUrl) =>
   invoke('telegram_check_connection', { proxyUrl });
 
+/** 从某条消息之前再取一页文件（对话即目录的位置才有）。 */
+export const remoteBrowseMore = (placeId, dir, before) =>
+  invoke('remote_browse_more', { placeId, dir, before });
+
+/** 一页多少条。界面据它判断还有没有更多。 */
+export const remotePageSize = () => invoke('remote_page_size');
+
 /** 当前对话是否开了「受保护内容」。
  *
  * 只影响是否显示一行告知。非 Telegram 位置恒为 false。 */

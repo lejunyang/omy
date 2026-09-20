@@ -56,6 +56,7 @@ import {
   canShowMessages,
   setRemoteViewMode,
   loadMoreMessages,
+  loadMoreFiles,
 } from '../store.js';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -931,6 +932,7 @@ function rowTitle(f) {
               {{ i18n.t('msgs.no_more') }}
             </div>
           </div>
+
         </template>
 
         <template v-else>
@@ -1030,6 +1032,24 @@ function rowTitle(f) {
               <template v-else-if="!f.unlocked">{{ i18n.t('kind.encrypted') }}</template>
             </span>
           </div>
+        </div>
+
+        <!-- 加载更多文件。只在对话内层出现——根目录列的是对话、不分页。
+             没有更多时不画按钮而是明说，免得放一个点了没反应的入口 -->
+        <div v-if="state.remoteDir && visible.length" class="msgmore">
+          <button
+            v-if="state.hasMoreFiles"
+            class="btn small"
+            data-pb="loadmore"
+            :disabled="state.loadingMoreFiles"
+            @click="loadMoreFiles"
+          >
+            {{ i18n.t(state.loadingMoreFiles
+                ? 'msgs.loading_more' : 'rplace.load_more_files') }}
+          </button>
+          <span v-else class="d" data-pb="nomorefiles">
+            {{ i18n.t('rplace.no_more_files') }}
+          </span>
         </div>
         </template>
       </template>

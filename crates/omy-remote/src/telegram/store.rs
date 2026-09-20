@@ -1033,6 +1033,24 @@ impl TelegramStore {
     /// （实测一条视频同时被 `Video` 与 `PhotoVideo` 命中），
     /// 在限流敏感的 Telegram 上不划算。
     async fn list_messages(&self, chat: i64, limit: usize) -> Result<Vec<Entry>> {
+        self.list_messages_before(chat, limit, None).await
+    }
+
+    /// 同 [`Self::list_messages`]，但能从某条消息之前继续取。
+    ///
+    /// # 为什么需要分页
+    ///
+    /// 固定拉一页的话，活跃群里**第 N+1 个文件之后永远看不到，而且界面上
+    /// 没有任何迹象**——用户会以为那些文件不在这个群里。
+    ///
+    /// `before` 用消息号而不是日期：同一秒可能有多条，按日期翻页会重复或
+    /// 漏掉（与消息视图那条同源）。
+    async fn list_messages_before(
+        &self,
+        chat: i64,
+        limit: usize,
+        before: Option<i32>,
+    ) -> Result<Vec<Entry>> {
         let client = self.client()?;
         let peer = self.peer_ref(chat).await?;
 
@@ -1040,8 +1058,37 @@ impl TelegramStore {
             .search_messages(peer)
             .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
             .limit(limit);
+        if let Some(off) = before {
+            it = it.offset_id(off);
+        }
 
         self.collect_media(&mut it, chat).await
+    }
+
+    /// 列一个对话里的文件，支持从某条消息之前继续取。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、网络失败、限流、对话不存在时返回。
+    pub async fn list_more(&self, dir_id: &str, before: Option<i32>) -> Result<Vec<Entry>> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+        if self.conversation(chat).is_none() {
+            self.refresh_conversations().await?;
+        }
+        if self.conversation(chat).is_none() {
+            return Err(Error::NotFound(format!("未知对话：{dir_id}")));
+        }
+        self.list_messages_before(chat, DEFAULT_MESSAGE_PAGE, before)
+            .await
+    }
+
+    /// 一页拉多少条。界面据它判断「还有没有更多」。
+    ///
+    /// 判据是「取回条数是否等于请求的 limit」，不靠「下一次返回空」——
+    /// 那要多发一次必然为空的请求，在限流敏感的 Telegram 上是实打实的浪费。
+    #[must_use]
+    pub const fn page_size() -> usize {
+        DEFAULT_MESSAGE_PAGE
     }
 
     /// 把一串消息收成文件条目，顺带缓存它们的下载位置。

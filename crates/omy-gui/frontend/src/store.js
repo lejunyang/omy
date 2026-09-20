@@ -118,6 +118,12 @@ export const state = reactive({
   /** 消息视图的数据。与 remoteItems 分开：一个是「这个对话里有哪些文件」，
    *  一个是「这个对话里发生过什么」，来源和生命周期都不同。 */
   remoteMessages: [],
+  /** 还有没有更多文件可加载。 */
+  hasMoreFiles: false,
+  /** 正在加载更多文件。 */
+  loadingMoreFiles: false,
+  /** 后端一页多少条。用来判断「取满了就可能还有」。 */
+  pageSize: 100,
   /** 还有没有更早的消息可加载。取回的条数少于一页就说明到头了。 */
   hasMoreMessages: false,
   /** 正在加载更早。 */
@@ -1965,6 +1971,7 @@ export function leaveRemotePlace() {
   state.remotePlace = '';
   state.remoteDir = '';
   state.remoteItems = [];
+  state.hasMoreFiles = false;
   state.remoteRetrying = [];
   // 能力必须跟着清：留着会让下次进另一个位置时先按上一个位置的能力渲染一帧
   state.remoteDirCaps = null;
@@ -2003,12 +2010,18 @@ export async function reloadRemoteDir() {
   // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）
   remoteEntryBuffer.delete(remoteDirKey(state.remotePlace, state.remoteDir));
   try {
-    state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    const rows = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    state.remoteItems = rows;
+    // 取满一页就假定还有更多。只对「对话内层」成立：根目录列的是对话
+    // （不分页），WebDAV 的 PROPFIND 也是一次列全
+    state.hasMoreFiles =
+      !!state.remoteDir && rows.length >= state.pageSize;
     // 骨架刚落地，把 await 期间早到的识别结果补贴上去。
     // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
     applyBufferedRemoteEntries();
   } catch (e) {
     state.remoteItems = [];
+  state.hasMoreFiles = false;
     // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
     state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
   } finally {
@@ -2031,6 +2044,54 @@ export async function reloadRemoteDir() {
  *    都可能让边界错位。重复一条在界面上表现为同一个文件出现两次，
  *    用户会以为自己传了两遍。
  */
+/** 加载更多文件。
+ *
+ * 与消息视图那条同源：用当前最后一条的消息号作 offset。
+ *
+ * # 为什么必须有
+ *
+ * 固定拉一页的话，活跃群里**第 N+1 个文件之后永远看不到，而且界面上
+ * 没有任何迹象**——用户会以为那些文件不在这个群里。
+ */
+/** 取后端的分页大小。启动时问一次就够——它是编译期常量。 */
+export async function loadPageSize() {
+  try {
+    const n = await api.remotePageSize();
+    if (Number.isFinite(n) && n > 0) state.pageSize = n;
+  } catch {
+    // 取不到就用默认值；判据只是「取满一页就可能还有」，
+    // 差一点不会导致漏文件，最多多问一次
+  }
+}
+
+export async function loadMoreFiles() {
+  if (state.loadingMoreFiles || !state.hasMoreFiles) return;
+  if (!state.remotePlace || !state.remoteDir) return;
+  const last = state.remoteItems.at(-1);
+  if (!last) return;
+  // Telegram 条目 id 形如 tg:<对话>:<消息号>，取最后一段。
+  // 这里能按 ':' 切是因为**这条路径只对 Telegram 开放**（后端对其它
+  // provider 直接回 remote_no_messages），不是在猜通用 id 的形状
+  const n = Number.parseInt(String(last.id).split(':').pop(), 10);
+  if (!Number.isFinite(n)) return;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  state.loadingMoreFiles = true;
+  try {
+    const rows = await api.remoteBrowseMore(place, dir, n);
+    // 回写前校验还在同一个目录：用户可能在请求飞行途中切走了
+    if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    const seen = new Set(state.remoteItems.map((x) => x.id));
+    const fresh = rows.filter((x) => !seen.has(x.id));
+    state.remoteItems = [...state.remoteItems, ...fresh];
+    state.hasMoreFiles = rows.length >= state.pageSize && fresh.length > 0;
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
+  } finally {
+    state.loadingMoreFiles = false;
+  }
+}
+
 export async function loadMoreMessages() {
   if (state.loadingMore || !state.hasMoreMessages) return;
   if (!state.remotePlace || !state.remoteDir) return;
