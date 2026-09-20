@@ -598,6 +598,13 @@ export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
  * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
 export const TG_PENDING_ACCOUNT = 'pending';
 
+/** 登录之前先自检能不能连到 Telegram。
+ *
+ * 返回 `{status, elapsed_ms, via_proxy}`（snake_case，同本仓库其它命令），status 是
+ * `ok` | `bad_proxy` | `no_route`。三种要分开显示：用户该做的事不同。 */
+export const telegramCheckConnection = (proxyUrl) =>
+  invoke('telegram_check_connection', { proxyUrl });
+
 /** 当前对话是否开了「受保护内容」。
  *
  * 只影响是否显示一行告知。非 Telegram 位置恒为 false。 */

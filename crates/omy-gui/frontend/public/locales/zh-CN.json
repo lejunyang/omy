@@ -722,7 +722,18 @@
     "tdata_import": "导入并连接",
     "tdata_importing": "正在导入…",
     "tdata_use_qr": "改用扫码",
-    "proxy_auto": "已按本机的代理设置自动填好，可以直接用，也可以改。"
+    "proxy_auto": "已按本机的代理设置自动填好，可以直接用，也可以改。",
+    "conn_checking": "正在检查与 Telegram 的连接…",
+    "conn_idle": "还没检查连接。",
+    "conn_ok_direct": "直连可用（{{ms}} ms）。",
+    "conn_ok_proxy": "经代理可用（{{ms}} ms）。",
+    "conn_bad_proxy": "代理地址格式不对，先改正再检查。",
+    "conn_no_route_direct": "直连不通。多数网络下需要填一个 socks5:// 代理。",
+    "conn_no_route_proxy": "经这个代理连不上，检查代理是否在运行、端口是否正确。",
+    "conn_check": "检查连接",
+    "proxy_from_system": "从系统设置读取",
+    "proxy_scheme_hint": "只支持 socks5://。http:// 会按同端口的 SOCKS5 尝试。",
+    "proxy_scheme_fix": "改为 socks5://"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

@@ -65,6 +65,71 @@ const tdPlaceholder = computed(() =>
     : '~/.local/share/TelegramDesktop/tdata',
 );
 
+/** 连通性自检：null=没查过，否则 {status, elapsed_ms, via_proxy}。
+ *
+ * 字段是 snake_case——Rust 那边没加 serde rename，而本仓库其它命令
+ * （RemoteEntry 的 is_dir / real_name 等）也都是 snake。按 camel 读
+ * 会得到 undefined，而界面只会显示成「直连可用（undefined ms）」，
+ * 状态本身却是对的，很难一眼看出。 */
+const conn = ref(null);
+/** 正在自检连通性。
+ *
+ * 与下面那个 `checking`（正在查有没有登录态）是两件事，所以不复用名字
+ * ——同名会让人以为是同一个状态。 */
+const connChecking = ref(false);
+
+/** 跑一次连通性自检。
+ *
+ * 放在登录**之前**：实测直连 MTProto 数据中心超时、经 socks5 才通，
+ * 而用户分不清「连不上」是代理、网络还是 api_id 的问题。先自检就把
+ * 归因定下来，不用等他登录失败再盲猜。
+ */
+async function checkConn() {
+  if (connChecking.value) return;
+  connChecking.value = true;
+  conn.value = null;
+  try {
+    conn.value = await api.telegramCheckConnection(proxyUrl.value.trim());
+  } catch {
+    // 自检本身失败也当成连不上——它不该比登录更脆弱
+    conn.value = { status: 'no_route', elapsed_ms: 0, via_proxy: false };
+  } finally {
+    connChecking.value = false;
+  }
+}
+
+/** 从系统设置读回代理。
+ *
+ * 后端会把读到的 http:// 形式改写成 socks5://（grammers 只认后者），
+ * 所以这里拿到的已经是可用形式。 */
+async function useSystemProxy() {
+  try {
+    const p = await api.telegramSuggestProxy();
+    if (p) {
+      proxyUrl.value = p;
+      proxyAuto.value = true;
+      await checkConn();
+    }
+  } catch {
+    // 读不到就维持原样，不打断用户
+  }
+}
+
+/** 用户填了 http:// 时给一个显式的改写按钮。
+ *
+ * 后端本来就会按同端口的 SOCKS5 尝试，但那是**静默**的——用户不知道
+ * 自己填的东西被改过。显式提示 + 一键改写，他才知道真正生效的是什么。 */
+const proxyNeedsFix = computed(() => {
+  const v = proxyUrl.value.trim().toLowerCase();
+  return v.startsWith('http://') || v.startsWith('https://');
+});
+function fixProxyScheme() {
+  proxyUrl.value = proxyUrl.value
+    .trim()
+    .replace(/^https?:\/\//i, 'socks5://');
+  proxyAuto.value = false;
+}
+
 /** 代理地址。默认值由后端给：已有位置的代理 > 系统代理 > 空。 */
 const proxyUrl = ref('');
 /** 默认值是不是自动填的——是的话在输入框下方说明来源，
@@ -410,6 +475,43 @@ onBeforeUnmount(() => {
           <span class="d">{{ i18n.t('tg.proxy_desc') }}</span>
         </label>
 
+        <!-- 填了 http:// 时显式提示会改写，而不是静默按 SOCKS5 试。
+             静默转换的问题是用户不知道真正生效的是什么 -->
+        <div v-if="proxyNeedsFix" class="pxfix" data-tg="px-fix">
+          <span>{{ i18n.t('tg.proxy_scheme_hint') }}</span>
+          <button class="btn" data-tg="px-fixbtn" @click="fixProxyScheme">
+            {{ i18n.t('tg.proxy_scheme_fix') }}
+          </button>
+        </div>
+
+        <!-- 连通性自检。放在登录之前，把「连不上」的归因先定下来 -->
+        <div class="conn" data-tg="conn" :data-st="connChecking ? 'checking' : (conn ? conn.status : 'idle')">
+          <span aria-hidden="true">{{
+            connChecking ? '⏳' : conn ? (conn.status === 'ok' ? '✓' : '⚠️') : '•'
+          }}</span>
+          <div class="cb" data-tg="conn-text">
+            <template v-if="connChecking">{{ i18n.t('tg.conn_checking') }}</template>
+            <template v-else-if="!conn">{{ i18n.t('tg.conn_idle') }}</template>
+            <template v-else-if="conn.status === 'ok'">
+              {{ i18n.t(conn.via_proxy ? 'tg.conn_ok_proxy' : 'tg.conn_ok_direct',
+                        { ms: conn.elapsed_ms }) }}
+            </template>
+            <template v-else-if="conn.status === 'bad_proxy'">
+              {{ i18n.t('tg.conn_bad_proxy') }}
+            </template>
+            <template v-else>
+              {{ i18n.t(conn.via_proxy ? 'tg.conn_no_route_proxy'
+                                      : 'tg.conn_no_route_direct') }}
+            </template>
+          </div>
+          <button class="btn" data-tg="conn-retry" :disabled="connChecking" @click="checkConn">
+            {{ i18n.t('tg.conn_check') }}
+          </button>
+          <button class="btn" data-tg="px-sys" @click="useSystemProxy">
+            {{ i18n.t('tg.proxy_from_system') }}
+          </button>
+        </div>
+
         <!-- 这条必须在扫码**之前**说。等他扫完再说「存不住」，他下次打开
              发现又要扫码会以为程序把他登出了 -->
         <div v-if="!canPersist" class="warnbox" data-tg="no-persist">
@@ -616,6 +718,183 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 连通性自检行：一行状态 + 两个小按钮。
+   它出现在登录按钮之前，所以不能太重——是给用户定心的，不是报警。 */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.conn .cb {
+  flex: 1;
+  color: var(--fg2);
+  line-height: 1.5;
+}
+/* 通了给一点绿，连不上给一点琥珀。用 color-mix 让两种主题都自适应，
+   写死颜色会在浅色主题下糊成一团（这一轮已经踩过一次） */
+.conn[data-st='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.conn[data-st='ok'] .cb {
+  color: color-mix(in srgb, var(--ok) 80%, var(--fg));
+}
+.conn[data-st='no_route'],
+.conn[data-st='bad_proxy'] {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.conn[data-st='no_route'] .cb,
+.conn[data-st='bad_proxy'] .cb {
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.conn .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* scheme 修正提示：填了 http:// 才出现，一行说明 + 一个按钮 */
+.pxfix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.pxfix .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 连通性自检行：一行状态 + 两个小按钮。
+   它出现在登录按钮之前，所以不能太重——是给用户定心的，不是报警。 */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.conn .cb {
+  flex: 1;
+  color: var(--fg2);
+  line-height: 1.5;
+}
+/* 通了给一点绿，连不上给一点琥珀。用 color-mix 让两种主题都自适应，
+   写死颜色会在浅色主题下糊成一团（这一轮已经踩过一次） */
+.conn[data-st='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.conn[data-st='ok'] .cb {
+  color: color-mix(in srgb, var(--ok) 80%, var(--fg));
+}
+.conn[data-st='no_route'],
+.conn[data-st='bad_proxy'] {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.conn[data-st='no_route'] .cb,
+.conn[data-st='bad_proxy'] .cb {
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.conn .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* scheme 修正提示：填了 http:// 才出现，一行说明 + 一个按钮 */
+.pxfix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.pxfix .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 连通性自检行：一行状态 + 两个小按钮。
+   它出现在登录按钮之前，所以不能太重——是给用户定心的，不是报警。 */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.conn .cb {
+  flex: 1;
+  color: var(--fg2);
+  line-height: 1.5;
+}
+/* 通了给一点绿，连不上给一点琥珀。用 color-mix 让两种主题都自适应，
+   写死颜色会在浅色主题下糊成一团（这一轮已经踩过一次） */
+.conn[data-st='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.conn[data-st='ok'] .cb {
+  color: color-mix(in srgb, var(--ok) 80%, var(--fg));
+}
+.conn[data-st='no_route'],
+.conn[data-st='bad_proxy'] {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.conn[data-st='no_route'] .cb,
+.conn[data-st='bad_proxy'] .cb {
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.conn .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* scheme 修正提示：填了 http:// 才出现，一行说明 + 一个按钮 */
+.pxfix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
+}
+.pxfix .btn {
+  padding: 2px 9px;
+  min-height: 28px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .mask {
   position: fixed;
   inset: 0;

@@ -722,7 +722,18 @@
     "tdata_import": "Import and connect",
     "tdata_importing": "Importing…",
     "tdata_use_qr": "Use a QR code instead",
-    "proxy_auto": "Filled in from this machine’s proxy settings. Use as is, or change it."
+    "proxy_auto": "Filled in from this machine’s proxy settings. Use as is, or change it.",
+    "conn_checking": "Checking the connection to Telegram…",
+    "conn_idle": "Connection not checked yet.",
+    "conn_ok_direct": "Direct connection works ({{ms}} ms).",
+    "conn_ok_proxy": "Works through the proxy ({{ms}} ms).",
+    "conn_bad_proxy": "That proxy address is malformed. Fix it, then check.",
+    "conn_no_route_direct": "No direct route. Most networks need a socks5:// proxy here.",
+    "conn_no_route_proxy": "Cannot reach Telegram through this proxy. Check that it is running and the port is right.",
+    "conn_check": "Check connection",
+    "proxy_from_system": "Read from system settings",
+    "proxy_scheme_hint": "Only socks5:// is supported. http:// is retried as SOCKS5 on the same port.",
+    "proxy_scheme_fix": "Change to socks5://"
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",
