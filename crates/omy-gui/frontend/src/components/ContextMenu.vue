@@ -65,7 +65,26 @@ function onKey(ev) {
   }
 }
 
+/** 忽略长按手势尾巴上那次合成 click 的截止时刻。
+ *
+ * 触屏没有右键，长按是唯一的菜单入口；而浏览器在 touchend 之后会补发一次
+ * click。菜单恰好在长按到点时弹出，于是这次 click 落在刚铺开的全屏关闭层
+ * 上——实测 pointerup 与 click 相差 1ms，菜单在手指抬起的瞬间就被关掉，
+ * 用户看到的是「长按好像闪过什么，然后什么也没有」。
+ *
+ * 取 600ms：合成 click 紧跟 touchend，而用户真想点空白处关闭，
+ * 至少得先看见菜单再移过去，不会这么快。 */
+const SYNTHETIC_CLICK_MS = 600;
+let openedAt = 0;
+
+/** 点击关闭层。长按刚结束时的那一次不算，见 SYNTHETIC_CLICK_MS。 */
+function onLayerClick() {
+  if (performance.now() - openedAt < SYNTHETIC_CLICK_MS) return;
+  emit('close');
+}
+
 onMounted(async () => {
+  openedAt = performance.now();
   window.addEventListener('keydown', onKey);
   await nextTick();
   const el = menu.value;
@@ -93,7 +112,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 <template>
   <!-- 铺满全屏的透明层：点任何地方都关掉菜单。
        只在菜单自身上监听 blur 是不够的——点到别的条目上不会触发 -->
-  <div class="ctxlayer" @click="$emit('close')" @contextmenu.prevent="$emit('close')">
+  <div class="ctxlayer" @click="onLayerClick" @contextmenu.prevent="$emit('close')">
     <div
       ref="menu"
       class="ctxmenu"
