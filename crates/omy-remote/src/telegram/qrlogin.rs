@@ -364,11 +364,13 @@ impl QrSession {
         match res {
             tl::enums::auth::LoginToken::Token(t) => {
                 let url = token_url(&t.token);
-                let ttl = remaining_secs(t.expires);
+                // 显示给用户的是完整寿命，内部换图用扣掉提前量的那个——
+                // 两者不是同一个数，见 lifetime_secs 的说明
+                let ttl = lifetime_secs(t.expires);
                 self.pending = Some(t.token);
                 // 与 pending 一起更新：漏掉这里会让等待时长停留在上一张的值，
                 // 而症状是「偶尔有一张图扫不出来」，极难复现
-                self.pending_ttl = ttl;
+                self.pending_ttl = refresh_after_secs(t.expires);
                 Ok(QrEvent::Token {
                     url,
                     expires_in_secs: ttl,
@@ -437,11 +439,13 @@ impl QrSession {
             // 迁移之后又给了一个新令牌：正常，继续显示新图
             tl::enums::auth::LoginToken::Token(t) => {
                 let url = token_url(&t.token);
-                let ttl = remaining_secs(t.expires);
+                // 显示给用户的是完整寿命，内部换图用扣掉提前量的那个——
+                // 两者不是同一个数，见 lifetime_secs 的说明
+                let ttl = lifetime_secs(t.expires);
                 self.pending = Some(t.token);
                 // 与 pending 一起更新：漏掉这里会让等待时长停留在上一张的值，
                 // 而症状是「偶尔有一张图扫不出来」，极难复现
-                self.pending_ttl = ttl;
+                self.pending_ttl = refresh_after_secs(t.expires);
                 Ok(QrEvent::Token {
                     url,
                     expires_in_secs: ttl,
@@ -599,16 +603,36 @@ fn contains_login_token(u: &UpdatesLike) -> bool {
     }
 }
 
-/// 把服务端给的绝对过期时刻换算成「还有多少秒」。
+/// 这张二维码**还能被扫多久**（服务端口径的完整剩余寿命）。
 ///
-/// 服务端给的是 Unix 时间戳，而界面要显示倒计时。已经过期时返回 0 而不是负数
-/// ——界面拿负数会显示「-3 秒后刷新」。
-fn remaining_secs(expires_at: i32) -> u32 {
+/// 这是给界面看的数：用户看到的倒计时应当就是这张码真实的寿命，
+/// 服务端给 30 秒就显示约 30 秒。
+///
+/// # 为什么不在这里扣提前量
+///
+/// 换图会提前 [`REFRESH_MARGIN_SECS`] 秒发生（见 [`refresh_after_secs`]），
+/// 但那是**内部行为**。把余量也从显示值里扣掉，倒计时就会从 26 这种看着
+/// 随机的数字开始，用户会以为实现算错了。两个用途分开，不要合并回一个函数。
+///
+/// 已经过期时返回 0 而不是负数——界面拿负数会显示「-3 秒后刷新」。
+fn lifetime_secs(expires_at: i32) -> u32 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0i64, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    let left = i64::from(expires_at) - now - REFRESH_MARGIN_SECS;
+    let left = i64::from(expires_at) - now;
     u32::try_from(left.max(0)).unwrap_or(0)
+}
+
+/// 等这张码多久就该换下一张（比真实寿命提前 [`REFRESH_MARGIN_SECS`] 秒）。
+///
+/// 卡着过期时刻才换，用户正要扫的那一瞬间图会失效——他扫到一张刚好作废的
+/// 码，而界面上什么都没发生。所以留一点提前量。
+///
+/// 这个值**只用于内部等待超时**，不要拿去显示（理由见 [`lifetime_secs`]）。
+fn refresh_after_secs(expires_at: i32) -> u32 {
+    lifetime_secs(expires_at).saturating_sub(
+        u32::try_from(REFRESH_MARGIN_SECS).unwrap_or(0),
+    )
 }
 
 #[cfg(test)]
@@ -698,27 +722,51 @@ mod tests {
     /// 计算，很容易变成一个永远走不完的循环。
     #[test]
     fn expired_tokens_report_zero_not_negative() {
-        assert_eq!(remaining_secs(0), 0, "1970 年的时间戳早就过期了");
-        assert_eq!(remaining_secs(i32::MIN), 0);
+        assert_eq!(lifetime_secs(0), 0, "1970 年的时间戳早就过期了");
+        assert_eq!(lifetime_secs(i32::MIN), 0);
+        assert_eq!(refresh_after_secs(0), 0, "换图时机同样不能为负");
+        assert_eq!(refresh_after_secs(i32::MIN), 0);
     }
 
-    /// 未过期的令牌要留出提前量。
+    /// 给界面看的倒计时是**完整寿命**，不扣提前量。
     ///
-    /// 不这样会怎样：卡着过期时刻才换图，用户正要扫的那一瞬间图失效——他扫到
-    /// 一张刚好作废的码，而界面上什么都没发生。
+    /// 不这样会怎样：服务端给 30 秒，界面却从 26 这种看着随机的数字开始数，
+    /// 用户会以为倒计时算错了。提前换图是内部行为，不该体现在显示值里。
     #[test]
-    fn unexpired_tokens_reserve_a_margin() {
+    fn displayed_lifetime_is_not_reduced_by_the_margin() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0i64, |d| i64::try_from(d.as_secs()).unwrap_or(0));
         let in_30s = i32::try_from(now + 30).unwrap_or(i32::MAX);
-        let left = remaining_secs(in_30s);
-        // 提前量必须真的被扣掉，否则这个常量等于没写
+        let shown = lifetime_secs(in_30s);
+        // 29 而不是 30 是因为取整；关键是**没有**被扣掉 3 秒余量。
+        // 只断言 `shown > 0` 是不够的——那样即使扣了余量也照样通过
         assert!(
-            left <= 30 - u32::try_from(REFRESH_MARGIN_SECS).unwrap_or(0),
-            "应当扣掉提前量，实际 {left}"
+            (29..=30).contains(&shown),
+            "应当显示完整寿命（约 30 秒），实际 {shown}"
         );
-        assert!(left >= 20, "也不该扣得离谱，实际 {left}");
+    }
+
+    /// 换图要比真实过期**提前**，而且提前量必须真的被扣掉。
+    ///
+    /// 不这样会怎样：卡着过期时刻才换图，用户正要扫的那一瞬间图失效——他扫到
+    /// 一张刚好作废的码，而界面上什么都没发生。
+    #[test]
+    fn refresh_happens_before_the_token_actually_expires() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0i64, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let in_30s = i32::try_from(now + 30).unwrap_or(i32::MAX);
+        let shown = lifetime_secs(in_30s);
+        let refresh = refresh_after_secs(in_30s);
+        // 断言两者的**差值**正好是余量，而不是只断言 refresh < shown：
+        // 后者在余量被改成 1 秒（几乎等于没有提前量）时照样通过
+        assert_eq!(
+            i64::from(shown) - i64::from(refresh),
+            REFRESH_MARGIN_SECS,
+            "换图应当恰好提前 {REFRESH_MARGIN_SECS} 秒，实际 {shown} vs {refresh}"
+        );
+        assert!(refresh >= 20, "也不该扣得离谱，实际 {refresh}");
     }
 
     /// 等确认的时长必须**跟着令牌寿命走**，不能是一个固定值。
