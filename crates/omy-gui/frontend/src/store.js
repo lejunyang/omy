@@ -1905,6 +1905,9 @@ export async function openRemotePlace(id) {
 
 /** 离开远程位置，回到本地浏览。 */
 export function leaveRemotePlace() {
+  // 暂存区跟着清：它只服务「当前这一屏」，留着既占内存，
+  // 也可能在下次进同一目录时贴上已经过时的识别结果
+  remoteEntryBuffer.clear();
   state.remotePlace = '';
   state.remoteDir = '';
   state.remoteItems = [];
@@ -1940,8 +1943,14 @@ export async function reloadRemoteDir() {
   state.remoteMessages = [];
   state.remoteViewMode = 'files';
   refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
+  // 本次重载的暂存区从空开始：留着上一次的会把已被服务端改动过的
+  // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）
+  remoteEntryBuffer.delete(remoteDirKey(state.remotePlace, state.remoteDir));
   try {
     state.remoteItems = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    // 骨架刚落地，把 await 期间早到的识别结果补贴上去。
+    // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
+    applyBufferedRemoteEntries();
   } catch (e) {
     state.remoteItems = [];
     // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
@@ -1998,6 +2007,38 @@ export async function retryRemoteEntry(f) {
   }
 }
 
+/** 识别结果暂存区：键是「位置 + 目录」，值是 id 到已识别条目的映射。
+ *
+ *  存在的理由是一个实测到的竞态，不是防御性编程：后台识别任务在
+ *  `remote_browse` **内部**被 spawn，识别结果走事件、骨架走返回值，
+ *  两条路径互相独立。头部改走密文块缓存之后，单文件识别只要 2~5ms，
+ *  于是事件会**早于** `remote_browse` 返回就到达（实测 browse 在 399ms
+ *  返回，6 条事件落在 398~399ms）。那一刻 `state.remoteItems` 还是上一屏，
+ *  findIndex 找不到 id，事件被丢掉；紧接着骨架整份覆盖上来，
+ *  界面就永远停在「识别中」。
+ *
+ *  注意这是缓存优化把一个潜伏的竞态变成了必现故障——在那之前识别要 1.5 秒，
+ *  稳稳晚于 browse 返回，所以从没暴露过。 */
+const remoteEntryBuffer = new Map();
+
+/** 暂存区的键。用 \u0000 分隔是因为它不可能出现在位置 id 或对话 id 里；
+ *  用 ':' 会和 Telegram 的 `tg:<对话>:<消息>` 撞上。 */
+function remoteDirKey(placeId, dir) {
+  return `${placeId}\u0000${dir}`;
+}
+
+/** 把暂存区里属于当前这一屏的识别结果贴到列表上。
+ *
+ *  `reloadRemoteDir` 写完骨架后立刻调用，专治「事件比骨架先到」。 */
+function applyBufferedRemoteEntries() {
+  const buf = remoteEntryBuffer.get(remoteDirKey(state.remotePlace, state.remoteDir));
+  if (!buf || buf.size === 0) return;
+  for (let i = 0; i < state.remoteItems.length; i += 1) {
+    const hit = buf.get(state.remoteItems[i].id);
+    if (hit) state.remoteItems[i] = hit;
+  }
+}
+
 /**
  * 全局只注册一次「边扫边出」监听：remote_browse 返回骨架后，后台每识别完
  * 一个文件推一条 remote-entry，这里只在事件仍属于当前位置+当前目录时，
@@ -2010,6 +2051,16 @@ export async function ensureRemoteListeners() {
   await api.onRemoteEntry((p) => {
     if (!p || !p.entry) return;
     if (p.place_id !== state.remotePlace || p.dir !== state.remoteDir) return;
+    // 先存再贴：骨架可能还没到（见 remoteEntryBuffer 的说明）。
+    // 只为当前位置+目录暂存，切走后晚到的事件连存都不存，
+    // 否则反复进出目录会让这张表一直涨。
+    const key = remoteDirKey(p.place_id, p.dir);
+    let buf = remoteEntryBuffer.get(key);
+    if (!buf) {
+      buf = new Map();
+      remoteEntryBuffer.set(key, buf);
+    }
+    buf.set(p.entry.id, p.entry);
     const idx = state.remoteItems.findIndex((x) => x.id === p.entry.id);
     if (idx >= 0) state.remoteItems[idx] = p.entry;
   });
