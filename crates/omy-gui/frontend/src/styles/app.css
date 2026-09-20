@@ -627,9 +627,35 @@ input {
   filter: brightness(1.1);
 }
 
+/* 禁用态用显式配色，**不要**只靠 opacity 把整个元素调淡。
+ *
+ * 原来是 `opacity: .5`。opacity 作用在整个元素上（背景和文字一起淡），
+ * 而 .btn.primary 是实心蓝底白字，于是合成之后：
+ *   浅色主题 白字 + 淡蓝底 -> 对比度 2.14
+ *   深色主题 灰字 + 暗蓝底 -> 对比度 2.20
+ * 都低于 UI 组件 3:1 的下限，浅色下几乎看不清字——用户报的
+ * 「导入按钮悬浮变灰」就是这个。
+ *
+ * 排查时要注意：getComputedStyle 给的是**合成前**的值（5.17 / 3.1），
+ * 看起来完全合格。只测 computed 会整个错过这个缺陷，必须按 opacity
+ * 手算混合后的颜色。
+ *
+ * 现在用主题里本来就为「弱化」准备的 --bg3 / --fg2，两种主题下算出来
+ * 分别是 4.6 与 4.34。 */
 .btn:disabled {
-  opacity: 0.5;
+  background: var(--bg3);
+  color: var(--fg2);
+  border-color: var(--border);
+  opacity: 0.9;
   cursor: not-allowed;
+}
+
+/* 主按钮禁用时同样走上面那套弱化配色，而不是"淡一点的蓝"：
+   一个看起来仍像主操作、只是颜色浅了的按钮，会让人一直去点它 */
+.btn.primary:disabled {
+  background: var(--bg3);
+  color: var(--fg2);
+  border-color: var(--border);
 }
 
 /* ---------- 对话框 ---------- */

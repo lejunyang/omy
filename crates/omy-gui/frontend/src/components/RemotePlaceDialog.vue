@@ -237,7 +237,13 @@ select {
   color: #fff;
 }
 .btn:disabled {
-  opacity: 0.5;
+  /* 与 app.css / TelegramLoginDialog.vue 的同名规则保持一致：显式着色
+     而非只调 opacity（调淡后浅色主题下对比度仅 1.49）。
+     **三处任何一处漏改，那一屏的按钮就会变回看不清的样子。** */
+  background: var(--bg3);
+  color: var(--fg2);
+  border-color: var(--border);
+  opacity: 0.9;
   cursor: default;
 }
 

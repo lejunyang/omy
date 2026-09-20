@@ -52,6 +52,19 @@ const errDetail = ref('');
 const sessionSaved = ref(true);
 /** 这台机器能不能保存登录态。扫码**之前**就要知道。 */
 const canPersist = ref(true);
+/** 路径输入框的提示文本。
+ *
+ * 给的是 Telegram 桌面版的**默认安装位置**，不是某台机器上的实际路径
+ * ——写死后者既泄露了那台机器的目录布局，对别人也没有参考价值。
+ *
+ * 只是提示，不预填：真要预填得先确认目录存在，那是 checkTdPath 的事。
+ */
+const tdPlaceholder = computed(() =>
+  navigator.userAgent.includes('Windows')
+    ? '%APPDATA%\\Telegram Desktop\\tdata'
+    : '~/.local/share/TelegramDesktop/tdata',
+);
+
 /** 代理地址。默认值由后端给：已有位置的代理 > 系统代理 > 空。 */
 const proxyUrl = ref('');
 /** 默认值是不是自动填的——是的话在输入框下方说明来源，
@@ -419,7 +432,7 @@ onBeforeUnmount(() => {
               v-model="tdPath"
               data-tg="td-path"
               type="text"
-              placeholder="D:\TelegramDesktop\tdata"
+              :placeholder="tdPlaceholder"
               spellcheck="false"
               @input="checkTdPath"
             />
@@ -736,9 +749,14 @@ input[type='password'] {
 }
 .warnbox {
   font-size: 12px;
-  color: var(--warn);
+  /* 必须给背景。原来只设了文字色和边框，于是琥珀色字直接压在对话框
+     底色上——浅色主题下算出来对比度只有 2.42（深色主题 7.6 正常），
+     这就是「只在浅色主题下看不清」的来源。
+     做法与 styles/app.css 里的 .warnbox 一致：淡的同色底 + 同色边框。 */
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: color-mix(in srgb, var(--warn) 80%, var(--fg));
   line-height: 1.55;
-  border: 1px solid var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
   border-radius: var(--r-s);
   padding: 9px 11px;
   margin-bottom: 4px;
@@ -774,7 +792,15 @@ input[type='password'] {
   color: #fff;
 }
 .btn:disabled {
-  opacity: 0.5;
+  /* 与 styles/app.css 的 .btn:disabled 保持一致：禁用态必须显式着色，
+     不能只靠 opacity——实心蓝底白字调淡后在浅色主题下对比度只有
+     1.49，几乎看不清。**改这里时另外两处也要改**（app.css、
+     RemotePlaceDialog.vue），漏改哪一处，那一屏的按钮就会变回
+     看不清的样子。 */
+  background: var(--bg3);
+  color: var(--fg2);
+  border-color: var(--border);
+  opacity: 0.9;
   cursor: default;
 }
 
