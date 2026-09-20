@@ -51,9 +51,13 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 | Decrypt to local (plaintext lands only on this machine) | ✅ | ✅ |
 | Ciphertext block cache | ✅ | ✅ |
 | Remove a single file from the cache (local ciphertext only) | ✅ | ✅ |
-| Encrypted upload, new folder, rename, delete | ✅ (planned) | ❌ rejected before any request is sent |
+| Encrypted upload | ✅ | ❌ rejected before any request is sent |
+| Keep permanently / stop keeping | ✅ | ✅ |
+| New folder, rename, delete | Not available yet | ❌ |
 
-**Right-click on desktop, long-press on mobile** on an entry opens its context menu, which currently offers "Preview / Open", "Decrypt to local…", and — once that file actually has local ciphertext blocks cached — "Remove from cache".
+**Right-click on desktop, long-press on mobile** on an entry opens its context menu: "Preview / Open", "Decrypt to local…", "Keep permanently" (shown as "Stop keeping" for files already kept), and — once that file actually has local ciphertext blocks cached — "Remove from cache".
+
+Menu items follow the capabilities of the **current directory**, not of the location. Within one Telegram location the conversation list is not writable, a read-only channel is not writable, and your own group is — so the upload button only appears where writing actually works.
 
 ### Decrypt to local
 
@@ -64,7 +68,7 @@ A read-only location cannot be rewritten, yet you may still need to bring a file
 - The file name comes from the original name recorded in the header (and is sanitized to stop a crafted name from writing outside the target folder). It **never overwrites**: if a same-named file already exists, it errors out and asks you to pick another location.
 - Encrypted folders (containers) cannot yet be decrypted to local from a remote location; handle them locally for now.
 
-Operations that rewrite the remote side (encrypted upload, delete, rename, new folder) do not have an entry point yet. When they arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a note under the item — left-aligned with its label — where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
+Encrypted upload is available (see the Telegram section below). Delete, rename, and new folder still have no entry point. When they arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a note under the item — left-aligned with its label — where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
 
 ## Telegram
 
@@ -88,6 +92,21 @@ Direct connections to Telegram's data centres fail on many networks. The sign-in
 :::
 
 omy reports itself **honestly as omy** in Telegram's list of active sessions rather than impersonating an official client, so you can always recognise it there and revoke it.
+
+### Multiple accounts
+
+You can mount several Telegram accounts at once. Each one is its own remote location with its own stored sign-in. Adding another account after the first still runs a full sign-in rather than silently reusing the account you already have.
+
+A location is named after that account's display name by default. When two accounts share a display name (a main and an alt belonging to the same person, say) the sidebar cannot tell them apart, so the name **can be changed**: click the ✎ on that row in the location list. This only changes the name on this machine; it does not touch the account profile on the server.
+
+There are two ways to get rid of a Telegram location, and their consequences differ a lot, so they are two separate entries:
+
+| | Sign-in | Next time |
+|---|---|---|
+| **Remove from list** (✕) | Kept on this machine | Add it back directly, no new QR code |
+| **Delete account** (🗑️) | Deleted as well | Scan a QR code or import tdata again |
+
+The latter cannot be undone, and says so before you confirm. Note also that **removing a location from the list does not delete files you kept permanently** — they still occupy disk space; clear them from the permanent list in Settings.
 
 ### Browsing and searching
 
@@ -128,6 +147,18 @@ Under **Settings → Remote locations → Ciphertext cache** you can:
 - Clear the cache on exit.
 
 Beyond clearing everything in settings, you can clean up a single file: choose "Remove from cache" in an entry's context menu. It deletes only that file's locally downloaded ciphertext blocks and never touches the remote file, so it is available on read-only locations too. The menu queries on demand — the item only appears when the file actually has some cached blocks; a file with no cache never shows an empty action. Whether a file is fully cached (available offline) is counted block by block at 1 MiB; this is not scanned for every file while listing the directory, to avoid slowing down browsing when there are many files.
+
+### Keeping files permanently
+
+The cache above is evictable: when space runs short, the least recently used blocks go first. If you want a particular file to open reliably offline, choose "Keep permanently" in its context menu.
+
+- Permanently kept files are **outside the cache limit above and never evicted**, which is why Settings shows the two numbers separately: the temporary cache gets "used / limit", while permanent storage reports only its size and file count — it has no limit, and a progress bar would send you looking for a denominator that does not exist;
+- Keeping a file is a real download: it fetches the file's ciphertext in full rather than just flagging it. A flag alone would make "permanent" a promise rather than a fact, and opening the file offline would still fail;
+- Stopping keeps deletes those ciphertext blocks and gives the space back.
+
+Settings → Remote locations → Ciphertext cache → "Manage permanent files…" lists everything kept permanently so you can release them one by one. Without that list your only option would be to go back to the location the file came from and find it in the directory again — and on Telegram that message may be long out of reach.
+
+The list keeps working **after the location itself has been removed**: such a row reads "Removed location" but can still be released to reclaim the space.
 
 "Cache on Wi-Fi only" on mobile will follow in a later release.
 
@@ -218,7 +249,7 @@ tell which server you use.
 
 ## Current limitations (first iteration)
 
-- **Remote write operations** — encrypted upload, new folder, rename/delete, transfer progress — are not available yet; this iteration focuses on remote browsing, streaming, and decrypt-to-local. Decrypting an encrypted folder (container) from remote to local is not supported yet either.
+- New folder and rename/delete are not available yet (encrypted upload is). Decrypting an encrypted folder (container) from remote to local is not supported yet either.
 - No private cloud drivers beyond WebDAV and Telegram yet.
 - No "unlock with fingerprint / face" tier for credential protection yet.
 
