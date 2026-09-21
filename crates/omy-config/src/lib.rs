@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 mod paths;
-pub use paths::{cache_dir, config_path, data_dir, is_portable};
+pub use paths::{cache_dir, config_path, data_dir, is_portable, log_dir};
 
 /// 配置读写错误。
 #[derive(Debug, thiserror::Error)]

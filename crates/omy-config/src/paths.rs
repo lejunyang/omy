@@ -74,6 +74,23 @@ pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("omy"))
 }
 
+/// 日志目录。
+///
+/// 与配置同源：便携模式下在 exe 旁的 `omy-data/logs`，否则用系统数据目录下的
+/// `omy/logs`。移动端 `portable_root()` 恒为 `None`（见其定义），会走后一支
+/// ——但移动端**不落文件日志**（应用目录不可写，见模块顶注），由日志初始化
+/// 那边按平台决定不启用文件写入，这里只负责给出「假如要写，写哪」。
+///
+/// 复用 [`portable_root`]，不自己再定位一次 exe：同一逻辑两处实现，改了一处
+/// 忘了另一处，会出现「配置在 A、日志在 B」这种最难排查的分裂。
+#[must_use]
+pub fn log_dir() -> Option<PathBuf> {
+    if let Some(root) = portable_root() {
+        return Some(root.join("logs"));
+    }
+    dirs::data_dir().map(|d| d.join("omy").join("logs"))
+}
+
 /// 可执行文件旁的数据目录，仅在**确认可写**时返回。
 ///
 /// 移动端直接返回 `None`：那里没有便携这个概念，应用目录也不可写。

@@ -36,6 +36,7 @@
 // 不是问题——否则每次构建都多一条噪音。
 #![allow(linker_messages)]
 
+pub mod applog;
 pub mod transfers;
 mod browse;
 mod citem;
@@ -71,6 +72,12 @@ use std::sync::Arc;
 /// 宏生成 JNI 入口调用（仅 Android/iOS 构建时启用该属性）。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 最先初始化日志：后面的位置恢复、setup 都可能出错，日志要能记到。
+    // 失败只降级不 panic（见 applog::init）。
+    match applog::init() {
+        Some(p) => applog::info("boot", &format!("omy-gui 启动，日志落点 {}", p.display())),
+        None => eprintln!("[omy] 本次不写文件日志（移动端或目录不可写）"),
+    }
     let shared: commands::Shared = Arc::new(AppState::new());
     let for_protocol = Arc::clone(&shared);
     let device_session: device_cmds::SharedDevices = Arc::new(devices::DeviceSession::new());
