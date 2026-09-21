@@ -121,6 +121,7 @@ pub fn remote_place_add(
         ..WebDavConfig::default()
     };
     let id = reg.add_webdav(name, cfg).map_err(|e| to_cmd_err(&e))?;
+    crate::applog::info("place", &format!("新增 WebDAV 位置 id={id}"));
     // 立刻落盘：用户加完位置就可能直接关掉应用，等到退出再存会丢。
     //
     // 存不上不让整个添加失败——位置在本次会话里是可用的，只是重启后
@@ -150,6 +151,7 @@ pub fn remote_secret_status() -> crate::places::SecretStatus {
 /// 移除一个远程位置。
 #[tauri::command]
 pub fn remote_place_remove(reg: tauri::State<'_, Arc<PlaceRegistry>>, id: String) {
+    crate::applog::info("place", &format!("移除位置 id={id}"));
     reg.remove(&id);
     // 同样立刻落盘，否则删掉的位置重启后又回来了
     if let Err(e) = reg.persist() {
@@ -183,7 +185,30 @@ pub async fn remote_browse(
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
 
-    let items = place.store.list(&dir).await.map_err(|e| to_cmd_err(&e))?;
+    let t0 = std::time::Instant::now();
+    let items = match place.store.list(&dir).await {
+        Ok(v) => v,
+        Err(e) => {
+            crate::applog::warn(
+                "browse",
+                &format!(
+                    "list place={place_id} dir={} failed: {}",
+                    crate::applog::redact(&dir),
+                    to_cmd_err(&e).code
+                ),
+            );
+            return Err(to_cmd_err(&e));
+        }
+    };
+    crate::applog::info(
+        "browse",
+        &format!(
+            "list place={place_id} dir={} -> {} entries in {}ms",
+            crate::applog::redact(&dir),
+            items.len(),
+            t0.elapsed().as_millis()
+        ),
+    );
     Ok(scan_entries(
         &app,
         &state,
@@ -590,8 +615,23 @@ pub async fn remote_upload(
     // 错误还只有一句 provider 的原始报错
     let caps = store.effective_capabilities(&dir).await.map_err(|e| to_cmd_err(&e))?;
     if !caps.write {
+        crate::applog::warn(
+            "upload",
+            &format!(
+                "place={place_id} dir={} 拒绝：目录只读",
+                crate::applog::redact(&dir)
+            ),
+        );
         return Err(CmdError::code("remote_readonly"));
     }
+    crate::applog::info(
+        "upload",
+        &format!(
+            "place={place_id} dir={} 开始上传 {} 个文件",
+            crate::applog::redact(&dir),
+            paths.len()
+        ),
+    );
 
     let mut out = Vec::with_capacity(paths.len());
     for p in paths {
@@ -617,20 +657,40 @@ pub async fn remote_upload(
         };
 
         match store.write(&dir, &name, &data).await {
-            Ok(entry) => out.push(UploadOutcome {
-                path: p,
-                name,
-                ok: true,
-                id: Some(entry.id),
-                error: None,
-            }),
-            Err(e) => out.push(UploadOutcome {
-                path: p,
-                name,
-                ok: false,
-                id: None,
-                error: Some(e.to_string()),
-            }),
+            Ok(entry) => {
+                crate::applog::info(
+                    "upload",
+                    &format!(
+                        "place={place_id} ok size={} name={}",
+                        data.len(),
+                        crate::applog::redact(&name)
+                    ),
+                );
+                out.push(UploadOutcome {
+                    path: p,
+                    name,
+                    ok: true,
+                    id: Some(entry.id),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                // 记结果类型（RPC 错误码/来源报错），不记文件内容
+                crate::applog::error(
+                    "upload",
+                    &format!(
+                        "place={place_id} 失败 name={}: {e}",
+                        crate::applog::redact(&name)
+                    ),
+                );
+                out.push(UploadOutcome {
+                    path: p,
+                    name,
+                    ok: false,
+                    id: None,
+                    error: Some(e.to_string()),
+                });
+            }
         }
     }
     Ok(out)
@@ -813,6 +873,13 @@ pub async fn remote_place_open(
                 source,
                 mime: mime.clone(),
             });
+            crate::applog::info(
+                "open",
+                &format!(
+                    "place={place_id} file={} -> 普通文件（非 omy），mime={mime}",
+                    crate::applog::redact(&path)
+                ),
+            );
             return Ok(OpenPlaceResult {
                 token,
                 unlocked: true,
@@ -844,6 +911,13 @@ pub async fn remote_place_open(
     let Some(opened) = opened else {
         // 是 omy 但当前密码集打不开——明确告诉前端是「未解锁」，
         // 不能混进 not_encrypted，否则用户会以为文件没加密
+        crate::applog::info(
+            "open",
+            &format!(
+                "place={place_id} file={} -> omy 已识别但当前密码集打不开（未解锁）",
+                crate::applog::redact(&path)
+            ),
+        );
         return Ok(OpenPlaceResult {
             token: None,
             unlocked: false,
@@ -899,6 +973,14 @@ pub async fn remote_place_open(
         .insert(holder)
         .ok_or_else(|| CmdError::code("remote_open_failed"))?;
 
+    // 记「已解锁」但**不记 real_name**——那是解密后的真名，属于明文内容
+    crate::applog::info(
+        "open",
+        &format!(
+            "place={place_id} file={} -> 已解锁，mime={mime}",
+            crate::applog::redact(&path)
+        ),
+    );
     Ok(OpenPlaceResult {
         token: Some(token),
         unlocked: true,
@@ -1676,12 +1758,29 @@ pub async fn remote_cache_pin(
     }
     let r = source.pin().map_err(|e| to_cmd_err(&e));
     match &r {
-        Ok(_) => xfer.finish(&app, h.id(), TaskState::Done),
-        Err(e) => xfer.finish(
-            &app,
-            h.id(),
-            TaskState::Failed { code: e.code.clone() },
-        ),
+        Ok(freed) => {
+            crate::applog::info(
+                "pin",
+                &format!(
+                    "place={} file={} 已转永久，bytes={freed}",
+                    req.place_id,
+                    crate::applog::redact(&req.path)
+                ),
+            );
+            xfer.finish(&app, h.id(), TaskState::Done);
+        }
+        Err(e) => {
+            crate::applog::error(
+                "pin",
+                &format!(
+                    "place={} file={} 转永久失败: {}",
+                    req.place_id,
+                    crate::applog::redact(&req.path),
+                    e.code
+                ),
+            );
+            xfer.finish(&app, h.id(), TaskState::Failed { code: e.code.clone() });
+        }
     }
     r
 }
@@ -1740,7 +1839,27 @@ pub async fn remote_cache_unpin(
     req: RemoteFileRef,
 ) -> CmdResult<u64> {
     let source = build_remote_source(&reg, &cache, &req).await?;
-    source.unpin().map_err(|e| to_cmd_err(&e))
+    let r = source.unpin().map_err(|e| to_cmd_err(&e));
+    match &r {
+        Ok(freed) => crate::applog::info(
+            "unpin",
+            &format!(
+                "place={} file={} 取消永久，释放 bytes={freed}",
+                req.place_id,
+                crate::applog::redact(&req.path)
+            ),
+        ),
+        Err(e) => crate::applog::warn(
+            "unpin",
+            &format!(
+                "place={} file={} 取消永久失败: {}",
+                req.place_id,
+                crate::applog::redact(&req.path),
+                e.code
+            ),
+        ),
+    }
+    r
 }
 
 /// 列出所有**永久保留**的文件，供设置页的「管理永久缓存」。

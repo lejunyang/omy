@@ -652,11 +652,21 @@ pub async fn telegram_tdata_import(
     let dir = std::path::PathBuf::from(&path);
     let pass = passcode.unwrap_or_default();
 
+    // 记「开始导入」但**不记真实 tdata 路径与 passcode**——路径可能暴露
+    // 用户目录结构，passcode 是凭据
+    crate::applog::info(
+        "tg-tdata",
+        &format!("开始导入 有passcode={}", !pass.is_empty()),
+    );
     // 解析。注意这一步**不碰网络**，失败就是格式或密码问题
     let auth = tokio::task::spawn_blocking(move || tdata::read_tdata(&dir, &pass))
         .await
         .map_err(|e| CmdError::with("tg_tdata_failed", detail(&e.to_string())))?
-        .map_err(|e| CmdError::with(tdata_code(&e), detail(&e.to_string())))?;
+        .map_err(|e| {
+            crate::applog::error("tg-tdata", &format!("解析阶段失败: {}", tdata_code(&e)));
+            CmdError::with(tdata_code(&e), detail(&e.to_string()))
+        })?;
+    crate::applog::info("tg-tdata", "解析成功，开始向服务端验证");
 
     let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
         Ok(p) => p.map(|p| p.to_string()),
@@ -674,7 +684,10 @@ pub async fn telegram_tdata_import(
     // 不是这次导入——诊断方向完全跑偏。
     let conn = connect::connect_with(&saved, &app, &device, proxy.as_deref())
         .await
-        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+        .map_err(|e| {
+            crate::applog::error("tg-tdata", &format!("连接阶段失败: {}", e.code()));
+            CmdError::with(e.code(), detail(&e.to_string()))
+        })?;
 
     // 默认位置名取服务端昵称；取不到就回落，不让它影响导入本身
     let label = connect::account_label(&conn.client).await;
@@ -688,6 +701,7 @@ pub async fn telegram_tdata_import(
     let id = reg
         .add_telegram(label, store, proxy.clone())
         .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
+    crate::applog::info("tg-tdata", &format!("导入成功，位置 id={id}"));
 
     // 拿到位置 id 之后才落 session：文件名正是按它命名的。
     //
@@ -854,9 +868,27 @@ pub async fn ensure_connected(
     // **按这个位置自己的 session 重连。** 多账号下这一步不能含糊：
     // 读错文件的表现是用户点开 A 账号却看到 B 账号的对话列表，
     // 而两边都不会报错
+    crate::applog::info(
+        "tg",
+        &format!(
+            "重连 place={place_id} proxy={}",
+            if proxy.is_some() { "有" } else { "无（直连）" }
+        ),
+    );
+    let t0 = std::time::Instant::now();
     let conn = connect::connect_saved(&app, &device, proxy.as_deref(), place_id)
         .await
-        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+        .map_err(|e| {
+            crate::applog::error(
+                "tg",
+                &format!("重连 place={place_id} 失败: {} ({}ms)", e.code(), t0.elapsed().as_millis()),
+            );
+            CmdError::with(e.code(), detail(&e.to_string()))
+        })?;
+    crate::applog::info(
+        "tg",
+        &format!("重连 place={place_id} 成功 ({}ms)", t0.elapsed().as_millis()),
+    );
     let store = TelegramStore::from_connection(conn.client, conn.runner);
     // 换掉占位：先摘再加，否则会并存两条
     reg.remove(place_id);
@@ -1294,6 +1326,14 @@ impl PhoneLoginTask {
 pub type SharedPhoneLogin = Arc<PhoneLoginTask>;
 
 /// 把驱动层错误翻成手机号登录的失败事件。
+/// 从错误里取出简短错误码，用于日志（不含手机号/验证码等敏感信息）。
+fn phone_err_code(e: &QrError) -> String {
+    match phone_phase_of_error(e) {
+        PhonePhase::Failed { code, .. } => code,
+        _ => String::from("unknown"),
+    }
+}
+
 fn phone_phase_of_error(e: &QrError) -> PhonePhase {
     let (code, wait) = match e {
         QrError::FloodWait { secs } => ("tg_flood_wait", Some(*secs)),
@@ -1467,12 +1507,21 @@ async fn run_phone_login(
     proxy: Option<String>,
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<PhoneInput>,
 ) {
+    crate::applog::info(
+        "tg-phone",
+        &format!(
+            "手机号登录开始，连接中 proxy={}",
+            if proxy.is_some() { "有" } else { "无（直连）" }
+        ),
+    );
     phone_emit(app, &PhonePhase::Connecting);
     let appid = AppId::builtin();
     let device = DeviceInfo::current();
     let mut sess = match PhoneSession::connect(appid.clone(), proxy.as_deref(), &device) {
         Ok(s) => s,
         Err(e) => {
+            // 只记错误码，不记手机号/代理地址明文
+            crate::applog::error("tg-phone", &format!("连接失败: {}", phone_err_code(&e)));
             phone_emit(app, &phone_phase_of_error(&e));
             return;
         }
@@ -1506,13 +1555,19 @@ async fn phone_code_loop(
 ) -> bool {
     // 首次发码
     match sess.send_code(phone).await {
-        Ok(PhoneEvent::CodeSent { shape }) => emit_code_sent(app, &shape),
+        Ok(PhoneEvent::CodeSent { shape }) => {
+            crate::applog::info("tg-phone", "sendCode 成功，验证码已发出");
+            emit_code_sent(app, &shape);
+        }
         Ok(PhoneEvent::LoggedIn) => {
+            crate::applog::info("tg-phone", "sendCode 即登录成功");
             phone_finish(app, sess).await;
             return true;
         }
         Ok(PhoneEvent::NeedPassword { .. }) => {} // send_code 不会走到这
         Err(e) => {
+            // FLOOD_WAIT / PHONE_NUMBER_INVALID 这类正是排查最需要的
+            crate::applog::error("tg-phone", &format!("sendCode 失败: {}", phone_err_code(&e)));
             phone_emit(app, &phone_phase_of_error(&e));
             return true;
         }
@@ -1522,14 +1577,18 @@ async fn phone_code_loop(
         match input_rx.recv().await {
             Some(PhoneInput::Code(code)) => match sess.submit_code(&code).await {
                 Ok(PhoneEvent::LoggedIn) => {
+                    crate::applog::info("tg-phone", "signIn 成功（验证码通过）");
                     phone_finish(app, sess).await;
                     return true;
                 }
                 Ok(PhoneEvent::NeedPassword { hint }) => {
+                    crate::applog::info("tg-phone", "验证码通过，需 2FA 云密码");
                     return phone_password_loop(app, sess, hint, input_rx).await;
                 }
                 Ok(PhoneEvent::CodeSent { .. }) => {} // submit_code 不会走到这
                 Err(e) => {
+                    // 只记错误码（验证码错/过期），绝不记 code 本身
+                    crate::applog::warn("tg-phone", &format!("signIn 失败: {}", phone_err_code(&e)));
                     // 验证码错 / 过期停在本步：推一条失败让界面提示，但**不返回**，
                     // 继续等用户重输或重发
                     phone_emit(app, &phone_phase_of_error(&e));
