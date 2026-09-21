@@ -146,6 +146,8 @@ pub fn run() {
     // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
     // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
     let telegram_login: telegram_cmds::SharedLogin = Arc::new(telegram_cmds::LoginTask::new());
+    let telegram_phone_login: telegram_cmds::SharedPhoneLogin =
+        Arc::new(telegram_cmds::PhoneLoginTask::new());
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -173,6 +175,7 @@ pub fn run() {
         .manage(Arc::clone(&place_containers))
         .manage(Arc::clone(&transfers))
         .manage(Arc::clone(&telegram_login))
+        .manage(Arc::clone(&telegram_phone_login))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
@@ -302,6 +305,12 @@ pub fn run() {
             telegram_cmds::telegram_login_start,
             telegram_cmds::telegram_submit_password,
             telegram_cmds::telegram_login_cancel,
+            telegram_cmds::telegram_phone_start,
+            telegram_cmds::telegram_phone_submit_phone,
+            telegram_cmds::telegram_phone_submit_code,
+            telegram_cmds::telegram_phone_submit_password,
+            telegram_cmds::telegram_phone_resend,
+            telegram_cmds::telegram_phone_cancel,
             telegram_cmds::telegram_place_connect,
         ])
         .setup(move |app| {

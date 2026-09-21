@@ -30,6 +30,7 @@ use tauri::Emitter as _;
 use omy_remote::telegram::appid::AppId;
 use omy_remote::telegram::device::DeviceInfo;
 use omy_remote::telegram::qr::{encode_matrix, QrMatrix};
+use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
 use omy_remote::telegram::store::TelegramStore;
 use omy_remote::telegram::{connect, proxy, session as tgsession, tdata};
@@ -1160,6 +1161,482 @@ async fn finish(app: &tauri::AppHandle, sess: &QrSession, appid: &AppId) {
             },
         ),
         Err(e) => emit(app, &phase_of_error(&e)),
+    }
+}
+
+/// 手机号登录进度事件的通道名。前端 `listen('telegram-phone-login', …)`。
+///
+/// 与扫码分开一个通道：两条登录路径的事件形态不同（这条没有二维码、有验证码
+/// 形态），混在一个通道里前端要靠字段有无来猜是哪条，容易错。
+pub const PHONE_LOGIN_EVENT: &str = "telegram-phone-login";
+
+/// 推给前端的手机号登录进度。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum PhonePhase {
+    /// 正在连接。
+    Connecting,
+    /// 等用户输入手机号。
+    AwaitingPhone,
+    /// 验证码已发出，等输码。
+    CodeSent {
+        /// 是不是纯数字码。false 表示单词或短句，界面不能用数字键盘/位数限制。
+        numeric: bool,
+        /// 固定位数（供数字码分格）；无固定位数时为 `None`。
+        length: Option<u8>,
+        /// 「验证码发到哪里」的 i18n key。App 那条尤其重要：发到其他已登录
+        /// 客户端，用户不知道就盯着短信白等。
+        via_key: String,
+        /// 这个送达方式要不要用户离开本机去别处取码（App 为真）。
+        needs_other_client: bool,
+    },
+    /// 要输两步验证的云密码（事先不可预知，只有开了 2FA 才会走到）。
+    NeedPassword {
+        /// 用户自设的提示，可能为空。
+        hint: Option<String>,
+    },
+    /// 登录成功。
+    Done {
+        /// 登录态有没有真的落盘。
+        session_saved: bool,
+    },
+    /// 失败。
+    Failed {
+        /// 翻译键（`errors.<code>`）。
+        code: String,
+        /// 限流剩余秒数，其余为 `None`。
+        wait_secs: Option<u32>,
+        /// 供排查的原因（服务端错误名 + 代码），不含 message（可能回显号码）。
+        detail: Option<String>,
+    },
+}
+
+/// 用户给手机号登录任务的输入。
+///
+/// 用一个 enum 走同一条 channel，而不是给手机号、验证码、密码、重发各开一个
+/// 通道：那样后台任务要同时 select 四个通道，而它们本质是「登录流程的下一个
+/// 输入」这同一件事的不同阶段。
+#[derive(Debug, Clone)]
+pub enum PhoneInput {
+    /// 提交手机号（含国家码，如 +8613800138000）。
+    Phone(String),
+    /// 提交验证码。
+    Code(String),
+    /// 提交 2FA 云密码。
+    Password(String),
+    /// 请求重新发码。
+    Resend,
+}
+
+/// 正在进行的手机号登录任务。
+#[derive(Default)]
+pub struct PhoneLoginTask {
+    inner: Mutex<Option<PhoneRunning>>,
+}
+
+struct PhoneRunning {
+    handle: tauri::async_runtime::JoinHandle<()>,
+    input_tx: tokio::sync::mpsc::UnboundedSender<PhoneInput>,
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PhoneLoginTask {
+    /// 新建空闲任务。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 有没有正在进行的登录。
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| {
+                g.as_ref()
+                    .map(|r| !r.done.load(std::sync::atomic::Ordering::SeqCst))
+            })
+            .unwrap_or(false)
+    }
+
+    /// 取消并清理。
+    pub fn cancel(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(r) = g.take() {
+                r.handle.abort();
+                r.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// 把一个输入送给后台任务。返回是否送出去了。
+    fn send(&self, input: PhoneInput) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|r| r.input_tx.send(input).is_ok()))
+            .unwrap_or(false)
+    }
+
+    fn set(&self, r: PhoneRunning) {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(old) = g.take() {
+                old.handle.abort();
+                old.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            *g = Some(r);
+        }
+    }
+}
+
+/// 共享句柄。
+pub type SharedPhoneLogin = Arc<PhoneLoginTask>;
+
+/// 把驱动层错误翻成手机号登录的失败事件。
+fn phone_phase_of_error(e: &QrError) -> PhonePhase {
+    let (code, wait) = match e {
+        QrError::FloodWait { secs } => ("tg_flood_wait", Some(*secs)),
+        QrError::ApiIdPublishedFlood => ("tg_api_id_flood", None),
+        QrError::WrongPassword => ("tg_wrong_password", None),
+        QrError::SignUpRequired => ("tg_signup_required", None),
+        QrError::UnsupportedPasswordAlgo => ("tg_unsupported_2fa", None),
+        QrError::Disconnected => ("tg_disconnected", None),
+        QrError::Invocation(d) => classify_phone_invocation(d),
+    };
+    let detail = match e {
+        // 已归入具体码的（含验证码错、需付费）就不再附原文
+        QrError::Invocation(d) if classify_phone_invocation(d).0 == "tg_login_failed" => {
+            Some(d.clone())
+        }
+        _ => None,
+    };
+    PhonePhase::Failed {
+        code: String::from(code),
+        wait_secs: wait,
+        detail,
+    }
+}
+
+/// 从服务端原始错误名里认出手机号登录特有的几种，给它们各自的出路。
+///
+/// 验证码错 / 过期、号码不合法、需付费短信——每种界面要做的事不同：
+/// 重输、重发、改号码、改用扫码。混成一句「登录失败」用户就不知道下一步。
+fn classify_phone_invocation(detail: &str) -> (&'static str, Option<u32>) {
+    if detail.contains("PHONE_CODE_INVALID") {
+        ("tg_code_invalid", None)
+    } else if detail.contains("PHONE_CODE_EXPIRED") {
+        ("tg_code_expired", None)
+    } else if detail.contains("PHONE_NUMBER_INVALID") {
+        ("tg_phone_invalid", None)
+    } else if detail.contains("PHONE_NUMBER_BANNED") {
+        ("tg_phone_banned", None)
+    } else if detail.contains("PAYMENT_REQUIRED") {
+        // 需付费短信，我们不支持——引导改用扫码（扫码不经过 sendCode）
+        ("tg_phone_payment", None)
+    } else {
+        ("tg_login_failed", None)
+    }
+}
+
+/// 往前端推一步手机号登录进度。
+fn phone_emit(app: &tauri::AppHandle, phase: &PhonePhase) {
+    if let PhonePhase::Failed { code, detail, .. } = phase {
+        eprintln!(
+            "[omy] Telegram 手机号登录失败：{code}{}",
+            detail.as_ref().map_or(String::new(), |d| format!(" / {d}"))
+        );
+    }
+    if let Err(e) = app.emit(PHONE_LOGIN_EVENT, phase) {
+        eprintln!("[omy] Telegram 手机号登录进度推送失败：{e}");
+    }
+}
+
+/// 开始手机号登录。立刻返回，进度通过 [`PHONE_LOGIN_EVENT`] 推送。
+///
+/// 与扫码同理：必须是 `async` + `tauri::async_runtime::spawn`，否则 `spawn`
+/// 会在没有 reactor 的线程上 panic 并带走整个进程（见 `telegram_login_start`
+/// 那处的详细注释）。
+///
+/// # Errors
+///
+/// 已有登录进行中、或代理地址不合法时返回。
+#[tauri::command]
+pub async fn telegram_phone_start(
+    app: tauri::AppHandle,
+    task: tauri::State<'_, SharedPhoneLogin>,
+    proxy_url: Option<String>,
+) -> CmdResult<()> {
+    if task.is_busy() {
+        return Err(CmdError::code("tg_login_in_progress"));
+    }
+    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
+        Ok(p) => p.map(|p| p.as_str().to_owned()),
+        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
+    };
+    let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = app.clone();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done_for_task = Arc::clone(&done);
+    let handle = tauri::async_runtime::spawn(async move {
+        run_phone_login(&emitter, proxy, input_rx).await;
+        done_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    task.set(PhoneRunning {
+        handle,
+        input_tx,
+        done,
+    });
+    Ok(())
+}
+
+/// 提交手机号。
+///
+/// # Errors
+///
+/// 没有正在进行的手机号登录时返回。
+#[tauri::command]
+pub fn telegram_phone_submit_phone(
+    task: tauri::State<'_, SharedPhoneLogin>,
+    phone: String,
+) -> CmdResult<()> {
+    if task.send(PhoneInput::Phone(phone)) {
+        Ok(())
+    } else {
+        Err(CmdError::code("tg_no_login_in_progress"))
+    }
+}
+
+/// 提交验证码。
+///
+/// # Errors
+///
+/// 没有正在进行的手机号登录时返回。
+#[tauri::command]
+pub fn telegram_phone_submit_code(
+    task: tauri::State<'_, SharedPhoneLogin>,
+    code: String,
+) -> CmdResult<()> {
+    if task.send(PhoneInput::Code(code)) {
+        Ok(())
+    } else {
+        Err(CmdError::code("tg_no_login_in_progress"))
+    }
+}
+
+/// 提交 2FA 云密码。
+///
+/// # Errors
+///
+/// 没有正在进行的手机号登录时返回。
+#[tauri::command]
+pub fn telegram_phone_submit_password(
+    task: tauri::State<'_, SharedPhoneLogin>,
+    password: String,
+) -> CmdResult<()> {
+    if task.send(PhoneInput::Password(password)) {
+        Ok(())
+    } else {
+        Err(CmdError::code("tg_no_login_in_progress"))
+    }
+}
+
+/// 请求重新发码。
+///
+/// # Errors
+///
+/// 没有正在进行的手机号登录时返回。
+#[tauri::command]
+pub fn telegram_phone_resend(task: tauri::State<'_, SharedPhoneLogin>) -> CmdResult<()> {
+    if task.send(PhoneInput::Resend) {
+        Ok(())
+    } else {
+        Err(CmdError::code("tg_no_login_in_progress"))
+    }
+}
+
+/// 取消手机号登录。
+#[tauri::command]
+pub fn telegram_phone_cancel(task: tauri::State<'_, SharedPhoneLogin>) {
+    task.cancel();
+}
+
+/// 后台手机号登录主循环。
+async fn run_phone_login(
+    app: &tauri::AppHandle,
+    proxy: Option<String>,
+    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<PhoneInput>,
+) {
+    phone_emit(app, &PhonePhase::Connecting);
+    let appid = AppId::builtin();
+    let device = DeviceInfo::current();
+    let mut sess = match PhoneSession::connect(appid.clone(), proxy.as_deref(), &device) {
+        Ok(s) => s,
+        Err(e) => {
+            phone_emit(app, &phone_phase_of_error(&e));
+            return;
+        }
+    };
+
+    // ① 等手机号
+    phone_emit(app, &PhonePhase::AwaitingPhone);
+    let phone = loop {
+        match input_rx.recv().await {
+            Some(PhoneInput::Phone(p)) => break p,
+            // 还没发码前收到别的输入就忽略——界面在这一步只该给手机号输入框
+            Some(_) => {}
+            // 通道关了 = 用户取消，静默收工
+            None => return,
+        }
+    };
+
+    // ② 发码，进入「输码」子循环。这里用一个可重入的循环处理重发。
+    // 返回值（是否走到终态）在这里没有后续动作，直接丢弃
+    let _ = phone_code_loop(app, &mut sess, &phone, &mut input_rx).await;
+}
+
+/// 发码 + 输码子循环，处理验证码错误重输、重发、以及 2FA 分支。
+///
+/// 返回 `true` 表示走到了终态（成功或已 emit 失败）。
+async fn phone_code_loop(
+    app: &tauri::AppHandle,
+    sess: &mut PhoneSession,
+    phone: &str,
+    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PhoneInput>,
+) -> bool {
+    // 首次发码
+    match sess.send_code(phone).await {
+        Ok(PhoneEvent::CodeSent { shape }) => emit_code_sent(app, &shape),
+        Ok(PhoneEvent::LoggedIn) => {
+            phone_finish(app, sess).await;
+            return true;
+        }
+        Ok(PhoneEvent::NeedPassword { .. }) => {} // send_code 不会走到这
+        Err(e) => {
+            phone_emit(app, &phone_phase_of_error(&e));
+            return true;
+        }
+    }
+
+    loop {
+        match input_rx.recv().await {
+            Some(PhoneInput::Code(code)) => match sess.submit_code(&code).await {
+                Ok(PhoneEvent::LoggedIn) => {
+                    phone_finish(app, sess).await;
+                    return true;
+                }
+                Ok(PhoneEvent::NeedPassword { hint }) => {
+                    return phone_password_loop(app, sess, hint, input_rx).await;
+                }
+                Ok(PhoneEvent::CodeSent { .. }) => {} // submit_code 不会走到这
+                Err(e) => {
+                    // 验证码错 / 过期停在本步：推一条失败让界面提示，但**不返回**，
+                    // 继续等用户重输或重发
+                    phone_emit(app, &phone_phase_of_error(&e));
+                }
+            },
+            Some(PhoneInput::Resend) => match sess.resend_code().await {
+                Ok(PhoneEvent::CodeSent { shape }) => emit_code_sent(app, &shape),
+                Ok(PhoneEvent::LoggedIn) => {
+                    phone_finish(app, sess).await;
+                    return true;
+                }
+                Ok(PhoneEvent::NeedPassword { .. }) => {}
+                Err(e) => phone_emit(app, &phone_phase_of_error(&e)),
+            },
+            // 这一步不该收到手机号/密码，忽略
+            Some(_) => {}
+            None => return false,
+        }
+    }
+}
+
+/// 2FA 云密码子循环：反复要密码直到通过或用户放弃。
+async fn phone_password_loop(
+    app: &tauri::AppHandle,
+    sess: &mut PhoneSession,
+    mut hint: Option<String>,
+    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PhoneInput>,
+) -> bool {
+    loop {
+        phone_emit(app, &PhonePhase::NeedPassword { hint: hint.clone() });
+        let Some(input) = input_rx.recv().await else {
+            return false;
+        };
+        let PhoneInput::Password(pw) = input else {
+            // 这一步只收密码，其余忽略
+            continue;
+        };
+        match sess.submit_password(&pw).await {
+            Ok(_) => {
+                phone_finish(app, sess).await;
+                return true;
+            }
+            Err(QrError::WrongPassword) => {
+                phone_emit(
+                    app,
+                    &PhonePhase::Failed {
+                        code: String::from("tg_wrong_password"),
+                        wait_secs: None,
+                        detail: None,
+                    },
+                );
+                hint = hint.take();
+            }
+            Err(e) => {
+                phone_emit(app, &phone_phase_of_error(&e));
+                return true;
+            }
+        }
+    }
+}
+
+/// 把 CodeSent 事件翻成前端要的形状。
+fn emit_code_sent(app: &tauri::AppHandle, shape: &omy_remote::telegram::login::CodeShape) {
+    phone_emit(
+        app,
+        &PhonePhase::CodeSent {
+            numeric: shape.length > 0,
+            length: if shape.length > 0 {
+                Some(shape.length)
+            } else {
+                None
+            },
+            via_key: String::from(shape.via.guidance_key()),
+            needs_other_client: shape.via.requires_other_client(),
+        },
+    );
+}
+
+/// 手机号登录成功的收尾：与扫码同样，先落盘到 PENDING_ACCOUNT、再自证。
+async fn phone_finish(app: &tauri::AppHandle, sess: &PhoneSession) {
+    let saved = match tgsession::save(sess.session(), sess.app(), tgsession::PENDING_ACCOUNT) {
+        Ok(_) => true,
+        Err(tgsession::SessionError::NoProtector) => {
+            eprintln!("[omy] 这台机器没有可用的凭据库，Telegram 登录态不会保存");
+            false
+        }
+        Err(e) => {
+            eprintln!("[omy] Telegram 登录态保存失败：{e}");
+            false
+        }
+    };
+    match sess.is_authorized().await {
+        Ok(true) => phone_emit(
+            app,
+            &PhonePhase::Done {
+                session_saved: saved,
+            },
+        ),
+        Ok(false) => phone_emit(
+            app,
+            &PhonePhase::Failed {
+                code: String::from("tg_login_not_effective"),
+                wait_secs: None,
+                detail: None,
+            },
+        ),
+        Err(e) => phone_emit(app, &phone_phase_of_error(&e)),
     }
 }
 

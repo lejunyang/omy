@@ -758,7 +758,32 @@
     "risk_1": "Telegram may place the account under review, and in serious cases restrict or ban it.",
     "risk_2": "omy appears as “omy” in your Logged-in Devices list, where you can terminate it at any time.",
     "risk_ack": "I understand these risks and want to continue",
-    "risk_next": "Continue"
+    "risk_next": "Continue",
+    "back": "Back",
+    "method_qr": "QR code",
+    "method_qr_desc": "Scan with the Telegram app — the simplest way",
+    "method_phone": "Phone number",
+    "method_phone_desc": "Sign in with a code sent to your phone",
+    "method_tdata": "Reuse desktop",
+    "method_tdata_desc": "Use this machine's Telegram Desktop login",
+    "phone_title": "Sign in by phone",
+    "phone_desc": "Enter your number with country code, e.g. +14155550123",
+    "phone_placeholder": "+14155550123",
+    "phone_send": "Send code",
+    "phone_sending": "Sending…",
+    "code_title": "Enter the code",
+    "code_placeholder_num": "Code",
+    "code_placeholder_text": "Code (word or phrase)",
+    "code_verify": "Verify",
+    "code_verifying": "Verifying…",
+    "code_resend": "Resend",
+    "code": {
+      "sentToApp": "The code was sent to your other logged-in Telegram apps (not by SMS). Open Telegram on your phone or desktop to see it.",
+      "sentToSms": "The code was sent by SMS.",
+      "sentToCall": "The code will be read out in a phone call.",
+      "sentToFlashCall": "You will get a flash call; the last digits of the number are the code.",
+      "sentUnknown": "The code has been sent."
+    }
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",

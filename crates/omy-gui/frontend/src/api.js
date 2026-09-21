@@ -739,3 +739,35 @@ export const telegramPlaceConnect = (proxyUrl) =>
  */
 export const onTelegramLogin = (handler) =>
   listen('telegram-login', (e) => handler(e.payload));
+
+// ---- 手机号登录（与扫码并列的一条路）----
+
+/** 开始手机号登录。立刻返回，进度走 `onTelegramPhoneLogin` 推送。 */
+export const telegramPhoneStart = (proxyUrl) =>
+  invoke('telegram_phone_start', { proxyUrl: proxyUrl || null });
+
+/** 提交手机号（含国家码，如 +8613800138000）。 */
+export const telegramPhoneSubmitPhone = (phone) =>
+  invoke('telegram_phone_submit_phone', { phone });
+
+/** 提交验证码。 */
+export const telegramPhoneSubmitCode = (code) =>
+  invoke('telegram_phone_submit_code', { code });
+
+/** 提交手机号登录的 2FA 云密码。 */
+export const telegramPhoneSubmitPassword = (password) =>
+  invoke('telegram_phone_submit_password', { password });
+
+/** 请求重新发码。 */
+export const telegramPhoneResend = () => invoke('telegram_phone_resend');
+
+/** 取消手机号登录。 */
+export const telegramPhoneCancel = () => invoke('telegram_phone_cancel');
+
+/**
+ * 订阅手机号登录进度。payload 形如 `{ phase, ... }`：
+ * `connecting` / `awaiting_phone` / `code_sent` / `need_password` /
+ * `done` / `failed`。返回 unlisten。
+ */
+export const onTelegramPhoneLogin = (handler) =>
+  listen('telegram-phone-login', (e) => handler(e.payload));

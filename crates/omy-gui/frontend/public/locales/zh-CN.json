@@ -758,7 +758,32 @@
     "risk_1": "账号可能被 Telegram 置于观察状态，严重时被限制或封禁。",
     "risk_2": "omy 会以「omy」的名义出现在你的「已登录设备」列表里，你可以随时在那里终止它。",
     "risk_ack": "我了解上述风险，继续登录",
-    "risk_next": "继续"
+    "risk_next": "继续",
+    "back": "返回",
+    "method_qr": "扫码登录",
+    "method_qr_desc": "用手机 Telegram 扫码，最省事",
+    "method_phone": "手机号登录",
+    "method_phone_desc": "输入手机号，用验证码登录",
+    "method_tdata": "复用桌面端",
+    "method_tdata_desc": "读取本机 Telegram Desktop 的登录态",
+    "phone_title": "手机号登录",
+    "phone_desc": "输入带国家码的手机号，例如 +8613800138000",
+    "phone_placeholder": "+8613800138000",
+    "phone_send": "发送验证码",
+    "phone_sending": "正在发送…",
+    "code_title": "输入验证码",
+    "code_placeholder_num": "验证码",
+    "code_placeholder_text": "验证码（单词或短句）",
+    "code_verify": "验证",
+    "code_verifying": "正在验证…",
+    "code_resend": "重新发送",
+    "code": {
+      "sentToApp": "验证码已发到你其他已登录的 Telegram 客户端（不是短信）。请打开手机或电脑上的 Telegram 查看。",
+      "sentToSms": "验证码已通过短信发送。",
+      "sentToCall": "验证码将通过电话语音播报。",
+      "sentToFlashCall": "会有一通闪电来电，号码的后几位就是验证码。",
+      "sentUnknown": "验证码已发送。"
+    }
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

@@ -340,8 +340,154 @@ const tdPass = ref('');
 const tdNeedPass = ref(false);
 const tdBusy = ref(false);
 
+// ---- 登录方式选择（扫码 / 手机号 / tdata）----
+//
+// 原型 §12.3：三条路是并列入口，不是把手机号/tdata 藏成切换按钮。
+// method 为空时显示三选一；选定后进对应流程。
+/** 'qr' | 'phone' | 'tdata' | ''（还没选）。 */
+const method = ref('');
+
+// ---- 手机号登录 ----
+/** 手机号流程的子阶段：'input'（填号）| 'code'（输码）| 'password'（2FA）。 */
+const phoneStage = ref('input');
+/** 用户填的手机号（含国家码）。 */
+const phoneNumber = ref('');
+/** 用户填的验证码。 */
+const phoneCode = ref('');
+/** 用户填的 2FA 云密码。 */
+const phonePassword = ref('');
+/** 验证码是不是纯数字（决定 inputmode 与校验）。 */
+const codeNumeric = ref(true);
+/** 验证码固定位数；null 表示不限制（单词/短句）。 */
+const codeLength = ref(null);
+/** 「验证码发到哪里」的 i18n key。 */
+const codeViaKey = ref('');
+/** 这个送达方式要不要去其他客户端取码（App 为真，要显眼提示）。 */
+const codeNeedsOther = ref(false);
+/** 手机号登录是否正忙（发码/验码中，用于禁用按钮防重复提交）。 */
+const phoneBusy = ref(false);
+/** 手机号登录的错误码（停在本步显示，如验证码错）。 */
+const phoneErr = ref('');
+/** 手机号登录的限流秒数。 */
+const phoneWait = ref(0);
+
+let phoneUnlisten = null;
+
+/** 处理一条手机号登录进度。 */
+function onPhonePhase(p) {
+  if (!p || typeof p.phase !== 'string') return;
+  phoneBusy.value = false;
+  switch (p.phase) {
+    case 'connecting':
+      phoneErr.value = '';
+      break;
+    case 'awaiting_phone':
+      // 后端已连上、在等手机号——界面本来就停在 input，不用动
+      phoneStage.value = 'input';
+      break;
+    case 'code_sent':
+      phoneErr.value = '';
+      phoneWait.value = 0;
+      codeNumeric.value = !!p.numeric;
+      codeLength.value = p.length || null;
+      codeViaKey.value = p.via_key || 'tg.code.sentUnknown';
+      codeNeedsOther.value = !!p.needs_other_client;
+      phoneStage.value = 'code';
+      phoneCode.value = '';
+      break;
+    case 'need_password':
+      phoneErr.value = '';
+      phoneStage.value = 'password';
+      hint.value = p.hint || '';
+      phonePassword.value = '';
+      break;
+    case 'done':
+      phase.value = 'done';
+      sessionSaved.value = p.session_saved;
+      emit('done', {
+        sessionSaved: p.session_saved,
+        proxyUrl: proxyUrl.value,
+        placeId: null,
+      });
+      break;
+    case 'failed':
+      // 停在本步显示错误（验证码错要重输、密码错要重输），不退回选择
+      phoneErr.value = p.code;
+      phoneWait.value = p.wait_secs || 0;
+      break;
+    default:
+      break;
+  }
+}
+
+/** 选了「手机号登录」：连上后端、开始等手机号。 */
+async function startPhone() {
+  method.value = 'phone';
+  phoneStage.value = 'input';
+  phoneErr.value = '';
+  phoneNumber.value = '';
+  started.value = true;
+  phase.value = 'phone';
+  if (phoneUnlisten) phoneUnlisten();
+  phoneUnlisten = await api.onTelegramPhoneLogin(onPhonePhase);
+  try {
+    await api.telegramPhoneStart(proxyUrl.value.trim());
+  } catch (e) {
+    phoneErr.value = api.errCode(e) || 'tg_login_failed';
+  }
+}
+
+async function submitPhone() {
+  if (phoneBusy.value || !phoneNumber.value.trim()) return;
+  phoneBusy.value = true;
+  phoneErr.value = '';
+  try {
+    await api.telegramPhoneSubmitPhone(phoneNumber.value.trim());
+  } catch (e) {
+    phoneErr.value = api.errCode(e) || 'tg_login_failed';
+    phoneBusy.value = false;
+  }
+}
+
+async function submitCode() {
+  if (phoneBusy.value || !phoneCode.value.trim()) return;
+  phoneBusy.value = true;
+  phoneErr.value = '';
+  try {
+    await api.telegramPhoneSubmitCode(phoneCode.value.trim());
+  } catch (e) {
+    phoneErr.value = api.errCode(e) || 'tg_login_failed';
+    phoneBusy.value = false;
+  }
+}
+
+async function resendCode() {
+  if (phoneBusy.value) return;
+  phoneBusy.value = true;
+  phoneErr.value = '';
+  try {
+    await api.telegramPhoneResend();
+  } catch (e) {
+    phoneErr.value = api.errCode(e) || 'tg_login_failed';
+    phoneBusy.value = false;
+  }
+}
+
+async function submitPhonePassword() {
+  if (phoneBusy.value || !phonePassword.value) return;
+  phoneBusy.value = true;
+  phoneErr.value = '';
+  try {
+    await api.telegramPhoneSubmitPassword(phonePassword.value);
+  } catch (e) {
+    phoneErr.value = api.errCode(e) || 'tg_login_failed';
+    phoneBusy.value = false;
+  }
+}
+
 async function openTdata() {
   tdataMode.value = true;
+  method.value = 'tdata';
   errCode.value = '';
   try {
     const p = await api.telegramTdataProbe();
@@ -529,6 +675,8 @@ onBeforeUnmount(() => {
   // 组件销毁必须取消后台登录：那条连接挂着会占一个连接配额，而 Telegram 对
   // 同一账号的并发连接数有限制，反复开关几次登录页就会开始收到 429
   api.telegramLoginCancel().catch(() => {});
+  if (phoneUnlisten) phoneUnlisten();
+  api.telegramPhoneCancel().catch(() => {});
 });
 </script>
 
@@ -592,12 +740,30 @@ onBeforeUnmount(() => {
 
       <!-- 开始之前：说明 + 代理 + 「存不存得住」的前置告知 -->
       <template v-else-if="!started">
-        <!-- 只在扫码那一支显示。放在外层的话 tdata 面板上方也会顶着
-             这句「用手机扫码」，而那条路根本不扫码——两种方式显示同一句
-             说明，等于没有区分 -->
-        <p v-if="!tdataMode" class="lead">{{ i18n.t('tg.qr_why') }}</p>
+        <!-- 选方式：扫码 / 手机号 / tdata 三条并列（原型 §12.3）。
+             不是把手机号/tdata 藏成切换按钮——那样它们不是平等入口。 -->
+        <div v-if="!method" class="methods" data-tg="methods">
+          <button class="mcard" data-tg="m-qr" @click="method = 'qr'">
+            <span class="mi" aria-hidden="true">▦</span>
+            <b>{{ i18n.t('tg.method_qr') }}</b>
+            <span class="d">{{ i18n.t('tg.method_qr_desc') }}</span>
+          </button>
+          <button class="mcard" data-tg="m-phone" @click="startPhone">
+            <span class="mi" aria-hidden="true">📱</span>
+            <b>{{ i18n.t('tg.method_phone') }}</b>
+            <span class="d">{{ i18n.t('tg.method_phone_desc') }}</span>
+          </button>
+          <button class="mcard" data-tg="m-tdata" @click="openTdata">
+            <span class="mi" aria-hidden="true">🖥️</span>
+            <b>{{ i18n.t('tg.method_tdata') }}</b>
+            <span class="d">{{ i18n.t('tg.method_tdata_desc') }}</span>
+          </button>
+        </div>
 
-        <label class="f">
+        <!-- 只在选了扫码那一支时显示这句说明 -->
+        <p v-if="method === 'qr'" class="lead">{{ i18n.t('tg.qr_why') }}</p>
+
+        <label v-if="method" class="f">
           <span class="fl">{{ i18n.t('tg.proxy') }}</span>
           <input
             v-model="proxyUrl"
@@ -616,7 +782,7 @@ onBeforeUnmount(() => {
 
         <!-- 填了 http:// 时显式提示会改写，而不是静默按 SOCKS5 试。
              静默转换的问题是用户不知道真正生效的是什么 -->
-        <div v-if="proxyNeedsFix" class="pxfix" data-tg="px-fix">
+        <div v-if="method && (proxyNeedsFix)" class="pxfix" data-tg="px-fix">
           <span>{{ i18n.t('tg.proxy_scheme_hint') }}</span>
           <button class="btn" data-tg="px-fixbtn" @click="fixProxyScheme">
             {{ i18n.t('tg.proxy_scheme_fix') }}
@@ -626,7 +792,7 @@ onBeforeUnmount(() => {
         <!-- 内置 api_id 说明 + 改用自己的那一对。
              这是一条逃生口：内置的是 Telegram Desktop 的 2040，它一旦触发
              API_ID_PUBLISHED_FLOOD，所有用户同时连不上而没有自救办法 -->
-        <div class="apibox" data-tg="apibox">
+        <div v-if="method" class="apibox" data-tg="apibox">
           <span class="d" data-tg="api-status">
             {{ apiStatus && !apiStatus.builtin
               ? i18n.t('tg.api_mine', { id: apiStatus.id })
@@ -636,7 +802,7 @@ onBeforeUnmount(() => {
             {{ i18n.t(apiStatus && !apiStatus.builtin ? 'tg.api_reset' : 'tg.api_custom') }}
           </button>
         </div>
-        <div v-if="apiOpen" class="apifields" data-tg="apifields">
+        <div v-if="method && (apiOpen)" class="apifields" data-tg="apifields">
           <label class="f">
             <span class="fl">{{ i18n.t('tg.api_id_label') }}</span>
             <input v-model="apiId" data-tg="api-id" type="text" spellcheck="false" />
@@ -662,7 +828,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 连通性自检。放在登录之前，把「连不上」的归因先定下来 -->
-        <div class="conn" data-tg="conn" :data-st="connChecking ? 'checking' : (conn ? conn.status : 'idle')">
+        <div v-if="method" class="conn" data-tg="conn" :data-st="connChecking ? 'checking' : (conn ? conn.status : 'idle')">
           <span aria-hidden="true">{{
             connChecking ? '⏳' : conn ? (conn.status === 'ok' ? '✓' : '⚠️') : '•'
           }}</span>
@@ -691,12 +857,12 @@ onBeforeUnmount(() => {
 
         <!-- 这条必须在扫码**之前**说。等他扫完再说「存不住」，他下次打开
              发现又要扫码会以为程序把他登出了 -->
-        <div v-if="!canPersist" class="warnbox" data-tg="no-persist">
+        <div v-if="method && (!canPersist)" class="warnbox" data-tg="no-persist">
           {{ i18n.t('tg.no_persist') }}
         </div>
 
         <!-- tdata 面板。与扫码并列的一条路，不是子步骤 -->
-        <template v-if="tdataMode">
+        <template v-if="method === 'tdata'">
           <div class="sgh" data-tg="td-title">{{ i18n.t('tg.tdata_title') }}</div>
           <p class="lead">{{ i18n.t('tg.tdata_desc') }}</p>
 
@@ -775,8 +941,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="act">
-            <button class="btn" data-tg="td-back" @click="tdataMode = false">
-              {{ i18n.t('tg.tdata_use_qr') }}
+            <button class="btn" data-tg="td-back" @click="tdataMode = false; method = ''">
+              {{ i18n.t('tg.back') }}
             </button>
             <button
               class="btn pri"
@@ -789,15 +955,19 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <div v-else class="act">
-          <button class="btn" data-tg="cancel" @click="cancel">
-            {{ i18n.t('common.cancel') }}
-          </button>
-          <button class="btn" data-tg="td-open" @click="openTdata">
-            {{ i18n.t('tg.tdata_switch') }}
+        <!-- 扫码那一支的动作区。手机号与 tdata 各有自己的流程/动作区。 -->
+        <div v-else-if="method === 'qr'" class="act">
+          <button class="btn" data-tg="qr-back" @click="method = ''">
+            {{ i18n.t('tg.back') }}
           </button>
           <button class="btn pri" data-tg="start" @click="start">
             {{ i18n.t('tg.start') }}
+          </button>
+        </div>
+        <!-- 还没选方式：只有一个取消。方法卡片自己就是「下一步」 -->
+        <div v-else-if="!method" class="act">
+          <button class="btn" data-tg="cancel" @click="cancel">
+            {{ i18n.t('common.cancel') }}
           </button>
         </div>
       </template>
@@ -807,6 +977,122 @@ onBeforeUnmount(() => {
         <div v-if="phase === 'connecting'" class="prog" data-tg="connecting">
           {{ i18n.t('tg.connecting') }}
         </div>
+
+        <!-- 手机号登录：三个子屏由 phoneStage 切 -->
+        <template v-if="phase === 'phone'">
+          <!-- ① 输入手机号 -->
+          <div v-if="phoneStage === 'input'" class="phonebox" data-tg="ph-input">
+            <div class="strong">{{ i18n.t('tg.phone_title') }}</div>
+            <div class="d">{{ i18n.t('tg.phone_desc') }}</div>
+            <input
+              v-model="phoneNumber"
+              data-tg="ph-number"
+              type="tel"
+              inputmode="tel"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="i18n.t('tg.phone_placeholder')"
+              @keydown.enter="submitPhone"
+            />
+            <div v-if="phoneErr" class="errbox" data-tg="ph-err">
+              {{ i18n.te(phoneErr, i18n.t('tg.login_failed')) }}
+            </div>
+            <div class="act">
+              <button class="btn" data-tg="ph-back"
+                      @click="started = false; method = ''; phase = 'idle'">
+                {{ i18n.t('tg.back') }}
+              </button>
+              <button
+                class="btn pri"
+                data-tg="ph-send"
+                :disabled="phoneBusy || !phoneNumber.trim()"
+                @click="submitPhone"
+              >
+                {{ phoneBusy ? i18n.t('tg.phone_sending') : i18n.t('tg.phone_send') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- ② 输入验证码 -->
+          <div v-else-if="phoneStage === 'code'" class="phonebox" data-tg="ph-code">
+            <div class="strong">{{ i18n.t('tg.code_title') }}</div>
+            <!-- 验证码发到哪里。App 那条要显眼——用户默认预期是等短信，
+                 而它其实发到了其他已登录客户端，不提示他会白等 -->
+            <div
+              class="codevia"
+              :class="{ strong: codeNeedsOther }"
+              data-tg="ph-via"
+            >
+              {{ i18n.t(codeViaKey) }}
+            </div>
+            <input
+              v-model="phoneCode"
+              data-tg="ph-code-input"
+              :type="codeNumeric ? 'text' : 'text'"
+              :inputmode="codeNumeric ? 'numeric' : 'text'"
+              :maxlength="codeLength || undefined"
+              autocomplete="one-time-code"
+              spellcheck="false"
+              :placeholder="codeNumeric
+                ? i18n.t('tg.code_placeholder_num')
+                : i18n.t('tg.code_placeholder_text')"
+              @keydown.enter="submitCode"
+            />
+            <div v-if="phoneErr" class="errbox" data-tg="ph-err">
+              {{ i18n.te(phoneErr, i18n.t('tg.login_failed')) }}
+              <span v-if="phoneWait > 0" class="d">
+                {{ i18n.t('tg.flood_wait', { secs: phoneWait }) }}
+              </span>
+            </div>
+            <div class="act">
+              <button class="btn" data-tg="ph-resend"
+                      :disabled="phoneBusy" @click="resendCode">
+                {{ i18n.t('tg.code_resend') }}
+              </button>
+              <button
+                class="btn pri"
+                data-tg="ph-verify"
+                :disabled="phoneBusy || !phoneCode.trim()"
+                @click="submitCode"
+              >
+                {{ phoneBusy ? i18n.t('tg.code_verifying') : i18n.t('tg.code_verify') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- ③ 2FA 云密码 -->
+          <div v-else-if="phoneStage === 'password'" class="phonebox" data-tg="ph-pw">
+            <div class="strong">{{ i18n.t('tg.need_password') }}</div>
+            <div class="d">{{ i18n.t('tg.need_password_desc') }}</div>
+            <input
+              v-model="phonePassword"
+              data-tg="ph-pw-input"
+              type="password"
+              autocomplete="off"
+              :placeholder="i18n.t('tg.cloud_password')"
+              @keydown.enter="submitPhonePassword"
+            />
+            <div v-if="hint" class="d" data-tg="ph-hint">
+              {{ i18n.t('tg.password_hint', { hint }) }}
+            </div>
+            <div v-if="phoneErr" class="errbox" data-tg="ph-err">
+              {{ i18n.te(phoneErr, i18n.t('tg.login_failed')) }}
+            </div>
+            <div class="act">
+              <button class="btn" data-tg="cancel" @click="cancel">
+                {{ i18n.t('common.cancel') }}
+              </button>
+              <button
+                class="btn pri"
+                data-tg="ph-pw-submit"
+                :disabled="phoneBusy || !phonePassword"
+                @click="submitPhonePassword"
+              >
+                {{ i18n.t('tg.submit_password') }}
+              </button>
+            </div>
+          </div>
+        </template>
 
         <!-- 二维码 -->
         <div v-if="phase === 'qr' && matrix" class="qrwrap" data-tg="qr">
@@ -898,7 +1184,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="phase !== 'done' && !askingPassword" class="act">
+        <div
+          v-if="phase !== 'done' && phase !== 'phone' && !askingPassword"
+          class="act"
+        >
           <button class="btn" data-tg="cancel" @click="cancel">
             {{ i18n.t('common.cancel') }}
           </button>
@@ -918,6 +1207,61 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin: 6px 0 12px;
+}
+.mcard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 12px;
+  text-align: start;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  cursor: pointer;
+}
+.mcard:hover {
+  border-color: var(--accent);
+}
+.mcard .mi {
+  font-size: 22px;
+}
+.mcard b {
+  font-size: 13px;
+}
+.mcard .d {
+  font-size: 11.5px;
+  color: var(--fg2);
+}
+/* 移动端窄屏：三张卡片竖排，横排会挤成一条读不出来 */
+@media (max-width: 768px) {
+  .methods {
+    grid-template-columns: 1fr;
+  }
+}
+.phonebox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.phonebox input {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.codevia {
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+/* App 送达（发到其他客户端）要显眼：用户默认以为等短信 */
+.codevia.strong {
+  color: var(--fg);
+  font-weight: 500;
+}
 .risklist {
   margin: 8px 0 14px;
   padding-inline-start: 18px;
