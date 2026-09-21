@@ -2452,6 +2452,32 @@ export async function removeRemoteFileCache(f) {
   }
 }
 
+/** 当前位置：侧栏高亮的**唯一**真相。
+ *
+ * 返回 `{ kind: 'local'|'remote'|'transfers', key }`。
+ *
+ * # 为什么要这个派生值
+ *
+ * 原来侧栏两处各自判断——本地看 `state.cwd === p.path`、远程看
+ * `state.remotePlace === p.id`。而 `state.cwd` 进远程后**不会清空**
+ * （也不该清空：退出远程要回到原来那个目录），于是两个条件同时成立，
+ * 侧栏同时高亮本地「文档」和远程「Lol」。
+ *
+ * 不能靠「进远程就清 cwd」来解决：那会让退出远程后落到一个空目录，
+ * 把导航弄坏。所以改成从「当前在哪个视图」+「那个视图里选了什么」
+ * 算出唯一位置，两边高亮都从它派生。
+ *
+ * 这样「不会同时亮两个」是**结构上**的保证，而不是靠两处条件恰好互斥
+ * ——后者在下一次有人新增视图时会再次失效。
+ */
+export const activeLocation = computed(() => {
+  if (state.transfersOpen) return { kind: 'transfers', key: '' };
+  if (state.placeBrowserOpen) {
+    return { kind: 'remote', key: state.remotePlace || '' };
+  }
+  return { kind: 'local', key: state.cwd || '' };
+});
+
 /** 打开云盘浏览器（停在位置列表）。 */
 export async function openPlaceBrowser() {
   state.transfersOpen = false;
@@ -2484,6 +2510,22 @@ export function closeTransfers() {
 export function closePlaceBrowser() {
   state.placeBrowserOpen = false;
   leaveRemotePlace();
+}
+
+/** 退出所有整屏覆盖的视图，回到本地文件浏览。
+ *
+ * # 为什么要收口在一处
+ *
+ * 这些视图都是**整屏覆盖**的。少关一个，本地导航就会「已经发生了、
+ * 却被盖住」——用户看到的是点了没反应。
+ *
+ * 原来调用方只关云盘视图（那时只有它），后来加了传输管理页却没跟着改，
+ * 于是从传输页点本地位置界面不动。与其在每个调用方列举要关哪些，
+ * 不如收在这里：**以后新增整屏视图只改这一处**。
+ */
+export function leaveOverlays() {
+  state.transfersOpen = false;
+  closePlaceBrowser();
 }
 
 /** 移除一个远程位置；若正在浏览它，先退回到位置列表。 */

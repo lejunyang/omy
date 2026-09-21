@@ -48,6 +48,7 @@ import {
   reloadRemotePlaces,
   openPlaceBrowser,
   closePlaceBrowser,
+  leaveOverlays,
   selectAll,
   enrich,
   encryptable,
@@ -657,9 +658,10 @@ async function onPick() {
     return;
   }
   if (dir) {
-    // 同上：用户挑了个本地文件夹，就该落到本地视图，
-    // 不能把它载入到一个被云盘视图盖住的地方
-    closePlaceBrowser();
+    // 同上：用户挑了个本地文件夹，就该落到本地视图，不能把它载入到一个
+    // 被整屏视图盖住的地方。用 leaveOverlays 而不是只关云盘：
+    // 传输管理页同样是整屏覆盖的，漏掉它就会「挑完目录界面不动」
+    leaveOverlays();
     await navigate(dir);
   }
 }

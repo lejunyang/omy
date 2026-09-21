@@ -4,7 +4,7 @@
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n.js';
 import {
-  closePlaceBrowser,
+  leaveOverlays,
   state,
   navigate,
   grantStorageAccess,
@@ -14,8 +14,19 @@ import {
   deleteTelegramAccount,
   removeRemotePlace,
   openTransfers,
+  activeLocation,
 } from '../store.js';
 import ContextMenu from './ContextMenu.vue';
+
+/** 这一项是不是当前位置。
+ *
+ * 判据只有一个来源 `activeLocation`，本地与远程都问它。
+ * 原来两处各自判断（本地比 cwd、远程比 remotePlace），而 cwd 进远程后
+ * 不会清空，于是两个条件同时成立、侧栏同时高亮本地和远程两项。
+ * 走同一个派生值之后「不会同时亮两个」是结构上的保证。 */
+function isActive(kind, key) {
+  return activeLocation.value.kind === kind && activeLocation.value.key === key;
+}
 
 defineProps({
   /** 移动端（抽屉形态）。抽屉里点完一项要自动收起，
@@ -44,10 +55,13 @@ async function onGrant() {
 
 /** 进入某个本地位置，并通知父组件（抽屉据此收起）。 */
 function go(path) {
-  // 关掉云盘视图：它是整屏覆盖的，不关的话本地目录已经载入、界面却
-  // 还停在远程那一屏，侧栏同时高亮两个位置。用户看到的是「点了本地
-  // 盘符没反应」，而实际上导航已经发生了，只是被盖住
-  closePlaceBrowser();
+  // 退出所有整屏覆盖的视图（云盘浏览、传输管理）。不退的话本地目录
+  // 已经载入、界面却还停在那一屏，用户看到的是「点了本地盘符没反应」，
+  // 而实际上导航已经发生了，只是被盖住。
+  //
+  // 用 leaveOverlays 而不是逐个点名：原来这里只关云盘视图，后来加了
+  // 传输管理页没跟着改，于是从传输页点本地位置界面不动
+  leaveOverlays();
   navigate(path);
   emit('navigate');
 }
@@ -202,7 +216,7 @@ function iconOf(place) {
       v-for="p in state.places"
       :key="p.path"
       class="sitem"
-      :class="{ sel: state.cwd === p.path }"
+      :class="{ sel: isActive('local', p.path) }"
       :data-side="'place-' + p.name"
       :title="p.path"
       @click="go(p.path)"
@@ -240,7 +254,7 @@ function iconOf(place) {
       v-for="p in state.remotePlaces"
       :key="p.id"
       class="sitem"
-      :class="{ sel: state.remotePlace === p.id }"
+      :class="{ sel: isActive('remote', p.id) }"
       :data-rp="p.id"
       :title="p.name"
       @click="goRemote(p)"
@@ -266,7 +280,7 @@ function iconOf(place) {
     <div class="sgrp">{{ i18n.t('nav.global') }}</div>
     <button
       class="sitem"
-      :class="{ sel: state.transfersOpen }"
+      :class="{ sel: isActive('transfers', '') }"
       data-side="transfers"
       @click="openTransfers(); emit('navigate')"
     >
