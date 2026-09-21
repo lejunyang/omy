@@ -910,6 +910,18 @@ impl TelegramStore {
         let mut peers = std::collections::HashMap::new();
         // 待下载的头像：(在 out 里的下标, 头像定位)。先攒着，循环结束后并发下
         let mut avatar_jobs: Vec<(usize, grammers_client::media::ChatPhoto)> = Vec::new();
+        // 上一次已经下好的头像，按 chat id 索引。头像基本不变，重复 refresh
+        // （每次 browse 根目录都会 refresh）不该把 72 张头像再下一遍——那是
+        // 「二次进入还要等 7 秒」的来源。命中缓存的直接复用，只有新对话才下。
+        let prev_avatars: std::collections::HashMap<i64, Vec<u8>> = self
+            .conversations
+            .lock()
+            .map(|c| {
+                c.iter()
+                    .filter_map(|conv| conv.avatar.clone().map(|a| (conv.chat, a)))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         loop {
             let d = match it.next().await {
@@ -988,10 +1000,14 @@ impl TelegramStore {
             //
             // `peer.photo(false)` 本身只查 session、不下载，放在循环里没问题；
             // 真正的下载挪到下面并发做。
-            let photo = peer.photo(false).await.ok().flatten();
+            // 头像：先看上次有没有下过这个对话的。有就直接复用（省一次往返），
+            // 没有才在下面并发下。photo(false) 只查 session、不下载
             let this_idx = out.len();
-            if let Some(p) = photo {
-                avatar_jobs.push((this_idx, p));
+            let cached_avatar = prev_avatars.get(&chat_id).cloned();
+            if cached_avatar.is_none() {
+                if let Some(p) = peer.photo(false).await.ok().flatten() {
+                    avatar_jobs.push((this_idx, p));
+                }
             }
             out.push(Conversation {
                 chat: chat_id,
@@ -1000,8 +1016,8 @@ impl TelegramStore {
                 can_delete,
                 broadcast,
                 kind,
-                // 先留空，下面并发填上
-                avatar: None,
+                // 命中缓存的直接带上，未命中的先留空、下面并发填
+                avatar: cached_avatar,
                 protected,
             });
         }
@@ -1118,12 +1134,14 @@ impl TelegramStore {
     /// 未登录、网络失败、限流、对话不存在时返回。
     pub async fn list_more(&self, dir_id: &str, before: Option<i32>) -> Result<Vec<Entry>> {
         let chat = Conversation::parse_dir_id(dir_id)?;
-        if self.conversation(chat).is_none() {
-            self.refresh_conversations().await?;
-        }
-        if self.conversation(chat).is_none() {
-            return Err(Error::NotFound(format!("未知对话：{dir_id}")));
-        }
+        // 不在这里预先 refresh_conversations 全量拉对话——那是「进对话被全量
+        // 对话刷新拖住」的来源。进这个对话只需要**它自己**的 peer 引用，
+        // 而 peer_ref（list_messages_before 内部会调）在缓存未命中时会自己
+        // 补，缺的只是这一个对话所需的引用。
+        //
+        // 正常路径（先浏览了根目录再进对话）peers 缓存已命中，一次网络都不多。
+        // 冷启动直接进对话时，peer_ref 触发的那次刷新不可避免——访问对话所需
+        // 的 access hash 只能从对话列表里拿到。
         self.list_messages_before(chat, DEFAULT_MESSAGE_PAGE, before)
             .await
     }
