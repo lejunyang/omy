@@ -341,6 +341,47 @@ function openMenuAt(f, x, y) {
 }
 
 /** 桌面右键。 */
+/** 所有条目的缓存标识：id -> {kind,cls,icon,title}。
+ *
+ * 用 computed map 而不是「模板里调 cacheMark(f) 函数」：
+ * 函数版在卡片 render 时读 `state.remoteCacheStat[key]`，而首次求值时
+ * 那个 key 还不存在（读到 undefined），这次 render 的依赖收集**不一定**
+ * 精确地把这张卡片的 effect 绑到那个 key 上。于是 pin 之后（即便替换
+ * 整个 remoteCacheStat 对象）那张卡片也不重渲染——实测 pin 后菜单变了、
+ * 卡片标识不变，就是这个。
+ *
+ * computed 在求值时整体读了 state.remoteCacheStat 与 visible，两者任一
+ * 变化都必然让它重算，卡片再从这个 map 取值，依赖稳定不再靠碰运气。
+ *
+ * 只画两种值得画的：**永久保留**（不会被淘汰、离线一定还在）与
+ * **已全部缓存**（在本地、但随时可能被 LRU 淘汰）。目录、半缓存、
+ * 未缓存都不画——满屏小圆点会淹没那两个有意义的状态。 */
+const cacheMarks = computed(() => {
+  const m = {};
+  // 顶部碰一下整个对象，让这个 computed 依赖它：pin/unpin 替换整个
+  // remoteCacheStat 时必然重算。具体取值仍走 remoteFileCache（与右键
+  // 菜单同一份数据）
+  void state.remoteCacheStat;
+  for (const f of visible.value) {
+    if (f.is_dir) continue;
+    const st = remoteFileCache(f);
+    if (!st) continue;
+    if (st.pinned) {
+      m[f.id] = { kind: 'pinned', cls: 'pinned', icon: '📌',
+                  title: i18n.t('rplace.mark_pinned') };
+    } else if (st && st.fully_cached && st.total_blocks > 0) {
+      m[f.id] = { kind: 'cached', cls: 'cached', icon: '●',
+                  title: i18n.t('rplace.mark_cached') };
+    }
+  }
+  return m;
+});
+
+/** 卡片右上角标识，从 cacheMarks 取值。 */
+function cacheMark(f) {
+  return cacheMarks.value[f.id] || null;
+}
+
 function onEntryContext(f, ev) {
   ev.preventDefault();
   ev.stopPropagation();
@@ -940,7 +981,14 @@ function rowTitle(f) {
           <div class="icon" aria-hidden="true">⏳</div>
           <div class="title">{{ i18n.t('search.searching') }}</div>
         </div>
-        <div v-else-if="state.busy" class="empty">
+        <!-- 整屏「加载中」只在**手里一点内容都没有**时出现。
+             加上 !visible.length 这个条件才让「再进目录先摆上次的结果」
+             真正起作用：否则列表虽然已经在 state 里，却被这个占满整屏的
+             ⏳ 盖着，直到 browse 返回才第一次画出来——表现和完全没有缓存
+             一模一样。
+             有旧内容时改用下面那条不挡视线的细提示：用户能一边看已有内容、
+             一边知道在刷新。 -->
+        <div v-else-if="state.busy && !visible.length" class="empty">
           <div class="icon" aria-hidden="true">⏳</div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
         </div>
@@ -960,7 +1008,14 @@ function rowTitle(f) {
           </div>
         </div>
 
-        <div v-else-if="state.view === 'grid'" class="grid">
+        <div
+          v-if="state.busy && visible.length"
+          class="refreshing"
+          data-pb="refreshing"
+        >
+          {{ i18n.t('rplace.refreshing') }}
+        </div>
+        <div v-if="state.view === 'grid'" class="grid">
           <div
             v-for="f in visible"
             :key="f.id"
@@ -986,6 +1041,19 @@ function rowTitle(f) {
                 @error="onThumbError(f.thumb_token)"
               />
               <span v-else aria-hidden="true">{{ icon(f) }}</span>
+              <!-- 缓存标识。只画「永久」与「已缓存」两种：
+                   半缓存画出来是噪音（用户对「缓存了 3/17 块」无法做
+                   任何决定），而满屏小圆点会淹没那两个有意义的状态。
+                   两者必须区分——都显示成一样的话，用户无从判断哪些
+                   内容离线时真的还在。 -->
+              <span
+                v-if="cacheMark(f)"
+                class="cmark"
+                :class="cacheMark(f).cls"
+                :data-pb-cache="cacheMark(f).kind"
+                :title="cacheMark(f).title"
+                aria-hidden="true"
+              >{{ cacheMark(f).icon }}</span>
             </div>
             <div class="cname">{{ displayName(f) }}</div>
             <div class="cmeta">
@@ -1002,7 +1070,7 @@ function rowTitle(f) {
           </div>
         </div>
 
-        <div v-else class="list">
+        <div v-else-if="state.view !== 'grid'" class="list">
           <div
             v-for="f in visible"
             :key="f.id"
@@ -1108,6 +1176,25 @@ function rowTitle(f) {
   font-size: 9px;
   font-style: normal;
   line-height: 1.5;
+}
+.refreshing {
+  padding: 4px calc(var(--sp) * 3);
+  font-size: 12px;
+  color: var(--fg2);
+}
+.cmark {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--r-s);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.cmark.cached {
+  color: var(--ok);
 }
 .msgmore {
   display: flex;

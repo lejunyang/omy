@@ -1386,6 +1386,50 @@ pub async fn remote_cache_file_stat(
     Ok(source.cache_stat())
 }
 
+/// 批量查一批远程文件的缓存状态。
+///
+/// 返回与 `reqs` 等长的数组，顺序一一对应；某一项查不到时给全零的
+/// 占位而不是整批失败——一个条目查不到不该让整屏的标识都消失。
+///
+/// # 为什么要批量版
+///
+/// 卡片右上角的缓存标识需要每个文件的状态。逐个调
+/// [`remote_cache_file_stat`] 意味着一屏 N 个文件就 N 次 IPC 往返，
+/// 而这些查询全在本地（读缓存索引、不碰网络），往返开销反而成了主要
+/// 成本。
+///
+/// 也**刻意不并进 `remote_browse`**：browse 要走网络、可能几百毫秒，
+/// 缓存状态是本地的、几乎瞬时。合在一起就意味着「想刷新缓存标识必须
+/// 重新列一次目录」，而 pin 之后变的只是标识、目录没变。
+///
+/// # Errors
+///
+/// 整批都拿不到时返回；单项失败不算错误。
+#[tauri::command]
+pub async fn remote_cache_file_stats(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    reqs: Vec<RemoteFileRef>,
+) -> CmdResult<Vec<omy_remote::cache::FileCacheStat>> {
+    let mut out = Vec::with_capacity(reqs.len());
+    for req in reqs {
+        // 一项失败给零值占位，不让整批垮掉：这批数据只用来画标识，
+        // 少一个标识远好过整屏标识消失
+        let stat = match build_remote_source(&reg, &cache, &req).await {
+            Ok(src) => src.cache_stat(),
+            Err(_) => omy_remote::cache::FileCacheStat {
+                cached_blocks: 0,
+                total_blocks: 0,
+                cached_bytes: 0,
+                fully_cached: false,
+                pinned: false,
+            },
+        };
+        out.push(stat);
+    }
+    Ok(out)
+}
+
 /// 删除单个远程文件的本地密文块，返回释放字节数。
 ///
 /// 只读位置也允许：它只清理本机缓存，绝不向云端发任何写请求。

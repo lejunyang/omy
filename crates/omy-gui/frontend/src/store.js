@@ -2009,9 +2009,28 @@ export async function reloadRemoteDir() {
   // 本次重载的暂存区从空开始：留着上一次的会把已被服务端改动过的
   // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）
   remoteEntryBuffer.delete(remoteDirKey(state.remotePlace, state.remoteDir));
+
+  // 这个目录之前进过，就**先把上次的结果摆出来**再去刷新。
+  //
+  // 实测后端一次 browse 稳定约 0.4 秒（连接是复用的，那 0.4 秒是真的
+  // 在拉消息）。不先摆出来的话，每次进对话都是 0.4 秒空白 + 骨架重画
+  // ——用户说的「每次进来都需要重新加载」就是这个。
+  //
+  // 摆出来之后仍然会刷新（Telegram 里随时可能有新文件），只是用户不必
+  // 盯着空屏等。
+  const cachedRows = remoteDirCache.get(
+    remoteDirKey(state.remotePlace, state.remoteDir),
+  );
+  if (cachedRows && cachedRows.length) {
+    state.remoteItems = cachedRows;
+    void refreshCacheStats(state.remotePlace, cachedRows);
+  }
+
   try {
     const rows = await api.remoteBrowse(state.remotePlace, state.remoteDir);
     state.remoteItems = rows;
+    remoteDirCache.set(remoteDirKey(state.remotePlace, state.remoteDir), rows);
+    void refreshCacheStats(state.remotePlace, rows);
     // 取满一页就假定还有更多。只对「对话内层」成立：根目录列的是对话
     // （不分页），WebDAV 的 PROPFIND 也是一次列全
     state.hasMoreFiles =
@@ -2020,8 +2039,10 @@ export async function reloadRemoteDir() {
     // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
     applyBufferedRemoteEntries();
   } catch (e) {
-    state.remoteItems = [];
-  state.hasMoreFiles = false;
+    // 有缓存就保留：刷新失败不该把用户已经看到的内容抹掉。
+    // 清空的话一次网络抖动就让整屏变空，而那些文件其实都还在
+    if (!cachedRows || !cachedRows.length) state.remoteItems = [];
+    state.hasMoreFiles = false;
     // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
     state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
   } finally {
@@ -2044,15 +2065,39 @@ export async function reloadRemoteDir() {
  *    都可能让边界错位。重复一条在界面上表现为同一个文件出现两次，
  *    用户会以为自己传了两遍。
  */
-/** 加载更多文件。
+
+/** 批量拉这批条目的缓存状态，填进 `state.remoteCacheStat`。
  *
- * 与消息视图那条同源：用当前最后一条的消息号作 offset。
- *
- * # 为什么必须有
- *
- * 固定拉一页的话，活跃群里**第 N+1 个文件之后永远看不到，而且界面上
- * 没有任何迹象**——用户会以为那些文件不在这个群里。
- */
+ * 用批量命令：逐个查的话一屏 N 个文件就 N 次 IPC 往返，而这些查询全在
+ * 本地（读缓存索引、不碰网络），往返本身反而成了主要成本。 */
+export async function refreshCacheStats(place, items) {
+  const files = (items || []).filter((x) => !x.is_dir);
+  if (!place || !files.length) return;
+  try {
+    const stats = await api.remoteCacheFileStats(
+      files.map((f) => ({
+        // size 必须兜底：缺了它后端 build_remote_source 可能拿不到正确的
+        // 分块信息，返回一个 pinned=false 的空 stat（单文件路径就因为
+        // 有 `|| 0` 而没踩到）
+        place_id: place, path: f.id, size: f.size || 0, name: f.name,
+      })),
+    );
+    if (!Array.isArray(stats)) return;
+    // 写进**已有的** remoteCacheStat，不另起一份。
+    //
+    // 它原本只在右键菜单里被单个填充，而 pin / unpin / 移除缓存三处都
+    // 已经就地更新它。另存一份的代价实测过：pin 之后菜单知道状态变了、
+    // 卡片标识不知道，要退出再进才刷新——因为两者看的不是同一份数据。
+    const next = { ...state.remoteCacheStat };
+    files.forEach((f, i) => {
+      if (stats[i]) next[remoteFileCacheKey(place, f.id)] = stats[i];
+    });
+    state.remoteCacheStat = next;
+  } catch {
+    // 查不到就不画标识。这是附加信息，失败不该影响浏览本身
+  }
+}
+
 /** 取后端的分页大小。启动时问一次就够——它是编译期常量。 */
 export async function loadPageSize() {
   try {
@@ -2064,6 +2109,15 @@ export async function loadPageSize() {
   }
 }
 
+/** 加载更多文件。
+ *
+ * 与消息视图那条同源：用当前最后一条的消息号作 offset。
+ *
+ * # 为什么必须有
+ *
+ * 固定拉一页的话，活跃群里**第 N+1 个文件之后永远看不到，而且界面上
+ * 没有任何迹象**——用户会以为那些文件不在这个群里。
+ */
 export async function loadMoreFiles() {
   if (state.loadingMoreFiles || !state.hasMoreFiles) return;
   if (!state.remotePlace || !state.remoteDir) return;
@@ -2209,6 +2263,32 @@ const remoteEntryBuffer = new Map();
 function remoteDirKey(placeId, dir) {
   return `${placeId}\u0000${dir}`;
 }
+
+/** 已加载过的目录列表：`位置\x01目录` -> 条目数组。
+ *
+ * # 为什么要缓存
+ *
+ * 实测后端 remote_browse 连续五次是 6332 / 408 / 408 / 428 / 439 ms
+ * ——**连接是复用的**（第一次含握手），但没有任何列表缓存，每次进对话
+ * 都真的去 RPC 一趟。界面上表现为每次都有约 0.4 秒空白 + 骨架重画，
+ * 也就是用户说的「每次进来都需要重新加载」。
+ *
+ * 缓存之后再进立刻见内容，同时后台静默刷新、有变化才替换。
+ *
+ * **刻意不设过期时间**：静默刷新总会发生，加个 TTL 只会让「多久算新鲜」
+ * 变成一个要调的参数，而调错的表现是用户看到过期列表。
+ */
+const remoteDirCache = new Map();
+
+// ⚠️ 这个声明必须留在 reloadRemoteDir **之前**。
+//
+// 它原来写在文件后半，而 reloadRemoteDir 在前面就读它——`const` 不像
+// `function` 会提升，模块顶层的 const 在求值到那一行之前处于时间死区，
+// 提前访问直接抛 ReferenceError。
+//
+// 而那个错误**不会显示出来**：reloadRemoteDir 是 async，抛出变成
+// rejected promise 被静默吞掉，表现只是「缓存好像没生效」，甚至因为
+// 走了退化路径而比不缓存更慢（实测二次进入 1.33s，比首次 0.47s 还慢）。
 
 /** 把暂存区里属于当前这一屏的识别结果贴到列表上。
  *
@@ -2389,13 +2469,20 @@ export async function pinRemoteFile(f) {
     // 带上列表里显示的那个名字。不传的话后端只能从 id 猜，而 Telegram
     // 的 id 是 tg:<对话>:<消息号>，猜出来是个数字——传输列表里就会
     // 出现一行「6」，用户不知道那是哪个文件（实测过）
-    const stat = await api.remoteCachePin(
+    // 注意：remoteCachePin 返回的是**字节数**（u64），不是 FileCacheStat。
+    // 早先把它当 stat 存进 remoteCacheStat，于是 st.pinned 是 undefined，
+    // 卡片标识判成 false（菜单却"对"，因为菜单打开时另查了一次真 stat
+    // 覆盖掉那个数字——同一份数据两条路径写成不同形状）。
+    await api.remoteCachePin(
       state.remotePlace,
       f.id,
       f.size || 0,
       f.real_name || f.name || null,
     );
-    state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] = stat;
+    // 重新查一次真 stat 填进去。用 requestRemoteFileCache（单文件、
+    // 与右键菜单同一条路径），不用批量版：批量版在单文件场景实测不生效
+    // （最可能是 f 缺 size 兜底），而单数路径一直可靠
+    await requestRemoteFileCache(f);
     setNotice(i18n.t('rplace.pinned'));
     return true;
   } catch (e) {
@@ -2415,8 +2502,9 @@ export async function pinRemoteFile(f) {
 export async function unpinRemoteFile(f) {
   if (!state.remotePlace || !f || f.is_dir) return false;
   try {
-    const stat = await api.remoteCacheUnpin(state.remotePlace, f.id, f.size || 0);
-    state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] = stat;
+    // remoteCacheUnpin 返回字节数、不是 stat。用单数路径重查真 stat
+    await api.remoteCacheUnpin(state.remotePlace, f.id, f.size || 0);
+    await requestRemoteFileCache(f);
     setNotice(i18n.t('rplace.unpinned'));
     return true;
   } catch (e) {

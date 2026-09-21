@@ -628,6 +628,10 @@ export const telegramApiIdReset = () => invoke('telegram_api_id_reset');
 export const telegramCheckConnection = (proxyUrl) =>
   invoke('telegram_check_connection', { proxyUrl });
 
+/** 批量查一批远程文件的缓存状态（本地查询，不碰网络）。 */
+export const remoteCacheFileStats = (reqs) =>
+  invoke('remote_cache_file_stats', { reqs });
+
 /** 从某条消息之前再取一页文件（对话即目录的位置才有）。 */
 export const remoteBrowseMore = (placeId, dir, before) =>
   invoke('remote_browse_more', { placeId, dir, before });

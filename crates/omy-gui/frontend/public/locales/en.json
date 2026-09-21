@@ -669,7 +669,10 @@
     "delete_account_note": "Also deletes the saved login. You would have to scan or import again.",
     "protected_note": "This chat has Protected Content enabled. Opening and playing files here is unaffected; forwarding or saving in Telegram is not possible.",
     "load_more_files": "Load more files",
-    "no_more_files": "That is all the files"
+    "no_more_files": "That is all the files",
+    "mark_pinned": "Kept offline",
+    "mark_cached": "Cached; may be evicted when space runs low",
+    "refreshing": "Refreshing…"
   },
   "common": {
     "back": "Back",
