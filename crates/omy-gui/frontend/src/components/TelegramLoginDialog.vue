@@ -295,7 +295,14 @@ function onPhase(p) {
       sessionSaved.value = p.session_saved;
       // 代理要一并回传：登录走了代理而后续浏览不走，表现是「登录成功了
       // 但点进去什么都加载不出来」，而这两件事看起来毫无关联
-      emit('done', { sessionSaved: p.session_saved, proxyUrl: proxyUrl.value });
+      // placeId 为 null 表示「位置还没建，请外面去 connect」——扫码这条
+      // 路的 session 落在 PENDING_ACCOUNT 下，位置要等 connect 才创建。
+      // 显式写出来，免得与「忘了传」混淆
+      emit('done', {
+        sessionSaved: p.session_saved,
+        proxyUrl: proxyUrl.value,
+        placeId: null,
+      });
       break;
     case 'failed':
       phase.value = 'failed';
@@ -380,6 +387,12 @@ async function checkTdPath() {
   }
 }
 
+/** tdata 导入建好的位置 id。
+ *
+ * 成功屏上的「关闭」也要带着它——否则用户不点自动跳转、而是手动关掉时，
+ * 外面又会走一次 connect，等于回到那个 bug。 */
+const tdPlaceId = ref(null);
+
 async function importTdata() {
   const p = tdPath.value.trim();
   if (!p || tdBusy.value) return;
@@ -388,9 +401,15 @@ async function importTdata() {
   // 密码用完立刻从本地清掉：它在 WebView 里已无用途，留着只是多一处泄露面
   const pw = tdPass.value || null;
   try {
-    await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
+    // 这条命令**内部已经建好位置**并返回它的 id。必须接住往上传：
+    // 丢掉的话外面会照扫码那条路去调 telegramPlaceConnect，而那个命令
+    // 只认 PENDING_ACCOUNT 下的 session（扫码的占位账号），tdata 的
+    // session 不在那儿——于是要么报「尚未登录」而位置其实已经建好了，
+    // 要么拿上次扫码残留的 session 又建一个**别的账号**的位置
+    const placeId = await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
     tdPass.value = '';
-    emit('done', { sessionSaved: true, proxyUrl: proxyUrl.value });
+    tdPlaceId.value = placeId;
+    emit('done', { sessionSaved: true, proxyUrl: proxyUrl.value, placeId });
   } catch (e) {
     const code = api.errCode(e) || 'tg_tdata_failed';
     errCode.value = code;
@@ -537,7 +556,7 @@ onBeforeUnmount(() => {
           <button class="btn" data-tg="rescan" @click="scanAnyway">
             {{ i18n.t('tg.scan_again') }}
           </button>
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true, proxyUrl })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true, proxyUrl, placeId: tdPlaceId })">
             {{ i18n.t('common.close') }}
           </button>
         </div>
@@ -884,7 +903,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-if="phase === 'done'" class="act">
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved, proxyUrl })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved, proxyUrl, placeId: tdPlaceId })">
             {{ i18n.t('common.close') }}
           </button>
         </div>

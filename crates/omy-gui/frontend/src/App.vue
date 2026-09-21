@@ -109,7 +109,7 @@ const showTelegramLogin = ref(false);
  * 登录态是否落盘要如实转达：存不住时用户下次打开又要扫码，不说清楚
  * 他会以为程序把他登出了。
  */
-async function onTelegramDone({ sessionSaved, proxyUrl }) {
+async function onTelegramDone({ sessionSaved, proxyUrl, placeId }) {
   showTelegramLogin.value = false;
   setNotice(sessionSaved ? i18n.t('tg.session_saved') : i18n.t('tg.session_not_saved'));
   // 登录完就把它接成一个远程位置并进去。
@@ -118,7 +118,14 @@ async function onTelegramDone({ sessionSaved, proxyUrl }) {
   // 停在提示上等于让他自己去找入口，而那个入口刚刚才出现。
   try {
     state.placeBrowserOpen = true;
-    const id = await api.telegramPlaceConnect(proxyUrl);
+    // 两条登录路径在这里分流，依据是「后端有没有给我位置 id」这个事实，
+    // 不是猜现在走的是哪条路：
+    //   tdata 导入 —— 命令内部已经 add_telegram 建好位置，直接用它的 id；
+    //   扫码     —— session 落在 PENDING_ACCOUNT 下，位置要等 connect 才建。
+    // 混用的后果很实际：对 tdata 再调一次 connect，它读不到 PENDING 里的
+    // session 就报「尚未登录」（而位置已经建好了），或者拿上次扫码残留的
+    // session 又建一个**别的账号**的位置
+    const id = placeId || (await api.telegramPlaceConnect(proxyUrl));
     await afterPlaceAdded(id);
   } catch (e) {
     // 按错误码给话，不要把 Error 对象丢进 te()——那会落到通用「内部错误」，
