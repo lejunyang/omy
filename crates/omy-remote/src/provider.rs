@@ -78,6 +78,19 @@ impl PlaceStore {
             Self::Telegram(_) => None,
         }
     }
+
+    /// 取 Telegram 驱动；不是 Telegram 位置时返回 `None`。
+    ///
+    /// 与 `as_webdav` 同理，供 Telegram **特有**的东西用——目前是「对话列表
+    /// 头像后台补齐」：命令层要在 list 返回后拿到待下头像任务再逐个下。
+    /// 凡 `RemoteStore` 已表达的能力都不要走这里。
+    #[must_use]
+    pub const fn as_telegram(&self) -> Option<&TelegramStore> {
+        match self {
+            Self::Telegram(s) => Some(s),
+            Self::WebDav(_) => None,
+        }
+    }
 }
 
 impl From<WebDavStore> for PlaceStore {

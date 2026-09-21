@@ -209,7 +209,7 @@ pub async fn remote_browse(
             t0.elapsed().as_millis()
         ),
     );
-    Ok(scan_entries(
+    let entries = scan_entries(
         &app,
         &state,
         &thumbs,
@@ -218,7 +218,93 @@ pub async fn remote_browse(
         &dir,
         items,
         cache.snapshot(),
-    ))
+    );
+
+    // 对话列表（根目录）的头像后台补齐。
+    //
+    // list("") 已经把对话结构返回了（头像先空着），这里把待下的头像交给后台
+    // 逐个下、下完一个就通过 remote-entry 事件把那张卡片的图标补上——对齐官方
+    // 「列表先出、头像后补」。不在 list 里同步下是因为那会让列表等所有头像
+    // 到手才返回（72 个约 11s）。
+    //
+    // 只在**根目录**（dir 为空）且是 Telegram 位置时做：对话内层是文件、
+    // 走的是另一条缩略图路径。
+    if dir.is_empty() {
+        if let Some(tg) = place.store.as_telegram() {
+            let jobs = tg.take_pending_avatars();
+            if !jobs.is_empty() {
+                spawn_avatar_backfill(
+                    app.clone(),
+                    Arc::clone(&place.store),
+                    thumbs.inner().clone(),
+                    place_id.clone(),
+                    jobs,
+                );
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+/// 后台把对话头像逐个下好，下完一个就发 remote-entry 事件让前端替换图标。
+///
+/// 限流到 8 路（与文件缩略图同一个理由：别为 72 个头像同时打满请求触发
+/// 服务端限流）。用户离开该列表后晚到的事件由前端按「位置+目录」过滤丢弃，
+/// 与文件缩略图完全同一条通道、同一套丢弃规则，不新造机制。
+fn spawn_avatar_backfill(
+    app: tauri::AppHandle,
+    store: Arc<omy_remote::PlaceStore>,
+    thumbs: Arc<PlaceThumbs>,
+    place_id: String,
+    jobs: Vec<(i64, omy_remote::telegram::store::ChatPhoto)>,
+) {
+    tokio::spawn(async move {
+        let sem = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut set = tokio::task::JoinSet::new();
+        for (chat, photo) in jobs {
+            let sem = Arc::clone(&sem);
+            let store = Arc::clone(&store);
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let tg = store.as_telegram()?;
+                let bytes = tg.download_avatar(&photo).await;
+                // 写回对话缓存，让下次 refresh 命中缓存、不再重下
+                tg.set_conversation_avatar(chat, bytes.clone());
+                Some((chat, bytes))
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok(Some((chat, bytes))) = joined else {
+                continue;
+            };
+            // 没下到就不发事件：卡片保持类型图标即可，不必推一条空的
+            let Some(bytes) = bytes else { continue };
+            let token = thumbs.insert_image(bytes);
+            // 发**完整**的对话条目，不是只带 token——前端按 id 整体替换
+            // （state.remoteItems[idx] = entry），只带 token 会把标题清空。
+            // 从 store 取回这个对话的标题等，构成和 list 里一致的条目。
+            let Some(tg) = store.as_telegram() else { continue };
+            let Some(conv) = tg.conversation(chat) else { continue };
+            let mut entry = skeleton_entry(
+                format!("tg:{chat}"),
+                conv.title.clone(),
+                true,
+                None,
+                false,
+            );
+            entry.thumb_token = token;
+            let _ = app.emit(
+                REMOTE_ENTRY_EVENT,
+                RemoteEntryEvent {
+                    place_id: place_id.clone(),
+                    // 根目录的 dir 就是空串，与前端 state.remoteDir 对得上
+                    dir: String::new(),
+                    entry,
+                },
+            );
+        }
+    });
 }
 
 /// 把一批远程条目变成「骨架 + 后台识别」的结果。

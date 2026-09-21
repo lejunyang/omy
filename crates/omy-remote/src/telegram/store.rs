@@ -103,6 +103,10 @@ pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view"
 /// 把 100 条都筛完才出第一屏。
 const DEFAULT_MESSAGE_PAGE: usize = 15;
 
+/// 头像/图片下载定位类型的再导出，供命令层构造后台头像补齐任务时命名，
+/// 不必让上层直接依赖 grammers 的模块路径。
+pub use grammers_client::media::ChatPhoto;
+
 /// 服务端接受的最大单片大小：**1 MiB**。实测 1 MiB 接受、1 MiB + 1 KiB 被拒。
 ///
 /// 有这个常量是为了让「别把 chunk 调过头」这件事有个可检查的上界，
@@ -693,6 +697,14 @@ pub struct TelegramStore {
     /// 变，同一个文件被反复重新下载。所以 id 用稳定的 `(对话, 消息号)`，
     /// 而易变的位置放在这张表里。
     media: Mutex<std::collections::HashMap<String, CachedMedia>>,
+    /// 上一次 refresh_conversations 攒下的、还没下载的头像任务：(对话号, 头像定位)。
+    ///
+    /// 为什么把它放在 store 上让命令层来取：头像下载慢（每个一次经代理往返），
+    /// 若在 refresh 里同步下完，对话列表就要等 72 张头像都到手才返回——那正是
+    /// 「冷启动 11 秒」。改成 refresh 只收集任务、立刻返回列表，命令层再在后台
+    /// 逐个下、下完一个就通过事件把那张卡片的图标补上（对齐官方「列表先出、
+    /// 头像后补」）。下载本身仍在 store（要用 client），只是由命令层驱动节奏。
+    pending_avatars: Mutex<Vec<(i64, grammers_client::media::ChatPhoto)>>,
     /// 分片大小。
     ///
     /// 可配置而不是写死常量，这样实测出真实约束后改一处即可，也便于单测。
@@ -763,6 +775,7 @@ impl TelegramStore {
             conversations: Mutex::new(Vec::new()),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
+            pending_avatars: Mutex::new(Vec::new()),
             chunk: CHUNK,
         }
     }
@@ -776,6 +789,7 @@ impl TelegramStore {
             conversations: Mutex::new(conversations),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
+            pending_avatars: Mutex::new(Vec::new()),
             chunk: CHUNK,
         }
     }
@@ -793,6 +807,7 @@ impl TelegramStore {
             conversations: Mutex::new(Vec::new()),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
+            pending_avatars: Mutex::new(Vec::new()),
             chunk: CHUNK,
         }
     }
@@ -810,6 +825,7 @@ impl TelegramStore {
             conversations: Mutex::new(Vec::new()),
             peers: Mutex::new(std::collections::HashMap::new()),
             media: Mutex::new(std::collections::HashMap::new()),
+            pending_avatars: Mutex::new(Vec::new()),
             chunk: CHUNK,
         }
     }
@@ -908,8 +924,9 @@ impl TelegramStore {
         let mut it = client.iter_dialogs();
         let mut out = Vec::new();
         let mut peers = std::collections::HashMap::new();
-        // 待下载的头像：(在 out 里的下标, 头像定位)。先攒着，循环结束后并发下
-        let mut avatar_jobs: Vec<(usize, grammers_client::media::ChatPhoto)> = Vec::new();
+        // 待下载的头像：(对话号, 头像定位)。先攒着，循环结束后交给命令层后台下。
+        // 用 chat_id 而不是下标：下载在别处异步做，那时要按对话号回填。
+        let mut avatar_jobs: Vec<(i64, grammers_client::media::ChatPhoto)> = Vec::new();
         // 上一次已经下好的头像，按 chat id 索引。头像基本不变，重复 refresh
         // （每次 browse 根目录都会 refresh）不该把 72 张头像再下一遍——那是
         // 「二次进入还要等 7 秒」的来源。命中缓存的直接复用，只有新对话才下。
@@ -1002,11 +1019,10 @@ impl TelegramStore {
             // 真正的下载挪到下面并发做。
             // 头像：先看上次有没有下过这个对话的。有就直接复用（省一次往返），
             // 没有才在下面并发下。photo(false) 只查 session、不下载
-            let this_idx = out.len();
             let cached_avatar = prev_avatars.get(&chat_id).cloned();
             if cached_avatar.is_none() {
                 if let Some(p) = peer.photo(false).await.ok().flatten() {
-                    avatar_jobs.push((this_idx, p));
+                    avatar_jobs.push((chat_id, p));
                 }
             }
             out.push(Conversation {
@@ -1022,33 +1038,12 @@ impl TelegramStore {
             });
         }
 
-        // 并发下载头像：限流到 8 路，别为 72 个头像同时开 72 个请求把服务端
-        // 惹毛（那正是设置里「并发请求数」要防的）。相比原来的串行，72 个
-        // 头像从约 48s 降到约 (72/8)×0.67 ≈ 6s，且对话列表结构本身已经先
-        // 收齐——调用方可以先渲染文字与类型图标，头像随后补。
-        //
-        // 用 JoinSet + 信号量限流，不引第三方 futures 组合子：每个头像 spawn
-        // 一个受许可约束的任务，最多 8 个同时在下。
-        {
-            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
-            let mut set = tokio::task::JoinSet::new();
-            for (idx, photo) in avatar_jobs {
-                let sem = std::sync::Arc::clone(&sem);
-                let client = client.clone();
-                set.spawn(async move {
-                    // 许可拿不到（信号量被关闭，正常不会）就跳过这张头像
-                    let _permit = sem.acquire_owned().await.ok()?;
-                    let bytes = download_bytes(&client, &photo).await;
-                    Some((idx, bytes))
-                });
-            }
-            while let Some(joined) = set.join_next().await {
-                if let Ok(Some((idx, bytes))) = joined {
-                    if let Some(c) = out.get_mut(idx) {
-                        c.avatar = bytes;
-                    }
-                }
-            }
+        // **不在这里下载头像**：那会让对话列表等所有头像到手才返回（72 个约
+        // 11s，就是「冷启动很慢」）。改成把待下任务攒起来，先把对话列表返回，
+        // 头像交给命令层在后台逐个下、下完一个补一个（见
+        // [`Self::take_pending_avatars`] / [`Self::download_avatar`]）。
+        if let Ok(mut pa) = self.pending_avatars.lock() {
+            *pa = avatar_jobs;
         }
 
         if let Ok(mut c) = self.conversations.lock() {
@@ -1058,6 +1053,41 @@ impl TelegramStore {
             *p = peers;
         }
         Ok(out)
+    }
+
+    /// 取走上一次 refresh 攒下的待下载头像任务（对话号, 头像定位）。
+    ///
+    /// 命令层在 `list("")` 返回后调它，拿到任务在后台逐个下载、下完一个就把
+    /// 那张卡片的图标补上。取走即清空：避免同一批被重复下。
+    #[must_use]
+    pub fn take_pending_avatars(&self) -> Vec<(i64, grammers_client::media::ChatPhoto)> {
+        self.pending_avatars
+            .lock()
+            .map(|mut p| std::mem::take(&mut *p))
+            .unwrap_or_default()
+    }
+
+    /// 下载一张头像的字节。失败返回 `None`（头像是锦上添花，取不到不报错）。
+    ///
+    /// 单独一个方法而不是让命令层直接碰 client：client 是私有的，且下载要走
+    /// 同一条连接。命令层并发调用多次即可（自己限流）。
+    pub async fn download_avatar(
+        &self,
+        photo: &grammers_client::media::ChatPhoto,
+    ) -> Option<Vec<u8>> {
+        let client = self.client.as_ref()?;
+        download_bytes(client, photo).await
+    }
+
+    /// 把下好的头像写回对话缓存，让下次 refresh 能命中缓存、不再重下。
+    ///
+    /// 找不到该对话（用户已离开、列表已变）就静默忽略——那张头像本就没人要了。
+    pub fn set_conversation_avatar(&self, chat: i64, avatar: Option<Vec<u8>>) {
+        if let Ok(mut c) = self.conversations.lock() {
+            if let Some(conv) = c.iter_mut().find(|c| c.chat == chat) {
+                conv.avatar = avatar;
+            }
+        }
     }
 
     /// 取访问某个对话所需的引用。
