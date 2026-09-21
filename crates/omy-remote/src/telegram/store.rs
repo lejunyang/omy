@@ -103,6 +103,15 @@ pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view"
 /// 把 100 条都筛完才出第一屏。
 const DEFAULT_MESSAGE_PAGE: usize = 15;
 
+/// 为凑够一页文件，最多往回扫多少条消息。
+///
+/// 文件视图要的是「文件」不是「消息」，而很多群里绝大多数是文本，只看
+/// 一屏消息可能一个文件都没有（实测有群最新 15 条全是文本）。所以扫描
+/// 深度必须大于展示条数。但也要有上界：纯聊天群里可能翻几千条都没文件，
+/// 不设界就会一直翻下去。200 条约等于十几次 getHistory 往返，够覆盖
+/// 「文件夹杂在聊天里」的常见情形，又不至于失控。
+const MAX_MESSAGE_SCAN: usize = 200;
+
 /// 头像/图片下载定位类型的再导出，供命令层构造后台头像补齐任务时命名，
 /// 不必让上层直接依赖 grammers 的模块路径。
 pub use grammers_client::media::ChatPhoto;
@@ -1108,22 +1117,26 @@ impl TelegramStore {
 
     /// 列一个对话里带文件的消息。
     ///
-    /// # 为什么不用 `Document` 过滤器
+    /// # 为什么用 `getHistory` 而不是 `messages.search`
     ///
-    /// 因为它**不等于「所有文档」**。实测（真实账号）：一条 `mime=video/mp4`、
-    /// 8.4 MB 的消息，`Media` 类型确实是 `Document`，却不被 `Document` 过滤器
-    /// 命中，只能靠 `Video` / `PhotoVideo` / `Empty` 取到——服务端是按**发送
-    /// 方式**分类的，不是按 `Media` 类型，作为视频发送就归 `Video`。
+    /// **实测坐实的坑**：文件视图原来走 `messages.search` + `filterEmpty`，在很多
+    /// 超级群里返回 0 条或只返回极少数，而同一个群用 `getHistory`（消息视图那
+    /// 条路）能取到全部。真实账号数据：「ShuMale 二十元店」文件视图 0、消息
+    /// 视图 52 个带文件；「胖熊零导」文件视图 5、消息视图 67——`search` 漏掉了
+    /// 绝大多数。表现是「进群一个文件都看不到（或只看到几个），可它们明明
+    /// 都在」，而且不报错。
     ///
-    /// 同理，作为照片发送的图片是 `Photo` 类型，`Document` 过滤器完全取不到。
+    /// `filterEmpty` 名义上不过滤，但 `messages.search` 对某些对话/服务端分片
+    /// 本就不可靠（Telegram 侧的已知行为）。改用 `getHistory` 拉全部消息、
+    /// 再在本地按「有没有可下载的媒体」（`to_raw_input_location()` 返回 Some）
+    /// 筛——与消息视图用的完全同一条路径、同一个判据，两个视图不再各走各的。
     ///
-    /// 所以这里用 `Empty` 拉全部消息，再在本地按「有没有可下载的媒体」筛。
-    /// 代价是多传一些无媒体的消息；收益是不会因为服务端的分类口径而漏东西，
-    /// 而漏东西的表现是「我明明发过那个文件，omy 里却看不到」且不报错。
+    /// # 为什么判据是「能不能下载」而不是 Media 变体
     ///
-    /// 用多个专门过滤器分别拉再合并也能做到，但那要发 N 次请求、还要去重
-    /// （实测一条视频同时被 `Video` 与 `PhotoVideo` 命中），
-    /// 在限流敏感的 Telegram 上不划算。
+    /// 变体不可靠：一条 `video/mp4` 的 Media 类型是 `Document` 却按发送方式归到
+    /// `Video`；按变体列举会在 grammers 加新变体时静默漏掉。`to_raw_input_location()`
+    /// 返回 Some 才是「这东西真能取字节」的真实判据，投票/位置/联系人自然返回
+    /// None 被过滤掉。
     async fn list_messages(&self, chat: i64, limit: usize) -> Result<Vec<Entry>> {
         self.list_messages_before(chat, limit, None).await
     }
@@ -1146,15 +1159,37 @@ impl TelegramStore {
         let client = self.client()?;
         let peer = self.peer_ref(chat).await?;
 
-        let mut it = client
-            .search_messages(peer)
-            .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
-            .limit(limit);
+        // 用 getHistory（iter_messages）而不是 messages.search：见 list_messages
+        // 的文档，search 在很多超级群里会漏掉绝大多数文件。
+        //
+        // **扫到够 limit 个文件为止，而不是只看 limit 条消息**——这是「进群
+        // 一个文件都看不到」的真正根因：实测「ShuMale 二十元店」最新 15 条
+        // 全是文本公告，52 个文件都在更靠后，只看 15 条就得到 0。所以这里不
+        // 给迭代器设 .limit()，一直往回扫、把带媒体的收进结果，直到凑够 limit
+        // 个文件，或扫过 MAX_SCAN 条消息（防止在纯聊天群里无限翻）。
+        //
+        // 返回的最后一个文件条目的消息号供上层作下一页的 before，翻页语义不变。
+        let mut it = client.iter_messages(peer);
         if let Some(off) = before {
             it = it.offset_id(off);
         }
-
-        self.collect_media(&mut it, chat).await
+        let mut entries: Vec<Entry> = Vec::new();
+        let mut scanned = 0usize;
+        loop {
+            let msg = match it.next().await {
+                Ok(Some(m)) => m,
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            };
+            scanned += 1;
+            // 收一条（collect_media 会顺带缓存下载位置）；没媒体的返回空
+            let mut got = self.collect_media(vec![msg], chat);
+            entries.append(&mut got);
+            if entries.len() >= limit || scanned >= MAX_MESSAGE_SCAN {
+                break;
+            }
+        }
+        Ok(entries)
     }
 
     /// 列一个对话里的文件，支持从某条消息之前继续取。
@@ -1190,19 +1225,10 @@ impl TelegramStore {
     /// `list` 与 `search` 共用这一份。两处各写一份的话，以后给条目加个字段，
     /// 改了一处忘了另一处，表现是「浏览时有这个信息、一搜索就没了」，
     /// 而这种不一致很难被注意到。
-    async fn collect_media(
-        &self,
-        it: &mut grammers_client::client::SearchIter,
-        chat: i64,
-    ) -> Result<Vec<Entry>> {
+    fn collect_media(&self, msgs: Vec<grammers_client::message::Message>, chat: i64) -> Vec<Entry> {
         let mut out = Vec::new();
         let mut cache = Vec::new();
-        loop {
-            let msg = match it.next().await {
-                Ok(Some(m)) => m,
-                Ok(None) => break,
-                Err(e) => return Err(map_rpc(&e)),
-            };
+        for msg in msgs {
             let Some(media) = msg.media() else { continue };
             // 判据是「能不能下载」，不是「是不是某个 Media 变体」。
             //
@@ -1245,7 +1271,7 @@ impl TelegramStore {
                 m.insert(k, v);
             }
         }
-        Ok(out)
+        out
     }
 
     /// 列一个对话里的消息（**以文件为主线的消息视图**）。
@@ -1545,14 +1571,23 @@ impl RemoteStore for TelegramStore {
                 .search_messages(peer)
                 .query(query)
                 // 与 list 一样用 Empty：Document 过滤器不等于「所有文档」，
-                // 实测一条 video/mp4 的 Document 不被它命中（见 list_messages）
+                // 实测一条 video/mp4 的 Document 不被它命中（见 list_messages）。
+                // 这里是**带 query 的服务端搜索**，用 search 是对的（不是浏览
+                // 那条无 query 的路，那条已改回 getHistory）。
                 .filter(tl::enums::MessagesFilter::InputMessagesFilterEmpty)
                 .limit(limit);
-            match self.collect_media(&mut it, chat).await {
-                Ok(mut v) => out.append(&mut v),
-                Err(e) if e.is_retryable() => return Err(e),
-                // 非暂时性错误（没权限之类）就跳过这个对话，继续搜别的
-                Err(_) => continue,
+            let mut msgs = Vec::new();
+            let ok = loop {
+                match it.next().await {
+                    Ok(Some(m)) => msgs.push(m),
+                    Ok(None) => break true,
+                    Err(e) if map_rpc(&e).is_retryable() => return Err(map_rpc(&e)),
+                    // 非暂时性错误（没权限之类）就跳过这个对话，继续搜别的
+                    Err(_) => break false,
+                }
+            };
+            if ok {
+                out.append(&mut self.collect_media(msgs, chat));
             }
             if out.len() >= limit {
                 out.truncate(limit);

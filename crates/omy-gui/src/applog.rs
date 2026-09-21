@@ -207,10 +207,13 @@ fn rotate(path: &std::path::Path, keep: u32, sink: &mut Sink) {
     // 顶多是新日志进了刚改名的 .1，总比丢弃好
 }
 
-/// UTC 时间戳，`YYYY-MM-DD HH:MM:SS.mmm`。
+/// UTC 时间戳，`YYYY-MM-DD HH:MM:SS.mmm UTC`。
 ///
-/// 不引 chrono/time：只用 std 从 UNIX 秒算出年月日。日志时间戳用 UTC，
-/// 避免跨时区拷贝日志时对不上；毫秒对排查接口耗时前后顺序有用。
+/// 不引 chrono/time：只用 std 从 UNIX 秒算出年月日。std 没有获取本地时区的
+/// API，所以用 UTC，但**必须显式带上 `UTC` 后缀**——否则读日志的人（在
+/// CST+8）会把它当本地时间，把「今天凌晨 2 点(CST) = 昨天 18 点(UTC)」误读成
+/// 「日志停在昨天」，进而误判「用户在跑旧构建」。这个坑真发生过，后缀就是
+/// 为了让它不再发生。毫秒对排查接口耗时前后顺序有用。
 fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -218,7 +221,7 @@ fn timestamp() -> String {
     let secs = now.as_secs();
     let millis = now.subsec_millis();
     let (y, mo, d, h, mi, s) = civil_from_unix(secs);
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{millis:03}")
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{millis:03} UTC")
 }
 
 /// UNIX 秒 → (年,月,日,时,分,秒) UTC。
