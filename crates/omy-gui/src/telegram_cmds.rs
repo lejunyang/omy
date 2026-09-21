@@ -972,18 +972,40 @@ pub async fn ensure_connected(
         "tg",
         &format!("重连 place={place_id} 成功 ({}ms)", t0.elapsed().as_millis()),
     );
+    // user id 优先沿用占位带回来的那个（restore 从配置读进 p.user_id）。
+    // 但**老配置里的位置没有 user id**（这个字段是这次才加的），若不补上，
+    // 用户已有的那些账号永远参与不了去重——重复登录同一个老账号照样会
+    // 新建一个。所以当占位没有 user id 时，趁这次连上补取一次。
+    let user_id = match p.user_id {
+        Some(u) => Some(u),
+        None => {
+            let uid = connect::account_user_id(&conn.client).await;
+            if uid.is_some() {
+                crate::applog::info(
+                    "tg",
+                    &format!("为老位置 {place_id} 补取 user id={}", redact_uid(uid)),
+                );
+            }
+            uid
+        }
+    };
+    let backfilled = p.user_id.is_none() && user_id.is_some();
     let store = TelegramStore::from_connection(conn.client, conn.runner);
     // 换掉占位：先摘再加，否则会并存两条。
-    // user id 沿用占位带回来的那个（restore 时从配置读进 p.user_id），
-    // 不重新取——这里只是把未连接占位换成真连接，账号身份没变
     reg.remove(place_id);
     reg.add_telegram_with_id(
         String::from(place_id),
         p.name.clone(),
         store,
         proxy,
-        p.user_id,
+        user_id,
     );
+    // 补取了 user id 就落盘一次，让它下次启动也在（否则每次进都要重取）
+    if backfilled {
+        if let Err(e) = reg.persist() {
+            eprintln!("[omy] 保存补取的 user id 失败：{e}");
+        }
+    }
     Ok(())
 }
 
