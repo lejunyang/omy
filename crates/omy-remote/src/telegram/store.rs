@@ -95,8 +95,13 @@ pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view"
 /// 进一个对话时默认拉多少条带文件的消息。
 ///
 /// 不是「全部」：一个活跃群里可能有上万条，全拉会让进目录等很久，也白白占
-/// 限流配额。100 条足够填满一屏并留出滚动余量，不够时再加载更多。
-const DEFAULT_MESSAGE_PAGE: usize = 100;
+/// 限流配额。取小是刻意对齐官方客户端（DEC-26）：TDesktop/Web 每页
+/// `messages.getHistory` 约 20 条，进对话先出一屏、滚动再续，而不是一次性
+/// 拉满。15 条够填首屏并留一点滚动余量，不够时 `list_more(before=...)` 续。
+///
+/// 早先这里是 100——那是「进目录卡很久」的一个来源：活跃群里要等服务端
+/// 把 100 条都筛完才出第一屏。
+const DEFAULT_MESSAGE_PAGE: usize = 15;
 
 /// 服务端接受的最大单片大小：**1 MiB**。实测 1 MiB 接受、1 MiB + 1 KiB 被拒。
 ///
@@ -903,6 +908,8 @@ impl TelegramStore {
         let mut it = client.iter_dialogs();
         let mut out = Vec::new();
         let mut peers = std::collections::HashMap::new();
+        // 待下载的头像：(在 out 里的下标, 头像定位)。先攒着，循环结束后并发下
+        let mut avatar_jobs: Vec<(usize, grammers_client::media::ChatPhoto)> = Vec::new();
 
         loop {
             let d = match it.next().await {
@@ -970,13 +977,22 @@ impl TelegramStore {
                 grammers_client::peer::Peer::Group(_) => "group",
                 grammers_client::peer::Peer::Channel(_) => "channel",
             };
-            // 头像取小尺寸：列表里只占几十像素，大图纯属浪费流量。
-            // 任何一步失败都按「没有头像」处理——头像是锦上添花，
-            // 不能因为取不到就让整个对话列表失败
-            let avatar = match peer.photo(false).await {
-                Ok(Some(p)) => download_bytes(client, &p).await,
-                _ => None,
-            };
+            // 头像**先不下载**，只把它的定位信息记下来，等对话列表本身
+            // 收齐后再并发下。
+            //
+            // 为什么改：实测 72 个对话的账号，`refresh_conversations` 要 48 秒
+            // ——几乎全花在这里逐个 `download_bytes` 上（每个头像一次经代理
+            // 的完整往返，约 0.67s × 72）。头像取小尺寸也没用，慢的是**串行**
+            // 与**次数**，不是大小。对齐官方客户端（DEC-26）「列表先出、媒体
+            // 后补」：对话列表不该被头像下载卡住。
+            //
+            // `peer.photo(false)` 本身只查 session、不下载，放在循环里没问题；
+            // 真正的下载挪到下面并发做。
+            let photo = peer.photo(false).await.ok().flatten();
+            let this_idx = out.len();
+            if let Some(p) = photo {
+                avatar_jobs.push((this_idx, p));
+            }
             out.push(Conversation {
                 chat: chat_id,
                 title,
@@ -984,9 +1000,39 @@ impl TelegramStore {
                 can_delete,
                 broadcast,
                 kind,
-                avatar,
+                // 先留空，下面并发填上
+                avatar: None,
                 protected,
             });
+        }
+
+        // 并发下载头像：限流到 8 路，别为 72 个头像同时开 72 个请求把服务端
+        // 惹毛（那正是设置里「并发请求数」要防的）。相比原来的串行，72 个
+        // 头像从约 48s 降到约 (72/8)×0.67 ≈ 6s，且对话列表结构本身已经先
+        // 收齐——调用方可以先渲染文字与类型图标，头像随后补。
+        //
+        // 用 JoinSet + 信号量限流，不引第三方 futures 组合子：每个头像 spawn
+        // 一个受许可约束的任务，最多 8 个同时在下。
+        {
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+            let mut set = tokio::task::JoinSet::new();
+            for (idx, photo) in avatar_jobs {
+                let sem = std::sync::Arc::clone(&sem);
+                let client = client.clone();
+                set.spawn(async move {
+                    // 许可拿不到（信号量被关闭，正常不会）就跳过这张头像
+                    let _permit = sem.acquire_owned().await.ok()?;
+                    let bytes = download_bytes(&client, &photo).await;
+                    Some((idx, bytes))
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                if let Ok(Some((idx, bytes))) = joined {
+                    if let Some(c) = out.get_mut(idx) {
+                        c.avatar = bytes;
+                    }
+                }
+            }
         }
 
         if let Ok(mut c) = self.conversations.lock() {
