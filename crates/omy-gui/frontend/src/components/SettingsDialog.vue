@@ -1060,7 +1060,10 @@ async function openCacheDir() {
   background: var(--bg3);
 }
 .snav.on {
-  background: var(--accent);
+  /* 实心底 + 白字一律用 --accent-solid，不要用 --accent：后者为了在
+     暗背景上当边框/图标时显眼而调亮，白字压上去实测只有 3.10。
+     这是同一个错误的第三处（前两处是 .btn.primary 与 .btn.pri）。 */
+  background: var(--accent-solid);
   color: #fff;
 }
 .pane {

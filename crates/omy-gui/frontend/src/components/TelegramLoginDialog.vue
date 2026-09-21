@@ -725,24 +725,29 @@ onBeforeUnmount(() => {
                「需要你补个信息」说成「不支持」，便携版用户会直接走掉 -->
           <label class="f">
             <span class="fl">{{ i18n.t('tg.tdata_path') }}</span>
-            <input
-              v-model="tdPath"
-              data-tg="td-path"
-              type="text"
-              :placeholder="tdPlaceholder"
-              spellcheck="false"
-              @input="checkTdPath"
-            />
-            <button class="btn" data-tg="td-browse" @click="browseTdata">
-              {{ i18n.t('tg.browse') }}
-            </button>
+            <!-- 输入框与「浏览…」同一行。
+                 .f 是 block 的，直接并列会把按钮挤到输入框正下方、
+                 左对齐孤零零一个（实测 gapY=0），看着像误放的 -->
+            <div class="pathrow">
+              <input
+                v-model="tdPath"
+                data-tg="td-path"
+                type="text"
+                :placeholder="tdPlaceholder"
+                spellcheck="false"
+                @input="checkTdPath"
+              />
+              <button class="btn" data-tg="td-browse" @click="browseTdata">
+                {{ i18n.t('tg.browse') }}
+              </button>
+            </div>
             <span v-if="tdAuto && tdPathOk" class="d" data-tg="td-auto">
               {{ i18n.t('tg.tdata_autofound') }}
             </span>
-            <span v-else-if="!tdPath" class="d" data-tg="td-manual">
-              {{ i18n.t('tg.tdata_not_found') }}
-            </span>
-            <span v-else-if="!tdPathOk" class="d warn" data-tg="td-bad">
+            <!-- 「没自动找到」那句不在这里重复：上面的前提清单已经说了，
+                 而且它会随状态打勾。同一件事说两遍会让人以为是两件事、
+                 反而去找"还有哪里没配对" -->
+            <span v-else-if="!tdPathOk && tdPath" class="d warn" data-tg="td-bad">
               {{ i18n.t('tg.tdata_bad_dir') }}
             </span>
             <span class="d">{{ i18n.t('tg.tdata_path_hint') }}</span>
@@ -1349,22 +1354,21 @@ input[type='password'] {
   font-size: 13px;
   min-height: 36px;
 }
-.btn.pri {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+/* 主按钮与禁用态的配色统一由 styles/app.css 提供（.pri 是
+   .primary 的别名）。这里**不要**再抄一份：抄漏哪个状态，
+   那个状态就退回默认值，而最容易漏的正是 hover */
+.pathrow {
+  display: flex;
+  gap: calc(var(--sp) * 2);
+  align-items: center;
 }
-.btn:disabled {
-  /* 与 styles/app.css 的 .btn:disabled 保持一致：禁用态必须显式着色，
-     不能只靠 opacity——实心蓝底白字调淡后在浅色主题下对比度只有
-     1.49，几乎看不清。**改这里时另外两处也要改**（app.css、
-     RemotePlaceDialog.vue），漏改哪一处，那一屏的按钮就会变回
-     看不清的样子。 */
-  background: var(--bg3);
-  color: var(--fg2);
-  border-color: var(--border);
-  opacity: 0.9;
-  cursor: default;
+.pathrow input {
+  flex: 1;
+  min-width: 0;
+}
+.pathrow .btn {
+  flex: none;
+  white-space: nowrap;
 }
 
 /* 窄屏把按钮抬到触控下限。

@@ -231,21 +231,6 @@ select {
   font-size: 13px;
   min-height: 36px;
 }
-.btn.pri {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.btn:disabled {
-  /* 与 app.css / TelegramLoginDialog.vue 的同名规则保持一致：显式着色
-     而非只调 opacity（调淡后浅色主题下对比度仅 1.49）。
-     **三处任何一处漏改，那一屏的按钮就会变回看不清的样子。** */
-  background: var(--bg3);
-  color: var(--fg2);
-  border-color: var(--border);
-  opacity: 0.9;
-  cursor: default;
-}
 
 /* 窄屏把按钮抬到触控下限。写在组件自己的 scoped 样式里：
    scoped 会附加 [data-v-*]，特异性高于 app.css 的全局 `.btn`，

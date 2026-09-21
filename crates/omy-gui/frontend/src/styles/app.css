@@ -17,6 +17,15 @@
   --fg: #e6edf3;
   --fg2: #8b949e;
   --accent: #4493f8;
+  /* 专给「实心底 + 白字」用的那一档。
+     不能直接用 --accent：它被调亮以便在暗背景上当边框/图标时显眼，
+     可白字压上去只有 3.10——**最常点的主操作反而最不清楚**。
+     白字对 #1f6feb 是 4.63。 */
+  --accent-solid: #1f6feb;
+  /* 禁用态文字。--fg2 压在 --bg3 上只有 4.53（浅色更糟，只有 3.80）。
+     禁用不等于看不清：用户仍要读懂那按钮是什么，才知道该满足什么
+     条件才能点。#9198a1 对 --bg3 是 4.84。 */
+  --fg-dim: #9198a1;
   --ok: #3fb950;
   --warn: #d29922;
   --danger: #f85149;
@@ -36,6 +45,11 @@
   --fg: #1f2328;
   --fg2: #656d76;
   --accent: #2563eb;
+  /* 浅色下 --accent 白字已有 5.17，仍单列一条：这样后人调 --accent
+     的明度时不会顺手把「实心底 + 白字」那条对比度一起带坏 */
+  --accent-solid: #2563eb;
+  /* #656d76 压在 --bg3 (#eef0f3) 上只有 3.80。#4b5259 是 5.44 */
+  --fg-dim: #4b5259;
   --ok: #16a34a;
   --warn: #d97706;
   --danger: #dc2626;
@@ -169,8 +183,13 @@ input {
 }
 
 .iconbtn[aria-pressed='true'] {
+  /* 同 .sitem.sel：蓝字压在淡蓝底上色相相同、只靠明度差，对比度天然
+     上不去（实测浅色 3.69、深色 4.13）。选中靠**底色**表达，图形用
+     正常前景色。
+     图标按钮没有文字标签，图形就是它的全部信息——淡到看不清，等于这个
+     按钮从界面上消失了。 */
   background: color-mix(in srgb, var(--accent) 20%, transparent);
-  color: var(--accent);
+  color: var(--fg);
 }
 
 .body {
@@ -216,8 +235,14 @@ input {
 }
 
 .sitem.sel {
+  /* 选中靠**底色**表达，文字用正常前景色。
+     原来是「--accent 蓝字 + accent 18% 淡蓝底」：色相相同、只靠明度
+     差，对比度天然上不去——实测浅色 3.80、深色 4.28，换更深的蓝也只
+     到 3.94，因为问题不在深浅而在同色相。
+     侧栏选中项是**用户当前所在的位置**，读不清等于这个状态没表达出来。 */
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
+  color: var(--fg);
+  font-weight: 500;
 }
 
 .stext {
@@ -615,16 +640,34 @@ input {
   padding-inline: calc(var(--sp) * 2.5);
 }
 
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+/* `.pri` 是 `.primary` 的同名别名：两个对话框的模板用的是 `pri`。
+   曾经的做法是让它们各自在 scoped 里再抄一份配色，结果抄漏的状态
+   就退回默认值——实测浅色下 .btn.pri:hover 的白字压在浅灰底上只有
+   1.14，几乎全白。**主按钮的配色只能有一个来源。**
+   加新状态时这三条规则都要带上 .pri。 */
+.btn.primary,
+.btn.pri {
+  /* 用 --accent-solid 而不是 --accent：深色主题的 --accent 被调亮成
+     rgb(68,147,248) 以便在暗背景上显眼，可白字压上去只有 3.10 —— 
+     **最常点的主操作反而最不清楚**。而只检查「禁用态有没有显式着色」
+     永远发现不了这条：它是启用态。
+     --accent-solid 是专门给"实心底 + 白字"用的那一档，两个主题下
+     都保证 ≥4.5。 */
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
   color: #fff;
   font-weight: 500;
 }
 
-.btn.primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.1);
+.btn.primary:hover:not(:disabled),
+.btn.pri:hover:not(:disabled) {
+  /* 显式写回 color 与 border：上面那条 .btn:hover 会把 background 改成
+     --bg3，若只靠继承，白字就压在浅灰底上（实测 1.14）。
+     悬浮只该让按钮更醒目，不该让它变得读不出来 */
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: #fff;
+  filter: brightness(1.12);
 }
 
 /* 禁用态用显式配色，**不要**只靠 opacity 把整个元素调淡。
@@ -643,18 +686,22 @@ input {
  * 现在用主题里本来就为「弱化」准备的 --bg3 / --fg2，两种主题下算出来
  * 分别是 4.6 与 4.34。 */
 .btn:disabled {
+  /* 文字用 --fg-dim 而不是 --fg2：--fg2 在 --bg3 上实测只有 3.80，
+     低于 4.5。禁用不等于看不清——用户仍要读懂那个按钮是什么，
+     才知道该去满足什么条件才能点 */
   background: var(--bg3);
-  color: var(--fg2);
+  color: var(--fg-dim);
   border-color: var(--border);
-  opacity: 0.9;
+  opacity: 1;
   cursor: not-allowed;
 }
 
 /* 主按钮禁用时同样走上面那套弱化配色，而不是"淡一点的蓝"：
    一个看起来仍像主操作、只是颜色浅了的按钮，会让人一直去点它 */
-.btn.primary:disabled {
+.btn.primary:disabled,
+.btn.pri:disabled {
   background: var(--bg3);
-  color: var(--fg2);
+  color: var(--fg-dim);
   border-color: var(--border);
 }
 
@@ -1089,7 +1136,9 @@ input {
   height: 18px;
   padding-inline: 5px;
   border-radius: 9px;
-  background: var(--accent);
+  /* 实心底 + 白字一律 --accent-solid（见其定义处）：--accent 在深色下
+     被调亮，白字压上去只有 3.10。角标里的数字就是它的全部信息 */
+  background: var(--accent-solid);
   color: #fff;
   font-size: 11px;
   display: inline-flex;
@@ -1971,7 +2020,8 @@ input {
 
 /* 会作废其它密码的操作，按钮也要红：走到这一步时用户已经看过警示文字，
    但确认按钮和"添加密码"长得一样的话，手快点下去就没有第二次机会 */
-.btn.primary.danger {
+.btn.primary.danger,
+.btn.pri.danger {
   background: var(--danger);
   border-color: var(--danger);
 }
@@ -2262,7 +2312,8 @@ input {
   border-inline-start: 1px solid var(--border);
 }
 .seg button.on {
-  background: var(--accent);
+  /* 同 .badge / .btn.primary / .snav.on：实心底 + 白字用 --accent-solid */
+  background: var(--accent-solid);
   color: #fff;
 }
 
