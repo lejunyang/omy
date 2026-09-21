@@ -951,6 +951,13 @@ async function openLogDir() {
               <div class="fld">omy {{ aboutInfo.app_version }}</div>
             </div>
             <div class="row">
+              <label class="lb">{{ i18n.t('settings.about_build') }}</label>
+              <div class="fld">
+                <code>{{ aboutInfo.build_git || 'unknown' }}</code>
+                <span class="desc">{{ aboutInfo.build_time || '' }}</span>
+              </div>
+            </div>
+            <div class="row">
               <label class="lb">{{ i18n.t('settings.about_format') }}</label>
               <div class="fld">
                 <code>OMYFILE</code> v{{ aboutInfo.format_major }}.{{ aboutInfo.format_minor }}

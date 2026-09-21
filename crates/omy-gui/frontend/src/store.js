@@ -1796,7 +1796,14 @@ export const currentCaps = computed(() => {
  */
 export async function setRemoteViewMode(mode) {
   state.remoteViewMode = mode;
-  if (mode !== 'messages') return;
+  api.uiLog('switch-view', mode);
+  if (mode !== 'messages') {
+    // 切回文件视图时清掉消息视图留下的错误。
+    // 不清的话：在广播频道点「消息」→ 报「不为频道提供消息视图」→ 点回
+    // 「文件」→ 那句错误还挂着，看起来像卡死了（用户报过这个）。
+    state.placeError = '';
+    return;
+  }
   if (!state.remotePlace || !state.remoteDir) return;
   state.loadingMessages = true;
   state.placeError = '';
@@ -1958,6 +1965,8 @@ export async function reloadRemotePlaces() {
 
 /** 进入一个远程位置的根目录。 */
 export async function openRemotePlace(id) {
+  // 上报"切到某个远程位置/账号"（记 redact 后的短标识，不记位置名）
+  api.uiLog('open-place', id ? `#${id}` : '');
   state.remotePlace = id;
   state.remoteDir = '';
   await reloadRemoteDir();
@@ -2664,6 +2673,8 @@ export async function enterRemoteDir(id, name) {
   // 记下显示名。拿不到就留空，由面包屑那边决定怎么兜底——
   // 不要在这里回落到 id，那样面包屑就无从区分「有名字」和「没名字」了
   state.remoteDirName = name || '';
+  // 上报用户动作（不带对话名/id 明文，只记"进目录"还是"回根"）
+  api.uiLog(id ? 'enter-dir' : 'enter-root');
   await reloadRemoteDir();
 }
 

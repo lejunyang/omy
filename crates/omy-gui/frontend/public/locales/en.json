@@ -598,7 +598,8 @@
     "log_dir": "Log folder",
     "log_open": "Open",
     "log_none": "No log file this session",
-    "log_desc": "Records actions and errors for troubleshooting; no passwords or codes. Oldest logs are dropped automatically when the size limit is reached."
+    "log_desc": "Records actions and errors for troubleshooting; no passwords or codes. Oldest logs are dropped automatically when the size limit is reached.",
+    "about_build": "Build"
   },
   "rplace": {
     "title": "Remote locations",

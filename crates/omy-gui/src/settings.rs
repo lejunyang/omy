@@ -64,6 +64,23 @@ pub fn config_set(config: omy_config::Config) -> CmdResult<()> {
     config.save().map_err(|e| to_cmd_err("config_write_failed", &e))
 }
 
+/// 前端上报一条用户操作日志（进对话、切账号、切视图、pin 等）。
+///
+/// 为什么要前端上报：后端日志只看得到「发了什么请求」，看不到「用户点了
+/// 什么」。用户排查时想知道自己的操作序列，需要这条。前端只传一个已在代码里
+/// 写死的简短动作标识（如 `enter-dialog` / `switch-account`），**不传任何
+/// 用户内容**——保持日志不泄密的红线。
+#[tauri::command]
+pub fn ui_log(action: String, detail: Option<String>) {
+    // detail 也只该是前端传的非敏感短串（如视图名 files/messages）；
+    // 真要带对话/文件标识，调用方自己先 redact。这里原样记，责任在调用点。
+    let msg = match detail {
+        Some(d) if !d.is_empty() => format!("{action} {d}"),
+        _ => action,
+    };
+    crate::applog::info("ui", &msg);
+}
+
 /// 查询配置与各目录位置。
 #[tauri::command]
 #[must_use]
@@ -150,6 +167,10 @@ pub struct AppAbout {
     pub format_major: u16,
     /// OMYFILE 格式次版本。
     pub format_minor: u16,
+    /// 构建时的 git 短 hash（由 build.rs 注入），用于自证「这是哪一版」。
+    pub build_git: String,
+    /// 构建时间，`YYYY-MM-DD HH:MM UTC`。
+    pub build_time: String,
 }
 
 #[tauri::command]
@@ -160,7 +181,38 @@ pub fn app_about() -> AppAbout {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         format_major: major,
         format_minor: minor,
+        // 由 build.rs 注入。option_env! 而非 env!：万一构建脚本没跑（极少见），
+        // 也不至于编译不过，回落到 unknown
+        build_git: option_env!("OMY_BUILD_GIT").unwrap_or("unknown").to_string(),
+        build_time: build_time_string(),
     }
+}
+
+/// 把 build.rs 注入的构建 UNIX 秒转成 `YYYY-MM-DD HH:MM UTC`。
+///
+/// 不引 chrono：用与 applog 同源的 civil-from-unix 纯整数算法。这里只到分钟，
+/// 够用户和 `git log` 对上是哪一版。
+fn build_time_string() -> String {
+    let secs: u64 = option_env!("OMY_BUILD_UNIX")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if secs == 0 {
+        return String::from("unknown");
+    }
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (h, mi) = ((rem / 3600) as u32, ((rem % 3600) / 60) as u32);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let mo = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02} UTC")
 }
 
 #[cfg(test)]

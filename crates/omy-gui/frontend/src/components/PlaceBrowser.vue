@@ -151,8 +151,24 @@ async function reload() {
   if (state.remotePlace) await reloadRemoteDir();
 }
 
-/** 跳转到面包屑指定目录。 */
-async function jump(c) {
+/** 点位置名：回到**该位置的根**（对话列表），而不是退到位置选择那层。
+ *
+ * 用户报过：点地址栏 Telegram 名字本以为回对话列表，却跳到了位置选择。
+ * 回根 = 进空目录；要离开这个位置到列表另有顶部返回。 */
+async function jumpToPlaceRoot() {
+  await enterRemoteDir('');
+}
+
+/** 跳转到面包屑指定目录。
+ *
+ * 点**当前段**（最后一段，就是眼前这个目录/对话）时不导航、只刷新：
+ * 导航到「自己」在 Telegram 对话上会走进畸形分支（dir 变成 tg:-数字 再报
+ * 远程操作失败）。点当前对话名的语义本就是「刷新当前」。 */
+async function jump(c, isCurrent) {
+  if (isCurrent) {
+    await reloadRemoteDir();
+    return;
+  }
   await enterRemoteDir(c.dir);
 }
 
@@ -700,13 +716,13 @@ function rowTitle(f) {
           <button class="crumbseg cur">{{ i18n.t('rplace.title') }}</button>
         </template>
         <template v-else>
-          <button class="crumbseg" @click="leaveToList">{{ currentPlace?.name }}</button>
+          <button class="crumbseg" @click="jumpToPlaceRoot">{{ currentPlace?.name }}</button>
           <template v-for="(c, i) in crumbs" :key="c.dir">
             <span class="sep">/</span>
             <button
               class="crumbseg"
               :class="{ cur: i === crumbs.length - 1 }"
-              @click="jump(c)"
+              @click="jump(c, i === crumbs.length - 1)"
             >
               {{ c.name }}
             </button>

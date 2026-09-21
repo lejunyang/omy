@@ -391,6 +391,12 @@ export const configSet = (config) => invoke('config_set', { config });
  */
 export const configPaths = () => invoke('config_paths');
 
+/** 上报一条用户操作到日志（仅传写死的动作标识，不传用户内容）。
+ *  发了就算，失败也不影响操作——日志是辅助设施。 */
+export const uiLog = (action, detail) => {
+  try { invoke('ui_log', { action, detail: detail || null }); } catch { /* 忽略 */ }
+};
+
 /** 在系统文件管理器里打开日志目录（仅桌面端）。 */
 export const openLogDir = () => invoke('open_log_dir');
 

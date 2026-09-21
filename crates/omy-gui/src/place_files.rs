@@ -373,7 +373,20 @@ impl PlaceThumbs {
     /// 不同的东西（文件头 vs 图片），合成一个入口迟早有人传错，
     /// 而传错的表现是「图永远不出来、且不报错」。
     pub fn insert_image(&self, bytes: Vec<u8>) -> Option<String> {
-        self.put(ThumbSource::Image(bytes))
+        // 内容寻址：token 由字节内容算出，同一张图（头像/内嵌缩略图）永远得到
+        // 同一个 token。这样目录刷新时重新登记同一张头像不会换 token，前端
+        // 已经拿到的 `omystream://pthumb/<token>` URL 依然有效——**这正是修
+        // 「刷新时其他群图标闪成文件夹再变回」的关键**：换 token 会让旧 URL
+        // 在新列表到达前的那几百毫秒里 404、回退成文件夹图标。
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in &bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let token = format!("pi{hash:016x}");
+        let mut thumbs = self.thumbs.lock().ok()?;
+        thumbs.insert(token.clone(), ThumbSource::Image(bytes));
+        Some(token)
     }
 
     fn put(&self, src: ThumbSource) -> Option<String> {
@@ -407,6 +420,19 @@ impl PlaceThumbs {
     pub fn clear(&self) {
         if let Ok(mut m) = self.thumbs.lock() {
             m.clear();
+        }
+    }
+
+    /// 只清 omy 文件头缩略图（`OmyHeader`），保留图片（`Image`：头像与内嵌
+    /// 缩略图）。
+    ///
+    /// 用于目录刷新：文件头 token 是每屏登记、按序号递增的，必须清否则无限
+    /// 涨；而图片 token 已改成内容寻址（见 `insert_image`），同一张图刷新前后
+    /// 是同一个 token，清了反而会让当前显示的头像在新列表到达前 404、闪成
+    /// 文件夹图标。所以刷新只清文件头、不动图片。
+    pub fn clear_headers(&self) {
+        if let Ok(mut m) = self.thumbs.lock() {
+            m.retain(|_, v| matches!(v, ThumbSource::Image(_)));
         }
     }
 }

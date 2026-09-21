@@ -331,9 +331,12 @@ fn scan_entries(
     let omy_only = scan_cfg.remote.scan_omy_only;
     let concurrency = scan_cfg.remote.scan_concurrency.clamp(1, 32);
 
-    // 缩略图 token 只服务当前这一屏：开始探测前清掉上一屏登记的头部，
-    // 避免反复进出目录让句柄表无限增长，也防止旧 token 串到新列表。
-    thumbs.clear();
+    // 只清上一屏登记的 omy 文件头 token（每屏递增、必须清否则无限涨），
+    // **保留图片 token**（头像/内嵌缩略图，已内容寻址）。
+    // 全清会让当前显示的头像在新列表到达前那几百毫秒 404、闪成文件夹图标
+    // ——这正是用户报的「刷新时其他群图标闪回文件夹」。图片内容寻址后，
+    // 同一张头像刷新前后是同一 token，不清即不闪。
+    thumbs.clear_headers();
 
     // 边扫边出：PROPFIND 列目录很快、逐文件读头部识别较慢。先返回一屏骨架
     // （待探测文件标 probing=true）让界面立刻有内容，后台每识别完一个就 emit

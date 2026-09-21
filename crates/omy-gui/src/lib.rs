@@ -262,6 +262,7 @@ pub fn run() {
             settings::config_get,
             settings::config_set,
             settings::config_paths,
+            settings::ui_log,
             settings::open_log_dir,
             settings::app_about,
             place_cmds::remote_place_add,

@@ -45,7 +45,40 @@ fn main() {
         build_frontend(&frontend, &dist);
     }
 
+    emit_build_stamp();
+
     tauri_build::build();
+}
+
+/// 把「构建时间 + git 短 hash」作为编译期环境变量注入，供设置「关于」页显示。
+///
+/// # 为什么要有它
+///
+/// 用户报问题时，我们和他都需要一个能自证「他开的是哪一版」的东西——否则
+/// 「改了没生效」永远分不清是没生效还是在跑旧构建（这个坑真发生过）。
+/// 界面显示的 hash / 时间与 `git log` 一对就知道。
+fn emit_build_stamp() {
+    // 构建时间：UTC，秒级 UNIX 时间戳转成可读串。不引 chrono，简单用系统时间。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=OMY_BUILD_UNIX={now}");
+
+    // git 短 hash。拿不到（不是 git 仓库、没装 git）就给 "unknown"，不让构建失败。
+    let hash = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| String::from("unknown"));
+    println!("cargo:rustc-env=OMY_BUILD_GIT={hash}");
+    // 源码变了要重算 hash：盯 .git/HEAD
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
 }
 
 /// 产物是否需要重建。
