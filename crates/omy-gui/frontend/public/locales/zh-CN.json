@@ -787,7 +787,8 @@
       "sentToCall": "验证码将通过电话语音播报。",
       "sentToFlashCall": "会有一通闪电来电，号码的后几位就是验证码。",
       "sentUnknown": "验证码已发送。"
-    }
+    },
+    "account_already_added": "该账号已经添加过了，已切换到它。"
   },
   "devicekey": {
     "unlock_with_hello": "用 Windows Hello 解锁",

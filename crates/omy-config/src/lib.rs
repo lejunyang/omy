@@ -328,6 +328,17 @@ pub struct SavedPlace {
     /// 为 `None` 表示这个位置没有密码（匿名），或密钥已丢失需要重新登录。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<toml::Value>,
+    /// Telegram 账号的服务端 user id，用于登录去重。
+    ///
+    /// 只有 Telegram 位置有；WebDAV 为 `None`。它是**公开的数字 id**、
+    /// 不是凭据，可以明文存。判据必须用它而不是昵称：昵称会重复、会被用户
+    /// 改掉，只有 user id 在服务端唯一，才能判断「这两个位置是不是同一个账号」。
+    ///
+    /// `#[serde(default)]`：老配置里没有这个字段，反序列化时回落为 `None`
+    /// ——升级后已有位置照样读得出，只是暂时不带 user id，下次登录/连接
+    /// 拿到后再补上。少了这个默认，老配置会直接反序列化失败、所有位置丢失。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<i64>,
 }
 
 impl Default for Remote {

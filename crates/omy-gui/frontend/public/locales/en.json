@@ -787,7 +787,8 @@
       "sentToCall": "The code will be read out in a phone call.",
       "sentToFlashCall": "You will get a flash call; the last digits of the number are the code.",
       "sentUnknown": "The code has been sent."
-    }
+    },
+    "account_already_added": "This account is already added; switched to it."
   },
   "devicekey": {
     "unlock_with_hello": "Unlock with Windows Hello",

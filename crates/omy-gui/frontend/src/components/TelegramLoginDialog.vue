@@ -552,10 +552,16 @@ async function importTdata() {
     // 只认 PENDING_ACCOUNT 下的 session（扫码的占位账号），tdata 的
     // session 不在那儿——于是要么报「尚未登录」而位置其实已经建好了，
     // 要么拿上次扫码残留的 session 又建一个**别的账号**的位置
-    const placeId = await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
+    // 后端返回 { id, duplicate }：命中已有账号时 id 是那个已有位置的
+    const r = await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
     tdPass.value = '';
-    tdPlaceId.value = placeId;
-    emit('done', { sessionSaved: true, proxyUrl: proxyUrl.value, placeId });
+    tdPlaceId.value = r.id;
+    emit('done', {
+      sessionSaved: true,
+      proxyUrl: proxyUrl.value,
+      placeId: r.id,
+      duplicate: r.duplicate === true,
+    });
   } catch (e) {
     const code = api.errCode(e) || 'tg_tdata_failed';
     errCode.value = code;

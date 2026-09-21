@@ -37,6 +37,11 @@ pub struct Place {
     /// 存在 `Place` 上而不是只存在于那次连接调用里：重启后要靠它重连，
     /// 而本机直连 Telegram 数据中心是超时的。
     pub proxy: Option<String>,
+    /// Telegram 账号的服务端 user id（仅 Telegram 有，其余为 `None`）。
+    ///
+    /// 登录去重的判据：昵称会重会改，只有它在服务端唯一。从配置恢复出来的
+    /// 未连接占位也带着它，重启后不必重连就能判重。
+    pub user_id: Option<i64>,
     /// 驱动实例。
     ///
     /// 类型是 [`PlaceStore`] 而不是某个具体驱动：这里写死成 `Arc<WebDavStore>`
@@ -168,6 +173,7 @@ impl PlaceRegistry {
             // 而对不上的后果是配置存进去读回来变成另一种驱动
             kind: String::from(store.kind()),
             proxy: None,
+            user_id: None, // WebDAV 没有账号 user id
             store,
         });
         m.insert(id.clone(), place);
@@ -192,6 +198,7 @@ impl PlaceRegistry {
         name: String,
         store: TelegramStore,
         proxy: Option<String>,
+        user_id: Option<i64>,
     ) -> omy_remote::Result<String> {
         let store = Arc::new(PlaceStore::from(store));
         let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) else {
@@ -203,6 +210,7 @@ impl PlaceRegistry {
             name,
             kind: String::from(store.kind()),
             proxy,
+            user_id,
             store,
         });
         m.insert(id.clone(), place);
@@ -221,6 +229,7 @@ impl PlaceRegistry {
         name: String,
         store: TelegramStore,
         proxy: Option<String>,
+        user_id: Option<i64>,
     ) {
         let store = Arc::new(PlaceStore::from(store));
         let place = Arc::new(Place {
@@ -228,6 +237,7 @@ impl PlaceRegistry {
             name,
             kind: String::from(store.kind()),
             proxy,
+            user_id,
             store,
         });
         if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -282,6 +292,7 @@ impl PlaceRegistry {
             name,
             kind: old.kind.clone(),
             proxy: old.proxy.clone(),
+            user_id: old.user_id, // 改名不动账号身份
             store: Arc::clone(&old.store),
         });
         m.insert(String::from(id), replaced);
@@ -293,6 +304,63 @@ impl PlaceRegistry {
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Arc<Place>> {
         self.places.lock().ok()?.get(id).cloned()
+    }
+
+    /// 找一个 user id 相同的**已有** Telegram 位置，返回它的 id。
+    ///
+    /// 登录去重的查询点：判据是 user id 而非昵称——昵称会重、会改，只有
+    /// user id 在服务端唯一。带 user id 的占位（从配置恢复的）也算数，
+    /// 所以重启后不必先连上就能判重。
+    ///
+    /// `exclude` 用来排除某个位置：命中后要把新登录并进已有位置，扫码路径
+    /// 会先把占位建出来（PENDING → placeConnect），查重时要把那个刚建的
+    /// 占位本身排除掉，否则会「自己命中自己」。
+    #[must_use]
+    pub fn find_telegram_by_user(&self, user_id: i64, exclude: Option<&str>) -> Option<String> {
+        let (m, o) = (self.places.lock().ok()?, self.order.lock().ok()?);
+        // 按注册顺序找，命中最早那个：稳定、可预期
+        o.iter()
+            .filter(|id| exclude != Some(id.as_str()))
+            .filter_map(|id| m.get(id))
+            .find(|p| p.kind == "telegram" && p.user_id == Some(user_id))
+            .map(|p| p.id.clone())
+    }
+
+    /// 把一个已有 Telegram 位置的连接与 user id 就地换新。
+    ///
+    /// 登录去重命中已有账号时用：这次登录产生的是更新鲜的登录态，用它替换
+    /// 已有位置的 store，比留着旧连接合理。名字与代理沿用已有的——用户之前
+    /// 给这个账号起的名字不该被一次重复登录冲掉。
+    ///
+    /// 返回是否换成功（位置不存在或不是 Telegram 时为 `false`）。
+    pub fn update_telegram_connection(
+        &self,
+        id: &str,
+        store: TelegramStore,
+        user_id: Option<i64>,
+    ) -> bool {
+        let store = Arc::new(PlaceStore::from(store));
+        let Ok(mut m) = self.places.lock() else {
+            return false;
+        };
+        let Some(old) = m.get(id) else {
+            return false;
+        };
+        if old.kind != "telegram" {
+            return false;
+        }
+        let replaced = Arc::new(Place {
+            id: old.id.clone(),
+            name: old.name.clone(),
+            kind: old.kind.clone(),
+            proxy: old.proxy.clone(),
+            // user id 用新拿到的；正常与旧的相同（因为是靠它命中的），
+            // 但占位此前可能没有 user id，这里正好补上
+            user_id: user_id.or(old.user_id),
+            store,
+        });
+        m.insert(String::from(id), replaced);
+        true
     }
 
     /// 移除一个位置。
@@ -483,6 +551,7 @@ impl PlaceRegistry {
                     vendor: String::from(vendor_str(c.vendor)),
                     writable: c.writable,
                     secret,
+                    user_id: None, // WebDAV 无账号 user id
                 }
             })
             .collect();
@@ -535,6 +604,8 @@ impl PlaceRegistry {
                 // 凭据不在这里：Telegram 的登录态由
                 // omy_remote::telegram::session 按位置 id 单独加密落盘
                 secret: None,
+                // 账号 user id：登录去重的判据，公开数字 id、可明文存
+                user_id: p.user_id,
             })
             .collect()
     }
@@ -575,6 +646,10 @@ impl PlaceRegistry {
                     kind: sp.kind.clone(),
                     // 代理存在 url 字段里（见 persist 处的说明）
                     proxy: Some(sp.url.clone()).filter(|s| !s.is_empty()),
+                    // 从配置带回 user id：老配置没有这个字段时为 None（见
+                    // SavedPlace.user_id 的 serde default），重启后判重就少了
+                    // 这一个账号，等它下次连接再补上
+                    user_id: sp.user_id,
                     store: Arc::new(PlaceStore::from(TelegramStore::new())),
                 });
                 if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -632,6 +707,7 @@ impl PlaceRegistry {
                 name: sp.name.clone(),
                 kind: sp.kind.clone(),
                 proxy: None,
+                user_id: None, // WebDAV 无账号 user id
                 store: Arc::new(PlaceStore::from(store)),
             });
             if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
@@ -775,6 +851,7 @@ mod tests {
                     vendor: String::from(vendor_str(c.vendor)),
                     writable: c.writable,
                     secret,
+                    user_id: None,
                 }
             })
             .collect();
@@ -825,6 +902,7 @@ mod tests {
                     c: String::from("deadbeef"),
                 })
                 .ok(),
+                user_id: None,
             }],
             ..omy_config::Remote::default()
         };
@@ -853,6 +931,7 @@ mod tests {
             vendor: String::from("generic"),
             writable: false,
             secret: None,
+            user_id: None,
         };
         let remote = omy_config::Remote {
             places: vec![
@@ -888,6 +967,7 @@ mod tests {
             vendor: String::from("generic"),
             writable: true,
             secret: toml::Value::try_from(env).ok(),
+            user_id: None,
         };
         let remote = omy_config::Remote {
             places: vec![sp],
@@ -902,7 +982,7 @@ mod tests {
 
     /// 造一个 Telegram 位置（未连接占位，够用来验注册表逻辑）。
     fn add_tg(r: &PlaceRegistry, name: &str) -> String {
-        r.add_telegram(String::from(name), TelegramStore::new(), None)
+        r.add_telegram(String::from(name), TelegramStore::new(), None, None)
             .expect("添加 Telegram")
     }
 
@@ -1062,6 +1142,7 @@ mod tests {
             vendor: String::new(),
             writable: true,
             secret: None,
+            user_id: None,
         };
         let remote = omy_config::Remote {
             places: vec![mk("p1", "甲"), mk("p2", "乙"), mk("p3", "丙")],
@@ -1077,5 +1158,133 @@ mod tests {
             !["p1", "p2", "p3"].contains(&fresh.as_str()),
             "新位置拿到了已被占用的 id：{fresh}"
         );
+    }
+
+    /// 带 user id 造一个 Telegram 位置。
+    fn add_tg_uid(r: &PlaceRegistry, name: &str, uid: i64) -> String {
+        r.add_telegram(String::from(name), TelegramStore::new(), None, Some(uid))
+            .expect("添加 Telegram")
+    }
+
+    /// **同一个 user id 能被查到，用于登录去重。**
+    ///
+    /// 不这样会怎样：去重靠这条查询判断「这个账号加过没有」。查不到就会
+    /// 每次重复登录都新建一个同账号位置——正是这次要修的缺陷。
+    #[test]
+    fn find_telegram_by_user_hits_same_account() {
+        let r = PlaceRegistry::new();
+        let a = add_tg_uid(&r, "工作号", 111);
+        add_tg_uid(&r, "私人号", 222);
+        assert_eq!(
+            r.find_telegram_by_user(111, None).as_deref(),
+            Some(a.as_str()),
+            "同一个 user id 必须命中它对应的位置"
+        );
+        assert!(
+            r.find_telegram_by_user(999, None).is_none(),
+            "没加过的 user id 不该命中任何位置"
+        );
+    }
+
+    /// **exclude 能把某个位置排除掉。**
+    ///
+    /// 不这样会怎样：扫码路径会先建占位再查重，若不排除占位本身，就会
+    /// 「自己命中自己」，把一次全新登录误判成重复。
+    #[test]
+    fn find_telegram_by_user_respects_exclude() {
+        let r = PlaceRegistry::new();
+        let only = add_tg_uid(&r, "唯一账号", 111);
+        assert!(
+            r.find_telegram_by_user(111, Some(&only)).is_none(),
+            "排除唯一持有者后不该再命中"
+        );
+    }
+
+    /// **不同 user id 各自建位置，去重不误伤多账号。**
+    ///
+    /// 不这样会怎样：去重做过头会把两个不同账号也并成一个，多账号直接失效。
+    #[test]
+    fn distinct_users_are_not_deduped() {
+        let r = PlaceRegistry::new();
+        let a = add_tg_uid(&r, "甲", 111);
+        let b = add_tg_uid(&r, "乙", 222);
+        assert_ne!(a, b);
+        assert_eq!(r.find_telegram_by_user(111, None).as_deref(), Some(a.as_str()));
+        assert_eq!(r.find_telegram_by_user(222, None).as_deref(), Some(b.as_str()));
+    }
+
+    /// **命中后覆盖连接：位置 id 与名字不变，user id 补上。**
+    ///
+    /// 不这样会怎样：去重命中已有账号时，要用更新鲜的登录态换掉旧连接，
+    /// 但不能把用户起的名字冲掉、也不能换 id（换 id 等于换 session 文件）。
+    #[test]
+    fn update_connection_keeps_id_and_name() {
+        let r = PlaceRegistry::new();
+        let id = add_tg(&r, "我的账号"); // 占位此前没有 user id（老配置恢复的）
+        assert!(
+            r.update_telegram_connection(&id, TelegramStore::new(), Some(111)),
+            "对已有 Telegram 位置换连接应成功"
+        );
+        let p = r.get(&id).expect("位置还在");
+        assert_eq!(p.name, "我的账号", "名字不能被换连接冲掉");
+        assert_eq!(p.user_id, Some(111), "占位应补上 user id");
+        assert_eq!(r.find_telegram_by_user(111, None).as_deref(), Some(id.as_str()));
+    }
+
+    /// **user id 能持久化并在恢复后读回，用于重启后判重。**
+    ///
+    /// 不这样会怎样：user id 不落盘的话，重启后所有位置都「没有 user id」，
+    /// 下次重复登录又会新建——去重只在本次运行内有效，形同虚设。
+    #[test]
+    fn user_id_round_trips_through_persist() {
+        let r = PlaceRegistry::new();
+        let id = add_tg_uid(&r, "账号", 12345);
+        // 走产品真正的组装路径 assemble_saved_places（见其文档），不重抄
+        let saved = {
+            let (m, o) = (r.places.lock().unwrap(), r.order.lock().unwrap());
+            PlaceRegistry::assemble_saved_places(&m, &o, None)
+        };
+        let sp = saved.iter().find(|s| s.id == id).expect("应存下这个位置");
+        assert_eq!(sp.user_id, Some(12345), "user id 必须被存进 SavedPlace");
+
+        let remote = omy_config::Remote {
+            places: saved,
+            ..omy_config::Remote::default()
+        };
+        let r2 = PlaceRegistry::new();
+        r2.restore(&remote);
+        assert_eq!(
+            r2.find_telegram_by_user(12345, None).as_deref(),
+            Some(id.as_str()),
+            "恢复后必须还能按 user id 查到"
+        );
+    }
+
+    /// **老配置没有 user_id 字段时，反序列化不崩、位置照常恢复。**
+    ///
+    /// 不这样会怎样：给 SavedPlace 加字段若没配 serde default，老用户升级后
+    /// 整份 remote.places 反序列化失败，所有远程位置一起消失——这是最恶劣的
+    /// 升级回归，而且不报错，用户只看到「我的位置全没了」。
+    #[test]
+    fn old_config_without_user_id_still_loads() {
+        let old = r#"
+[[places]]
+id = "p1"
+name = "老账号"
+kind = "telegram"
+url = ""
+username = ""
+vendor = ""
+writable = true
+"#;
+        let remote: omy_config::Remote =
+            toml::from_str(old).expect("老配置必须仍能反序列化");
+        assert_eq!(remote.places.len(), 1, "位置不能丢");
+        assert_eq!(remote.places[0].user_id, None, "缺字段应回落为 None");
+
+        let r = PlaceRegistry::new();
+        let (n, _) = r.restore(&remote);
+        assert_eq!(n, 1, "位置必须恢复出来");
+        assert!(r.get("p1").is_some(), "p1 应存在");
     }
 }

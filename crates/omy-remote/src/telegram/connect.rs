@@ -191,6 +191,19 @@ pub async fn account_label(client: &Client) -> String {
     String::from("Telegram")
 }
 
+/// 取当前账号的服务端 user id，用于登录去重。
+///
+/// 这是**账号在服务端的唯一标识**：昵称会重、会改，只有 user id 唯一，
+/// 判断「两个位置是不是同一个账号」只能靠它。取不到（网络抖动、
+/// `get_me` 失败）时返回 `None`——调用方据此选择不去重、按新账号处理，
+/// 也好过错判成某个已有账号。
+pub async fn account_user_id(client: &Client) -> Option<i64> {
+    // me.id() 是 PeerId；对普通 User 取 bare_id() 得到服务端的账号数字 id。
+    // bare_id() 只有在「self_user 占位」时才 None，而 get_me() 返回的是
+    // 真实用户、不是那个占位，所以正常都能取到
+    client.get_me().await.ok().and_then(|me| me.id().bare_id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

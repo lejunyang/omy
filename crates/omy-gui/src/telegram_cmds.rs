@@ -648,7 +648,7 @@ pub async fn telegram_tdata_import(
     path: String,
     passcode: Option<String>,
     proxy_url: Option<String>,
-) -> CmdResult<String> {
+) -> CmdResult<RegisterOutcome> {
     let dir = std::path::PathBuf::from(&path);
     let pass = passcode.unwrap_or_default();
 
@@ -689,17 +689,39 @@ pub async fn telegram_tdata_import(
             CmdError::with(e.code(), detail(&e.to_string()))
         })?;
 
-    // 默认位置名取服务端昵称；取不到就回落，不让它影响导入本身
+    // 拿这个账号的服务端 user id 用于去重；默认位置名取服务端昵称
+    let user_id = connect::account_user_id(&conn.client).await;
     let label = connect::account_label(&conn.client).await;
+
+    let store = TelegramStore::from_connection(conn.client, conn.runner);
+
+    // 去重在**建位置之前**做——这样命中时根本不必回滚一个刚建的位置。
+    // exclude 传 None：tdata 这条路此刻还没有属于自己的占位。
+    if let Some(existing) = dedupe_target(&reg, user_id, None) {
+        // 命中已有账号：不新建。用这次的登录态覆盖已有位置的 session 与连接，
+        // 不留孤儿——tdata 的 session 此刻还没落盘，直接 save_current 到
+        // 已有位置的 id 即可。
+        if let Err(e) = tgsession::save_current(&saved, &existing) {
+            eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
+        }
+        reg.update_telegram_connection(&existing, store, user_id);
+        if let Err(e) = reg.persist() {
+            eprintln!("[omy] 保存 Telegram 位置失败：{e}");
+        }
+        crate::applog::info(
+            "tg-tdata",
+            &format!("导入命中已有账号 uid={}，并入 {existing}，不新建", redact_uid(user_id)),
+        );
+        return Ok(RegisterOutcome { id: existing, duplicate: true });
+    }
 
     // **不再摘掉已有的 Telegram 位置。**
     //
     // 早先这里有一句「已有占位就先摘掉，否则侧栏会出现两个 Telegram」，
     // 那基于「只会有一个账号」的前提。多账号之后两个位置正是**想要**的结果，
     // 摘掉反而会让用户导入第二个账号时第一个凭空消失。
-    let store = TelegramStore::from_connection(conn.client, conn.runner);
     let id = reg
-        .add_telegram(label, store, proxy.clone())
+        .add_telegram(label, store, proxy.clone(), user_id)
         .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
     crate::applog::info("tg-tdata", &format!("导入成功，位置 id={id}"));
 
@@ -719,7 +741,7 @@ pub async fn telegram_tdata_import(
     if let Err(e) = reg.persist() {
         eprintln!("[omy] 保存 Telegram 位置失败：{e}");
     }
-    Ok(id)
+    Ok(RegisterOutcome { id, duplicate: false })
 }
 
 
@@ -748,6 +770,37 @@ fn tdata_code(e: &tdata::TdataError) -> &'static str {
 /// 看起来是「登记一条记录」的同步操作变成能卡住界面的操作；放在命令层，
 /// 前端可以照常显示进行中状态。
 ///
+/// 登录去重的结果：命中已有账号，还是建了新位置。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterOutcome {
+    /// 最终对应的位置 id（命中时是已有位置的 id，否则是新建的）。
+    pub id: String,
+    /// 是否命中了已有账号（前端据此提示「该账号已添加」并跳过去）。
+    pub duplicate: bool,
+}
+
+/// 三条登录路径共用的去重判据：拿这次登录的 user id 查有没有已加过的同一账号。
+///
+/// **抽成一处、三处调用**（AGENTS.md 同一逻辑不两处实现）：只在扫码那条路上
+/// 判重，换手机号或 tdata 照样能把同一个账号加第二遍。判据是 user id 不是
+/// 昵称——昵称会重、会改，只有服务端 user id 唯一。
+///
+/// `exclude` 排除某个位置：扫码路径会先建占位（PENDING→connect），查重要把
+/// 那个刚建的占位排除掉，否则会自己命中自己。tdata 传 `None`（查重在建位置
+/// 之前做）。
+///
+/// 返回命中的已有位置 id；未命中或 user id 取不到（网络抖动）时 `None`——
+/// 取不到时按新账号处理，也好过错判成某个已有账号。
+fn dedupe_target(
+    reg: &crate::places::PlaceRegistry,
+    user_id: Option<i64>,
+    exclude: Option<&str>,
+) -> Option<String> {
+    let uid = user_id?;
+    reg.find_telegram_by_user(uid, exclude)
+}
+
 /// # 每次调用都新建一个位置，**不再复用已有的**
 ///
 /// 早先这里会先查「有没有 Telegram 位置」，有就直接返回那个 id。那基于
@@ -765,7 +818,7 @@ fn tdata_code(e: &tdata::TdataError) -> &'static str {
 pub async fn telegram_place_connect(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
     proxy_url: Option<String>,
-) -> CmdResult<String> {
+) -> CmdResult<RegisterOutcome> {
     let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
         Ok(p) => p.map(|p| p.to_string()),
         Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
@@ -779,6 +832,8 @@ pub async fn telegram_place_connect(
         .await
         .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
 
+    // 拿这个账号的服务端 user id，用于去重。取不到就按新账号处理
+    let user_id = connect::account_user_id(&conn.client).await;
     // 默认位置名取服务端昵称，让两个账号在侧栏上一眼能分辨
     let label = connect::account_label(&conn.client).await;
 
@@ -789,8 +844,27 @@ pub async fn telegram_place_connect(
     // 这条约束由类型系统保证，不靠谁记得。
     let store = TelegramStore::from_connection(conn.client, conn.runner);
 
+    // 去重：这个账号是不是已经加过了？此处还没建位置，exclude 传 None。
+    if let Some(existing) = dedupe_target(&reg, user_id, None) {
+        // 命中已有账号：不新建。用这次更新鲜的登录态覆盖已有位置的连接，
+        // 并把 PENDING 那份 session 收编成已有位置的（覆盖旧的），
+        // 绝不留孤儿 session 文件。
+        reg.update_telegram_connection(&existing, store, user_id);
+        if let Err(e) = tgsession::adopt_pending(&existing) {
+            eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
+        }
+        if let Err(e) = reg.persist() {
+            eprintln!("[omy] 保存 Telegram 位置失败：{e}");
+        }
+        crate::applog::info(
+            "tg",
+            &format!("扫码命中已有账号 uid={}，并入 {existing}，不新建", redact_uid(user_id)),
+        );
+        return Ok(RegisterOutcome { id: existing, duplicate: true });
+    }
+
     let id = reg
-        .add_telegram(label, store, proxy.clone())
+        .add_telegram(label, store, proxy.clone(), user_id)
         .map_err(|e| CmdError::with("tg_register_failed", detail(&e.to_string())))?;
 
     // 把待收编的那份 session 改名成这个位置自己的。
@@ -808,7 +882,16 @@ pub async fn telegram_place_connect(
     if let Err(e) = reg.persist() {
         eprintln!("[omy] 保存 Telegram 位置失败：{e}");
     }
-    Ok(id)
+    Ok(RegisterOutcome { id, duplicate: false })
+}
+
+/// user id 记进日志时脱敏：它虽是公开数字 id、不是凭据，但仍属于账号信息，
+/// 日志里过一遍 redact 只保留「能不能对上是同一个」的能力。
+fn redact_uid(user_id: Option<i64>) -> String {
+    match user_id {
+        Some(u) => crate::applog::redact(&u.to_string()),
+        None => String::from("<none>"),
+    }
 }
 
 /// 给一个远程位置改名。
@@ -890,13 +973,16 @@ pub async fn ensure_connected(
         &format!("重连 place={place_id} 成功 ({}ms)", t0.elapsed().as_millis()),
     );
     let store = TelegramStore::from_connection(conn.client, conn.runner);
-    // 换掉占位：先摘再加，否则会并存两条
+    // 换掉占位：先摘再加，否则会并存两条。
+    // user id 沿用占位带回来的那个（restore 时从配置读进 p.user_id），
+    // 不重新取——这里只是把未连接占位换成真连接，账号身份没变
     reg.remove(place_id);
     reg.add_telegram_with_id(
         String::from(place_id),
         p.name.clone(),
         store,
         proxy,
+        p.user_id,
     );
     Ok(())
 }
