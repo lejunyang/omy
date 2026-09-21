@@ -35,7 +35,7 @@ const mobilePane = ref(null);
 
 /** 整份配置。读失败时用空对象兜底，界面显示默认值而不是白屏。 */
 const cfg = ref(null);
-const paths = ref({ config: '', cache: '', data: '', portable: false });
+const paths = ref({ config: '', cache: '', data: '', log: '', portable: false });
 const loading = ref(true);
 const error = ref('');
 
@@ -395,6 +395,15 @@ async function openCacheDir() {
     await api.remoteCacheOpenDir();
   } catch (e) {
     error.value = i18n.te(api.errCode(e), 'settings.cache_open_failed');
+  }
+}
+
+/** 在系统文件管理器里打开日志目录（仅桌面端）。 */
+async function openLogDir() {
+  try {
+    await api.openLogDir();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.log_open_failed');
   }
 }
 </script>
@@ -954,6 +963,21 @@ async function openCacheDir() {
             <div class="row">
               <label class="lb">{{ i18n.t('settings.config_file') }}</label>
               <div class="fld path">{{ paths.config }}</div>
+            </div>
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.log_dir') }}</label>
+              <div class="fld">
+                <div class="path">{{ paths.log || i18n.t('settings.log_none') }}</div>
+                <button
+                  v-if="paths.log"
+                  class="btn"
+                  data-sf="open-log"
+                  @click="openLogDir"
+                >
+                  {{ i18n.t('settings.log_open') }}
+                </button>
+                <div class="desc">{{ i18n.t('settings.log_desc') }}</div>
+              </div>
             </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.portable') }}</label>

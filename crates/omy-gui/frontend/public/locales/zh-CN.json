@@ -594,7 +594,11 @@
     "pinned_unpin_failed": "取消永久保留失败",
     "pinned_gone_place": "已移除的位置",
     "pinned_list_failed": "读取永久保留清单失败",
-    "pinned_loading": "正在读取…"
+    "pinned_loading": "正在读取…",
+    "log_dir": "日志目录",
+    "log_open": "打开",
+    "log_none": "本次未写文件日志",
+    "log_desc": "记录操作与错误，供排查用；不含密码、验证码等敏感信息。达到上限会自动清理最旧的日志。"
   },
   "rplace": {
     "title": "远程位置",

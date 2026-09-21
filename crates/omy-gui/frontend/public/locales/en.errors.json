@@ -119,5 +119,9 @@
   "tg_code_expired": "The code has expired. Tap \"Resend\".",
   "tg_phone_invalid": "Invalid phone number. Include the country code (e.g. +1).",
   "tg_phone_banned": "This number has been banned by Telegram.",
-  "tg_phone_payment": "This number needs a paid SMS, which omy does not support. Please use QR sign-in instead."
+  "tg_phone_payment": "This number needs a paid SMS, which omy does not support. Please use QR sign-in instead.",
+  "log_open_failed": "Couldn't open the log folder. Please open the path manually.",
+  "log_dir_unknown": "The log folder is not determined yet.",
+  "log_dir_open_failed": "Couldn't open the log folder. Please open the path manually.",
+  "log_dir_unsupported": "Opening the log folder is not supported on this platform."
 }

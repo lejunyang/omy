@@ -119,5 +119,9 @@
   "tg_code_expired": "验证码已过期，请点「重新发送」。",
   "tg_phone_invalid": "手机号格式不正确，请带上国家码（如 +86）。",
   "tg_phone_banned": "这个号码已被 Telegram 封禁，无法登录。",
-  "tg_phone_payment": "这个号码需要付费短信才能收码，omy 不支持。请改用扫码登录。"
+  "tg_phone_payment": "这个号码需要付费短信才能收码，omy 不支持。请改用扫码登录。",
+  "log_open_failed": "打不开日志目录，请手动前往该路径查看。",
+  "log_dir_unknown": "尚未确定日志目录。",
+  "log_dir_open_failed": "打不开日志目录，请手动前往该路径查看。",
+  "log_dir_unsupported": "当前平台不支持打开日志目录。"
 }

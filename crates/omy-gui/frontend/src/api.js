@@ -391,6 +391,9 @@ export const configSet = (config) => invoke('config_set', { config });
  */
 export const configPaths = () => invoke('config_paths');
 
+/** 在系统文件管理器里打开日志目录（仅桌面端）。 */
+export const openLogDir = () => invoke('open_log_dir');
+
 /**
  * 应用版本与 OMYFILE 格式版本，供设置页「关于」显示。
  * 版本来自后端编译期常量，避免在前端写死后发版漏改。

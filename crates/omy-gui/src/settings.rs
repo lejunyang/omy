@@ -37,6 +37,9 @@ pub struct ConfigPaths {
     pub cache: Option<String>,
     /// 数据目录（设备库等）。
     pub data: Option<String>,
+    /// 日志目录（排查用）。用户加日志就是为了排查，找不到等于没有，
+    /// 所以设置页要能直接显示它在哪、并一键打开。
+    pub log: Option<String>,
     /// 是否为便携模式（放在可执行文件旁）。
     pub portable: bool,
 }
@@ -70,7 +73,67 @@ pub fn config_paths() -> ConfigPaths {
         config: to_s(omy_config::config_path()),
         cache: to_s(omy_config::cache_dir()),
         data: to_s(omy_config::data_dir()),
+        // 优先给「实际在写的那个文件所在目录」；没在写文件（移动端/降级）时
+        // 回落到「本该在哪」，让界面仍能说清位置
+        log: to_s(crate::applog::current_path()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+            .or_else(crate::applog::dir)),
         portable: omy_config::is_portable(),
+    }
+}
+
+/// 在系统文件管理器里打开日志目录。
+///
+/// 复用回收站那套的思路——桌面端才有「文件管理器」这个概念，移动端没有。
+/// 打不开（目录不存在、无桌面环境）时返回结构化错误，界面提示用户手动去
+/// 那个路径找，而不是静默失败。
+///
+/// # Errors
+///
+/// 日志目录未知、或系统调用失败时返回。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub fn open_log_dir() -> CmdResult<()> {
+    let dir = crate::applog::current_path()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .or_else(crate::applog::dir)
+        .ok_or_else(|| CmdError::code("log_dir_unknown"))?;
+    // 目录可能还没建（还没写过日志）——先确保它在，否则打开会失败
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(CmdError::with("log_dir_open_failed", serde_json::json!({
+            "detail": e.to_string()
+        })));
+    }
+    opener_reveal(&dir)
+}
+
+/// 移动端没有文件管理器可打开，命令仍要存在（前端统一调用），直接返回不支持。
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub fn open_log_dir() -> CmdResult<()> {
+    Err(CmdError::code("log_dir_unsupported"))
+}
+
+/// 用系统默认方式在文件管理器里显示某个目录。
+///
+/// 不引第三方 opener crate：各平台就一条命令，std::process 够了，且能避免
+/// 又拉进一串依赖。Android 已被外层 cfg 排除，这里只处理三个桌面平台。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn opener_reveal(dir: &std::path::Path) -> CmdResult<()> {
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("explorer").arg(dir).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(dir).spawn();
+    // Linux 等：xdg-open。Android 走不到这（上面 cfg 已排除），
+    // 否则会去调一个不存在的命令
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(dir).spawn();
+    match r {
+        // explorer 打开目录时返回码可能非 0，但目录确实开了，不据此判失败
+        Ok(_) => Ok(()),
+        Err(e) => Err(CmdError::with("log_dir_open_failed", serde_json::json!({
+            "detail": e.to_string()
+        }))),
     }
 }
 
@@ -119,6 +182,9 @@ mod tests {
         // portable 是 bool，这里只确认调用不 panic 且字段存在
         let j = serde_json::to_value(&p).expect("应可序列化");
         assert!(j.get("portable").is_some(), "前端要靠这个字段决定是否显示便携提示");
+        // 日志路径字段必须在——设置页要显示「日志在哪」，缺了它这条排查
+        // 入口就等于没做，而序列化不会因为少个字段报错
+        assert!(j.get("log").is_some(), "设置页要靠 log 字段显示日志目录");
     }
 
     /// 配置能完整地序列化给前端。

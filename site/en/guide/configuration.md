@@ -36,6 +36,24 @@ omy --config ./ci-config.toml encrypt file.mp4
 A file given via `--config` that cannot be read is an **error**; a missing file at the default path silently falls back to defaults. The distinction is deliberate — silently ignoring a file you named explicitly would let you believe your configuration took effect.
 :::
 
+## Logs
+
+The GUI writes actions, backend calls and errors to a rolling log to help with troubleshooting.
+
+| Situation | Path |
+|---|---|
+| Portable | `omy-data/logs/omy.log` beside the executable |
+| Fallback | `omy/logs/omy.log` under the system data directory |
+| Android / iOS | No file log is written |
+
+The full log path is shown under Settings › About, with a button that opens the folder in your file manager.
+
+A few things worth knowing:
+
+- Each log file rolls over at 5 MiB, keeping at most four history files (`omy.log.1` through `omy.log.4`); older ones are deleted automatically. Disk usage is therefore bounded at roughly 25 MiB.
+- The log **never** contains passwords, verification codes, two-step passwords, phone numbers, login credentials or decrypted file contents. Backend calls record only the method name, result and duration; file and chat identifiers are stored as an irreversible short hash, enough to tell whether two entries refer to the same item but not to recover the original path.
+- When the log directory is not writable (for example on a read-only install), no file is written and the program runs normally.
+
 ## The GUI shares this same file
 
 The GUI's Settings screen writes exactly this file: command line and graphical interface read the same configuration with the same defaults.

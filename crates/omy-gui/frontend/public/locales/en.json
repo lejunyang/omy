@@ -594,7 +594,11 @@
     "pinned_unpin_failed": "Could not stop keeping this file",
     "pinned_gone_place": "Removed location",
     "pinned_list_failed": "Could not read the list of permanent files",
-    "pinned_loading": "Loading…"
+    "pinned_loading": "Loading…",
+    "log_dir": "Log folder",
+    "log_open": "Open",
+    "log_none": "No log file this session",
+    "log_desc": "Records actions and errors for troubleshooting; no passwords or codes. Oldest logs are dropped automatically when the size limit is reached."
   },
   "rplace": {
     "title": "Remote locations",
