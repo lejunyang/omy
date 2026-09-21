@@ -863,6 +863,16 @@ function rowTitle(f) {
               {{ i18n.t('search.server') }}
             </button>
           </div>
+          <!-- 本账号内的后台刷新指示：蓝色转圈图标，放搜索栏右端，不占文字流、
+               不推挤布局。只在**已有内容**时显示（空列表/首次用下面占满区域的
+               大圆圈，不是这个）。 -->
+          <span
+            v-if="state.busy && visible.length"
+            class="refspin"
+            data-pb="refreshing"
+            :title="i18n.t('rplace.refreshing')"
+            aria-hidden="true"
+          ></span>
         </div>
 
         <!-- 两种语义各自的提示条。服务端那条是警告色：
@@ -1005,7 +1015,7 @@ function rowTitle(f) {
              有旧内容时改用下面那条不挡视线的细提示：用户能一边看已有内容、
              一边知道在刷新。 -->
         <div v-else-if="state.busy && !visible.length" class="empty">
-          <div class="icon" aria-hidden="true">⏳</div>
+          <div class="bigspin" aria-hidden="true"></div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
         </div>
 
@@ -1024,13 +1034,6 @@ function rowTitle(f) {
           </div>
         </div>
 
-        <div
-          v-if="state.busy && visible.length"
-          class="refreshing"
-          data-pb="refreshing"
-        >
-          {{ i18n.t('rplace.refreshing') }}
-        </div>
         <div v-if="state.view === 'grid'" class="grid">
           <div
             v-for="f in visible"
@@ -1193,10 +1196,31 @@ function rowTitle(f) {
   font-style: normal;
   line-height: 1.5;
 }
-.refreshing {
-  padding: 4px calc(var(--sp) * 3);
-  font-size: 12px;
-  color: var(--fg2);
+/* 后台刷新指示：搜索栏右端的蓝色转圈小图标，不占文字流、不推挤布局 */
+.refspin {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pb-spin 0.7s linear infinite;
+}
+@keyframes pb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 首次/空列表的大号居中加载圈，替换原来那个 ⏳ emoji（emoji 不转、也不够
+   「加载中」的分量）。用在占满内容区的 .empty 里 */
+.bigspin {
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pb-spin 0.8s linear infinite;
+  margin: 0 auto 10px;
 }
 .cmark {
   position: absolute;

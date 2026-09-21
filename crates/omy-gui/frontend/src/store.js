@@ -1969,6 +1969,11 @@ export async function openRemotePlace(id) {
   api.uiLog('open-place', id ? `#${id}` : '');
   state.remotePlace = id;
   state.remoteDir = '';
+  // 切账号先清掉上一个账号的列表：不清的话，切到一个**从没加载过**的账号时
+  // 会先显示上一个账号的内容 + 顶部小刷新图标，而不是「占满区域的大加载圈」。
+  // reloadRemoteDir 随后若命中缓存会立刻把内容摆回来，所以有缓存的账号仍是
+  // 「先出缓存」，不受影响——三态就此区分开。
+  state.remoteItems = [];
   await reloadRemoteDir();
 }
 
