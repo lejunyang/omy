@@ -593,6 +593,53 @@ grammers 提供 `Client::iter_dialogs()`（`DialogIter`，带 `total()`）。
    **两条现已都实测取到字节。** 这印证了本文早先记的那条——
    「只实现 document 的话，有一半取文件路径根本走不到」（§5.4）。
 
+#### 5.2.3 媒体分栏 + 两级缩略图 —— 已实现并真机验证
+
+官方客户端进对话看的是**按类型分的媒体页**（媒体/文件/链接/音频/GIF），
+不是「所有文件」一锅端。本轮据此把对话内文件视图改成五个分栏，实现要点与
+真机结果如下（这一节记「实现与实测」，与上面记「协议事实」的 §5.2.1/5.2.2
+分开）。
+
+**五个分栏各用一个服务端 filter**（`messages.search` 的 `MessagesFilter`）：
+
+| 分栏 | filter | 真机（Joh/「ShuMale 二十元店」首屏 30） |
+|---|---|---|
+| 媒体 | `InputMessagesFilterPhotoVideo` | 30 张图片/视频，含 `IMG_*.MOV` |
+| 文件 | `InputMessagesFilterDocument` | 30 个 document（.apk/.doc/.txt，含作为 document 发送的 .mp4）|
+| 链接 | `InputMessagesFilterUrl` | 30 条含 URL 的消息 |
+| 音频 | `InputMessagesFilterMusic` | 0（该群无音乐，界面显示「这一栏没有内容」）|
+| GIF | `InputMessagesFilterGif` | 2 条 |
+
+**这正好根治了「文件视图空但群里满是视频」**（§8.7 那条曾用 getHistory
+兜底）：视频的 `Media` 是 `Document`，但服务端把带 video 属性的 document 归进
+**PhotoVideo 索引**——所以「文件」栏用 `Document` filter 不会误含视频、
+「媒体」栏用 `PhotoVideo` 才拿到视频，两栏不重不漏。用了类型 filter 之后
+**不再需要**那个「扫 200 条凑一页」的兜底（那是无过滤只扫首页时的补救）。
+
+**加载策略对齐官方「填满视口 + 一屏缓冲」**：首屏 limit 按当前网格能放几个
+估（列数×可视行×2，夹在 [15,100]），不再拍固定 N；滚到底用 `offset_id` 游标
+续拉，「返回条数 < limit 即到底」（不靠 count，省一次必为空的请求，
+与 §5.1 同一条纪律）。各栏独立分页、独立缓存（内容缓存键带上栏名，否则
+同一对话的媒体栏和文件栏会串）。
+
+**两级缩略图**（官方「先出糊图、随即变清」的观感）：
+
+1. **一级 = `photoStrippedSize`**：列目录时随消息一起回来（§5.7 那个「零请求」
+   的好东西），几百字节、极低清，**首屏立即铺满**——补头后经 `is_complete_image`
+   校验，糊但瞬间有画面、尺寸正确不跳版。
+2. **二级 = `upload.getFile` 取可渲染档**：后台按 id 重取该条消息、下载一个
+   清晰尺寸档（跳过 stripped），限流 8 路，下好就发 `remote-entry` 事件把那张
+   卡片换成清晰图。真机：ShuMale 媒体栏首屏 30 张占位秒出，10 秒内 30/30 全部
+   升级为清晰图（`naturalWidth` 从几十像素变成 147×320 / 320×240 的真实尺寸）。
+
+**`.omy` 加密文件**：落「文件」栏（作为 document 上传），缩略图仍用 omy 自己
+文件头里的那张（不是 Telegram 给 .omy 生成的密文缩略图），识别/解锁走既有
+`probe_remote_entry` 同一条路。真机：Lol/omytest 文件栏 6 个 .omy 全部识别为
+锁定态。
+
+**广播频道**：媒体分栏在广播频道同样可用（filter 与是不是广播无关）；广播
+频道的**消息视图**改为只读浏览，见 DEC-24 的改判记录。
+
 ### 5.3 服务端搜索：能下推，但搜的不是文件名
 
 两个方法<sup>[T3]</sup>：

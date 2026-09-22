@@ -87,9 +87,10 @@ pub const CDN_REDIRECT: &str = "telegram cdn redirect";
 
 /// 广播频道不提供消息视图时给出的标记。
 ///
-/// 原因见 [`TelegramStore::messages`]：ToS 3.3 的 sponsored messages 要求。
-/// 做成公开常量供 GUI 映射成一句用户看得懂的话——否则界面只会显示一句
-/// 笼统的「不支持此操作」，而用户完全不知道为什么这个频道没有消息视图。
+/// **历史标记**：方案 A（DEC-24）之后 `messages()` 已允许广播频道只读浏览，
+/// 不再返回这个 `Unsupported`。保留常量与它在 GUI 侧的错误映射，是为了「将来
+/// 若又收紧口径重新拒绝广播频道」时界面仍能给专门文案。当前路径不会产生它——
+/// 单测 broadcast_channels_allow_readonly_messages 正是断言它不再被特判触发。
 pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view";
 
 /// 进一个对话时默认拉多少条带文件的消息。
@@ -1413,21 +1414,19 @@ impl TelegramStore {
 
     /// 列一个对话里的消息（**以文件为主线的消息视图**）。
     ///
-    /// # 为什么不覆盖广播频道
+    /// # 广播频道：只读浏览（方案 A，DEC-24）
     ///
-    /// Telegram ToS 3.3 要求：允许访问频道内容的应用必须支持官方 sponsored
-    /// messages，且不得干扰该功能。文档 §9.3 记着：**只展示文件时这条适用性
-    /// 存疑，而真做消息列表页时它就是硬约束**（§11.2 第 10 项）。
+    /// 广播频道的消息视图**是只读的**：只列历史消息、不实现官方 sponsored
+    /// messages 的投放与曝光回报（`viewSponsoredMessage` / `clickSponsoredMessage`）。
     ///
-    /// omy 是文件管理器，不打算实现广告投放与曝光回报（`viewSponsoredMessage`
-    /// / `clickSponsoredMessage`）。所以这里**直接不给广播频道提供消息视图**——
-    /// 不把它渲染成消息时间线，就不落进 3.3 的字面范围。私聊、群、超级群不在
-    /// 这条范围内，照常可用。
+    /// 早先为了完全躲开 ToS 3.3 而直接不给广播频道提供消息视图，代价是用户
+    /// 「点了消息栏就是一条死路」——这不是好体验。方案 A 的取舍：**不实现
+    /// sponsored 即不参与广告分发**，同时把频道消息当作可浏览的只读内容呈现。
+    /// 私聊、群、超级群本来就不在 3.3 范围内，照常可用。
     ///
-    /// 广播频道的**文件视图**不受影响（那是本期既有行为）。
-    ///
-    /// 这是个可以被推翻的判断，写在这里而不是埋掉：要改的话，要么实现
-    /// sponsored messages 支持，要么重新解读 3.3 的适用范围。
+    /// 这是个可以被推翻的判断（DEC-24 记录了从「不覆盖」改到「只读浏览」的
+    /// 全过程）：要改回更严格的口径，要么实现 sponsored messages 支持、
+    /// 要么重新解读 3.3 的适用范围。
     ///
     /// # 纯文本消息是正常的一行
     ///
@@ -1437,7 +1436,7 @@ impl TelegramStore {
     ///
     /// # Errors
     ///
-    /// 未登录、对话不存在、是广播频道、网络失败或限流时返回。
+    /// 未登录、对话不存在、网络失败或限流时返回。
     pub async fn messages(
         &self,
         dir_id: &str,
@@ -1446,27 +1445,11 @@ impl TelegramStore {
     ) -> Result<Vec<MessageRow>> {
         let chat = Conversation::parse_dir_id(dir_id)?;
 
-        // 先判**不随状态变化的事实**，再判依赖运行时状态的。
-        //
-        // 顺序反了的话（先查有没有连接），同一个广播频道会在断线时说
-        // 「尚未登录」、连上后才说「不提供消息视图」——而后者才是真正的原因，
-        // 且重连也不会变。用户按前一句去重连，只会白试一次。
-        if self.conversation(chat).is_some_and(|c| c.broadcast) {
-            return Err(Error::Unsupported(BROADCAST_NO_MESSAGES));
-        }
-
+        // 方案 A：广播频道也允许只读浏览消息，不再在这里拒掉。
         let client = self.client()?;
         if self.conversation(chat).is_none() {
             self.refresh_conversations().await?;
         }
-        let conv = self
-            .conversation(chat)
-            .ok_or_else(|| Error::NotFound(format!("未知对话：{dir_id}")))?;
-        // 刚拉回来的对话表可能才认出它是广播频道，这里再判一次
-        if conv.broadcast {
-            return Err(Error::Unsupported(BROADCAST_NO_MESSAGES));
-        }
-
         let peer = self.peer_ref(chat).await?;
         // `before` 是「从这条消息之前开始取」。Telegram 的消息号在对话内
         // 单调递增，所以「加载更早」就是拿当前最老那条的号再要一页。
@@ -1577,7 +1560,7 @@ impl TelegramStore {
         let peer = self.peer_ref(id.chat).await.ok()?;
         let msgs = client.get_messages_by_id(peer, &[id.message]).await.ok()?;
         let media = msgs.into_iter().flatten().next()?.media()?;
-        thumb_bytes(&client, &media).await
+        thumb_bytes(client, &media).await
     }
 }
 
@@ -2345,16 +2328,15 @@ mod tests {
         assert_eq!(r.message, 3);
     }
 
-    /// 广播频道不提供消息视图，而**私聊与群照常提供**。
+    /// 方案 A（DEC-24）：广播频道**也提供只读消息视图**，不再被 messages()
+    /// 单独拒掉。它和普通群走同一条路——无连接时都停在「尚未登录」，
+    /// 而不是一个「尚未登录」一个「不支持」。
     ///
-    /// 不这样会怎样：ToS 3.3 要求允许访问频道内容的应用必须支持官方
-    /// sponsored messages。omy 不实现广告投放与曝光回报，所以不把广播频道
-    /// 渲染成消息时间线——不落进那条的字面范围（文档 §9.3 / §11.2 第 10 项）。
-    ///
-    /// 这条断言同时守住另一半：**不能因噎废食把所有对话的消息视图都关掉**。
-    /// 只断言「频道被拒」的话，一个「永远返回 Unsupported」的实现也能通过。
+    /// 不这样会怎样：若广播频道仍被 Unsupported 拒掉，用户点消息栏就是死路
+    /// （用户明确反对的体验）。这条断言守住「广播不再被特判拒绝」，
+    /// 真正的只读浏览内容要真机验证（无连接的单测拿不到消息）。
     #[test]
-    fn broadcast_channels_have_no_message_view() {
+    fn broadcast_channels_allow_readonly_messages() {
         let s = TelegramStore::with_conversations(vec![
             conv(1, "群聊", true, true),
             Conversation {
@@ -2372,23 +2354,26 @@ mod tests {
             .build()
             .expect("建运行时");
 
-        // 广播频道：必须以「不支持」拒掉，且理由要能被界面区分出来
-        assert!(
-            matches!(
-                rt.block_on(s.messages("tg:2", 10, None)),
-                Err(Error::Unsupported(w)) if w == BROADCAST_NO_MESSAGES
-            ),
-            "广播频道不该有消息视图，且要给出专门的标记而不是笼统的不支持"
-        );
+        // 广播频道：不再被特判成 Unsupported，而是和普通群一样走到「需要连接」。
+        // 关键是**不是** Unsupported(BROADCAST_NO_MESSAGES)——那正是死路的来源。
+        let broadcast = rt.block_on(s.messages("tg:2", 10, None));
+        match broadcast {
+            // 不再被特判成 Unsupported(BROADCAST_NO_MESSAGES)——那正是死路的来源
+            Err(Error::Unsupported(w)) if w == BROADCAST_NO_MESSAGES => {
+                panic!("方案 A 下广播频道不该再被特判拒绝，否则点消息栏又成死路")
+            }
+            // 无连接时应停在「尚未登录」，与普通群同一条路
+            Err(Error::Protocol(m)) if m.contains("尚未登录") => {}
+            other => panic!("广播频道应停在「尚未登录」，实际：{other:?}"),
+        }
 
-        // 普通群：不能被这条规则误伤。没有连接时停在「尚未登录」，
-        // 而不是停在「不支持」——两者必须能区分开
+        // 普通群：同样停在「尚未登录」——两者现在行为一致
         assert!(
             matches!(
                 rt.block_on(s.messages("tg:1", 10, None)),
                 Err(Error::Protocol(ref m)) if m.contains("尚未登录")
             ),
-            "普通群的消息视图不该被广播频道那条规则挡掉"
+            "普通群的消息视图行为不变"
         );
     }
 
