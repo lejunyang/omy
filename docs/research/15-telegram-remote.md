@@ -658,24 +658,38 @@ grammers 提供 `Client::iter_dialogs()`（`DialogIter`，带 `total()`）。
 
 **消息栏也走缓存**：二次进入先出缓存消息、再后台刷新（与文件栏同一种节奏）。
 
-#### 5.2.5 缓存分层（六项，逐项说明缓存在哪层、二次进入是否复用）
+#### 5.2.5 缓存分层（七项，逐项说明缓存在哪层、重启后是否保留、走不走 BlockCache LRU）
 
-| # | 内容 | 缓存层 | 二次进入复用 |
-|---|---|---|---|
-| ① | 对话列表 | 后端 `conversations` 内存缓存（进程内） | 是（但 browse 仍会后台刷新一次） |
-| ② | 对话头像 | 后端按 chat id 内存缓存 + 前端 PlaceThumbs 内容寻址 token | 是，不重下 |
-| ③ | 文件/媒体列表快照 | 前端 `remoteDirCache`（内存，键含分栏） | 是，进对话即出、再后台刷新 |
-| ④ | 文件头识别结果（.omy） | 后端 `BlockCache`（磁盘，头部块） | 是，重列不重新读头部 |
-| ⑤ | **媒体清晰缩略图** | 前端 PlaceThumbs 内容寻址（会话内内存）+ 写透 `remoteDirCache` | 是（本轮修复：二次进入直接出清晰图、不退回 stripped） |
-| ⑥ | 视频/文件内容块 | 后端 `BlockCache`（磁盘，1 MiB 对齐 LR；pin 为永久） | 是，拖动播放不重复拉同段 |
+| # | 内容 | 缓存层 | 重启后保留 | 走 BlockCache LRU |
+|---|---|---|---|---|
+| ① | 对话列表 | 后端 `conversations` 内存（进程内） | 否 | 否 |
+| ② | 对话头像 | 后端内存(按 chat id) + 前端 PlaceThumbs 内容寻址 token | 否 | 否 |
+| ③ | 文件/媒体列表快照 | 前端 `remoteDirCache`（JS Map，内存，键含分栏） | 否 | 否 |
+| ④ | 文件头识别结果（.omy） | 后端 `BlockCache`（磁盘，头部块） | **是** | 是 |
+| ⑤ | 媒体清晰缩略图 | 前端 PlaceThumbs 内容寻址(内存) + **`<缓存根>/rthumbs` 磁盘**(本轮新增) | **是**（本轮从内存转磁盘） | 否（独立缩略图目录，不占内容块 LRU） |
+| ⑥ | 视频/文件内容块 | 后端 `BlockCache`（磁盘，1 MiB 对齐 LRU） | **是** | 是 |
+| ⑦ | pin 永久层 | 后端 `BlockCache` 的永久区（磁盘，**不参与 LRU 淘汰**） | **是** | 否（永久区，独立于 LRU） |
 
-⑤ 此前的 bug：清晰缩略图只在 `state.remoteItems` 里、没写回 `remoteDirCache`，
-二次进对话摆出的是缓存里那批带 stripped 占位 token 的旧行，于是清晰图退回
-糊占位、又得重新后台拉一遍。修法：后台升级事件（`remote-entry`）**写透缓存**，
-且 `reloadRemoteDir` 刷新时**沿用缓存里已升级的 token**。真机验证：进对话→
-出清晰图→退出→再进，二次 400ms 内 token 一致、`naturalWidth` 148~273（清晰），
-不退回占位。**注意 ⑤ 是会话内内存缓存，不是磁盘永久**——重启应用后首次仍会
-重新拉清晰图（那是可接受的，官方也如此）。
+**本轮把 ⑤ 从内存转成磁盘**：原来纯内存 HashMap 重启即空、每次开应用进对话都
+重新拉清晰缩略图（用户报的「重启全部重新加载」）。现在清晰图落 `<缓存根>/rthumbs`、
+按媒体 id 内容哈希命名；`thumb_full` 先查盘命中就不发网络、拉回后写盘。
+
+真机重启实测（Joh/ShuMale）：会话1 进对话 → 30 张清晰图 → 目录写入 30 个 .jpg；
+**完全关闭应用重开** → 再进同一对话，1.2 秒内缩略图**已是清晰图**（`naturalWidth`
+147/320，与会话1 一致）、且 rthumbs 文件数仍是 30（未重复下载）——证明读盘、
+不是内存冒充。单测 `place_thumbs_disk_survives_restart` 用两个独立实例(模拟重启)
+锁死这条。
+
+⑤ 会话内不退回占位那条（升级事件写透 `remoteDirCache` + 刷新沿用缓存 token）
+仍在，真机进→退→再进 token 一致、不退回 stripped。
+
+**缓存角标（三态 + 永久）**：卡片右上角按 `stat_file` 的
+`{cached_blocks, total_blocks, fully_cached, pinned}` 映射——已缓存(●绿)/部分缓存
+(◐灰，`cached_blocks>0 && !fully_cached`，大视频 seek 只下几块)/永久(📌蓝)。
+数据源 `stat_file` 由后端单测 `stat_file_reports_partial_then_full` 覆盖；映射是
+前端纯函数。**live pin→角标渲染的真机捕获本轮未完成**：pin 需下载整文件，实测
+多次 `remote_prefetch_failed`（当时网络无法完成 2.2 MB 下载），故只验到数据源与
+映射，未截到带 📌 的卡片——如实标注，待网络可用时补。
 
 ### 5.3 服务端搜索：能下推，但搜的不是文件名
 

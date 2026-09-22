@@ -363,13 +363,8 @@ pub struct PlaceThumbs {
 }
 
 impl PlaceThumbs {
-    /// 空表（纯内存，无磁盘持久）。
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 带磁盘缩略图缓存目录的表。目录不存在会尝试创建；创建失败则降级为纯内存。
+    /// 带磁盘缩略图缓存目录的表（`None` = 纯内存，无磁盘持久）。
+    /// 目录不存在会尝试创建；创建失败则降级为纯内存。
     #[must_use]
     pub fn with_disk_dir(dir: Option<PathBuf>) -> Self {
         if let Some(d) = &dir {
@@ -624,7 +619,7 @@ mod tests {
     /// 的 pthumb token 还能取到内容——与「锁定后什么都读不到」相悖。
     #[test]
     fn place_thumbs_register_and_clear() {
-        let t = PlaceThumbs::new();
+        let t = PlaceThumbs::with_disk_dir(None);
         let a = t.insert(vec![1u8, 2, 3]).expect("token a");
         let b = t.insert(vec![4u8]).expect("token b");
         assert_ne!(a, b, "两次登记的 token 不能相同");
