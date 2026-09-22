@@ -675,6 +675,12 @@
     "protected_note": "这个对话开启了「受保护内容」。在 omy 里打开和播放不受影响，但在 Telegram 里无法转发或另存。",
     "load_more_files": "加载更多文件",
     "no_more_files": "已经是全部文件",
+    "tab_media": "媒体",
+    "tab_file": "文件",
+    "tab_link": "链接",
+    "tab_audio": "音频",
+    "tab_gif": "GIF",
+    "tab_empty": "这一栏没有内容",
     "mark_pinned": "永久保留：离线也能打开",
     "mark_cached": "已缓存：空间不足时可能被清掉",
     "refreshing": "正在刷新…"

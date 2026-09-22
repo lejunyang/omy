@@ -55,6 +55,9 @@ import {
   onSearchQueryCleared,
   canShowMessages,
   setRemoteViewMode,
+  setRemoteTab,
+  MEDIA_TABS,
+  showMediaTabs,
   loadMoreMessages,
   loadMoreFiles,
 } from '../store.js';
@@ -107,6 +110,16 @@ const visible = computed(() => {
     const name = f.is_dir ? f.name : f.unlocked ? f.real_name || f.name : '';
     return (name || '').toLowerCase().includes(q);
   });
+});
+
+/** 空态文案：区分「搜索无匹配」「这一栏没内容」「整个对话空」。
+ *
+ * 在分栏下（Telegram 对话内），空表示这一栏没有该类型的内容，说「这一栏
+ * 没有内容」——而不是笼统的「目录是空的」，那会让用户以为整个对话都没东西。 */
+const emptyText = computed(() => {
+  if (state.remoteItems.length) return i18n.t('view.no_match');
+  if (showMediaTabs.value) return i18n.t('rplace.tab_empty');
+  return i18n.t('rplace.empty_dir');
 });
 
 /** 被本地精筛挡掉的加密文件数。
@@ -843,6 +856,21 @@ function rowTitle(f) {
             </button>
           </div>
 
+          <!-- 媒体分栏：媒体/文件/链接/音频/GIF。只在 Telegram 对话内的
+               文件视图下出现（消息视图、根目录、网盘都没有这个概念）。
+               各栏用服务端类型 filter 各取一类，切栏只重载文件列表这一栏。 -->
+          <div v-if="showMediaTabs" class="seg mtabs" data-tg="mediatabs">
+            <button
+              v-for="t in MEDIA_TABS"
+              :key="t.key"
+              :class="{ on: state.remoteTab === t.key }"
+              :data-tg-tab="t.key"
+              @click="setRemoteTab(t.key)"
+            >
+              {{ i18n.t(t.i18n) }}
+            </button>
+          </div>
+
           <!-- 只在位置支持服务端搜索时出现，不支持时整个不出现而非置灰：
                网盘根本没有「搜索整个对话」这个概念 -->
           <div v-if="canServerSearch" class="seg" data-tg="searchmode">
@@ -1030,7 +1058,7 @@ function rowTitle(f) {
         <div v-else-if="!visible.length" class="empty">
           <div class="icon" aria-hidden="true">📭</div>
           <div class="title">
-            {{ state.remoteItems.length ? i18n.t('view.no_match') : i18n.t('rplace.empty_dir') }}
+            {{ emptyText }}
           </div>
         </div>
 
@@ -1221,6 +1249,21 @@ function rowTitle(f) {
   border-radius: 50%;
   animation: pb-spin 0.8s linear infinite;
   margin: 0 auto 10px;
+}
+/* 媒体分栏：复用全局 .seg 的观感（app.css 里已定义底色/选中/触控下限），
+   这里只处理「五个栏在窄屏可能放不下」——允许横向滚动而不是撑破工具条。
+   不另造一套按钮样式，免得和 .seg 在深浅主题下走形。 */
+.mtabs {
+  max-width: 100%;
+  overflow-x: auto;
+  /* 不显示滚动条占位，滑动即可；桌面一般放得下也就不出现 */
+  scrollbar-width: none;
+}
+.mtabs::-webkit-scrollbar {
+  display: none;
+}
+.mtabs button {
+  white-space: nowrap;
 }
 .cmark {
   position: absolute;

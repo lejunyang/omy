@@ -675,6 +675,12 @@
     "protected_note": "This chat has Protected Content enabled. Opening and playing files here is unaffected; forwarding or saving in Telegram is not possible.",
     "load_more_files": "Load more files",
     "no_more_files": "That is all the files",
+    "tab_media": "Media",
+    "tab_file": "Files",
+    "tab_link": "Links",
+    "tab_audio": "Audio",
+    "tab_gif": "GIFs",
+    "tab_empty": "Nothing in this tab",
     "mark_pinned": "Kept offline",
     "mark_cached": "Cached; may be evicted when space runs low",
     "refreshing": "Refreshing…"

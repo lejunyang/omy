@@ -106,6 +106,12 @@ export const state = reactive({
    * （文档 §1.3）。
    */
   remoteViewMode: 'files',
+  /** 对话内文件视图的**媒体分栏**：media/file/link/audio/gif。
+   *
+   * 官方客户端进对话看的是分类型的媒体页，而不是「所有文件」一锅端。
+   * 默认 media：图片视频是对话里最常翻的东西。只在 Telegram 对话内的
+   * 文件视图下有意义（消息视图、根目录、网盘都不用它）。 */
+  remoteTab: 'media',
   /** 当前所在目录的**显示名**。
    *
    * 面包屑不能直接拿 remoteDir 当名字：那是 provider 的 id。WebDAV 的 id
@@ -1823,6 +1829,35 @@ export async function setRemoteViewMode(mode) {
   }
 }
 
+/** 切换对话内的媒体分栏（media/file/link/audio/gif）。
+ *
+ * 只重载文件列表这一栏，不动消息视图。走 reloadRemoteDir 复用同一条
+ * 缓存优先 + 骨架 + 识别的路径——分栏只是换了个 filter，加载语义一样。 */
+export async function setRemoteTab(tab) {
+  if (state.remoteTab === tab) return;
+  state.remoteTab = tab;
+  api.uiLog('switch-tab', tab);
+  // 切栏保证在文件视图（不是消息视图）下才有意义
+  state.remoteViewMode = 'files';
+  await reloadRemoteDir();
+}
+
+/** 对话内文件视图的媒体分栏定义。key 与后端 MediaTab::from_key 对应。 */
+export const MEDIA_TABS = [
+  { key: 'media', i18n: 'rplace.tab_media' },
+  { key: 'file', i18n: 'rplace.tab_file' },
+  { key: 'link', i18n: 'rplace.tab_link' },
+  { key: 'audio', i18n: 'rplace.tab_audio' },
+  { key: 'gif', i18n: 'rplace.tab_gif' },
+];
+
+/** 分栏 tab 该不该显示：Telegram 对话内、文件视图下才出现。 */
+export const showMediaTabs = computed(
+  () => !!state.remotePlace && !!state.remoteDir
+    && state.remoteViewMode === 'files'
+    && (state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram'),
+);
+
 /** 消息视图里能不能用。
  *
  * 只有 Telegram 有「消息」这个概念，而且要已经进到某个对话里。
@@ -2032,23 +2067,35 @@ export async function reloadRemoteDir() {
   //
   // 摆出来之后仍然会刷新（Telegram 里随时可能有新文件），只是用户不必
   // 盯着空屏等。
-  const cachedRows = remoteDirCache.get(
-    remoteDirKey(state.remotePlace, state.remoteDir),
-  );
+  // 是否在 Telegram 对话内：对话内按媒体分栏取（remote_browse_tab），
+  // 根目录（列对话）与网盘走原来的 remote_browse。用 kind + remoteDir 判，
+  // 不硬编码 id 形状。
+  const inDialog = !!state.remoteDir && isTelegramDialog();
+  const tab = inDialog ? state.remoteTab : '';
+  // 缓存键带上分栏：同一对话的媒体栏和文件栏是两批内容，共用一个键会串。
+  const ckey = remoteDirKey(state.remotePlace, state.remoteDir, tab);
+  const cachedRows = remoteDirCache.get(ckey);
   if (cachedRows && cachedRows.length) {
     state.remoteItems = cachedRows;
     void refreshCacheStats(state.remotePlace, cachedRows);
   }
 
   try {
-    const rows = await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    const rows = inDialog
+      // 首屏 limit 按视口估：填满可见网格 + 一屏缓冲，别拍一个固定 N
+      ? await api.remoteBrowseTab(
+          state.remotePlace, state.remoteDir, tab, 0, viewportFillCount(),
+        )
+      : await api.remoteBrowse(state.remotePlace, state.remoteDir);
     state.remoteItems = rows;
-    remoteDirCache.set(remoteDirKey(state.remotePlace, state.remoteDir), rows);
+    remoteDirCache.set(ckey, rows);
     void refreshCacheStats(state.remotePlace, rows);
     // 取满一页就假定还有更多。只对「对话内层」成立：根目录列的是对话
-    // （不分页），WebDAV 的 PROPFIND 也是一次列全
-    state.hasMoreFiles =
-      !!state.remoteDir && rows.length >= state.pageSize;
+    // （不分页），WebDAV 的 PROPFIND 也是一次列全。对话内按本次请求的
+    // limit 判（不是固定 pageSize），因为分栏首屏 limit 是按视口算的。
+    state.hasMoreFiles = inDialog
+      ? rows.length >= viewportFillCount()
+      : (!!state.remoteDir && rows.length >= state.pageSize);
     // 骨架刚落地，把 await 期间早到的识别结果补贴上去。
     // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
     applyBufferedRemoteEntries();
@@ -2144,15 +2191,27 @@ export async function loadMoreFiles() {
   if (!Number.isFinite(n)) return;
   const place = state.remotePlace;
   const dir = state.remoteDir;
+  const inDialog = isTelegramDialog();
+  const tab = inDialog ? state.remoteTab : '';
+  const lim = viewportFillCount();
   state.loadingMoreFiles = true;
   try {
-    const rows = await api.remoteBrowseMore(place, dir, n);
-    // 回写前校验还在同一个目录：用户可能在请求飞行途中切走了
+    // 对话内按当前分栏续拉（同一个类型 filter），否则走无过滤的 more
+    const rows = inDialog
+      ? await api.remoteBrowseTab(place, dir, tab, n, lim)
+      : await api.remoteBrowseMore(place, dir, n);
+    // 回写前校验还在同一个目录**且没换栏**：用户可能在请求飞行途中切走
+    // 或切了栏，晚到的这批不能贴到别的栏上
     if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    if (inDialog && state.remoteTab !== tab) return;
     const seen = new Set(state.remoteItems.map((x) => x.id));
     const fresh = rows.filter((x) => !seen.has(x.id));
     state.remoteItems = [...state.remoteItems, ...fresh];
-    state.hasMoreFiles = rows.length >= state.pageSize && fresh.length > 0;
+    // 回写内容缓存（带 tab 的键），下次进来先摆这批
+    remoteDirCache.set(remoteDirKey(place, dir, tab), state.remoteItems);
+    const need = inDialog ? lim : state.pageSize;
+    state.hasMoreFiles = rows.length >= need && fresh.length > 0;
+    void refreshCacheStats(place, fresh);
   } catch (e) {
     state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
   } finally {
@@ -2274,8 +2333,46 @@ const remoteEntryBuffer = new Map();
 
 /** 暂存区的键。用 \u0000 分隔是因为它不可能出现在位置 id 或对话 id 里；
  *  用 ':' 会和 Telegram 的 `tg:<对话>:<消息>` 撞上。 */
-function remoteDirKey(placeId, dir) {
-  return `${placeId}\u0000${dir}`;
+function remoteDirKey(placeId, dir, tab) {
+  // tab 只在**内容缓存**里带上（同一对话媒体栏/文件栏是两批内容）。
+  // 识别事件的暂存区仍用不带 tab 的 2 参数键：识别结果按文件 id 贴，
+  // 与它属于哪一栏无关，两者共用同一个函数但传参不同。
+  return tab
+    ? `${placeId}\u0000${dir}\u0000${tab}`
+    : `${placeId}\u0000${dir}`;
+}
+
+/** 当前是否在某个 Telegram 对话内（而非根对话列表 / 网盘）。
+ *  分栏只在这种情况下有意义。 */
+function isTelegramDialog() {
+  if (!state.remoteDir) return false;
+  const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
+  return p?.kind === 'telegram';
+}
+
+/** 首屏该拉多少条：填满可见网格 + 一屏缓冲。
+ *
+ * 官方那样「填满视口就够、别一次拉几百条」。按卡片估行列数：网格卡片约
+ * 132px 宽、156px 高（见 PlaceBrowser 的 .grid 覆盖）。估不出来（无 DOM、
+ * 尺寸为 0）时给一个稳妥的默认，宁可略多一点也不要首屏留空。 */
+function viewportFillCount() {
+  const FALLBACK = 30;
+  try {
+    const grid = document.querySelector('.pb .grid, .pbroot .grid');
+    const host = grid?.parentElement || document.querySelector('.pb, .pbroot');
+    if (!host) return FALLBACK;
+    const w = host.clientWidth || 0;
+    const h = host.clientHeight || 0;
+    if (w < 40 || h < 40) return FALLBACK;
+    const cols = Math.max(1, Math.floor(w / 132));
+    const rows = Math.max(1, Math.ceil(h / 156));
+    // 可见格数 + 一屏缓冲，夹在 [15, 100]：太小翻页太频繁、太大又违背
+    // 「填满即可」的初衷，后端也封顶 100
+    const n = cols * rows * 2;
+    return Math.min(100, Math.max(15, n));
+  } catch {
+    return FALLBACK;
+  }
 }
 
 /** 已加载过的目录列表：`位置\x01目录` -> 条目数组。
@@ -2675,6 +2772,9 @@ export async function renameTelegramPlace(id, name) {
 /** 进入远程子目录。 */
 export async function enterRemoteDir(id, name) {
   state.remoteDir = id;
+  // 换对话/回根都回到默认媒体栏：留着上个对话选的栏，会让用户以为
+  // 新对话「只有链接」之类（其实是停在链接栏且新对话没链接）
+  state.remoteTab = 'media';
   // 记下显示名。拿不到就留空，由面包屑那边决定怎么兜底——
   // 不要在这里回落到 id，那样面包屑就无从区分「有名字」和「没名字」了
   state.remoteDirName = name || '';
