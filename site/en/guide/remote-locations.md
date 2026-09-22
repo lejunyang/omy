@@ -110,9 +110,9 @@ The latter cannot be undone, and says so before you confirm. Note also that **re
 
 ### Browsing and searching
 
-Entering the location shows the conversation list; opening a conversation shows its files. Documents sent as files, images sent as photos, and videos all appear.
+Entering the location shows the conversation list; opening a conversation shows its files. The file list is split into five tabs by type — **Media, Files, Links, Audio, GIF** — each returned by Telegram's server-side type index: the Media tab holds images and videos, the Files tab holds documents, and the rest each get their own tab. Images sent as photos and videos sent as videos land in the Media tab; documents sent as files land in the Files tab. Tabs load a screen at a time — fill one screen first, then fetch more as you scroll. Thumbnails first show the tiny low-res placeholder carried with the message, then swap to the sharper image once it is fetched in the background.
 
-Each conversation also has a **message view** that lists messages over time with files as the through-line, so a message carrying a file can be opened directly. Broadcast channels **do not** offer the message view; their file view is unaffected. The reason is below.
+Each conversation also has a **message view** that lists messages over time with files as the through-line, so a message carrying a file can be opened directly. For broadcast channels the message view is **read-only browsing** (you can read it, but omy does not implement sponsored messages — see the note below).
 
 Search comes in two forms, and the interface keeps them clearly apart:
 
@@ -129,7 +129,7 @@ When uploading into a writable conversation, omy always sends **as a file** rath
 
 - Some groups enable "restrict saving content" (`noforwards`). omy can still read and play those files normally, but **cannot forward** them; that restriction is enforced by the server.
 - A few files are served via a CDN redirect, which this version does not support. It reports a clear error instead of failing silently.
-- **Broadcast channels have no message view.** Telegram's terms require clients that display a message stream to support and faithfully display sponsored messages (ads), and carrying ad delivery and impression reporting inside a local encrypted file manager conflicts directly with what omy is for. This is therefore a **deliberate omission**, not a missing capability. Files in those channels work as usual.
+- **The message view for broadcast channels is read-only, and omy does not implement sponsored messages.** Telegram's terms require clients that display a message stream to support and faithfully display sponsored messages (ads), and carrying ad delivery and impression reporting inside a local encrypted file manager conflicts with what omy is for. omy's choice is to **browse channel messages read-only and not implement sponsored messages** (i.e. not participate in ad delivery), rather than refusing to show messages at all. Files and the media tabs in those channels work as usual.
 
 ## Ciphertext cache
 
