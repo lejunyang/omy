@@ -1472,6 +1472,70 @@ pub async fn remote_browse_more(
     ))
 }
 
+/// 按**媒体分栏**列一个对话（媒体/文件/链接/音频/GIF），服务端 filter 分页。
+///
+/// 与 remote_browse_more 的区别：那条无过滤列「所有文件」，这条按栏用服务端
+/// 类型索引，各栏独立分页。`tab` 是前端传的短标识（media/file/link/audio/gif），
+/// `before`=0 表示首屏、否则是上一页最后一条消息号；`limit` 由前端按视口算。
+///
+/// # Errors
+///
+/// 位置不存在、不是 Telegram 位置、或列目录失败时返回。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn remote_browse_tab(
+    app: tauri::AppHandle,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    place_id: String,
+    dir: String,
+    tab: String,
+    before: i32,
+    limit: usize,
+) -> CmdResult<Vec<RemoteEntry>> {
+    use omy_remote::telegram::store::MediaTab;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        return Err(CmdError::code("remote_no_messages"));
+    };
+    let media_tab = MediaTab::from_key(&tab);
+    // before=0 当作首屏（消息号从 1 起，0 是"无游标"的哨兵，前端传 0 即首屏）
+    let cursor = if before > 0 { Some(before) } else { None };
+    // limit 兜底：前端估错或传 0 时给个合理默认，别把 limit=0 发给服务端
+    let lim = if limit == 0 { 30 } else { limit.min(100) };
+    let t0 = std::time::Instant::now();
+    let items = tg
+        .list_tab(&dir, media_tab, cursor, lim)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
+    crate::applog::info(
+        "browse-tab",
+        &format!(
+            "place={place_id} dir={} tab={tab} before={before} -> {} entries in {}ms",
+            crate::applog::redact(&dir),
+            items.len(),
+            t0.elapsed().as_millis()
+        ),
+    );
+    // 走与首屏完全相同的 scan_entries：识别 .omy、登记缩略图、边扫边出的
+    // 后台识别都复用同一条路，不另写一份（否则翻页/换栏后 omy 识别会不一致）
+    Ok(scan_entries(
+        &app,
+        &state,
+        &thumbs,
+        &place,
+        &place_id,
+        &dir,
+        items,
+        cache.snapshot(),
+    ))
+}
+
 /// 一页多少条。界面据它判断还有没有更多。
 #[tauri::command]
 #[must_use]

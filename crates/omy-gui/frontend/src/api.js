@@ -645,6 +645,11 @@ export const remoteCacheFileStats = (reqs) =>
 export const remoteBrowseMore = (placeId, dir, before) =>
   invoke('remote_browse_more', { placeId, dir, before });
 
+/** 按媒体分栏列对话：tab=media/file/link/audio/gif，before=0 为首屏，
+ *  limit 前端按视口估。 */
+export const remoteBrowseTab = (placeId, dir, tab, before, limit) =>
+  invoke('remote_browse_tab', { placeId, dir, tab, before: before || 0, limit: limit || 0 });
+
 /** 一页多少条。界面据它判断还有没有更多。 */
 export const remotePageSize = () => invoke('remote_page_size');
 

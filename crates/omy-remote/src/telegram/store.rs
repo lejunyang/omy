@@ -112,6 +112,61 @@ const DEFAULT_MESSAGE_PAGE: usize = 15;
 /// 「文件夹杂在聊天里」的常见情形，又不至于失控。
 const MAX_MESSAGE_SCAN: usize = 200;
 
+/// 对话内的媒体分栏。每栏对应 Telegram 服务端的一个消息索引 filter。
+///
+/// 用**服务端 filter** 而不是拉全部消息再本地分类：服务端按类型建了索引，
+/// `messages.search` 带 filter 直接返回该类型的消息，既准又省——尤其解决了
+/// 「文件视图空但群里满是视频」那个坑：视频的 media 类型虽是 Document，但
+/// 服务端把带 video 属性的 document 归进 PhotoVideo 索引，所以「文件」栏用
+/// Document filter 不会误含视频、「媒体」栏用 PhotoVideo 才拿到视频，
+/// 两栏各取所需、不重不漏。用了类型 filter 就不必再「扫 200 条凑一页」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaTab {
+    /// 图片 + 视频。
+    Media,
+    /// 文档/PDF/压缩包等非媒体 document（`.omy` 也落这里）。
+    File,
+    /// 含 URL 的消息。
+    Link,
+    /// 音乐文件。
+    Audio,
+    /// 动图。
+    Gif,
+}
+
+impl MediaTab {
+    /// 从前端传来的短标识解析。未知值回落到 `File`（最常用、也最安全）。
+    #[must_use]
+    pub fn from_key(k: &str) -> Self {
+        match k {
+            "media" => Self::Media,
+            "link" => Self::Link,
+            "audio" => Self::Audio,
+            "gif" => Self::Gif,
+            // "file" 与其它未知值
+            _ => Self::File,
+        }
+    }
+
+    /// 这一栏对应的服务端消息 filter。
+    fn filter(self) -> tl::enums::MessagesFilter {
+        use tl::enums::MessagesFilter as F;
+        match self {
+            Self::Media => F::InputMessagesFilterPhotoVideo,
+            Self::File => F::InputMessagesFilterDocument,
+            Self::Link => F::InputMessagesFilterUrl,
+            Self::Audio => F::InputMessagesFilterMusic,
+            Self::Gif => F::InputMessagesFilterGif,
+        }
+    }
+
+    /// 这一栏的条目是否**没有可下载媒体**（链接栏就是纯文本带 URL）。
+    /// 这类栏要走 collect_links 而不是 collect_media。
+    const fn is_link(self) -> bool {
+        matches!(self, Self::Link)
+    }
+}
+
 /// 头像/图片下载定位类型的再导出，供命令层构造后台头像补齐任务时命名，
 /// 不必让上层直接依赖 grammers 的模块路径。
 pub use grammers_client::media::ChatPhoto;
@@ -567,6 +622,41 @@ fn embedded_thumb(m: &Media) -> Option<Vec<u8>> {
         }
     }
     best
+}
+
+/// 把「链接栏」的消息收成条目。
+///
+/// 链接消息多半没有可下载媒体（就是带 URL 的文本），所以不走 collect_media
+/// （那条只收 to_raw_input_location 有值的媒体，会把链接全过滤掉）。这里把
+/// 每条消息的文本当作条目名，id 用 `tg:<对话>:<消息>`，标为非目录、无大小。
+///
+/// 名字取消息文本首行、截断到合理长度：URL 本身通常就在文本里，用户一眼能
+/// 认出是哪条链接；完整文本留给点开后看。空文本的（极少）用消息号兜底。
+fn collect_links(msgs: Vec<grammers_client::message::Message>, chat: i64) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for msg in msgs {
+        let id = TelegramId { chat, message: msg.id() };
+        let text = msg.text().trim();
+        // 取首行、压掉多余空白，截断到 120 字符（按字符不按字节，别切碎多字节）
+        let first = text.lines().next().unwrap_or("").trim();
+        let name = if first.is_empty() {
+            format!("link-{}", msg.id())
+        } else {
+            let t: String = first.chars().take(120).collect();
+            t
+        };
+        out.push(Entry {
+            id: id.encode(),
+            name,
+            is_dir: false,
+            size: None,
+            mtime: None,
+            etag: None,
+            // 链接条目没有缩略图；界面回退到链接类型图标
+            thumb: None,
+        });
+    }
+    out
 }
 
 /// 一个媒体在文件列表里显示的名字。
@@ -1209,6 +1299,53 @@ impl TelegramStore {
         // 的 access hash 只能从对话列表里拿到。
         self.list_messages_before(chat, DEFAULT_MESSAGE_PAGE, before)
             .await
+    }
+
+    /// 按**媒体分栏**列一个对话里的条目，服务端 filter + 游标分页。
+    ///
+    /// 与 `list_more` 的区别：那条用 getHistory 无过滤（浏览「所有文件」），
+    /// 这条用 `messages.search` 带该栏的类型 filter，服务端只返回该类型消息，
+    /// 不必本地扫一堆无关消息。
+    ///
+    /// `before` 是上一页最后一条的消息号（offset_id 游标）；`limit` 由调用方
+    /// 按视口大小算。返回条数 < limit 即到底（不靠 count）。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、网络失败、限流、对话不存在时返回。
+    pub async fn list_tab(
+        &self,
+        dir_id: &str,
+        tab: MediaTab,
+        before: Option<i32>,
+        limit: usize,
+    ) -> Result<Vec<Entry>> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+        let client = self.client()?;
+        let peer = self.peer_ref(chat).await?;
+
+        let mut it = client
+            .search_messages(peer)
+            .filter(tab.filter())
+            .limit(limit);
+        if let Some(off) = before {
+            it = it.offset_id(off);
+        }
+        let mut msgs = Vec::new();
+        loop {
+            match it.next().await {
+                Ok(Some(m)) => msgs.push(m),
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            }
+        }
+        // 链接栏的消息多半没有可下载媒体（就是带 URL 的文本），collect_media
+        // 会把它们全过滤掉。所以链接栏走单独的转换，其余栏走 collect_media。
+        if tab.is_link() {
+            Ok(collect_links(msgs, chat))
+        } else {
+            Ok(self.collect_media(msgs, chat))
+        }
     }
 
     /// 一页拉多少条。界面据它判断「还有没有更多」。
@@ -2524,5 +2661,41 @@ mod tests {
         wav.extend(1000u32.to_le_bytes());
         wav.extend_from_slice(b"WAVE");
         assert!(!is_complete_image(&wav), "RIFF+WAVE 不是图片");
+    }
+
+    /// 分栏标识必须映射到对应的服务端 filter。
+    ///
+    /// 不这样会怎样：媒体栏和文件栏用错了 filter，就会重现「文件视图空但群里
+    /// 满是视频」——视频归 PhotoVideo 索引、文件栏必须用 Document 才不误含视频。
+    /// 这条把「每一栏对应哪个 filter」钉死，任何一栏映射被改错都会当场失败。
+    #[test]
+    fn media_tab_maps_to_expected_filter() {
+        use tl::enums::MessagesFilter as F;
+        assert!(matches!(MediaTab::Media.filter(), F::InputMessagesFilterPhotoVideo));
+        assert!(matches!(MediaTab::File.filter(), F::InputMessagesFilterDocument));
+        assert!(matches!(MediaTab::Link.filter(), F::InputMessagesFilterUrl));
+        assert!(matches!(MediaTab::Audio.filter(), F::InputMessagesFilterMusic));
+        assert!(matches!(MediaTab::Gif.filter(), F::InputMessagesFilterGif));
+    }
+
+    /// 未知/缺省栏标识回落到文件栏，且只有链接栏走 collect_links。
+    ///
+    /// 不这样会怎样：前端传来拼错的 tab 时若映射到某个媒体 filter，用户会看到
+    /// 空栏或错栏；而 is_link 判错则链接栏走 collect_media 被全过滤成空。
+    #[test]
+    fn media_tab_from_key_and_is_link() {
+        assert_eq!(MediaTab::from_key("media"), MediaTab::Media);
+        assert_eq!(MediaTab::from_key("file"), MediaTab::File);
+        assert_eq!(MediaTab::from_key("link"), MediaTab::Link);
+        assert_eq!(MediaTab::from_key("audio"), MediaTab::Audio);
+        assert_eq!(MediaTab::from_key("gif"), MediaTab::Gif);
+        // 未知值回落到文件栏
+        assert_eq!(MediaTab::from_key("nonsense"), MediaTab::File);
+        assert_eq!(MediaTab::from_key(""), MediaTab::File);
+        // 只有链接栏没有可下载媒体、要走 collect_links
+        assert!(MediaTab::Link.is_link());
+        for t in [MediaTab::Media, MediaTab::File, MediaTab::Audio, MediaTab::Gif] {
+            assert!(!t.is_link(), "{t:?} 不该走链接路径");
+        }
     }
 }
