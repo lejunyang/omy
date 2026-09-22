@@ -1395,7 +1395,9 @@ impl TelegramStore {
                 name: media_name(&media, msg.id()),
                 is_dir: false,
                 size: Some(size),
-                mtime: None,
+                // 消息发送时间（Unix 秒）当作文件的时间，供列表视图显示
+                // 「上传时间」。不影响缓存校验（那用 id，不用 mtime）。
+                mtime: Some(msg.date().timestamp()),
                 // 不用 file_reference 当 etag：它会过期，拿它做变更检测会让
                 // 缓存层误以为文件变了，从而反复重新下载
                 etag: None,
@@ -1495,10 +1497,12 @@ impl TelegramStore {
                 },
                 None => (None, None, None),
             };
-            // 缩略图与时长：用服务端已有的小图，不下载原图再缩。
-            // 一屏可能有几十条消息，拉原图既慢又费流量
+            // 缩略图与时长。**缩略图用随消息一起回来的内嵌 stripped 占位图
+            // （零请求）**，不再逐条 upload.getFile 拉清晰档——那是消息列表极慢
+            // 的根因：一屏几十条里每条带媒体的都发一次网络往返，串行下完才返回。
+            // 与媒体分栏首屏同款：先出糊占位、秒回；需要清晰图的话交给上层后台补。
             let (thumb, duration) = match msg.media() {
-                Some(m) => (thumb_bytes(client, &m).await, media_duration(&m)),
+                Some(m) => (embedded_thumb(&m), media_duration(&m)),
                 None => (None, None),
             };
             out.push(MessageRow {

@@ -1800,46 +1800,75 @@ export const currentCaps = computed(() => {
  *
  * 只在对话内可用：位置列表那一层没有「消息」这个概念。
  */
-export async function setRemoteViewMode(mode) {
-  state.remoteViewMode = mode;
-  api.uiLog('switch-view', mode);
-  if (mode !== 'messages') {
-    // 切回文件视图时清掉消息视图留下的错误。
-    // 不清的话：在广播频道点「消息」→ 报「不为频道提供消息视图」→ 点回
-    // 「文件」→ 那句错误还挂着，看起来像卡死了（用户报过这个）。
-    state.placeError = '';
-    return;
-  }
+/** 消息视图缓存：`位置\x00目录` -> 消息行数组。
+ *  二次进入某对话的消息栏时先出缓存、再后台刷新，别每次全量重拉。 */
+const remoteMsgCache = new Map();
+
+/** 加载消息栏首屏（带缓存优先）。
+ *
+ * 先出缓存（若有），再拉服务端刷新。缓存/刷新都写回 remoteMsgCache。
+ * 与文件栏的 reloadRemoteDir 同一种「缓存先出 + 后台刷新」节奏。 */
+export async function loadMessagesFirstPage() {
   if (!state.remotePlace || !state.remoteDir) return;
-  state.loadingMessages = true;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  const key = remoteDirKey(place, dir);
   state.placeError = '';
-  try {
-    const rows = await api.remoteMessages(state.remotePlace, state.remoteDir);
-    state.remoteMessages = rows;
-    // 取满一页就假定还有更早的。少于一页说明到头了——不能靠「下一次返回
-    // 空」来判断，那要多发一次必然为空的请求
-    state.hasMoreMessages = rows.length >= 80;
-  } catch (e) {
+  // 缓存优先：有上次的就先摆出来，避免空屏
+  const cached = remoteMsgCache.get(key);
+  if (cached && cached.length) {
+    state.remoteMessages = cached;
+    state.loadingMessages = false;
+  } else {
     state.remoteMessages = [];
-    // 广播频道那条要给专门的话：用户需要知道这是「omy 不为频道做这个视图」，
-    // 而不是「加载失败、再试一次」——再试多少次都一样
+    state.loadingMessages = true;
+  }
+  try {
+    const rows = await api.remoteMessages(place, dir);
+    // 回写前校验没切走对话/栏
+    if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    if (state.remoteTab !== 'messages') return;
+    state.remoteMessages = rows;
+    remoteMsgCache.set(key, rows);
+    // 取满一页就假定还有更早的。少于一页说明到头了——不靠「下一次返回空」
+    state.hasMoreMessages = rows.length >= 25;
+  } catch (e) {
+    // 有缓存就保留，别让一次网络抖动把已看到的消息抹掉
+    if (!cached || !cached.length) state.remoteMessages = [];
     state.placeError = i18n.te(api.errCode(e), i18n.te('remote_failed'));
   } finally {
     state.loadingMessages = false;
   }
 }
 
-/** 切换对话内的媒体分栏（media/file/link/audio/gif）。
+/** 兼容保留：旧调用点（若有）切文件/消息视图。现在消息是第六个分栏，
+ *  统一走 setRemoteTab；这里仅转发，避免遗漏的调用点报错。 */
+export async function setRemoteViewMode(mode) {
+  if (mode === 'messages') {
+    await setRemoteTab('messages');
+  } else {
+    state.remoteViewMode = 'files';
+    state.placeError = '';
+    if (state.remoteTab === 'messages') await setRemoteTab('media');
+  }
+}
+
+/** 切换对话内的分栏：媒体/文件/链接/音频/GIF/消息。
  *
- * 只重载文件列表这一栏，不动消息视图。走 reloadRemoteDir 复用同一条
- * 缓存优先 + 骨架 + 识别的路径——分栏只是换了个 filter，加载语义一样。 */
+ * 消息栏走 getHistory 时间线（loadMessagesFirstPage）；其余五栏走服务端
+ * 类型 filter（reloadRemoteDir）。两条加载路径不同，切栏时正确分发。 */
 export async function setRemoteTab(tab) {
   if (state.remoteTab === tab) return;
   state.remoteTab = tab;
   api.uiLog('switch-tab', tab);
-  // 切栏保证在文件视图（不是消息视图）下才有意义
-  state.remoteViewMode = 'files';
-  await reloadRemoteDir();
+  if (tab === 'messages') {
+    // remoteViewMode 仍用 'messages' 驱动模板渲染消息时间线
+    state.remoteViewMode = 'messages';
+    await loadMessagesFirstPage();
+  } else {
+    state.remoteViewMode = 'files';
+    await reloadRemoteDir();
+  }
 }
 
 /** 对话内文件视图的媒体分栏定义。key 与后端 MediaTab::from_key 对应。 */
@@ -1849,12 +1878,15 @@ export const MEDIA_TABS = [
   { key: 'link', i18n: 'rplace.tab_link' },
   { key: 'audio', i18n: 'rplace.tab_audio' },
   { key: 'gif', i18n: 'rplace.tab_gif' },
+  // 消息作为第六个分栏（末位）：原来是「文件/消息」两 tab 那层单独切换，
+  // 合并进这一排后交互更一致。消息栏走 getHistory（时间线），其余五栏走
+  // 服务端类型 filter。
+  { key: 'messages', i18n: 'msgs.view_messages' },
 ];
 
 /** 分栏 tab 该不该显示：Telegram 对话内、文件视图下才出现。 */
 export const showMediaTabs = computed(
   () => !!state.remotePlace && !!state.remoteDir
-    && state.remoteViewMode === 'files'
     && (state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram'),
 );
 
@@ -1985,7 +2017,13 @@ export function onSearchQueryCleared(ev) {
 export async function setSearchMode(mode) {
   state.searchMode = mode;
   if (mode === 'server') {
-    await runServerSearch();
+    // 只有已经有搜索词才真去服务端搜。空词时若无条件 runServerSearch，
+    // 服务端返回空集，而 server 模式下列表 source 用的是 searchResults，
+    // 于是「切一下模式」就把整屏内容清空了——用户切模式并不等于想搜空。
+    // 空词时只切模式标记、保留当前列表，等用户真输入词再搜。
+    if (state.query.trim()) {
+      await runServerSearch();
+    }
   } else {
     // 切回本地时清掉服务端结果：留着会让用户以为本地过滤也能搜到那些
     state.searchResults = [];
@@ -2087,6 +2125,22 @@ export async function reloadRemoteDir() {
           state.remotePlace, state.remoteDir, tab, 0, viewportFillCount(),
         )
       : await api.remoteBrowse(state.remotePlace, state.remoteDir);
+    // 从缓存里把**已升级的清晰缩略图 token**带到刷新回来的新行上。
+    // 新行带的是 stripped 占位 token（后端每次 browse 都先给占位、清晰图走
+    // 后台事件）。若直接用新行覆盖，二次进对话就会先退回糊占位、再等后台
+    // 重新拉一遍清晰图——用户报的「切出切入清晰图退回占位」。缓存里那份 token
+    // 是上次后台升级后写透进来的（见 onRemoteEntry），沿用它即可直接出清晰图。
+    if (cachedRows && cachedRows.length) {
+      const prev = new Map(cachedRows.map((x) => [x.id, x.thumb_token]));
+      for (const r of rows) {
+        const pt = prev.get(r.id);
+        // 缓存里那份是「上次已知的最新 token」——媒体栏首屏给的是 stripped 占位、
+        // 后台升级事件再把它换成清晰图并写透进缓存，所以缓存里多半已是清晰图。
+        // 新行带的又是 stripped 占位，二者都非空。**优先沿用缓存的**，避免退回
+        // 糊占位；本次刷新的后台升级仍会照常跑一遍、确认或再更新它。
+        if (pt) r.thumb_token = pt;
+      }
+    }
     state.remoteItems = rows;
     remoteDirCache.set(ckey, rows);
     void refreshCacheStats(state.remotePlace, rows);
@@ -2234,7 +2288,7 @@ export async function loadMoreMessages() {
     const seen = new Set(state.remoteMessages.map((m) => m.message));
     const fresh = rows.filter((m) => !seen.has(m.message));
     state.remoteMessages = [...state.remoteMessages, ...fresh];
-    state.hasMoreMessages = rows.length >= 80 && fresh.length > 0;
+    state.hasMoreMessages = rows.length >= 25 && fresh.length > 0;
   } catch (e) {
     state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
   } finally {
@@ -2437,6 +2491,18 @@ export async function ensureRemoteListeners() {
     buf.set(p.entry.id, p.entry);
     const idx = state.remoteItems.findIndex((x) => x.id === p.entry.id);
     if (idx >= 0) state.remoteItems[idx] = p.entry;
+    // **写透到内容缓存**：识别结果与清晰缩略图 token 都通过这个事件回来。
+    // 只更新 state.remoteItems 而不更新缓存的话，二次进对话摆出的是缓存里
+    // 那批**带 stripped 占位 token 的旧行**，于是清晰图退回糊占位、又得重新
+    // 后台拉一遍——这正是用户报的「切出切入清晰缩略图退回占位」。
+    // 缓存键要带当前分栏（媒体栏和文件栏是两批）。
+    const tab = isTelegramDialog() ? state.remoteTab : '';
+    const ck = remoteDirKey(p.place_id, p.dir, tab);
+    const cachedArr = remoteDirCache.get(ck);
+    if (cachedArr) {
+      const ci = cachedArr.findIndex((x) => x.id === p.entry.id);
+      if (ci >= 0) cachedArr[ci] = p.entry;
+    }
   });
 }
 

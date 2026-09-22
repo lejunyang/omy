@@ -530,6 +530,19 @@ input {
   flex: 0 0 auto;
 }
 
+/* 列表视图的上传/发送时间列。比大小/类型宽些（要放完整日期时间），
+   窄屏会被下面的 @media 隐藏，与类型列同一处理。 */
+.lrow .tm {
+  width: 150px;
+  text-align: end;
+  font-size: 11px;
+  color: var(--fg2);
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- 空状态 ---------- */
 
 .empty {
@@ -1747,6 +1760,16 @@ input {
     min-height: 44px;
   }
 
+  /* 44px 触控按钮不能塞进固定 40px 的面包屑条：否则按钮顶满上下边、看起来
+     被纵向拉长（用户报的「返回/刷新过大、撑满高度」）。放开固定高度、按内容
+     撑高并留纵向 padding，让按钮四周有呼吸空间。 */
+  .crumb {
+    height: auto;
+    flex: 0 0 auto;
+    min-height: 56px;
+    padding-block: calc(var(--sp));
+  }
+
   /* 上传、添加这类小按钮实测只有 26px 高；
      面包屑每一段都是跳目录的入口，实测只有 20px 高 */
   .btn.small,
@@ -1771,8 +1794,9 @@ input {
     min-height: 48px;
   }
 
-  /* 列表视图在窄屏放不下四列，隐藏类型列保住文件名 */
-  .lrow .tg {
+  /* 列表视图在窄屏放不下这么多列，隐藏类型列与时间列保住文件名 */
+  .lrow .tg,
+  .lrow .tm {
     display: none;
   }
 

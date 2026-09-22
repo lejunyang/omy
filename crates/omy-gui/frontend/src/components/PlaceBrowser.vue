@@ -53,8 +53,6 @@ import {
   setSearchMode,
   runServerSearch,
   onSearchQueryCleared,
-  canShowMessages,
-  setRemoteViewMode,
   setRemoteTab,
   MEDIA_TABS,
   showMediaTabs,
@@ -836,29 +834,9 @@ function rowTitle(f) {
             @input="onSearchQueryCleared($event)"
             @keydown.enter="state.searchMode === 'server' && runServerSearch()"
           />
-          <!-- 文件 / 消息 切换。只在**对话内**且是 Telegram 时出现——
-               位置列表那层没有「消息」这个概念，网盘更没有。
-               与搜索那个分段控件同理：不支持就整个不出现，不是置灰。 -->
-          <div v-if="canShowMessages" class="seg" data-tg="viewmode">
-            <button
-              :class="{ on: state.remoteViewMode === 'files' }"
-              data-tg="vm-files"
-              @click="setRemoteViewMode('files')"
-            >
-              {{ i18n.t('msgs.view_files') }}
-            </button>
-            <button
-              :class="{ on: state.remoteViewMode === 'messages' }"
-              data-tg="vm-messages"
-              @click="setRemoteViewMode('messages')"
-            >
-              {{ i18n.t('msgs.view_messages') }}
-            </button>
-          </div>
-
-          <!-- 媒体分栏：媒体/文件/链接/音频/GIF。只在 Telegram 对话内的
-               文件视图下出现（消息视图、根目录、网盘都没有这个概念）。
-               各栏用服务端类型 filter 各取一类，切栏只重载文件列表这一栏。 -->
+          <!-- 分栏：媒体/文件/链接/音频/GIF/消息。前五栏用服务端类型 filter，
+               「消息」是第六栏、走 getHistory 时间线（原来单独的「文件/消息」
+               切换已并入这一排）。只在 Telegram 对话内出现。 -->
           <div v-if="showMediaTabs" class="seg mtabs" data-tg="mediatabs">
             <button
               v-for="t in MEDIA_TABS"
@@ -1138,6 +1116,11 @@ function rowTitle(f) {
             <span class="nm">{{ displayName(f) }}</span>
             <span class="sz">
               <template v-if="!f.is_dir">{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</template>
+            </span>
+            <!-- 上传/发送时间：列表视图是看详情的地方，媒体条目带消息日期。
+                 网格视图为保持简洁不显示，这里补上。目录没有时间 -->
+            <span class="tm">
+              <template v-if="!f.is_dir && f.mtime">{{ fmtDate(f.mtime) }}</template>
             </span>
             <span class="tg">
               <template v-if="f.is_dir">{{ i18n.t('rplace.folder') }}</template>

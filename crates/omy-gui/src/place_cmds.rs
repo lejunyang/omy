@@ -36,6 +36,9 @@ pub struct RemoteEntry {
     pub is_dir: bool,
     /// 字节数。
     pub size: Option<u64>,
+    /// 上传/发送时间（Unix 秒）。Telegram 媒体用消息日期，供列表视图显示。
+    /// WebDAV 若服务端不给则为 None。
+    pub mtime: Option<i64>,
     /// 是否为 omy 加密文件。
     pub is_encrypted: bool,
     /// 是否已用当前会话的密钥解开。
@@ -291,6 +294,7 @@ fn spawn_avatar_backfill(
                 conv.title.clone(),
                 true,
                 None,
+                None,
                 false,
             );
             entry.thumb_token = token;
@@ -323,23 +327,23 @@ fn spawn_thumb_upgrade(
     place_id: String,
     dir: String,
     // (文件 id, 名字, 大小)——发事件时要还原成完整条目
-    jobs: Vec<(String, String, Option<u64>)>,
+    jobs: Vec<(String, String, Option<u64>, Option<i64>)>,
 ) {
     tokio::spawn(async move {
         let sem = Arc::new(tokio::sync::Semaphore::new(8));
         let mut set = tokio::task::JoinSet::new();
-        for (id, name, size) in jobs {
+        for (id, name, size, mtime) in jobs {
             let sem = Arc::clone(&sem);
             let store = Arc::clone(&store);
             set.spawn(async move {
                 let _permit = sem.acquire_owned().await.ok()?;
                 let tg = store.as_telegram()?;
                 let bytes = tg.thumb_full(&id).await?;
-                Some((id, name, size, bytes))
+                Some((id, name, size, mtime, bytes))
             });
         }
         while let Some(joined) = set.join_next().await {
-            let Ok(Some((id, name, size, bytes))) = joined else {
+            let Ok(Some((id, name, size, mtime, bytes))) = joined else {
                 continue;
             };
             // insert_image 内容寻址：清晰图与占位图内容不同 → 新 token，
@@ -348,7 +352,7 @@ fn spawn_thumb_upgrade(
             // insert_image 可能返回 None（空字节/登记失败）：那种情况不发事件，
             // 占位图留着即可，不要清成类型图标
             let Some(token) = thumbs.insert_image(bytes) else { continue };
-            let mut entry = skeleton_entry(id, name, false, size, false);
+            let mut entry = skeleton_entry(id, name, false, size, mtime, false);
             entry.thumb_token = Some(token);
             let _ = app.emit(
                 REMOTE_ENTRY_EVENT,
@@ -403,7 +407,7 @@ fn scan_entries(
         .iter()
         .map(|it| {
             let mut e =
-                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, false);
+                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime, false);
             // 服务端随消息送来的内嵌缩略图：**列目录时就已经在手里**，
             // 不需要任何额外请求，也不必等后台识别。
             //
@@ -441,7 +445,7 @@ fn scan_entries(
         let base = entries
             .get(idx)
             .cloned()
-            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, true));
+            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime, true));
         let shared = Arc::clone(&shared);
         let thumbs = Arc::clone(&thumbs_arc);
         let app = app.clone();
@@ -611,7 +615,7 @@ pub async fn remote_probe_entry(
             .find(|seg| !seg.is_empty())
             .map_or_else(|| id.clone(), str::to_string)
     });
-    let base = skeleton_entry(id, name, false, Some(size), false);
+    let base = skeleton_entry(id, name, false, Some(size), None, false);
     // 重试仍然走缓存：识别失败时 fetch_full_header 在报错路径上**不写缓存**，
     // 所以「未能读取」的条目重试时必然是真的重新请求，不会命中一份坏结果
     let out = probe_remote_entry(
@@ -633,6 +637,7 @@ fn skeleton_entry(
     name: String,
     is_dir: bool,
     size: Option<u64>,
+    mtime: Option<i64>,
     probing: bool,
 ) -> RemoteEntry {
     RemoteEntry {
@@ -640,6 +645,7 @@ fn skeleton_entry(
         name,
         is_dir,
         size,
+        mtime,
         is_encrypted: false,
         unlocked: false,
         real_name: None,
@@ -1580,10 +1586,10 @@ pub async fn remote_browse_tab(
     // 媒体/GIF 栏的条目有真实缩略图，值得后台升级为清晰图（两级缩略图第二级）。
     // 文件/链接/音频栏多半没有可升级的缩略图，就不多发这批请求。
     if matches!(media_tab, MediaTab::Media | MediaTab::Gif) {
-        let jobs: Vec<(String, String, Option<u64>)> = items
+        let jobs: Vec<(String, String, Option<u64>, Option<i64>)> = items
             .iter()
             .filter(|it| !it.is_dir && it.thumb.is_some())
-            .map(|it| (it.id.clone(), it.name.clone(), it.size))
+            .map(|it| (it.id.clone(), it.name.clone(), it.size, it.mtime))
             .collect();
         if !jobs.is_empty() {
             spawn_thumb_upgrade(
@@ -1682,7 +1688,7 @@ pub async fn remote_messages(
 ///
 /// 不是「全部」：活跃对话里可能有上万条，全拉既慢又白占限流配额，
 /// 而用户在时间线上一次也看不完这么多。
-const MESSAGE_PAGE: usize = 80;
+const MESSAGE_PAGE: usize = 25;
 
 /// 查询单个远程文件在本地密文块缓存里的覆盖情况（不下载载荷）。
 #[tauri::command]
@@ -2326,6 +2332,7 @@ mod tests {
             name: String::from("a.omy"),
             is_dir: false,
             size: Some(1000),
+            mtime: Some(1_700_000_000),
             is_encrypted: true,
             unlocked: false,
             real_name: None,
@@ -2336,7 +2343,7 @@ mod tests {
         };
         let j = serde_json::to_value(&e).expect("序列化");
         for k in [
-            "id", "name", "is_dir", "size", "is_encrypted", "unlocked", "real_name",
+            "id", "name", "is_dir", "size", "mtime", "is_encrypted", "unlocked", "real_name",
             "plaintext_size", "probe_failed", "thumb_token", "probing",
         ] {
             assert!(j.get(k).is_some(), "字段 {k} 不能改名或缺失");
