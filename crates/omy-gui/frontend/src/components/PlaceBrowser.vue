@@ -1463,6 +1463,64 @@ function rowTitle(f) {
   .rowactions .btn {
     min-height: 44px;
   }
+  /* 工具条窄屏分层：五分栏 + 文件/消息 + 搜索模式 + 转圈一行放不下，
+     必然换行错乱或溢出（用户点名「分栏多」担心的就是这个）。
+     所以窄屏让 .searchbar 换行，各控件分层，且五分栏独占一行横向可滚——
+     参照官方 Telegram 移动端媒体页那条可左右滑的 tab 条。 */
+  .searchbar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  /* 输入框填满第一行，把 320px 上限去掉；仍 flex:1，给行末转圈留出位置 */
+  .searchbar .sinput {
+    max-width: none;
+    flex: 1 1 140px;
+  }
+  /* 后台刷新转圈：移动端工具条会换行，若让它参与 flex 流，它会被挤到某一行
+     末尾、还会随换行跳位。改为**绝对定位到工具条右上角**——不占流、不推挤
+     tab、不随换行跳动、始终在第一行右端可见。搜索输入右侧留出内边距避免压字。
+     对比过三种放法：①跟输入框行末（换行时跳到第二行、且把该行内容挤窄）；
+     ②单独占一行（凭空多一行、且一个小圈占满宽显得空）；③绝对定位右上角
+     （不占流、稳定）——选③。 */
+  .searchbar {
+    position: relative;
+  }
+  .searchbar .refspin {
+    position: absolute;
+    inset-block-start: 14px;
+    inset-inline-end: 2px;
+    width: 18px;
+    height: 18px;
+  }
+  /* 给输入框右侧留出转圈的位置，避免刷新时圈压在占位文字上 */
+  .searchbar .sinput {
+    padding-inline-end: 28px;
+  }
+  /* 三组分段控件各自独占整行：五分栏那行横向可滚（.mtabs 已有 overflow-x），
+     文件/消息 与 搜索模式 两个按钮拉宽，触控目标更大。 */
+  .searchbar .seg {
+    flex-basis: 100%;
+  }
+  /* 文件/消息、搜索模式：两个按钮平分整行 */
+  .searchbar [data-tg="viewmode"] button,
+  .searchbar [data-tg="searchmode"] button {
+    flex: 1;
+  }
+  /* 五分栏不平分（否则 5 个挤成一团、字被截）：保持按内容宽度 + 可横向滚动，
+     一屏放不下就左右滑，每个 tab 完整可读可点。触控下限由全局 .seg button
+     的 44px 保证。 */
+  .searchbar .mtabs {
+    display: flex;
+    /* 让滚动容器自身占满整行，内部按钮溢出即可滑动 */
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 五个 tab 在放得下时平分整行、铺满不留白（否则 seg 框满宽、按钮却按
+     内容宽，右侧会空出一块）；每个给 min-width 兜底，若某语言的字更长、
+     五个加起来超过一行，就触发 .mtabs 的横向滚动而不是把字截断。 */
+  .searchbar .mtabs button {
+    flex: 1 0 auto;
+    min-width: 56px;
+  }
 }
 /* 不可激活的条目（锁定项、非加密文件、识别失败）降低对比并去掉指点光标 */
 .lrow.off,
