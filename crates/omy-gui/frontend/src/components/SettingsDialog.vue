@@ -30,8 +30,13 @@ const emit = defineEmits(['close', 'lang', 'lock', 'devices']);
 
 /** 当前分类。`cache` 是「远程位置」的二级页。 */
 const pane = ref('general');
-/** 移动端：null 表示停在主列表，否则是二级页的分类名。 */
+/** 移动端：null 表示停在主列表，否则是当前二级页的分类名。 */
 const mobilePane = ref(null);
+/** 移动端返回栈：记录进入当前二级页之前的层级，返回时逐级弹出。
+ *  原来 backMobile 硬编码「cache 的上级是 remote」，但 cache 其实是从
+ *  pinned 页进的——于是从缓存返回会跳到「远程位置」而不是回上一级
+ *  （用户报的返回栈错乱）。用栈就不必猜每个页的父级。 */
+const mobileStack = ref([]);
 
 /** 整份配置。读失败时用空对象兜底，界面显示默认值而不是白屏。 */
 const cfg = ref(null);
@@ -238,8 +243,12 @@ function pinnedRowId(f) {
 }
 
 async function openPinnedPane() {
-  if (isMobile.value) mobilePane.value = 'pinned';
-  else pane.value = 'pinned';
+  if (isMobile.value) {
+    mobileStack.value.push(mobilePane.value);
+    mobilePane.value = 'pinned';
+  } else {
+    pane.value = 'pinned';
+  }
   pinnedLoading.value = true;
   try {
     // 先刷新位置列表再列清单：名字映射要对着当前真相。
@@ -308,8 +317,9 @@ const pinnedText = computed(() => {
   return `${i18n.formatSize(used || 0)}（${i18n.tn('settings.pinned_files', files || 0)}）`;
 });
 
-/** 移动端进入二级页。 */
+/** 移动端进入二级页：把当前层级压栈，便于逐级返回。 */
 function goMobile(key) {
+  mobileStack.value.push(mobilePane.value);
   mobilePane.value = key;
 }
 
@@ -317,15 +327,20 @@ function goMobile(key) {
 function openCachePane() {
   // isMobile 是 readonly(ref)，在 <script> 里必须取 .value，
   // 直接判断 ref 对象永远为真——那会让桌面端也走移动分支、PC 缓存页进不去
-  if (isMobile.value) mobilePane.value = 'cache';
-  else pane.value = 'cache';
+  if (isMobile.value) {
+    mobileStack.value.push(mobilePane.value);
+    mobilePane.value = 'cache';
+  } else {
+    pane.value = 'cache';
+  }
   // 进页面前刷一次用量，避免看到上次的旧数字
   loadCacheUsage();
 }
 
-/** 移动端标题栏返回：缓存页的上级是远程位置，其余二级页回主列表。 */
+/** 移动端标题栏返回：弹出返回栈，回到进入当前页之前的那一层。
+ *  栈空则回主列表（null）。不再硬编码某页的父级。 */
 function backMobile() {
-  mobilePane.value = mobilePane.value === 'cache' ? 'remote' : null;
+  mobilePane.value = mobileStack.value.length ? mobileStack.value.pop() : null;
 }
 
 /** 移动端二级页标题（cache 不在 PANES 里，单独给名）。 */
@@ -423,7 +438,13 @@ async function openLogDir() {
           ←
         </button>
         <span class="sethn">{{ paneTitle }}</span>
-        <button class="iconbtn close" data-si="close" :aria-label="i18n.t('common.close')" @click="onClose">
+        <button
+          v-if="!isMobile"
+          class="iconbtn close"
+          data-si="close"
+          :aria-label="i18n.t('common.close')"
+          @click="onClose"
+        >
           ✕
         </button>
       </div>
@@ -624,7 +645,7 @@ async function openLogDir() {
                 type="button"
                 data-si="pinned-back"
                 :aria-label="i18n.t('common.back')"
-                @click="isMobile ? (mobilePane = 'cache') : (pane = 'cache')"
+                @click="isMobile ? backMobile() : (pane = 'cache')"
               >
                 ←
               </button>
@@ -1019,6 +1040,16 @@ async function openLogDir() {
   justify-content: center;
   z-index: 50;
 }
+/* 移动端：设置不是盖住一切的模态，而是「底栏一个 tab 的内容区」。
+   底栏（.pnav，z-index 30、高 52px + 安全区）必须一直露出并可点，所以
+   mask 底部留出底栏高度、且去掉暗背景（不是弹窗、不该压暗背后）。 */
+@media (max-width: 768px) {
+  .mask {
+    background: none;
+    inset-block-end: calc(52px + env(safe-area-inset-bottom, 0px));
+    z-index: 28;
+  }
+}
 .setdlg {
   width: min(840px, 94vw);
   height: min(560px, 88vh);
@@ -1033,11 +1064,12 @@ async function openLogDir() {
    而且底部要留安全区，否则手势导航条会盖住内容 */
 .setdlg.mob {
   width: 100vw;
-  height: 100vh;
+  /* 占满 mask（mask 已在底部让出了底栏高度），底栏由 .pnav 自己处理安全区，
+     这里不再重复留 padding，否则底部会多出一条空白 */
+  height: 100%;
   max-width: none;
   border-radius: 0;
   border: 0;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 .seth {
   display: flex;

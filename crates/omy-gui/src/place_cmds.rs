@@ -335,10 +335,19 @@ fn spawn_thumb_upgrade(
         for (id, name, size, mtime) in jobs {
             let sem = Arc::clone(&sem);
             let store = Arc::clone(&store);
+            let thumbs = Arc::clone(&thumbs);
             set.spawn(async move {
+                // 先查磁盘：清晰缩略图上次落过盘的话，直接读盘、不发网络请求。
+                // 这就是「重启后仍是清晰图、不重新拉」的关键——纯内存表重启即空，
+                // 磁盘这一层跨会话保留。
+                if let Some(cached) = thumbs.disk_image(&id) {
+                    return Some((id, name, size, mtime, cached));
+                }
                 let _permit = sem.acquire_owned().await.ok()?;
                 let tg = store.as_telegram()?;
                 let bytes = tg.thumb_full(&id).await?;
+                // 拉回来的清晰图写盘，供下次（含重启后）直接命中
+                thumbs.persist_image(&id, &bytes);
                 Some((id, name, size, mtime, bytes))
             });
         }

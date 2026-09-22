@@ -683,6 +683,7 @@
     "tab_empty": "Nothing in this tab",
     "mark_pinned": "Kept offline",
     "mark_cached": "Cached; may be evicted when space runs low",
+    "mark_partial": "Partially cached: {{n}}/{{total}} blocks local; may not open fully offline",
     "refreshing": "Refreshing…"
   },
   "common": {

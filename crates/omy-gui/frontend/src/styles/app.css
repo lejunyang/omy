@@ -1092,6 +1092,16 @@ input {
   white-space: nowrap;
 }
 
+/* 关闭按钮在半透明黑底的预览栏上：字保持白，hover 用半透明白底而不是全局
+   --bg3（浅色主题下 --bg3 是浅色，白叉压浅底看不清——用户截图那个）。
+   与主题无关：预览栏本身恒为深底。 */
+.overlay-bar .iconbtn {
+  color: #fff;
+}
+.overlay-bar .iconbtn:hover {
+  background: rgb(255 255 255 / 18%);
+}
+
 .overlay-body {
   flex: 1;
   display: flex;
@@ -1688,21 +1698,16 @@ input {
     flex: 1;
   }
 
-  /* 密码按钮在窄屏上只留图标，文案会把其他按钮挤出屏幕 */
-  .titlebar.mob .pill {
-    padding-inline: calc(var(--sp) * 2);
-    font-size: 0;
-    gap: 0;
-    /* 只留图标之后实测只有 18x26，几乎点不中——而它是远程位置里
-       **唯一**的解锁入口，点不中等于解不了锁。图标保持原样，
-       只把命中区撑到触控下限 */
-    min-width: 44px;
-    min-height: 44px;
-    justify-content: center;
+  /* 密码按钮在窄屏上只留图标，文案会把其他按钮挤出屏幕。
+     用隐藏文案 span 的方式，而不是 font-size:0——后者配 ::first-letter 想
+     露出 emoji，但 emoji 是多码点、::first-letter 抓不到，结果图标整个消失、
+     只剩一个空心圆（用户截图那个）。pill 尺寸保持桌面的 26px 高，不撑大。 */
+  .titlebar.mob .pill .pill-txt {
+    display: none;
   }
-
-  .titlebar.mob .pill::first-letter {
-    font-size: 14px;
+  .titlebar.mob .pill {
+    padding-inline: calc(var(--sp) * 1.5);
+    gap: 0;
   }
 
   /* 侧栏改抽屉：脱离文档流盖在内容上，而不是挤压主区域。
@@ -1747,51 +1752,16 @@ input {
     padding-block-end: calc(var(--sp) * 16);
   }
 
-  /* 触摸目标至少 44px：手指不是鼠标指针，28px 的图标按钮在手机上
-     几乎点不中，会被当成「这个按钮坏了」。
-     
-     .iconbtn / .crumbbtn 有显式 width/height，所以这里必须连 width
-     一起覆盖——只写 min-* 的话它们仍按 30px/26px 布局。 */
-  .iconbtn,
-  .crumbbtn {
-    width: 44px;
-    height: 44px;
-    min-width: 44px;
-    min-height: 44px;
-  }
+  /* 移动端按钮**不放大**：与桌面共用组件、用桌面同一尺寸即可。
+     上一版曾把 .iconbtn/.crumbbtn 撑到 44px 方块、.crumb 撑到 56px、
+     .btn/.btn.small/.crumbseg/.sitem 都加 44px min-height——方向反了：
+     用户要的是「和 PC 一样、别更大」，而不是撑成触控方块。已全部回退。
+     若确需扩大触控命中区，应当用透明的 padding/命中层扩「可点范围」，
+     而不是撑大「可视按钮」——两者不是一回事，别再混。
 
-  /* 44px 触控按钮不能塞进固定 40px 的面包屑条：否则按钮顶满上下边、看起来
-     被纵向拉长（用户报的「返回/刷新过大、撑满高度」）。放开固定高度、按内容
-     撑高并留纵向 padding，让按钮四周有呼吸空间。 */
-  .crumb {
-    height: auto;
-    flex: 0 0 auto;
-    min-height: 56px;
-    padding-block: calc(var(--sp));
-  }
-
-  /* 上传、添加这类小按钮实测只有 26px 高；
-     面包屑每一段都是跳目录的入口，实测只有 20px 高 */
-  .btn.small,
-  .crumbseg {
-    min-height: 44px;
-    display: inline-flex;
-    align-items: center;
-  }
-
-  .sitem {
-    min-height: 44px;
-  }
-
-  /* 对话框里的按钮实测只有 36px（.btn 的全局值）。桌面用鼠标没问题，
-     手机上「开始扫码」「复用桌面端登录态」这种必须点中的主操作
-     按不准就等于走不下去 */
-  .btn {
-    min-height: 44px;
-  }
-
+     列表行仍略放高：行是整行可点的长条，放高不改变按钮观感，纯提升可点性。 */
   .lrow {
-    min-height: 48px;
+    min-height: 44px;
   }
 
   /* 列表视图在窄屏放不下这么多列，隐藏类型列与时间列保住文件名 */

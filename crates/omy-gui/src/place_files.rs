@@ -353,13 +353,62 @@ pub enum ThumbSource {
 pub struct PlaceThumbs {
     thumbs: Mutex<HashMap<String, ThumbSource>>,
     seq: Mutex<u64>,
+    /// 清晰缩略图的**磁盘**缓存目录（`<缓存根>/rthumbs`）。
+    ///
+    /// 内存里的 `thumbs` 表进程重启即空，于是每次开应用进对话都要重新拉一遍
+    /// 清晰缩略图（用户报的「重启全部重新加载」）。这里把清晰图落盘、按媒体 id
+    /// 命名，重启后直接读盘出清晰图、不再从零重拉。`None` 表示拿不到缓存目录
+    /// （降级为纯内存，不报错）。
+    disk: Option<PathBuf>,
 }
 
 impl PlaceThumbs {
-    /// 空表。
+    /// 空表（纯内存，无磁盘持久）。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 带磁盘缩略图缓存目录的表。目录不存在会尝试创建；创建失败则降级为纯内存。
+    #[must_use]
+    pub fn with_disk_dir(dir: Option<PathBuf>) -> Self {
+        if let Some(d) = &dir {
+            let _ = std::fs::create_dir_all(d);
+        }
+        Self {
+            disk: dir,
+            ..Self::default()
+        }
+    }
+
+    /// 把媒体 id 映射成磁盘文件名。id 形如 `tg:-100123:456`，含 `:` 等不能直接
+    /// 当文件名的字符，用内容哈希命名，避免路径注入也避免超长。
+    fn disk_path(&self, media_id: &str) -> Option<PathBuf> {
+        let dir = self.disk.as_ref()?;
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in media_id.as_bytes() {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Some(dir.join(format!("{hash:016x}.jpg")))
+    }
+
+    /// 从磁盘读某个媒体 id 的清晰缩略图字节。没有或读失败返回 `None`。
+    #[must_use]
+    pub fn disk_image(&self, media_id: &str) -> Option<Vec<u8>> {
+        let p = self.disk_path(media_id)?;
+        std::fs::read(p).ok().filter(|b| !b.is_empty())
+    }
+
+    /// 把某个媒体 id 的清晰缩略图字节写盘。失败静默忽略（缓存是附加项，
+    /// 写不进不该影响浏览）。
+    pub fn persist_image(&self, media_id: &str, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(p) = self.disk_path(media_id) {
+            let _ = std::fs::write(p, bytes);
+        }
     }
 
     /// 登记一份完整文件头用于取缩略图，返回不透明 token。
@@ -586,6 +635,55 @@ mod tests {
             t.get(&a).is_none() && t.get(&b).is_none(),
             "刷新/锁定后旧缩略图 token 必须全失效"
         );
+    }
+
+    /// 清晰缩略图落盘：写盘 → **换一个新表实例（模拟重启）** → 按同一媒体 id
+    /// 能从盘上读回来。
+    ///
+    /// 不这样会怎样：只有内存表的话，进程重启后清晰缩略图全丢、每次进对话都
+    /// 得重新拉——正是用户报的「重启全部重新加载」。这条断言证明「换实例后
+    /// 仍命中」，即真的落到了盘上、不是内存冒充。用独立实例而不是同一个 t，
+    /// 才能排除「只是内存 HashMap 还在」这种假通过。
+    #[test]
+    fn place_thumbs_disk_survives_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "omy-thumbtest-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let media_id = "tg:-100999:42";
+        let bytes = vec![0xFFu8, 0xD8, 0xFF, 1, 2, 3, 4, 5];
+
+        // 第一个实例：写盘
+        {
+            let t = PlaceThumbs::with_disk_dir(Some(dir.clone()));
+            assert!(t.disk_image(media_id).is_none(), "空目录不该读到东西");
+            t.persist_image(media_id, &bytes);
+            assert_eq!(
+                t.disk_image(media_id).as_deref(),
+                Some(&bytes[..]),
+                "同一实例写完应能读回"
+            );
+        }
+        // 第二个实例（模拟重启，内存表从零开始）：仍能从盘读回
+        {
+            let t2 = PlaceThumbs::with_disk_dir(Some(dir.clone()));
+            assert_eq!(
+                t2.disk_image(media_id).as_deref(),
+                Some(&bytes[..]),
+                "重启后（新实例）必须仍能从盘读回清晰缩略图，否则等于没落盘"
+            );
+            // 不同 id 不串
+            assert!(t2.disk_image("tg:-100999:43").is_none(), "别的 id 不该命中");
+        }
+        // 无磁盘目录时降级为纯内存：persist/disk_image 都不 panic、返回 None
+        let mem = PlaceThumbs::with_disk_dir(None);
+        mem.persist_image(media_id, &bytes);
+        assert!(mem.disk_image(media_id).is_none(), "无盘时读不到、也不该崩");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 造一个 holder。`RemoteSource::new` 只 `peek_header`、不发网络，

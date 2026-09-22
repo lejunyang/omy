@@ -394,11 +394,21 @@ const cacheMarks = computed(() => {
     const st = remoteFileCache(f);
     if (!st) continue;
     if (st.pinned) {
+      // 永久保留：蓝色 📌，与「已缓存」刻意用不同标识、不合并——一个是
+      // 「离线也在」，一个是「空间不足可能被清」，用户据此判断断网能不能打开
       m[f.id] = { kind: 'pinned', cls: 'pinned', icon: '📌',
                   title: i18n.t('rplace.mark_pinned') };
-    } else if (st && st.fully_cached && st.total_blocks > 0) {
+    } else if (st.fully_cached && st.total_blocks > 0) {
+      // 整个文件都在本地：绿点
       m[f.id] = { kind: 'cached', cls: 'cached', icon: '●',
                   title: i18n.t('rplace.mark_cached') };
+    } else if (st.cached_blocks > 0 && st.total_blocks > 0) {
+      // 只缓存了一部分（大视频 seek 时下的那几块）：半实心点。
+      // 与「整个都在」区分，是 pin 之前判断「断网还能不能完整打开」的依据。
+      m[f.id] = { kind: 'partial', cls: 'partial', icon: '◐',
+                  title: i18n.t('rplace.mark_partial', {
+                    n: st.cached_blocks, total: st.total_blocks,
+                  }) };
     }
   }
   return m;
@@ -1262,6 +1272,15 @@ function rowTitle(f) {
 .cmark.cached {
   color: var(--ok);
 }
+/* 永久保留：蓝色，与「已缓存」的绿区分开 */
+.cmark.pinned {
+  color: var(--accent);
+}
+/* 部分缓存：中性灰的半实心点，比绿点弱——它不是「完整可离线」的状态，
+   不该和「已缓存」一样醒目，只是提示「下过一部分」 */
+.cmark.partial {
+  color: var(--fg2);
+}
 .msgmore {
   display: flex;
   justify-content: center;
@@ -1471,13 +1490,14 @@ function rowTitle(f) {
   .searchbar .refspin {
     position: absolute;
     inset-block-start: 14px;
-    inset-inline-end: 2px;
+    /* 离输入框右缘留一点呼吸间距，不要贴边 */
+    inset-inline-end: 12px;
     width: 18px;
     height: 18px;
   }
   /* 给输入框右侧留出转圈的位置，避免刷新时圈压在占位文字上 */
   .searchbar .sinput {
-    padding-inline-end: 28px;
+    padding-inline-end: 38px;
   }
   /* 三组分段控件各自独占整行：五分栏那行横向可滚（.mtabs 已有 overflow-x），
      文件/消息 与 搜索模式 两个按钮拉宽，触控目标更大。 */

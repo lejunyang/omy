@@ -89,12 +89,12 @@ function setView(v) {
       :title="i18n.t('unlock.quick_hint')"
       @click="emit('quick-unlock')"
     >
-      {{ state.credentials > 0 ? '🔓' : '🔑' }}
-      {{
+      <span class="pill-ico" aria-hidden="true">{{ state.credentials > 0 ? '🔓' : '🔑' }}</span>
+      <span class="pill-txt">{{
         state.credentials > 0
           ? i18n.tn('status.credentials', state.credentials)
           : i18n.t('status.no_password')
-      }}
+      }}</span>
     </button>
 
     <template v-if="!isMobile">

@@ -136,8 +136,14 @@ pub fn run() {
         Arc::new(place_files::RemoteCache::from_config());
     let place_files: Arc<place_files::PlaceFiles> = Arc::new(place_files::PlaceFiles::new());
     let for_protocol_places = Arc::clone(&place_files);
-    // 远程列表缩略图句柄表：只存文件头，刷新目录 / 锁定即清空。
-    let place_thumbs: Arc<place_files::PlaceThumbs> = Arc::new(place_files::PlaceThumbs::new());
+    // 远程列表缩略图句柄表：文件头 token 刷新目录即清；清晰缩略图额外落盘
+    // （<缓存根>/rthumbs），重启后直接读盘出清晰图、不重新拉。
+    let thumb_disk = place_files::RemoteCache::resolve_root(
+        omy_config::Config::load().unwrap_or_default().remote.cache_dir.clone(),
+    )
+    .and_then(|remote_root| remote_root.parent().map(|p| p.join("rthumbs")));
+    let place_thumbs: Arc<place_files::PlaceThumbs> =
+        Arc::new(place_files::PlaceThumbs::with_disk_dir(thumb_disk));
     let for_protocol_thumbs = Arc::clone(&place_thumbs);
     // 远程容器内条目的登记表。与 PlaceFiles 分开：一个管「打开了哪些远程
     // 文件」，一个管「那些文件里的容器条目」，后者跟着前者失效

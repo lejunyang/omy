@@ -683,6 +683,7 @@
     "tab_empty": "这一栏没有内容",
     "mark_pinned": "永久保留：离线也能打开",
     "mark_cached": "已缓存：空间不足时可能被清掉",
+    "mark_partial": "部分缓存：{{n}}/{{total}} 块在本地，断网可能打不全",
     "refreshing": "正在刷新…"
   },
   "common": {
