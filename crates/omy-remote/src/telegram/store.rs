@@ -1556,6 +1556,29 @@ impl TelegramStore {
             .and_then(|m| m.get(&key).cloned())
             .ok_or_else(|| Error::NotFound(format!("找不到消息：{key}")))
     }
+
+    /// 取**清晰档**缩略图字节（两级缩略图的第二级）。
+    ///
+    /// 列目录时随消息一起回来的是 `photoStrippedSize`（几百字节的极低清占位，
+    /// 秒出但很糊）。这里按 id 重新取那条消息，下载一个**能直接渲染的**尺寸档
+    /// （非 stripped，见 thumb_bytes），供后台把糊图替换成清晰图。
+    ///
+    /// # 为什么单独取
+    ///
+    /// stripped 是「不发请求就有」的，清晰档要一次 upload.getFile。把这次请求
+    /// 放到后台、限流地做，才不会为了清晰度拖慢首屏——首屏用 stripped 先铺满。
+    ///
+    /// # Errors
+    ///
+    /// id 非法、消息已删、无缩略图或网络失败时返回 `None`（调用方保留占位图）。
+    pub async fn thumb_full(&self, dir_id: &str) -> Option<Vec<u8>> {
+        let id = TelegramId::decode(dir_id).ok()?;
+        let client = self.client().ok()?;
+        let peer = self.peer_ref(id.chat).await.ok()?;
+        let msgs = client.get_messages_by_id(peer, &[id.message]).await.ok()?;
+        let media = msgs.into_iter().flatten().next()?.media()?;
+        thumb_bytes(&client, &media).await
+    }
 }
 
 impl RemoteStore for TelegramStore {

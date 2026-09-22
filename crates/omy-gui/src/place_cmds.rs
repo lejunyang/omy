@@ -307,6 +307,61 @@ fn spawn_avatar_backfill(
     });
 }
 
+/// 两级缩略图的第二级：后台把媒体卡片的糊占位图升级为清晰图。
+///
+/// 列目录时每个媒体条目已带 stripped 占位（秒出但糊）。这里对每个条目
+/// 后台取一次清晰档（thumb_full = get_messages_by_id + 下载可渲染尺寸），
+/// 下好就发 remote-entry 让前端把那张卡片的图换成清晰的。
+///
+/// 限流 8 路、与头像/识别同一条事件通道、同一套「切走后前端按位置+目录
+/// 丢弃」规则，不新造机制。取不到清晰档就不发事件——占位图留着即可，
+/// 不倒退成类型图标。
+fn spawn_thumb_upgrade(
+    app: tauri::AppHandle,
+    store: Arc<omy_remote::PlaceStore>,
+    thumbs: Arc<PlaceThumbs>,
+    place_id: String,
+    dir: String,
+    // (文件 id, 名字, 大小)——发事件时要还原成完整条目
+    jobs: Vec<(String, String, Option<u64>)>,
+) {
+    tokio::spawn(async move {
+        let sem = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut set = tokio::task::JoinSet::new();
+        for (id, name, size) in jobs {
+            let sem = Arc::clone(&sem);
+            let store = Arc::clone(&store);
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let tg = store.as_telegram()?;
+                let bytes = tg.thumb_full(&id).await?;
+                Some((id, name, size, bytes))
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok(Some((id, name, size, bytes))) = joined else {
+                continue;
+            };
+            // insert_image 内容寻址：清晰图与占位图内容不同 → 新 token，
+            // 前端换 src 即从糊变清；万一服务端给的清晰档和占位同字节（不会），
+            // token 相同也无害
+            // insert_image 可能返回 None（空字节/登记失败）：那种情况不发事件，
+            // 占位图留着即可，不要清成类型图标
+            let Some(token) = thumbs.insert_image(bytes) else { continue };
+            let mut entry = skeleton_entry(id, name, false, size, false);
+            entry.thumb_token = Some(token);
+            let _ = app.emit(
+                REMOTE_ENTRY_EVENT,
+                RemoteEntryEvent {
+                    place_id: place_id.clone(),
+                    dir: dir.clone(),
+                    entry,
+                },
+            );
+        }
+    });
+}
+
 /// 把一批远程条目变成「骨架 + 后台识别」的结果。
 ///
 /// `remote_browse` 与 `remote_search` 共用这一份。搜索另写一份的话，结果里就
@@ -1522,6 +1577,25 @@ pub async fn remote_browse_tab(
             t0.elapsed().as_millis()
         ),
     );
+    // 媒体/GIF 栏的条目有真实缩略图，值得后台升级为清晰图（两级缩略图第二级）。
+    // 文件/链接/音频栏多半没有可升级的缩略图，就不多发这批请求。
+    if matches!(media_tab, MediaTab::Media | MediaTab::Gif) {
+        let jobs: Vec<(String, String, Option<u64>)> = items
+            .iter()
+            .filter(|it| !it.is_dir && it.thumb.is_some())
+            .map(|it| (it.id.clone(), it.name.clone(), it.size))
+            .collect();
+        if !jobs.is_empty() {
+            spawn_thumb_upgrade(
+                app.clone(),
+                Arc::clone(&place.store),
+                thumbs.inner().clone(),
+                place_id.clone(),
+                dir.clone(),
+                jobs,
+            );
+        }
+    }
     // 走与首屏完全相同的 scan_entries：识别 .omy、登记缩略图、边扫边出的
     // 后台识别都复用同一条路，不另写一份（否则翻页/换栏后 omy 识别会不一致）
     Ok(scan_entries(
