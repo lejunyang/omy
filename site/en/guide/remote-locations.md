@@ -256,6 +256,29 @@ listed so you can be told to log in again, rather than showing an empty list
 that looks like lost configuration. The cost is that anyone reading the file can
 tell which server you use.
 
+## Virtual remote locations (collections)
+
+In the "Remotes" area you can create a **virtual remote location**: it connects to
+no server and only collects **references** to files you pick from real remotes
+(Telegram / WebDAV), letting you organize what you watch often across accounts and
+chats.
+
+- **Create**: in the sidebar "Remotes" area click "New virtual remote" and give it a name.
+- **Add content**: right-click a file in a real remote (or select several) →
+  "Add to virtual remote…", then in the dialog pick a virtual remote and a
+  **specific folder** under it (expand the folder tree).
+- **Organize**: you can create folders inside a virtual remote; you **cannot upload
+  files** into it — it only stores references.
+- **Open**: double-clicking a reference jumps to the real location it points at and
+  locates that file; anything the real location already cached **opens instantly**
+  (a reference shares the same cache as the real file, nothing is downloaded twice).
+- **Source changes**: a reference records the account's stable identity (not the
+  local number that can change). So if you remove a remote from the list and add it
+  back later, the reference re-attaches and works again; while the source is
+  temporarily gone the reference does not disappear but is marked "source
+  unavailable"; if the source is encrypted and still locked, it prompts you to unlock
+  it first.
+
 ## Current limitations (first iteration)
 
 - New folder and rename/delete are not available yet (encrypted upload is). Decrypting an encrypted folder (container) from remote to local is not supported yet either.

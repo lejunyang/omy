@@ -221,11 +221,15 @@ list"）。这套"稳定 id + 按需刷新 reference"的两层结构，正是调
 委托，但产品上要想清"在收藏夹里 unpin 会不会影响真实位置那份"——它们是同一份，
 答案是"会"，UI 要说清。
 
-【待定】前提确认：路线 A 的委托要求"能按 place_id 拿到一个可 `read_range` 的真
-实 store 句柄"。`PlaceRegistry` 管理 `SavedPlace` 元数据，但**是否持有/能重建
-已连接的 store 实例**需要在实现前核实（Telegram store 的连接是有状态的，见 15
-号文档连接复用一节）。若不能直接拿到，虚拟位置的 read 就要走"按 place_id 现连
-一次"的路径，性能上仍可接受（连接复用实测 ~2ms）。
+【已实现】这个【待定】已落定：委托不做成 `omy-remote` 的 `PlaceStore` enum 变体
+（那够不到 `PlaceRegistry`），而是**在 omy-gui 命令层做**——虚拟位置的浏览/打开
+命令用引用的**稳定标识**（`SourceRef`）经 `PlaceRegistry::resolve_source` 认领出
+真实位置，再转调它现有的浏览/读取/播放命令。`PlaceRegistry` 已持有 `Arc<Place>`
+（含已连接 store），直接可用；源移除后本地 place_id 变了也能靠稳定标识
+（Telegram user_id / WebDAV url+账号）重新认领。缓存共享因此天然成立：委托过去后
+由真实 store 用它自己的 `(place,id)` 落 `BlockCache`，与直接在真实位置打开同一
+文件时 key 完全相同（断言 `virtual_read_shares_cache_key_with_real_place`）。
+实现见 `virtual_place.rs` / `virtual_cmds.rs` / `places.rs::resolve_source`。
 
 ### 2.4 跳转与打开
 
