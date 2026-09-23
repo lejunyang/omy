@@ -613,6 +613,10 @@ export const transferList = () => invoke('transfer_list');
 /** 取消一条任务。执行体会在下一个分片边界干净退出。 */
 export const transferCancel = (id) => invoke('transfer_cancel', { id });
 
+/** 重试一条失败任务。只对可重试的失败有意义（磁盘满 / 认证失效不给按钮），
+ *  重跑走断点续传：已缓存的块不会重下。 */
+export const transferRetry = (id) => invoke('transfer_retry', { id });
+
 /** 全部暂停 / 全部继续。 */
 export const transferPauseAll = (paused) =>
   invoke('transfer_pause_all', { paused });

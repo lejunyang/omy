@@ -861,6 +861,7 @@
     "st_failed": "失败",
     "st_canceled": "已取消",
     "act_cancel": "取消",
+    "act_retry": "重试",
     "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败",
     "speed": "{{rate}}/s",
     "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"

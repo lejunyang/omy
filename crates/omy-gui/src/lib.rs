@@ -155,6 +155,8 @@ pub fn run() {
     // 任务是跨对话的——用户可能同时在往一个对话传文件、从另一个缓存视频，
     // 分散在各个位置里显示的话，他一切走就看不到也管不了了
     let transfers = Arc::new(transfers::Transfers::default());
+    // pin 失败重试要能重跑原操作，而 Task 不带请求参数——用它记 id->请求
+    let pin_retry = Arc::new(place_cmds::PinRetryStore::default());
 
     // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
     // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
@@ -187,6 +189,7 @@ pub fn run() {
         .manage(Arc::clone(&place_thumbs))
         .manage(Arc::clone(&place_containers))
         .manage(Arc::clone(&transfers))
+        .manage(Arc::clone(&pin_retry))
         .manage(Arc::clone(&telegram_login))
         .manage(Arc::clone(&telegram_phone_login))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
@@ -284,6 +287,7 @@ pub fn run() {
             place_cmds::remote_page_size,
             place_cmds::transfer_list,
             place_cmds::transfer_cancel,
+            place_cmds::transfer_retry,
             place_cmds::transfer_pause_all,
             place_cmds::transfer_clear_done,
             place_cmds::remote_effective_caps,

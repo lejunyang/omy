@@ -861,6 +861,7 @@
     "st_failed": "Failed",
     "st_canceled": "Canceled",
     "act_cancel": "Cancel",
+    "act_retry": "Retry",
     "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed",
     "speed": "{{rate}}/s",
     "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."

@@ -151,6 +151,18 @@ async function cancel(t) {
   await refresh();
 }
 
+/** 这条失败任务能不能重试。后端在失败态里下发 retryable——界面不自己
+ *  按错误码再推一遍，判据只该有一处。 */
+function canRetry(t) {
+  return t.state === 'failed' && t.retryable === true;
+}
+
+/** 重试一条失败任务。重跑走断点续传：已缓存的块不重下。 */
+async function retry(t) {
+  await api.transferRetry(t.id).catch(() => {});
+  await refresh();
+}
+
 async function togglePauseAll() {
   paused.value = !paused.value;
   await api.transferPauseAll(paused.value).catch(() => {});
@@ -259,6 +271,15 @@ onBeforeUnmount(() => {
               @click="cancel(t)"
             >
               ✕
+            </button>
+            <button
+              v-else-if="canRetry(t)"
+              class="btn small"
+              data-xf="retry"
+              :title="i18n.t('xfer.act_retry')"
+              @click="retry(t)"
+            >
+              ↻
             </button>
           </div>
         </div>

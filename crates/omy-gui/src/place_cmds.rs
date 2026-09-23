@@ -1990,9 +1990,10 @@ pub async fn remote_cache_pin(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    pins: tauri::State<'_, Arc<PinRetryStore>>,
     req: RemoteFileRef,
 ) -> CmdResult<u64> {
-    use crate::transfers::{TaskKind, TaskState};
+    use crate::transfers::TaskKind;
 
     let source = build_remote_source(&reg, &cache, &req).await?;
 
@@ -2020,13 +2021,36 @@ pub async fn remote_cache_pin(
         .get(&req.place_id)
         .map_or_else(|| req.place_id.clone(), |p| p.name.clone());
     let h = xfer.start(&app, TaskKind::Pin, name, target, total);
+    // 记下这条 pin 任务的原始请求：失败后用户点重试要能重跑同一个操作。
+    // 只进内存重试登记表（不落盘、不进日志）——它含明文名，等同用户屏幕上
+    // 已显示的信息，进程退出即清。
+    pins.remember(h.id(), req.clone());
+
+    run_pin(&app, &source, &xfer, &req, &h)
+}
+
+/// pin 任务的执行体：预热所有块 → 搬进永久层，全程更新任务进度与终态。
+/// 首次 pin 与「失败后重试」共用它——重试判据、进度更新、终态写入只该有
+/// 一处，否则两条路各写一份迟早只改一处、行为分叉。
+///
+/// 预热天然从进度续：`prefetch_all_with_progress` 内部 `fetch_block` 先查
+/// 缓存命中就不重下（见 `RemoteSource::fetch_block`），所以重试不会把已经
+/// 在本地的块再拉一遍——这正是 `FailCause::Network` 对应的 `FromProgress`。
+fn run_pin(
+    app: &tauri::AppHandle,
+    source: &omy_remote::source::RemoteSource<PlaceStore>,
+    xfer: &Arc<crate::transfers::Transfers>,
+    req: &RemoteFileRef,
+    h: &Arc<crate::transfers::TaskHandle>,
+) -> CmdResult<u64> {
+    use crate::transfers::TaskState;
 
     // 先确保内容真的在本地：pin 只搬运已有的块，没有的块搬不了。
     // 不预热的话，「转为永久」会变成「把已经缓存的那几块标成永久」，
     // 而用户以为整个文件都留下来了——直到离线时才发现不是。
-    let h2 = Arc::clone(&h);
+    let h2 = Arc::clone(h);
     let app2 = app.clone();
-    let xfer2 = Arc::clone(&xfer);
+    let xfer2 = Arc::clone(xfer);
     let pre = tokio::task::block_in_place(|| {
         source.prefetch_all_with_progress(&mut |done| {
             h2.set_done(done);
@@ -2037,11 +2061,7 @@ pub async fn remote_cache_pin(
         })
     });
     if let Err(e) = pre {
-        xfer.finish(
-            &app,
-            h.id(),
-            TaskState::Failed { code: String::from("remote_prefetch_failed") },
-        );
+        xfer.finish(app, h.id(), TaskState::failed("remote_prefetch_failed"));
         drop(e);
         return Err(CmdError::code("remote_prefetch_failed"));
     }
@@ -2059,7 +2079,7 @@ pub async fn remote_cache_pin(
                     crate::applog::redact(&req.path)
                 ),
             );
-            xfer.finish(&app, h.id(), TaskState::Done);
+            xfer.finish(app, h.id(), TaskState::Done);
         }
         Err(e) => {
             crate::applog::error(
@@ -2071,7 +2091,7 @@ pub async fn remote_cache_pin(
                     e.code
                 ),
             );
-            xfer.finish(&app, h.id(), TaskState::Failed { code: e.code.clone() });
+            xfer.finish(app, h.id(), TaskState::failed(e.code.clone()));
         }
     }
     r
@@ -2091,9 +2111,77 @@ pub fn transfer_list(
 pub fn transfer_cancel(
     app: tauri::AppHandle,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    pins: tauri::State<'_, Arc<PinRetryStore>>,
     id: u64,
 ) {
     xfer.cancel(&app, id);
+    // 取消即不再是「可重试的失败」，登记的重试请求也没意义了，一并清掉。
+    pins.forget(id);
+}
+
+/// pin 任务的重试登记表：任务 id -> 原始 `RemoteFileRef`。
+///
+/// 为什么要单独存：`Task` 只带显示名 / 去向，不带 `place_id + path + size`，
+/// 而重跑 pin 需要这三样才能重建 `RemoteSource`。放在 GUI 层的内存表里
+/// （`Transfers` 是通用进度表、不该知道 pin 的请求形状），进程退出即清、
+/// 不落盘、不进日志——它含明文名，等同用户屏幕上已显示的信息。
+#[derive(Debug, Default)]
+pub struct PinRetryStore {
+    reqs: std::sync::Mutex<std::collections::HashMap<u64, RemoteFileRef>>,
+}
+
+impl PinRetryStore {
+    /// 记下一条 pin 任务的原始请求。
+    pub fn remember(&self, id: u64, req: RemoteFileRef) {
+        if let Ok(mut m) = self.reqs.lock() {
+            m.insert(id, req);
+        }
+    }
+    /// 取出（不移除）某任务的原始请求，供重试重跑。
+    #[must_use]
+    pub fn get(&self, id: u64) -> Option<RemoteFileRef> {
+        self.reqs.lock().ok().and_then(|m| m.get(&id).cloned())
+    }
+    /// 任务彻底结束（取消 / 清除）后丢弃其登记，避免表无限增长。
+    pub fn forget(&self, id: u64) {
+        if let Ok(mut m) = self.reqs.lock() {
+            m.remove(&id);
+        }
+    }
+}
+
+/// 重试一条失败的传输任务。
+///
+/// 只对**可重试**的失败生效（`reset_running` 内部只翻 `Failed` 态，配合
+/// 前端只在 `retryable` 时给按钮）：不可重试的（磁盘满 / 认证失效）压根不
+/// 该走到这里；即便前端漏判传了进来，`reset_running` 会翻回 Running、
+/// `run_pin` 再跑一次也只是再失败一次同样的错，不会造成坏状态。
+///
+/// 目前只有 pin 会进传输表（上传 / 下载还没登记成任务），所以重试就是
+/// 重跑 pin。找不到登记的原始请求（进程重启后内存表已空）时返回错误、
+/// 让界面提示重新从文件那里发起。
+#[tauri::command]
+pub async fn transfer_retry(
+    app: tauri::AppHandle,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    pins: tauri::State<'_, Arc<PinRetryStore>>,
+    id: u64,
+) -> CmdResult<u64> {
+    let Some(req) = pins.get(id) else {
+        // 登记丢了（多半是重启后内存表已空）：没法原地重试，让界面引导用户
+        // 回文件那里重新「转为永久」。给明确码而不是静默失败。
+        return Err(CmdError::code("remote_retry_expired"));
+    };
+    // 先重建 source（网络 / 位置不存在会在这里失败，直接返回，不动任务状态）
+    let source = build_remote_source(&reg, &cache, &req).await?;
+    // 翻回 Running、发新句柄；非失败任务 reset_running 返回 None，说明这条
+    // 已经在跑或已完成，不该重试
+    let Some(h) = xfer.reset_running(&app, id) else {
+        return Err(CmdError::code("remote_retry_not_failed"));
+    };
+    run_pin(&app, &source, &xfer, &req, &h)
 }
 
 /// 全部暂停 / 全部继续。
@@ -2111,8 +2199,12 @@ pub fn transfer_pause_all(
 pub fn transfer_clear_done(
     app: tauri::AppHandle,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
+    pins: tauri::State<'_, Arc<PinRetryStore>>,
 ) {
-    xfer.clear_done(&app);
+    // 清掉的任务其 pin 重试登记也一并丢，避免内存表随清除次数无限增长
+    for id in xfer.clear_done(&app) {
+        pins.forget(id);
+    }
 }
 
 /// 取消永久缓存。
