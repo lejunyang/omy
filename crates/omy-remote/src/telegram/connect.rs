@@ -46,6 +46,12 @@ pub enum ConnectError {
     /// 服务端不认这份登录态（被撤销、过期、换了账号）。
     #[error("登录态已失效，需要重新登录")]
     Unauthorized,
+    /// 位置的 session 被加密着，当前没有已解锁的密码能打开它。
+    ///
+    /// 这是**正常态、不是错误**：用户还没输能开这个位置的 omy 密码。界面据此
+    /// 显示锁定态并提示先解锁，而不是引导重新登录（那会白扫一次码）。
+    #[error("位置已加密，请先用 omy 密码解锁")]
+    Locked,
 }
 
 impl ConnectError {
@@ -61,6 +67,7 @@ impl ConnectError {
             Self::Connect(_) => "tg_connect_failed",
             Self::ConnectNoProxy(_) => "tg_connect_no_proxy",
             Self::Unauthorized => "tg_session_expired",
+            Self::Locked => "tg_locked",
         }
     }
 }
@@ -114,6 +121,37 @@ pub async fn connect_saved(
     account: &str,
 ) -> Result<Connection, ConnectError> {
     let saved = session::load(app, account)?.ok_or(ConnectError::NoSession)?;
+    connect_with(&saved, app, device, proxy).await
+}
+
+/// 用一批已解锁的 KEK 解开加密的 session 再连（per-place 槽格式）。
+///
+/// 与 [`connect_saved`] 的区别：那个走旧的 `session::load`（机器密钥）；这个
+/// 走 `session::load_with_keks`，用会话里已解锁的 KEK 去开位置的密码槽。
+///
+/// # LoadOutcome 到 ConnectError 的映射
+///
+/// - `Unlocked` → 正常连接。
+/// - `Locked` → [`ConnectError::Locked`]（未解锁，正常态，界面提示先解锁）。
+/// - `NeedsMigration` → 用旧格式解出的登录态直接连（**能连上说明它有效**），
+///   迁移到新格式的动作交给上层在合适时机做，不在建连路径里顺手改盘。
+/// - `Absent` → [`ConnectError::NoSession`]。
+///
+/// # Errors
+///
+/// 读盘/解密/网络/服务端不认时返回；未解锁返回 [`ConnectError::Locked`]。
+pub async fn connect_saved_with_keks(
+    app: &AppId,
+    device: &DeviceInfo,
+    proxy: Option<&str>,
+    account: &str,
+    keks: &[omy_core::crypto::Kek],
+) -> Result<Connection, ConnectError> {
+    let saved = match session::load_with_keks(app, account, keks)? {
+        session::LoadOutcome::Unlocked(s) | session::LoadOutcome::NeedsMigration(s) => s,
+        session::LoadOutcome::Locked => return Err(ConnectError::Locked),
+        session::LoadOutcome::Absent => return Err(ConnectError::NoSession),
+    };
     connect_with(&saved, app, device, proxy).await
 }
 
@@ -216,6 +254,7 @@ mod tests {
     fn error_codes_are_stable() {
         assert_eq!(ConnectError::NoSession.code(), "tg_no_session");
         assert_eq!(ConnectError::Unauthorized.code(), "tg_session_expired");
+        assert_eq!(ConnectError::Locked.code(), "tg_locked");
         assert_ne!(
             ConnectError::Connect(String::new()).code(),
             ConnectError::ConnectNoProxy(String::new()).code(),

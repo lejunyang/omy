@@ -55,7 +55,7 @@ pub mod tdata;
 
 pub use appid::{AppId, AppIdError, SessionIdentity, SessionMismatch, BUILTIN_API_ID};
 pub use auth::{SendCodeOutcome, SentCodeKind};
-pub use connect::{connect_saved, ConnectError, Connection};
+pub use connect::{connect_saved, connect_saved_with_keks, ConnectError, Connection};
 pub use device::{DeviceInfo, DEVICE_MODEL};
 pub use login::{LoginError, LoginFlow, LoginMethod, LoginState};
 pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
