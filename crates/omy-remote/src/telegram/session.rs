@@ -626,6 +626,41 @@ pub fn save_with_slots(
     Ok(path.to_path_buf())
 }
 
+/// 用**现场输入的密码**（+ 会话已解锁的 KEK 作额外槽）把 session 落成加密格式。
+///
+/// 这是「远程位置加密 = 普通 omy 文件加密」的落盘层：密码槽存 KDF 材料供解锁
+/// 重派生；`extra` 是会话里真实已解锁的 KEK（**绝不含机器密钥**，调用方保证），
+/// 让「输过的 omy 密码不用再输」。
+///
+/// # Errors
+///
+/// 密码为空、派生/包裹/序列化/写盘失败时返回。
+pub fn save_with_password(
+    saved: &SavedSession,
+    path: &Path,
+    password: &[u8],
+    params: omy_core::crypto::Argon2Params,
+    extra: &[SlotKey<'_>],
+) -> Result<PathBuf, SessionError> {
+    let (slots, pdk) = crate::telegram::place_secret::PlaceSlots::create_with_password(
+        password, params, extra, CipherId::ChaCha20Poly1305,
+    )
+    .map_err(map_place_err)?;
+    let plain = serde_json::to_vec(saved).map_err(|e| SessionError::Io(e.to_string()))?;
+    let env = omy_secret::seal(
+        &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+        &plain,
+    )
+    .map_err(|e| SessionError::Io(e.to_string()))?;
+    let stored = StoredSession { fmt: STORED_FMT, slots, session: env };
+    let text = serde_json::to_string(&stored).map_err(|e| SessionError::Io(e.to_string()))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| SessionError::Io(e.to_string()))?;
+    }
+    std::fs::write(path, text).map_err(|e| SessionError::Io(e.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
 /// 把 `PlaceKeyError` 归并到 `SessionError`。
 fn map_place_err(e: PlaceKeyError) -> SessionError {
     match e {
@@ -774,6 +809,89 @@ pub fn is_encrypted(account: &str) -> Result<bool, SessionError> {
 /// 读不出当前 session、无可用 KEK、槽创建或写盘失败时返回。
 pub fn encrypt_place(app: &AppId, account: &str, keks: &[Kek]) -> Result<bool, SessionError> {
     migrate_to_slots_with_keks(app, account, keks)
+}
+
+/// **用现场输入的密码**显式加密一个位置（远程位置加密当普通 omy 文件）。
+///
+/// 读出当前 session（可能是未加密的 legacy，用机器密钥能解；也可能已是加密态，
+/// 需 `session_keks` 能解），用 `password`（+ `session_keks` 作额外槽）重新落成
+/// 加密格式。已经用密码加密过的位置再调是覆盖（换密码走 keymgmt，不走这里）。
+///
+/// `session_keks` **必须只含真实已解锁的 KEK、不含机器密钥**（调用方用
+/// `place_keys::session_keks` 保证）——机器密钥进了槽就等于没加密。
+///
+/// 原子替换（临时文件→rename），失败原文件不动。
+///
+/// # Errors
+///
+/// 密码为空、读不出当前 session（锁着且 keks 开不了）、派生/写盘失败时返回。
+pub fn encrypt_place_with_password(
+    app: &AppId,
+    account: &str,
+    password: &[u8],
+    params: omy_core::crypto::Argon2Params,
+    session_keks: &[Kek],
+) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    // 先拿到明文 session：legacy 用机器密钥解（load_with_keks 回退那条），
+    // 已加密态用 session_keks 解。
+    let saved = match load_with_keks_from(&path, app, session_keks)? {
+        LoadOutcome::LegacyUnencrypted(s) | LoadOutcome::Unlocked(s) => s,
+        LoadOutcome::Locked => return Err(SessionError::Undecryptable),
+        LoadOutcome::Absent => return Ok(false),
+    };
+    let extra: Vec<SlotKey<'_>> = session_keks
+        .iter()
+        .map(|k| SlotKey { kek: k, kind: "vault", label: "session" })
+        .collect();
+    let tmp = path.with_extension("json.encrypting");
+    save_with_password(&saved, &tmp, password, params, &extra)?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        SessionError::Io(e.to_string())
+    })?;
+    Ok(true)
+}
+
+/// 用**现场输入的密码**（+ 会话已解锁 KEK）解出一个加密位置的 session。
+///
+/// 供「位置锁着、用户输密码解锁」这条路：连接层平时用 `load_with_keks`（只试
+/// 会话 KEK），锁着时前端弹框收密码再调这个。
+///
+/// # Errors
+///
+/// 不是加密格式 / 没存过时返回 `Ok(None)`；密码与 KEK 都开不了返回
+/// [`SessionError::Undecryptable`]；读盘/解析失败时返回对应错误。
+pub fn unlock_place_with_password(
+    app: &AppId,
+    account: &str,
+    password: &[u8],
+    session_keks: &[Kek],
+) -> Result<Option<SavedSession>, SessionError> {
+    let path = session_path_of(account)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+    let stored = match serde_json::from_str::<StoredSession>(&text) {
+        Ok(st) if st.fmt == STORED_FMT => st,
+        // 不是加密格式（旧格式/无法解析）：这条路不适用
+        _ => return Ok(None),
+    };
+    let pdk = stored
+        .slots
+        .unlock_with_password(password, session_keks)
+        .map_err(|_| SessionError::Undecryptable)?;
+    let plain = omy_secret::unseal(
+        &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+        &stored.session,
+    )
+    .map_err(|_| SessionError::Undecryptable)?;
+    let saved: SavedSession =
+        serde_json::from_slice(&plain).map_err(|_| SessionError::Malformed)?;
+    SessionIdentity { api_id: saved.api_id }.check(app)?;
+    Ok(Some(saved))
 }
 
 /// 显式取消加密一个位置：把它的 session 转回默认（机器密钥裸信封）格式。
@@ -1468,6 +1586,46 @@ mod tests {
         match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0xA1)]) {
             Ok(LoadOutcome::Unlocked(b)) => assert!(has_auth_key(&b), "真实密码应能解出"),
             other => panic_load("真实密码应能解出加密位置", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 现场密码加密往返：save_with_password 写盘后，unlock_place_with_password
+    /// 用对的密码能解出、错的密码 Undecryptable；且仅靠机器密钥（load_with_keks
+    /// 传空 KEK）解不开——现场密码加密的位置同样不能被本机自动解开。
+    ///
+    /// 不这样会怎样：这是「远程位置加密=普通文件加密」的端到端保证。密码派生的
+    /// KDF 材料若没正确落盘/读回，用户输对密码也打不开；若机器密钥能开，就又成
+    /// 了假加密。用弱 Argon2 参数避免测试慢。这里不建 account 路径，直接用
+    /// save_with_password + 手动 unlock 的等价路径覆盖存储层。
+    #[test]
+    fn typed_password_encrypt_roundtrip_at_path() {
+        use omy_core::crypto::Argon2Params;
+        let dir = std::env::temp_dir().join("omy-tg-pw-enc");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        // 用现场密码加密写盘（不带任何会话 KEK，extra 为空）
+        save_with_password(&saved(2040), &path, b"s3cret", Argon2Params::TEST_WEAK, &[])
+            .expect("现场密码加密写盘");
+
+        // 读回 StoredSession，用对的密码解 → 能拿到 auth key
+        let text = std::fs::read_to_string(&path).expect("读回");
+        let stored: crate::telegram::session::StoredSession =
+            serde_json::from_str(&text).expect("解析");
+        let pdk = stored.slots.unlock_with_password(b"s3cret", &[]).expect("对密码应能开");
+        let plain = omy_secret::unseal(
+            &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+            &stored.session,
+        ).expect("unseal");
+        let back: SavedSession = serde_json::from_slice(&plain).expect("反序列化");
+        assert!(has_auth_key(&back), "对密码应能解出 session");
+
+        // 错密码 → Locked
+        assert!(stored.slots.unlock_with_password(b"wrong", &[]).is_err(), "错密码必须开不了");
+        // 仅机器密钥（load_with_keks 传空 KEK）→ Locked（不是假加密）
+        match load_with_keks_from(&path, &AppId::builtin(), &[]) {
+            Ok(LoadOutcome::Locked) => {}
+            other => panic_load("现场密码加密的位置仅机器密钥不该解开", other),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

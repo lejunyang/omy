@@ -44,7 +44,7 @@
 //!   名称、锁定态下也要能判「这个账号已添加」。它们是公开信息（数字 id、
 //!   用户自己看得到的名字），不构成新的泄露面。
 
-use omy_core::crypto::{CipherId, Kek, SecretKey, ZERO_NONCE, KEY_LEN};
+use omy_core::crypto::{Argon2Params, CipherId, Kek, SecretKey, ZERO_NONCE, KEY_LEN};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -73,6 +73,46 @@ pub struct PlaceSlots {
     pub cipher_id: u8,
     /// 各密码槽。顺序即 slot_index，**下标是包裹密钥的一部分，不能重排**。
     pub slots: Vec<Slot>,
+    /// 用户**现场输入的密码**派生 KEK 所需的 KDF 材料（salt + Argon2 参数）。
+    ///
+    /// 这是「远程位置加密当成普通 omy 文件」的关键：文件加密时密码 KEK 由
+    /// `Kek::from_password(密码, vault_salt, 参数)` 派生，salt/参数存在文件头里
+    /// 供解锁重派生。位置加密同理——把它存在这里，`unlock_with_password` 才能
+    /// 用同一 salt/参数把用户输的密码重新派生成能开某个槽的 KEK。
+    ///
+    /// `None` 表示这个位置只用「会话已解锁的 KEK」建的槽（旧的、S1 那版），没有
+    /// 独立密码槽。`#[serde(default)]` 保证既有 fmt2 文件反序列化不报错。
+    #[serde(default)]
+    pub pw_kdf: Option<PwKdf>,
+}
+
+/// 现场密码槽的 KDF 材料。明文存（salt/参数不是秘密，密码本身从不落盘）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PwKdf {
+    /// Argon2 的 salt（每位置随机 16 字节），与 `.omy` 的 vault_salt 同角色。
+    pub salt: [u8; 16],
+    /// Argon2 内存成本（KiB）。
+    pub m_kib: u32,
+    /// Argon2 迭代次数。
+    pub t: u32,
+    /// Argon2 并行度。
+    pub p: u32,
+}
+
+impl PwKdf {
+    /// 还原成 [`Argon2Params`]。
+    #[must_use]
+    pub fn params(&self) -> Argon2Params {
+        Argon2Params { m_kib: self.m_kib, t: self.t, p: self.p }
+    }
+    /// 用这份 KDF 材料把明文密码派生成 KEK。
+    ///
+    /// # Errors
+    ///
+    /// Argon2 参数非法时返回 [`PlaceKeyError::Wrap`]（归到「派生失败」）。
+    pub fn derive(&self, password: &[u8]) -> Result<Kek, PlaceKeyError> {
+        Kek::from_password(password, &self.salt, self.params()).map_err(|_| PlaceKeyError::Wrap)
+    }
 }
 
 /// 单个密码槽。
@@ -169,9 +209,81 @@ impl PlaceSlots {
                 uuid,
                 cipher_id: cipher as u8,
                 slots,
+                pw_kdf: None,
             },
             pdk,
         ))
+    }
+
+    /// 用**现场输入的密码**建一个位置的槽区（远程位置加密当成普通 omy 文件）。
+    ///
+    /// 与 [`Self::create`] 的区别：这里的槽[0]是「密码槽」——KEK 由
+    /// `Kek::from_password(password, 随机salt, params)` 派生，salt/参数存进
+    /// `pw_kdf` 供解锁重派生。`extra` 是**当前会话已解锁的 KEK**，各建一个额外
+    /// 槽，好让「已经输过的 omy 密码能直接开这个位置」——这不是特殊逻辑，就是
+    /// 多给几个槽。**机器密钥绝不能进 `extra`**（调用方保证）：它本机自动可得，
+    /// 放进来就等于没加密。
+    ///
+    /// # Errors
+    ///
+    /// 密码为空 → [`PlaceKeyError::NoSlots`]（没有真正保护的位置不该建）；
+    /// 派生/包裹失败 → [`PlaceKeyError::Wrap`]；槽超限 → [`PlaceKeyError::TooManySlots`]。
+    pub fn create_with_password(
+        password: &[u8],
+        params: Argon2Params,
+        extra: &[SlotKey<'_>],
+        cipher: CipherId,
+    ) -> Result<(Self, Zeroizing<[u8; PDK_LEN]>), PlaceKeyError> {
+        if password.is_empty() {
+            // 空密码 = 没有真正的保护，拒绝——与 .omy 不接受空密码同理
+            return Err(PlaceKeyError::NoSlots);
+        }
+        if extra.len() + 1 > SLOT_CAP {
+            return Err(PlaceKeyError::TooManySlots { max: SLOT_CAP });
+        }
+        let mut salt = [0u8; 16];
+        omy_core::util::fill_random(&mut salt);
+        let pw_kdf = PwKdf { salt, m_kib: params.m_kib, t: params.t, p: params.p };
+        let pw_kek = pw_kdf.derive(password)?;
+
+        // 槽[0] 是密码槽，其后是会话已解锁的 KEK 各一个槽。
+        let pw_slot = SlotKey { kek: &pw_kek, kind: "password", label: "密码" };
+        let mut keys: Vec<SlotKey<'_>> = Vec::with_capacity(extra.len() + 1);
+        keys.push(pw_slot);
+        for e in extra {
+            keys.push(SlotKey { kek: e.kek, kind: e.kind, label: e.label });
+        }
+        let (mut slots, pdk) = Self::create(&keys, cipher)?;
+        slots.pw_kdf = Some(pw_kdf);
+        Ok((slots, pdk))
+    }
+
+    /// 用**现场输入的密码**（+ 会话里已解锁的 KEK）尝试解开 PDK。
+    ///
+    /// 先用 `pw_kdf` 把密码派生成 KEK 去试各槽；再用传入的 `keks`（会话已解锁的）
+    /// 去试——这就是「输过的 omy 密码直接开」。没有 `pw_kdf`（旧的纯 KEK 槽）时
+    /// 只试 `keks`。
+    ///
+    /// # Errors
+    ///
+    /// 都开不了 → [`PlaceKeyError::Locked`]。
+    pub fn unlock_with_password(
+        &self,
+        password: &[u8],
+        keks: &[Kek],
+    ) -> Result<Zeroizing<[u8; PDK_LEN]>, PlaceKeyError> {
+        // 先试现场密码（若这个位置有密码槽）
+        if let Some(kdf) = &self.pw_kdf {
+            if !password.is_empty() {
+                if let Ok(pw_kek) = kdf.derive(password) {
+                    if let Ok(pdk) = self.unlock(&[pw_kek]) {
+                        return Ok(pdk);
+                    }
+                }
+            }
+        }
+        // 再试会话已解锁的 KEK（复用已解锁态）
+        self.unlock(keks)
     }
 
     /// 尝试用会话里已解锁的一批 KEK 解开 PDK。
@@ -392,6 +504,61 @@ mod tests {
             !json.windows(PDK_LEN).any(|w| w == &pdk[..]),
             "槽区落盘不得出现 PDK 明文"
         );
+    }
+
+    /// 现场密码往返：用 typed 密码建槽，同一密码能解出、且能 unseal session。
+    ///
+    /// 不这样会怎样：这是「远程位置加密当普通文件」的核心——用户右键输的密码
+    /// 必须能在下次解锁时重新派生出开槽的 KEK。派生 salt/参数存不对，用户输对
+    /// 密码也打不开自己的位置。用弱 Argon2 参数避免测试太慢。
+    #[test]
+    fn typed_password_roundtrips() {
+        let weak = Argon2Params::TEST_WEAK;
+        let (slots, pdk) = PlaceSlots::create_with_password(b"hunter2", weak, &[], CipherId::ChaCha20Poly1305)
+            .expect("建密码槽");
+        assert!(slots.pw_kdf.is_some(), "密码槽必须落 KDF 材料供解锁重派生");
+        // 正确密码：能解出同一个 PDK
+        let back = slots.unlock_with_password(b"hunter2", &[]).expect("对密码必须能开");
+        assert_eq!(&pdk[..], &back[..], "解出的 PDK 要与建槽时一致");
+        // session 用 PDK 封，正确密码能 unseal
+        let env = omy_secret::seal(&pdk_as_protect_key(&pdk), b"auth key").expect("seal");
+        let opened = slots.unlock_with_password(b"hunter2", &[]).expect("解锁");
+        let plain = omy_secret::unseal(&pdk_as_protect_key(&opened), &env).expect("unseal");
+        assert_eq!(&plain[..], b"auth key");
+    }
+
+    /// 错误密码 → Locked（不是别的错误），空密码也开不了。
+    #[test]
+    fn wrong_password_locked() {
+        let weak = Argon2Params::TEST_WEAK;
+        let (slots, _) = PlaceSlots::create_with_password(b"correct", weak, &[], CipherId::ChaCha20Poly1305).unwrap();
+        assert!(matches!(slots.unlock_with_password(b"wrong", &[]).unwrap_err(), PlaceKeyError::Locked));
+        assert!(matches!(slots.unlock_with_password(b"", &[]).unwrap_err(), PlaceKeyError::Locked));
+    }
+
+    /// 空密码建槽被拒（没有真正保护的位置不该建）。
+    #[test]
+    fn empty_password_rejected() {
+        let err = PlaceSlots::create_with_password(b"", Argon2Params::TEST_WEAK, &[], CipherId::ChaCha20Poly1305).unwrap_err();
+        assert!(matches!(err, PlaceKeyError::NoSlots));
+    }
+
+    /// 「已解锁的 KEK 直接开」：密码槽 + 一个会话 KEK 额外槽，两者都能各自开。
+    ///
+    /// 不这样会怎样：这是「输过的 omy 密码不用再输」赖以成立的性质——
+    /// 加密时把会话 KEK 也建了槽，之后那把 KEK 在会话里就能直接开。
+    #[test]
+    fn session_kek_also_opens_password_place() {
+        let weak = Argon2Params::TEST_WEAK;
+        let session = kek(0x51);
+        let extra = [SlotKey { kek: &session, kind: "vault", label: "库密码" }];
+        let (slots, pdk) = PlaceSlots::create_with_password(b"pw", weak, &extra, CipherId::ChaCha20Poly1305).unwrap();
+        // 只给密码：能开
+        assert_eq!(&slots.unlock_with_password(b"pw", &[]).unwrap()[..], &pdk[..]);
+        // 只给会话 KEK（没给密码）：也能开
+        assert_eq!(&slots.unlock_with_password(b"", &[kek(0x51)]).unwrap()[..], &pdk[..]);
+        // 都不对：Locked
+        assert!(matches!(slots.unlock_with_password(b"nope", &[kek(0x99)]).unwrap_err(), PlaceKeyError::Locked));
     }
 
     /// 机器密钥回退：由机器 ProtectKey 造的 KEK 能建槽也能开。
