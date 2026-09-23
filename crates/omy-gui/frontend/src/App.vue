@@ -202,6 +202,13 @@ function onSettingsDevices() {
   applySettings();
 }
 
+/** 移动端设置底栏「远程」：关设置、进远程位置，并让本页改动即时生效。 */
+function onSettingsPlaces() {
+  showSettings.value = false;
+  applySettings();
+  onPlacesEntry();
+}
+
 const showEncrypt = ref(false);
 const showRestore = ref(false);
 /** 密码管理的目标条目；null 表示对话框关着。
@@ -1061,6 +1068,7 @@ onBeforeUnmount(() => {
     @lang="onSettingsLang"
     @lock="onSettingsLock"
     @devices="onSettingsDevices"
+    @places="onSettingsPlaces"
   />
 
   <RemotePlaceDialog

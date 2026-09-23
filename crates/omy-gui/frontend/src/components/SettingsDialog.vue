@@ -26,7 +26,7 @@ import { theme, setTheme } from '../theme.js';
 import * as api from '../api.js';
 import { state, setNotice, reloadRemotePlaces } from '../store.js';
 
-const emit = defineEmits(['close', 'lang', 'lock', 'devices']);
+const emit = defineEmits(['close', 'lang', 'lock', 'devices', 'places']);
 
 /** 当前分类。`cache` 是「远程位置」的二级页。 */
 const pane = ref('general');
@@ -341,6 +341,20 @@ function openCachePane() {
  *  栈空则回主列表（null）。不再硬编码某页的父级。 */
 function backMobile() {
   mobilePane.value = mobileStack.value.length ? mobileStack.value.pop() : null;
+}
+
+/** 移动端底栏切到别的 tab：先把设置的移动端二级页/返回栈**清干净**，再离开。
+ *
+ * 不清的话，下次再进设置会停在上次那个二级页，而且更要命的是——设置是个盖住
+ * 整屏的模态，切走时若不显式 emit('close') 让上层关掉 showSettings，模态会一直
+ * 压在文件/远程页上面，表现成「点了别的 tab 进不去」（本 bug 的根因：二级页
+ * 返回后底栏点击没有一条能真正关掉设置层的路径）。 */
+function leaveTo(tab) {
+  mobilePane.value = null;
+  mobileStack.value = [];
+  if (tab === 'files') emit('close');
+  else if (tab === 'places') emit('places');
+  else if (tab === 'devices') emit('devices');
 }
 
 /** 移动端二级页标题（cache 不在 PANES 里，单独给名）。 */
@@ -1019,6 +1033,25 @@ async function openLogDir() {
           <div v-if="error" class="err">{{ error }}</div>
         </section>
       </div>
+
+      <!-- 移动端底栏：设置也是一个「tab 页」，底栏常驻，点别的 tab 直接离开设置。
+           这是本 bug 的正解——之前设置是纯模态、盖住外层 pnav，二级页返回后没有
+           任何能真正关掉设置层的入口，于是点别的 tab「进不去」。把底栏放进模态内、
+           走 leaveTo 清干净移动导航状态再离开。 -->
+      <nav v-if="isMobile" class="pnav setpnav">
+        <button class="pnavi" type="button" data-si="nav-files" @click="leaveTo('files')">
+          <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
+        </button>
+        <button class="pnavi" type="button" data-si="nav-places" @click="leaveTo('places')">
+          <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+        </button>
+        <button class="pnavi" type="button" data-si="nav-devices" @click="leaveTo('devices')">
+          <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
+        </button>
+        <button class="pnavi on" type="button" data-si="nav-settings">
+          <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
+        </button>
+      </nav>
     </div>
   </div>
 </template>
@@ -1040,14 +1073,15 @@ async function openLogDir() {
   justify-content: center;
   z-index: 50;
 }
-/* 移动端：设置不是盖住一切的模态，而是「底栏一个 tab 的内容区」。
-   底栏（.pnav，z-index 30、高 52px + 安全区）必须一直露出并可点，所以
-   mask 底部留出底栏高度、且去掉暗背景（不是弹窗、不该压暗背后）。 */
+/* 移动端：设置铺满整屏，并**自带底栏**（.setpnav）。
+   为什么不再像以前那样让外层 pnav 从底部露出：外层 pnav 的 tab 事件是发给
+   设置**背后**那个内容屏的（MainScreen 的 @files 是空操作），点了根本关不掉
+   设置层——这正是「二级页返回后点别的 tab 进不去」的根因。改为设置自带底栏、
+   直接 emit 给 App 控制 showSettings，路径唯一且可靠。盖住外层 pnav 避免双底栏。 */
 @media (max-width: 768px) {
   .mask {
     background: none;
-    inset-block-end: calc(52px + env(safe-area-inset-bottom, 0px));
-    z-index: 28;
+    z-index: 40;
   }
 }
 .setdlg {
@@ -1060,16 +1094,18 @@ async function openLogDir() {
   flex-direction: column;
   overflow: hidden;
 }
-/* 移动端铺满：小屏上留边框只会让本就不多的空间更挤，
-   而且底部要留安全区，否则手势导航条会盖住内容 */
+/* 移动端铺满：小屏上留边框只会让本就不多的空间更挤。
+   底部安全区由自带的 .setpnav 处理。 */
 .setdlg.mob {
   width: 100vw;
-  /* 占满 mask（mask 已在底部让出了底栏高度），底栏由 .pnav 自己处理安全区，
-     这里不再重复留 padding，否则底部会多出一条空白 */
   height: 100%;
   max-width: none;
   border-radius: 0;
   border: 0;
+}
+/* 设置自带的移动端底栏：贴底、让出安全区。与外层 pnav 同款视觉。 */
+.setpnav {
+  flex: none;
 }
 .seth {
   display: flex;
