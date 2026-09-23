@@ -1009,6 +1009,17 @@ function rowTitle(f) {
                 <span class="msgid">#{{ m.message }}</span>
                 <span class="msgdate">{{ fmtTime(m.date) }}</span>
                 <span v-if="m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
+                <!-- 回复引用：点它跳到被引用的原消息并高亮（reply_to 是对话内消息号）。
+                     做成可点的小条而不是纯文字，让「这是能跳的」显而易见。 -->
+                <button
+                  v-if="m.reply_to"
+                  type="button"
+                  class="msgreply"
+                  data-tg="msgreply"
+                  @click="locateMessage(m.reply_to)"
+                >
+                  {{ i18n.t('msgs.reply_to', { id: m.reply_to }) }}
+                </button>
               </div>
               <!-- 带文件的消息：点它就打开那个文件，走与文件视图完全相同的
                    那条路（同一个 id、同一套识别与预览），不另写一份 -->

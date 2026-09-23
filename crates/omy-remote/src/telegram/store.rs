@@ -755,6 +755,12 @@ pub struct MessageRow {
     pub thumb: Option<Vec<u8>>,
     /// 视频时长（秒），非视频为 `None`。界面用它画时长角标。
     pub duration: Option<u32>,
+    /// 这条消息回复的那条的消息号；不是回复则为 `None`。
+    ///
+    /// 供「消息 → 跳到被引用的原消息」：界面在有 reply_to 的消息上给一个可点的
+    /// 引用条，点它 locateMessage(reply_to)。只记消息号（对话内唯一），跳转时与
+    /// 当前对话组合成定位目标——与文件 id 里那个消息号同源。
+    pub reply_to: Option<i32>,
 }
 
 /// [`TelegramStore::messages_around`] 的返回：以某条为中心的一段消息 + 两端游标。
@@ -1543,6 +1549,7 @@ impl TelegramStore {
                 file_size,
                 thumb,
                 duration,
+                reply_to: msg.reply_to_message_id(),
             });
         }
         if let Ok(mut m) = self.media.lock() {
@@ -2050,6 +2057,7 @@ mod tests {
             file_size: None,
             thumb: None,
             duration: None,
+            reply_to: None,
         }
     }
 
@@ -2435,6 +2443,7 @@ mod tests {
             file_size: Some(42),
             thumb: None,
             duration: None,
+            reply_to: None,
         };
         let j = serde_json::to_value(&r).expect("序列化");
         for k in [
@@ -2467,6 +2476,7 @@ mod tests {
             file_size: None,
             thumb: None,
             duration: None,
+            reply_to: None,
         };
         // 没有文件不代表这一行无效：它有文字、有时间、有消息号
         assert!(r.file_id.is_none());

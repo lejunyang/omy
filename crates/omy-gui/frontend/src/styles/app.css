@@ -2376,6 +2376,21 @@ input {
 .msgrow.hl {
   animation: msg-hl 1.6s ease-out 1;
 }
+.msgreply {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--accent-solid);
+  border-radius: var(--r-s);
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.msgreply:hover {
+  background: var(--accent-solid);
+  color: #fff;
+  border-color: var(--accent-solid);
+}
+
 @keyframes msg-hl {
   0%, 30% {
     background: var(--accent-solid);

@@ -852,7 +852,8 @@
     "load_more": "Load earlier messages",
     "loading_more": "Loading…",
     "no_more": "No earlier messages",
-    "locate_not_found": "Message not found — it may have been deleted"
+    "locate_not_found": "Message not found — it may have been deleted",
+    "reply_to": "↩ Reply to #{{id}}"
   },
   "xfer": {
     "title": "Transfers",
