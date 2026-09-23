@@ -31,6 +31,8 @@ reqwest_dav = "0.3"
 tokio = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+# 位置密钥槽的 PDK 用 Zeroizing 包裹，用完即擦
+zeroize = { workspace = true }
 # 缓存键用 blake2，与 core 同源
 blake2 = { workspace = true }
 # 百分号编码：WebDAV 路径里的中文与空格必须编码，否则部分服务端 400

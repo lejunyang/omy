@@ -45,6 +45,7 @@ pub mod connect;
 pub mod device;
 pub mod login;
 pub mod phonelogin;
+pub mod place_secret;
 pub mod proxy;
 pub mod qr;
 pub mod qrlogin;
