@@ -942,23 +942,32 @@ pub fn telegram_place_encrypted(place_id: String) -> CmdResult<bool> {
 }
 
 /// **显式加密**一个 Telegram 位置：把它的 session 转成 per-place 槽格式，
-/// 用当前会话已解锁的 omy 密码（KEK）保护。这是用户主动选择的可选操作
-/// （右键「加密此位置」或添加账号后的可选步骤），不是自动行为。
+/// 用当前会话**真实已解锁的 omy 密码**（库密码 / 设备密钥 / 恢复码）保护。
 ///
-/// 已经加密时是 no-op（返回 `false`）。没有任何已解锁密码且无凭据库时无从
-/// 建槽，返回错误让界面提示「先解锁一个 omy 库再加密」。
+/// # 只用真实密码，绝不用机器密钥
+///
+/// 用 `session_keks`（**不含**机器密钥回退），不是 `unlock_keks`。机器密钥本机
+/// 自动可得、不需任何密码，拿它建槽等于没加密（这台机器自动就能解开，用户也
+/// 从没被要求输密码）。所以会话里没有任何真实已解锁密码时，**拒绝加密**并让
+/// 界面提示用户先解锁一个 omy 库，而不是静默用机器密钥「假加密」。
+///
+/// 加密用的是**当前已解锁的密码**：加密后，解锁该密码即可访问这个位置；冷启动
+/// 未解锁时它是锁定态。已经加密时是 no-op（返回 `false`）。
 ///
 /// # Errors
 ///
-/// 无可用 KEK、读不出当前 session、或写盘失败时返回。
+/// 没有任何真实已解锁密码时返回 `tg_encrypt_no_key`；读不出当前 session 或
+/// 写盘失败时返回 `tg_encrypt_failed`。
 #[tauri::command]
 pub fn telegram_place_encrypt(
     state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
 ) -> CmdResult<bool> {
-    let keks = crate::place_keys::unlock_keks(&state);
+    // 只取真实已解锁的密码 KEK——机器密钥被有意排除（见 place_keys::session_keks）
+    let keks = crate::place_keys::session_keks(&state);
     if keks.is_empty() {
-        // 一把 KEK 都没有（连机器密钥都取不到）：建不了槽，如实报
+        // 没有任何真实密码：拒绝加密，让界面引导用户先解锁一个 omy 库。
+        // **绝不回退机器密钥**——那会造出一个「谁拿到这台机器就能解」的假加密
         return Err(CmdError::code("tg_encrypt_no_key"));
     }
     let app = AppId::builtin();

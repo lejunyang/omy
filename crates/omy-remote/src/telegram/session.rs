@@ -1441,6 +1441,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **假加密防线**：用真实密码 KEK 加密的位置，**仅用机器密钥必须解不开**。
+    ///
+    /// 不这样会怎样：这正是「右键加密却不弹密码、静默成功」那个假加密缺陷的
+    /// 核心——若加密时把机器密钥也放进槽，这台机器开机自动就能解开，等于没
+    /// 加密。这条断言钉死「加密位置的槽里没有机器密钥」：只有真实密码能开，
+    /// 单靠机器密钥（模拟本机自动派生的那把）开不了。
+    #[test]
+    fn encrypted_place_cannot_be_opened_by_machine_key_alone() {
+        let dir = std::env::temp_dir().join("omy-tg-no-fake-encrypt");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        // 用「真实密码」KEK（0xA1）加密——只把它放进槽，不带任何机器密钥
+        let real = tkek(0xA1);
+        save_with_slots(&saved(2040), &path, &[crate::telegram::place_secret::SlotKey {
+            kek: &real, kind: "vault", label: "主密码",
+        }]).expect("加密写盘");
+
+        // 仅用「机器密钥」（用另一把 KEK 0xB2 模拟本机自动可得、与真实密码不同的钥匙）：
+        // 必须 Locked（解不开）
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0xB2)]) {
+            Ok(LoadOutcome::Locked) => {}
+            other => panic_load("仅机器密钥必须解不开加密位置（否则是假加密）", other),
+        }
+        // 真实密码：能解开
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0xA1)]) {
+            Ok(LoadOutcome::Unlocked(b)) => assert!(has_auth_key(&b), "真实密码应能解出"),
+            other => panic_load("真实密码应能解出加密位置", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 显式加密 / 取消加密往返：encrypt_place 后 is_encrypted 为真、能用 KEK 开；
     /// decrypt_place 后转回默认格式、is_encrypted 为假、机器密钥能开、内容不丢。
     ///

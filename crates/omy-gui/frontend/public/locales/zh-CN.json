@@ -265,7 +265,7 @@
     "image": "图片",
     "text": "文本",
     "folder": "文件夹",
-    "encrypted": "加密文件",
+    "encrypted": "已用你当前的 omy 密码加密。下次冷启动需先解锁该 omy 密码才能进入这个位置。",
     "other": "其他",
     "folder_encrypted": "加密文件夹"
   },

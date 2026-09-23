@@ -265,7 +265,7 @@
     "image": "Image",
     "text": "Text",
     "folder": "Folder",
-    "encrypted": "Encrypted",
+    "encrypted": "Encrypted with your current omy password. On the next cold start you'll need to unlock that omy password before entering this location.",
     "other": "Other",
     "folder_encrypted": "Encrypted folder"
   },
