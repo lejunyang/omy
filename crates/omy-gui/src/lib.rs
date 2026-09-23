@@ -52,6 +52,7 @@ mod lan;
 mod mime;
 mod place_cmds;
 mod place_files;
+mod place_keys;
 mod places;
 mod plain;
 mod protocol;

@@ -645,6 +645,7 @@ pub fn telegram_tdata_check(path: String) -> bool {
 #[tauri::command]
 pub async fn telegram_tdata_import(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     path: String,
     passcode: Option<String>,
     proxy_url: Option<String>,
@@ -701,7 +702,7 @@ pub async fn telegram_tdata_import(
         // 命中已有账号：不新建。用这次的登录态覆盖已有位置的 session 与连接，
         // 不留孤儿——tdata 的 session 此刻还没落盘，直接 save_current 到
         // 已有位置的 id 即可。
-        if let Err(e) = tgsession::save_current(&saved, &existing) {
+        if let Err(e) = crate::place_keys::save_session_at(&state, &saved, &existing) {
             eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
         }
         reg.update_telegram_connection(&existing, store, user_id);
@@ -732,7 +733,7 @@ pub async fn telegram_tdata_import(
     //
     // 这一步也让导入的账号**独立持有自己的 session 副本**：此后它与
     // Telegram Desktop 再无关系，桌面端退出登录或删掉 tdata 都不影响它。
-    if let Err(e) = tgsession::save_current(&saved, &id) {
+    if let Err(e) = crate::place_keys::save_session_at(&state, &saved, &id) {
         // 存不住不该让整件事失败——本次会话里它是好的。
         // 但要说出来，否则用户会以为下次还在
         eprintln!("[omy] 保存 Telegram 登录态失败：{e}");
@@ -817,6 +818,7 @@ fn dedupe_target(
 #[tauri::command]
 pub async fn telegram_place_connect(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     proxy_url: Option<String>,
 ) -> CmdResult<RegisterOutcome> {
     let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
@@ -828,9 +830,12 @@ pub async fn telegram_place_connect(
     let device = DeviceInfo::current();
     // 扫码那条路把 session 落在 PENDING_ACCOUNT 下（那时还没有位置 id），
     // 所以这里从它读回来
-    let conn = connect::connect_saved(&app, &device, proxy.as_deref(), tgsession::PENDING_ACCOUNT)
-        .await
-        .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
+    let keks = crate::place_keys::unlock_keks(&state);
+    let conn = connect::connect_saved_with_keks(
+        &app, &device, proxy.as_deref(), tgsession::PENDING_ACCOUNT, &keks,
+    )
+    .await
+    .map_err(|e| CmdError::with(e.code(), detail(&e.to_string())))?;
 
     // 拿这个账号的服务端 user id，用于去重。取不到就按新账号处理
     let user_id = connect::account_user_id(&conn.client).await;
@@ -936,6 +941,7 @@ pub fn telegram_place_rename(
 pub async fn ensure_connected(
     reg: &Arc<crate::places::PlaceRegistry>,
     place_id: &str,
+    keks: &[omy_core::crypto::Kek],
 ) -> CmdResult<()> {
     let Some(p) = reg.get(place_id) else {
         return Ok(()); // 位置不存在由调用方自己报，这里不越俎代庖
@@ -959,7 +965,7 @@ pub async fn ensure_connected(
         ),
     );
     let t0 = std::time::Instant::now();
-    let conn = connect::connect_saved(&app, &device, proxy.as_deref(), place_id)
+    let conn = connect::connect_saved_with_keks(&app, &device, proxy.as_deref(), place_id, keks)
         .await
         .map_err(|e| {
             crate::applog::error(
@@ -1265,21 +1271,27 @@ async fn finish(app: &tauri::AppHandle, sess: &QrSession, appid: &AppId) {
     //
     // 不能为了「有个 id」就在这里先编一个：那会让位置 id 有两个来源，
     // 迟早对不上，而现象是「登录成功但重启后还要再登一次」。
-    let saved = match tgsession::save(sess.session(), appid, tgsession::PENDING_ACCOUNT) {
-        Ok(path) => {
-            // 只打目录不打文件名也没必要——这条日志里不含任何凭据，
-            // 但也不需要把路径写出去
-            let _ = path;
-            true
-        }
-        Err(tgsession::SessionError::NoProtector) => {
-            // 这台机器没有凭据库。**不退回明文**，如实告诉用户这次登录只在
-            // 本次会话有效
-            eprintln!("[omy] 这台机器没有可用的凭据库，Telegram 登录态不会保存");
-            false
-        }
+    // 用 per-place 槽格式落盘：拿当前会话已解锁的 KEK（无库时回退机器密钥）
+    // 给这份 PENDING session 建密码槽。这样用户当前输过的任一 omy 密码之后
+    // 都能解锁这个位置；没有任何库/密码时用机器密钥，等同旧的机器绑定加密。
+    use tauri::Manager as _;
+    let state = app.state::<crate::commands::Shared>();
+    let saved = match tgsession::extract(sess.session(), appid) {
+        Ok(s) => match crate::place_keys::save_session_at(&state, &s, tgsession::PENDING_ACCOUNT) {
+            Ok(crate::place_keys::SaveResult::Saved) => true,
+            Ok(crate::place_keys::SaveResult::CannotPersist) => {
+                // 本机既没解锁任何库、也没凭据库。**不退回明文**，如实告诉
+                // 用户这次登录只在本次会话有效
+                eprintln!("[omy] 本机无法安全保存 Telegram 登录态（无已解锁密码且无凭据库）");
+                false
+            }
+            Err(e) => {
+                eprintln!("[omy] Telegram 登录态保存失败：{e}");
+                false
+            }
+        },
         Err(e) => {
-            eprintln!("[omy] Telegram 登录态保存失败：{e}");
+            eprintln!("[omy] 抽取 Telegram 登录态失败：{e}");
             false
         }
     };
@@ -1777,14 +1789,22 @@ fn emit_code_sent(app: &tauri::AppHandle, shape: &omy_remote::telegram::login::C
 
 /// 手机号登录成功的收尾：与扫码同样，先落盘到 PENDING_ACCOUNT、再自证。
 async fn phone_finish(app: &tauri::AppHandle, sess: &PhoneSession) {
-    let saved = match tgsession::save(sess.session(), sess.app(), tgsession::PENDING_ACCOUNT) {
-        Ok(_) => true,
-        Err(tgsession::SessionError::NoProtector) => {
-            eprintln!("[omy] 这台机器没有可用的凭据库，Telegram 登录态不会保存");
-            false
-        }
+    use tauri::Manager as _;
+    let state = app.state::<crate::commands::Shared>();
+    let saved = match tgsession::extract(sess.session(), sess.app()) {
+        Ok(s) => match crate::place_keys::save_session_at(&state, &s, tgsession::PENDING_ACCOUNT) {
+            Ok(crate::place_keys::SaveResult::Saved) => true,
+            Ok(crate::place_keys::SaveResult::CannotPersist) => {
+                eprintln!("[omy] 本机无法安全保存 Telegram 登录态（无已解锁密码且无凭据库）");
+                false
+            }
+            Err(e) => {
+                eprintln!("[omy] Telegram 登录态保存失败：{e}");
+                false
+            }
+        },
         Err(e) => {
-            eprintln!("[omy] Telegram 登录态保存失败：{e}");
+            eprintln!("[omy] 抽取 Telegram 登录态失败：{e}");
             false
         }
     };

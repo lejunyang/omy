@@ -100,6 +100,7 @@
   "tg_login_failed": "Telegram 登录失败",
   "tg_forget_failed": "清除 Telegram 登录态失败",
   "tg_no_session": "还没有登录 Telegram，请先扫码登录",
+  "tg_locked": "这个 Telegram 位置已加密，请先用能打开它的 omy 密码解锁，再进入",
   "tg_session_unreadable": "读取 Telegram 登录态失败，可能需要重新登录",
   "tg_connect_failed": "连接 Telegram 失败，请检查网络或代理设置",
   "tg_session_expired": "Telegram 登录态已失效（可能已在其他设备上被撤销），请重新扫码登录",

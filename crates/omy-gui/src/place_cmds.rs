@@ -182,7 +182,7 @@ pub async fn remote_browse(
     // 从配置恢复出来的位置是未连接占位（恢复流程刻意不碰网络，否则应用会卡在
     // 启动那一刻）。不在这里补连的话，用户点「进入」只会看到一句
     // 「找不到该远程位置」——而那句话是错的：位置就在那儿，只是还没连。
-    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
 
     let place = reg
         .get(&place_id)
@@ -539,7 +539,7 @@ pub async fn remote_search(
     dir: String,
     query: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
 
     let place = reg
         .get(&place_id)
@@ -1529,7 +1529,7 @@ pub async fn remote_browse_more(
     dir: String,
     before: i32,
 ) -> CmdResult<Vec<RemoteEntry>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1579,7 +1579,7 @@ pub async fn remote_browse_tab(
     limit: usize,
 ) -> CmdResult<Vec<RemoteEntry>> {
     use omy_remote::telegram::store::MediaTab;
-    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1655,6 +1655,7 @@ pub const fn remote_page_size() -> usize {
 #[tauri::command]
 pub async fn remote_dir_protected(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
     dir: String,
 ) -> CmdResult<bool> {
@@ -1665,7 +1666,7 @@ pub async fn remote_dir_protected(
     // 实测过这个差别：冷启动直接问受保护的群得到 false，
     // 先 browse 一次再问才得到 true。界面上碰巧总是先 browse，
     // 但命令本身要自洽，不能要求调用方记住这个顺序。
-    if crate::telegram_cmds::ensure_connected(&reg, &place_id)
+    if crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state))
         .await
         .is_err()
     {
@@ -1686,11 +1687,12 @@ pub async fn remote_dir_protected(
 #[tauri::command]
 pub async fn remote_messages(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
     dir: String,
     before: Option<i32>,
 ) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id).await?;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;

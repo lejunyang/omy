@@ -100,6 +100,7 @@
   "tg_login_failed": "Telegram sign-in failed",
   "tg_forget_failed": "Could not clear the saved Telegram sign-in",
   "tg_no_session": "Not signed in to Telegram yet. Please scan the QR code first",
+  "tg_locked": "This Telegram location is encrypted. Unlock it with the omy password that can open it, then enter.",
   "tg_session_unreadable": "Could not read the saved Telegram session. You may need to sign in again",
   "tg_connect_failed": "Could not connect to Telegram. Check your network or proxy settings",
   "tg_session_expired": "The Telegram session is no longer valid (it may have been revoked on another device). Please scan the QR code again",

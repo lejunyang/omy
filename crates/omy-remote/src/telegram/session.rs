@@ -191,6 +191,19 @@ fn protect_key() -> Option<omy_secret::ProtectKey> {
     p.retrieve_or_create(SECRET_KEY_ID).ok()
 }
 
+/// 无库回退用的「机器密钥 KEK」：从系统凭据库取那把随机密钥，包成一个 KEK。
+///
+/// 用户一个 omy 库/密码都没有时，位置的密码槽用它来占——位置仍是加密的
+/// （机器绑定），只是解锁不需要输密码，等同旧行为。等用户将来设了库密码，
+/// 可以再给位置 `add` 一个真正的密码槽升级保护。
+///
+/// 返回 `None` 表示这台机器连凭据库都没有——那种情况下 session 无法安全落盘，
+/// 与旧的 `NoProtector` 语义一致，调用方应据此提示「本机存不住登录态」。
+#[must_use]
+pub fn machine_fallback_kek() -> Option<Kek> {
+    protect_key().map(|k| crate::telegram::place_secret::kek_from_machine_key(&k))
+}
+
 /// 这台机器能不能安全保存 Telegram 登录态。
 ///
 /// 界面在开始扫码**之前**就该问这个：如果答案是否，要先告诉用户「这台机器上
