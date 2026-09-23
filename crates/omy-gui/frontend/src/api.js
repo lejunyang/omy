@@ -714,13 +714,18 @@ export const telegramPlaceRename = (placeId, name) =>
 export const telegramPlaceEncrypted = (placeId) =>
   invoke('telegram_place_encrypted', { placeId });
 
-/** 显式加密此位置：用当前已解锁的 omy 密码保护它的登录态。返回是否真的改变了状态。 */
-export const telegramPlaceEncrypt = (placeId) =>
-  invoke('telegram_place_encrypt', { placeId });
+/** 显式加密此位置：用**现场输入的密码**保护登录态（与普通文件加密同款）。
+ *  kdfProfile: interactive/moderate/sensitive。返回是否真的改变了状态。 */
+export const telegramPlaceEncrypt = (placeId, password, kdfProfile = 'moderate') =>
+  invoke('telegram_place_encrypt', { placeId, password, kdfProfile });
 
 /** 取消加密此位置：转回默认（机器密钥）保护。需当前有能打开它的密码。 */
 export const telegramPlaceDecrypt = (placeId) =>
   invoke('telegram_place_decrypt', { placeId });
+
+/** 用现场输入的密码解锁一个锁定的加密位置。返回是否解出。 */
+export const telegramPlaceUnlock = (placeId, password) =>
+  invoke('telegram_place_unlock', { placeId, password });
 
 /** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
  *

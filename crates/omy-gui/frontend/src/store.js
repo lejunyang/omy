@@ -126,6 +126,10 @@ export const state = reactive({
   remoteMessages: [],
   /** 引用跳转 / 定位源消息命中的那条消息号；高亮它、滚到它。null 表示无高亮。 */
   highlightMsg: null,
+  /** 正在为哪个 Telegram 位置弹加密对话框。{id,name} 或 null。 */
+  tgEncryptFor: null,
+  /** 加密对话框是否正在提交（跑 Argon2 派生 + 写盘时置忙）。 */
+  tgEncryptBusy: false,
   /** 还有没有更多文件可加载。 */
   hasMoreFiles: false,
   /** 正在加载更多文件。 */
@@ -2954,17 +2958,34 @@ export async function renameTelegramPlace(id, name) {
   setNotice(i18n.t('rplace.renamed'));
 }
 
-/** Telegram：显式加密这个位置——用当前已解锁的 omy 密码保护它的登录态。
- *
- * 失败（如还没解锁任何 omy 库）时把错误码翻成可读文案提示，不静默吞掉。 */
-export async function encryptTelegramPlace(id) {
+/** Telegram：显式加密这个位置——**弹密码对话框**让用户现场输密码（与普通文件
+ *  加密同款），不再用已解锁 KEK 静默加密。真正的加密在 confirmTgEncrypt 里做。 */
+export function encryptTelegramPlace(id) {
+  const p = state.remotePlaces.find((x) => x.id === id);
+  state.tgEncryptFor = { id, name: p?.name || '' };
+}
+
+/** 关掉加密对话框（取消）。 */
+export function cancelTgEncrypt() {
+  state.tgEncryptFor = null;
+  state.tgEncryptBusy = false;
+}
+
+/** 用对话框里输的密码真正加密。成功后关框、刷新侧栏加密标识。 */
+export async function confirmTgEncrypt({ password, kdf_profile }) {
+  const target = state.tgEncryptFor;
+  if (!target || !password) return false;
+  state.tgEncryptBusy = true;
   try {
-    const changed = await api.telegramPlaceEncrypt(id);
+    const changed = await api.telegramPlaceEncrypt(target.id, password, kdf_profile || 'moderate');
     setNotice(i18n.t(changed ? 'rplace.encrypted' : 'rplace.already_encrypted'));
+    state.tgEncryptFor = null;
     return true;
   } catch (e) {
     setNotice(i18n.te(api.errCode(e), 'errors.tg_encrypt_failed'));
     return false;
+  } finally {
+    state.tgEncryptBusy = false;
   }
 }
 

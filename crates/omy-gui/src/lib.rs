@@ -326,6 +326,7 @@ pub fn run() {
             telegram_cmds::telegram_place_encrypted,
             telegram_cmds::telegram_place_encrypt,
             telegram_cmds::telegram_place_decrypt,
+            telegram_cmds::telegram_place_unlock,
             telegram_cmds::telegram_tdata_probe,
             telegram_cmds::telegram_tdata_check,
             telegram_cmds::telegram_tdata_import,

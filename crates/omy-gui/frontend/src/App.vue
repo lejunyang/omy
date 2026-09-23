@@ -46,6 +46,8 @@ import {
   applyLanguage,
   afterPlaceAdded,
   encryptTelegramPlace,
+  confirmTgEncrypt,
+  cancelTgEncrypt,
   reloadRemotePlaces,
   openPlaceBrowser,
   closePlaceBrowser,
@@ -96,6 +98,7 @@ import PlaceBrowser from './components/PlaceBrowser.vue';
 import TransferScreen from './components/TransferScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
+import TgEncryptDialog from './components/TgEncryptDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock.js';
 
@@ -1070,5 +1073,13 @@ onBeforeUnmount(() => {
     v-if="showTelegramLogin"
     @cancel="showTelegramLogin = false"
     @done="onTelegramDone"
+  />
+
+  <TgEncryptDialog
+    v-if="state.tgEncryptFor"
+    :name="state.tgEncryptFor.name"
+    :busy="state.tgEncryptBusy"
+    @cancel="cancelTgEncrypt"
+    @submit="confirmTgEncrypt"
   />
 </template>

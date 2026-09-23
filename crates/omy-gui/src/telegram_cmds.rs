@@ -956,23 +956,41 @@ pub fn telegram_place_encrypted(place_id: String) -> CmdResult<bool> {
 ///
 /// # Errors
 ///
-/// 没有任何真实已解锁密码时返回 `tg_encrypt_no_key`；读不出当前 session 或
-/// 写盘失败时返回 `tg_encrypt_failed`。
+/// 密码为空返回 `tg_encrypt_empty_pw`；读不出当前 session 或写盘失败时返回
+/// `tg_encrypt_failed`。
+///
+/// # 参数
+///
+/// - `password`：用户在加密对话框现场输入的密码（与普通 omy 文件加密同款交互）。
+/// - `kdf_profile`：KDF 强度档（`interactive`/`moderate`/`sensitive`），缺省 moderate。
 #[tauri::command]
 pub fn telegram_place_encrypt(
     state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
+    password: String,
+    kdf_profile: Option<String>,
 ) -> CmdResult<bool> {
-    // 只取真实已解锁的密码 KEK——机器密钥被有意排除（见 place_keys::session_keks）
-    let keks = crate::place_keys::session_keks(&state);
-    if keks.is_empty() {
-        // 没有任何真实密码：拒绝加密，让界面引导用户先解锁一个 omy 库。
-        // **绝不回退机器密钥**——那会造出一个「谁拿到这台机器就能解」的假加密
-        return Err(CmdError::code("tg_encrypt_no_key"));
+    if password.is_empty() {
+        return Err(CmdError::code("tg_encrypt_empty_pw"));
     }
+    let params = kdf_params_of(kdf_profile.as_deref());
+    // 会话里真实已解锁的 KEK 作**额外槽**——机器密钥被有意排除（session_keks 不含它），
+    // 这样"输过的 omy 密码不用再输"，但加密的钥匙是用户现场输的这个密码。
+    let session_keks = crate::place_keys::session_keks(&state);
     let app = AppId::builtin();
-    tgsession::encrypt_place(&app, &place_id, &keks)
+    tgsession::encrypt_place_with_password(&app, &place_id, password.as_bytes(), params, &session_keks)
         .map_err(|e| CmdError::with("tg_encrypt_failed", detail(&e.to_string())))
+}
+
+/// 把 KDF 档位串换成 Argon2 参数（与 EncryptDialog 的三档一致）。缺省 moderate。
+fn kdf_params_of(profile: Option<&str>) -> omy_core::crypto::Argon2Params {
+    use omy_core::crypto::Argon2Params;
+    match profile {
+        Some("interactive") => Argon2Params::INTERACTIVE,
+        Some("sensitive") => Argon2Params::SENSITIVE,
+        // 缺省与未知都用 moderate（比 interactive 更稳的默认）
+        _ => Argon2Params::MODERATE,
+    }
 }
 
 /// **显式取消加密**一个 Telegram 位置：转回默认（机器密钥）格式。
@@ -992,6 +1010,36 @@ pub fn telegram_place_decrypt(
     let app = AppId::builtin();
     tgsession::decrypt_place(&app, &place_id, &keks)
         .map_err(|e| CmdError::with("tg_decrypt_failed", detail(&e.to_string())))
+}
+
+/// 用**现场输入的密码**解锁一个锁定的加密 Telegram 位置。
+///
+/// 冷启动时加密位置是锁定态（session_keks 里没有能开它的密码）；前端弹框收密码
+/// 后调这个，成功即把解出的 session 用于连接。会话已解锁的 KEK 也一并试
+/// （输过的 omy 密码不用再输）。
+///
+/// 返回是否解出（`true`=密码对、已可连接）。
+///
+/// # Errors
+///
+/// 密码为空返回 `tg_unlock_empty_pw`；密码与已解锁 KEK 都开不了返回
+/// `tg_unlock_wrong`；不是加密格式 / 没存过返回 `tg_unlock_not_encrypted`。
+#[tauri::command]
+pub fn telegram_place_unlock(
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+    password: String,
+) -> CmdResult<bool> {
+    if password.is_empty() {
+        return Err(CmdError::code("tg_unlock_empty_pw"));
+    }
+    let session_keks = crate::place_keys::session_keks(&state);
+    let app = AppId::builtin();
+    match tgsession::unlock_place_with_password(&app, &place_id, password.as_bytes(), &session_keks) {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Err(CmdError::code("tg_unlock_not_encrypted")),
+        Err(_) => Err(CmdError::code("tg_unlock_wrong")),
+    }
 }
 
 /// 确保某个 Telegram 位置已连上；已经连上就什么都不做。
