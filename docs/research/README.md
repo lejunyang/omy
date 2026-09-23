@@ -40,6 +40,7 @@
 | 13 | [FFmpeg 裁剪内置方案](13-ffmpeg-minimal-build.md) | 裁剪构建的体积实测与估算、专利取舍、configure 配方 | 实现者、法务 |
 | 14 | [远程位置：云盘接入](14-remote-locations-cloud.md) | `RemoteStore` 抽象、云端 omy 文件识别、只读位置的能力矩阵与 UI | 实现者、设计 |
 | 15 | [远程位置：Telegram 接入](15-telegram-remote.md) | MTProto 选型（grammers）、登录方式、分片下载/上传、受保护内容、传输管理与永久缓存、UI 与交互设计 | 实现者、设计、法务 |
+| 16 | [引用模型与虚拟远程位置（调研）](16-references-and-virtual-locations.md) | 各类型唯一 id 与引用能力（消息/媒体标识、视频定位源消息、消息引用跳转，均据 grammers TL 核实）；虚拟位置的数据模型、接入 RemoteStore、缓存共享可行性、跳转/搜索与工作量估 | 实现者、设计 |
 
 **附录**
 - [appendix/ui-prototype.html](appendix/ui-prototype.html) — **可交互界面原型**（浏览器直接打开，可切换深/浅主题、网格/列表、锁定/解锁态）
