@@ -990,6 +990,7 @@ impl TelegramStore {
             .ok_or_else(|| Error::Protocol(String::from("Telegram 尚未登录")))
     }
 
+
     /// 找一个对话（从缓存）。
     #[must_use]
     pub fn conversation(&self, chat: i64) -> Option<Conversation> {

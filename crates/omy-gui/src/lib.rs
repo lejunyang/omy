@@ -63,6 +63,8 @@ mod state;
 mod storage;
 mod telegram_cmds;
 mod video;
+mod virtual_cmds;
+mod virtual_place;
 
 use state::AppState;
 use std::sync::Arc;
@@ -96,6 +98,14 @@ pub fn run() {
     // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
     // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
     let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+    // 虚拟远程位置注册表：本地「收藏夹式」位置，只存对真实远程文件的引用。
+    // 首帧就载入，侧栏要立即显示它们（同真实位置的理由）。载入失败只记日志、
+    // 不挡启动——收藏坏了不该让整个应用起不来。
+    let virtual_registry: Arc<virtual_place::VirtualRegistry> =
+        Arc::new(virtual_place::VirtualRegistry::new());
+    if let Err(e) = virtual_registry.load() {
+        applog::warn("virtual", &format!("载入虚拟远程位置失败：{e}"));
+    }
     // 恢复上次保存的远程位置。
     //
     // 放在这里而不是等前端来问：侧栏在首帧就要显示这些位置，晚一步
@@ -185,6 +195,7 @@ pub fn run() {
         .manage(Arc::clone(&share_task))
         .manage(Arc::clone(&remote_session))
         .manage(Arc::clone(&place_registry))
+        .manage(Arc::clone(&virtual_registry))
         .manage(Arc::clone(&remote_cache))
         .manage(Arc::clone(&place_files))
         .manage(Arc::clone(&place_thumbs))
@@ -327,6 +338,12 @@ pub fn run() {
             telegram_cmds::telegram_place_encrypt,
             telegram_cmds::telegram_place_decrypt,
             telegram_cmds::telegram_place_unlock,
+            virtual_cmds::virtual_places,
+            virtual_cmds::virtual_create,
+            virtual_cmds::virtual_add_folder,
+            virtual_cmds::virtual_add_ref,
+            virtual_cmds::virtual_browse,
+            virtual_cmds::virtual_delete,
             telegram_cmds::telegram_tdata_probe,
             telegram_cmds::telegram_tdata_check,
             telegram_cmds::telegram_tdata_import,

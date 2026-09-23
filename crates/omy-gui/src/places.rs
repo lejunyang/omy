@@ -326,6 +326,38 @@ impl PlaceRegistry {
             .map(|p| p.id.clone())
     }
 
+    /// 按**稳定标识**在当前已注册的真实位置里认领出对应的 `Place`。
+    ///
+    /// 这是虚拟远程「引用委托」的关键一步：引用记的是稳定标识（Telegram user_id /
+    /// WebDAV url+账号），而不是会变的本地 place_id；打开引用时用这个把它解析回
+    /// 当前的本地位置，再委托它读——**源被移除再加回后本地 id 变了也能重新认领**。
+    ///
+    /// Telegram 认 user_id，WebDAV 认 (url, username)。认不到（源没加、或还没连上
+    /// 拿到 user_id）返回 `None`，调用方据此显示「源不可用」而不是崩。
+    #[must_use]
+    pub fn resolve_source(&self, src: &crate::virtual_place::SourceRef) -> Option<Arc<Place>> {
+        let (m, o) = (self.places.lock().ok()?, self.order.lock().ok()?);
+        o.iter()
+            .filter_map(|id| m.get(id))
+            .find(|p| Self::place_source(p).is_some_and(|ps| ps.matches(src)))
+            .cloned()
+    }
+
+    /// 从一个真实位置导出它的稳定标识（[`SourceRef`]），供 `resolve_source` 与
+    /// 前端「添加到虚拟远程」构造引用时共用同一份口径——不让「怎么算同一个源」
+    /// 散在两处。取不到（缺 user_id / 非 telegram、webdav）返回 `None`。
+    #[must_use]
+    pub fn place_source(p: &Place) -> Option<crate::virtual_place::SourceRef> {
+        match p.kind.as_str() {
+            "telegram" => p.user_id.map(crate::virtual_place::SourceRef::telegram),
+            "webdav" => p.store.as_webdav().map(|w| {
+                let c = w.config();
+                crate::virtual_place::SourceRef::webdav(c.base_url.clone(), c.username.clone())
+            }),
+            _ => None,
+        }
+    }
+
     /// 把一个已有 Telegram 位置的连接与 user id 就地换新。
     ///
     /// 登录去重命中已有账号时用：这次登录产生的是更新鲜的登录态，用它替换
