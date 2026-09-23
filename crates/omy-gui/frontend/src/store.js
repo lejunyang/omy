@@ -2118,7 +2118,7 @@ export async function reloadRemoteDir() {
   const ckey = remoteDirKey(state.remotePlace, state.remoteDir, tab);
   let cachedRows = remoteDirCache.get(ckey);
   if (cachedRows && cachedRows.length) {
-    state.remoteItems = cachedRows;
+    state.remoteItems = tagConversations(cachedRows);
     void refreshCacheStats(state.remotePlace, cachedRows);
   } else {
     // 内存未命中（多半是重启后首次）：尝试读磁盘 meta 缓存，先把上次这一屏
@@ -2129,7 +2129,7 @@ export async function reloadRemoteDir() {
         && state.remotePlace === placeAtStart && state.remoteDir === dirAtStart) {
       cachedRows = diskRows;
       remoteDirCache.set(ckey, diskRows);
-      state.remoteItems = diskRows;
+      state.remoteItems = tagConversations(diskRows);
       void refreshCacheStats(state.remotePlace, diskRows);
     }
   }
@@ -2157,7 +2157,7 @@ export async function reloadRemoteDir() {
         if (pt) r.thumb_token = pt;
       }
     }
-    state.remoteItems = rows;
+    state.remoteItems = tagConversations(rows);
     remoteDirCache.set(ckey, rows);
     // 写透磁盘 meta（重启后可先出）：去掉 thumb_token——它是会话内 PlaceThumbs
     // 的句柄，重启后失效，存了会让重启后短暂显示裂图。缩略图/头像自有各自的
@@ -2454,6 +2454,24 @@ function isTelegramDialog() {
   return p?.kind === 'telegram';
 }
 
+/** 给「Telegram 根对话列表」的每一行打上 is_conversation 标记。
+ *
+ * 图标该显示 💬（对话）还是 📁（文件夹）必须由**行自身**决定，不能靠渲染时
+ * 的全局 state.remoteDir —— 双击进对话时 remoteDir 会先变、列表后换，中间那
+ * 一帧旧对话行会被误判成文件夹（见 PlaceBrowser.icon 的说明）。所以在建列表
+ * 时（此刻还确实在根目录）就把标记写死到行上。只标 Telegram 根目录的目录行；
+ * 网盘/对话内的行不加，保持原样。 */
+function tagConversations(rows) {
+  if (!rows || !rows.length) return rows;
+  const p = state.remotePlaces.find((x) => x.id === state.remotePlace);
+  const atTelegramRoot = !state.remoteDir && p?.kind === 'telegram';
+  if (!atTelegramRoot) return rows;
+  for (const r of rows) {
+    if (r && r.is_dir) r.is_conversation = true;
+  }
+  return rows;
+}
+
 /** 首屏该拉多少条：填满可见网格 + 一屏缓冲。
  *
  * 官方那样「填满视口就够、别一次拉几百条」。按卡片估行列数：网格卡片约
@@ -2513,7 +2531,10 @@ function applyBufferedRemoteEntries() {
   if (!buf || buf.size === 0) return;
   for (let i = 0; i < state.remoteItems.length; i += 1) {
     const hit = buf.get(state.remoteItems[i].id);
-    if (hit) state.remoteItems[i] = hit;
+    // 后端事件行不带 is_conversation（那是前端在根目录建列表时打的行级标记）。
+    // 替换时保留它，否则头像事件一到就把 💬 判据抹掉、无头像的对话又闪回 📁。
+    if (hit) state.remoteItems[i] = state.remoteItems[i].is_conversation
+      ? { ...hit, is_conversation: true } : hit;
   }
 }
 
@@ -2540,7 +2561,11 @@ export async function ensureRemoteListeners() {
     }
     buf.set(p.entry.id, p.entry);
     const idx = state.remoteItems.findIndex((x) => x.id === p.entry.id);
-    if (idx >= 0) state.remoteItems[idx] = p.entry;
+    // 保留行级 is_conversation（后端事件不带它），避免头像事件把 💬 判据抹掉。
+    if (idx >= 0) {
+      state.remoteItems[idx] = state.remoteItems[idx].is_conversation
+        ? { ...p.entry, is_conversation: true } : p.entry;
+    }
     // **写透到内容缓存**：识别结果与清晰缩略图 token 都通过这个事件回来。
     // 只更新 state.remoteItems 而不更新缓存的话，二次进对话摆出的是缓存里
     // 那批**带 stripped 占位 token 的旧行**，于是清晰图退回糊占位、又得重新

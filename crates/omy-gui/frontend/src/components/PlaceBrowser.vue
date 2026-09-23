@@ -573,10 +573,13 @@ function icon(f) {
     // Telegram 位置的根目录列出的**全是对话**，不是文件夹。
     // 用 📁 会让人以为里面是目录结构，而它其实是一个群/频道/私聊。
     //
-    // 判据是「在根目录且是目录」而不是某个类型字段：Telegram 的目录层级
-    // 只有「对话 -> 消息」两级，根目录下不存在真正的文件夹。若将来这一点
-    // 变了，这里要跟着改
-    if (isTelegram.value && !state.remoteDir) return '💬';
+    // 判据用**行自身的 is_conversation 标记**，不是全局 state.remoteDir。
+    // 为什么：双击进入某个群时 enterRemoteDir 会先把 state.remoteDir 设成该群
+    // 的 id、**然后**才 await reloadRemoteDir 换掉列表。这两步之间屏上还渲染着
+    // 旧的对话列表行，此刻 !state.remoteDir 已变 false —— 那些还没拿到头像
+    // thumb_token 的对话就会从 💬 闪成 📁（用户报的「刷新中双击进入、其他群
+    // 图标闪成文件夹」）。行级标记在建列表时就定死，不随导航状态漂移。
+    if (f.is_conversation) return '💬';
     return '📁';
   }
   if (f.probing || isRetrying(f)) return '⏳';
