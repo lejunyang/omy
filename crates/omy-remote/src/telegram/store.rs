@@ -757,6 +757,34 @@ pub struct MessageRow {
     pub duration: Option<u32>,
 }
 
+/// [`TelegramStore::messages_around`] 的返回：以某条为中心的一段消息 + 两端游标。
+///
+/// 供「引用跳转 / 定位源消息」：把目标居中后，`oldest` 用于继续向更旧翻、
+/// `newest` 用于继续向更新翻（现有 `messages` 只有向旧一个方向，这里补齐双向）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MessageWindow {
+    /// 这段消息，按消息号**升序**（旧 → 新）。
+    pub rows: Vec<MessageRow>,
+    /// 这段里最旧一条的消息号（继续向旧翻的 `before` 游标）；空段为 `None`。
+    pub oldest: Option<i32>,
+    /// 这段里最新一条的消息号（继续向新翻的游标）；空段为 `None`。
+    pub newest: Option<i32>,
+    /// 是否真的把目标那条拉到了。拉不到（已删/超范围）时上层不该假装定位成功。
+    pub found: bool,
+}
+
+/// 由一段**已升序**的消息行与目标号，算出 [`MessageWindow`] 的两端游标与命中标记。
+///
+/// 抽成纯函数（不碰 client）是为了能单测这段"端游标 + 命中"的推导——这是引用
+/// 跳转"能否继续双向翻、能否判定位成功"的判据，拉取本身要真 client、无法单测，
+/// 但这段推导不该跟着一起沉默。
+fn window_from_rows(rows: Vec<MessageRow>, around: i32) -> MessageWindow {
+    let oldest = rows.first().map(|r| r.message);
+    let newest = rows.last().map(|r| r.message);
+    let found = rows.iter().any(|r| r.message == around);
+    MessageWindow { rows, oldest, newest, found }
+}
+
 /// Telegram 驱动。
 ///
 /// # 两种构造方式
@@ -1461,46 +1489,46 @@ impl TelegramStore {
         if let Some(off) = before {
             it = it.offset_id(off);
         }
-        let mut out = Vec::new();
-        let mut cache = Vec::new();
+        let mut msgs = Vec::new();
         loop {
-            let msg = match it.next().await {
-                Ok(Some(m)) => m,
+            match it.next().await {
+                Ok(Some(m)) => msgs.push(m),
                 Ok(None) => break,
                 Err(e) => return Err(map_rpc(&e)),
-            };
+            }
+        }
+        Ok(self.rows_from_messages(chat, msgs))
+    }
+
+    /// 把一批 `Message` 转成消息行，并顺带把可下载媒体的位置写进缓存。
+    ///
+    /// 从 [`Self::messages`] 抽出来，好让 [`Self::messages_around`]（以某条为中心
+    /// 的定位拉取）复用同一套「消息 → 行 + 缓存」逻辑——同一逻辑不写两份，
+    /// 否则两条路径迟早在「纯文本要保留」「缩略图用内嵌 stripped」这些细节上
+    /// 分叉。
+    ///
+    /// 缩略图用随消息一起回来的**内嵌 stripped 占位图**（零请求）；清晰图交给
+    /// 上层后台补。纯文本消息 `file_id=None`、**照样成行**（不过滤）。
+    fn rows_from_messages(&self, chat: i64, msgs: Vec<grammers_client::message::Message>) -> Vec<MessageRow> {
+        let mut out = Vec::with_capacity(msgs.len());
+        let mut cache = Vec::new();
+        for msg in msgs {
             let id = TelegramId {
                 chat,
                 message: msg.id(),
             };
-            // 有没有可下载的媒体。取不到位置的（投票、位置、纯文本）
-            // 一律 file_id=None，而不是被丢掉
             let (file_id, file_name, file_size) = match msg.media() {
                 Some(media) => match media.to_raw_input_location() {
                     Some(loc) => {
                         let key = id.encode();
                         let size = media_size(&media);
-                        cache.push((
-                            key.clone(),
-                            CachedMedia {
-                                location: loc,
-                                size,
-                            },
-                        ));
-                        (
-                            Some(key),
-                            Some(media_name(&media, msg.id())),
-                            Some(size),
-                        )
+                        cache.push((key.clone(), CachedMedia { location: loc, size }));
+                        (Some(key), Some(media_name(&media, msg.id())), Some(size))
                     }
                     None => (None, None, None),
                 },
                 None => (None, None, None),
             };
-            // 缩略图与时长。**缩略图用随消息一起回来的内嵌 stripped 占位图
-            // （零请求）**，不再逐条 upload.getFile 拉清晰档——那是消息列表极慢
-            // 的根因：一屏几十条里每条带媒体的都发一次网络往返，串行下完才返回。
-            // 与媒体分栏首屏同款：先出糊占位、秒回；需要清晰图的话交给上层后台补。
             let (thumb, duration) = match msg.media() {
                 Some(m) => (embedded_thumb(&m), media_duration(&m)),
                 None => (None, None),
@@ -1517,14 +1545,87 @@ impl TelegramStore {
                 duration,
             });
         }
-        // 顺带把下载位置也缓存了：用户多半会从消息视图直接点开那个文件，
-        // 不缓存的话又要为此重列一次
         if let Ok(mut m) = self.media.lock() {
             for (k, v) in cache {
                 m.insert(k, v);
             }
         }
-        Ok(out)
+        out
+    }
+
+    /// **以某条消息为中心**拉取一段消息：向更旧取 `before` 条、向更新取 `after`
+    /// 条，连同目标本身，供「引用跳转 / 定位源消息」把目标定位到视口中间后，
+    /// 还能双向继续翻。
+    ///
+    /// # 为什么需要它（双向游标）
+    ///
+    /// 现有 [`Self::messages`] 只有「往更旧翻」这一个方向（`before` 游标）。跳到
+    /// 历史**中间**的一条时，光有更旧的不够——用户往下滚要能看到它**之后**的消息。
+    /// 所以这里用两次 getHistory：
+    /// - 更旧半区：`offset_id(around + 1)`（exclusive，含 around 自己及更旧）；
+    /// - 更新半区：`offset_id(around).reverse(true)`（reverse 把 offset_id 当
+    ///   min_id，取更新的一段、旧→新），排除 around 自己避免重复。
+    ///
+    /// 返回按消息号**升序**排好的一段（旧 → 新），并额外给出这段的两端游标，
+    /// 供上层判断「还能不能再往两头拉」。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、对话不存在、网络失败或限流时返回。
+    pub async fn messages_around(
+        &self,
+        dir_id: &str,
+        around: i32,
+        before: usize,
+        after: usize,
+    ) -> Result<MessageWindow> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+        let client = self.client()?;
+        if self.conversation(chat).is_none() {
+            self.refresh_conversations().await?;
+        }
+        let peer = self.peer_ref(chat).await?;
+
+        // 更旧半区（含目标）：offset_id 是 exclusive 的，用 around+1 把 around 收进来。
+        let mut older = Vec::new();
+        {
+            let mut it = client.iter_messages(peer).limit(before + 1);
+            it = it.offset_id(around.saturating_add(1));
+            loop {
+                match it.next().await {
+                    Ok(Some(m)) => older.push(m),
+                    Ok(None) => break,
+                    Err(e) => return Err(map_rpc(&e)),
+                }
+            }
+        }
+        // 更新半区（不含目标）：用 reverse 模式从 around 向**更新**方向取。
+        // MessageIter 没有 add_offset，但 reverse(true) 会把 offset_id 当作
+        // min_id（取 id > offset_id 的消息，即更新的），并按旧→新返回，正好是
+        // around 之后的一段；around 自己不含（min_id 是 exclusive 下界）。
+        let mut newer = Vec::new();
+        if after > 0 {
+            let mut it = client
+                .iter_messages(peer)
+                .limit(after)
+                .offset_id(around)
+                .reverse(true);
+            loop {
+                match it.next().await {
+                    Ok(Some(m)) => newer.push(m),
+                    Ok(None) => break,
+                    Err(e) => return Err(map_rpc(&e)),
+                }
+            }
+        }
+
+        // 合并成升序（旧→新），按消息号去重（两半区的边界可能有重叠/目标重复）。
+        let mut all = older;
+        all.extend(newer);
+        all.sort_by_key(grammers_client::message::Message::id);
+        all.dedup_by_key(|m| m.id());
+        let rows = self.rows_from_messages(chat, all);
+        Ok(window_from_rows(rows, around))
     }
 
     /// 取一个文件的下载位置；缓存里没有就重新列一次那个对话。
@@ -1935,6 +2036,47 @@ mod tests {
             avatar: None,
             protected: false,
         }
+    }
+
+    /// 造一个只填了消息号的 MessageRow（其余字段与本测试无关）。
+    fn mrow(message: i32) -> MessageRow {
+        MessageRow {
+            message,
+            text: String::new(),
+            date: 0,
+            outgoing: false,
+            file_id: None,
+            file_name: None,
+            file_size: None,
+            thumb: None,
+            duration: None,
+        }
+    }
+
+    /// window_from_rows：两端游标取升序段的首尾，命中标记看目标是否在段内。
+    ///
+    /// 不这样会怎样：oldest/newest 取错端，用户往上/往下翻就会拿错游标、
+    /// 重复拉同一段或跳过一段；found 判错会让"目标已删"被当成定位成功、
+    /// 界面高亮一条根本不存在的消息。
+    #[test]
+    fn window_cursors_and_found() {
+        // 升序段 [10,20,30]，目标 20 在段内
+        let w = window_from_rows(vec![mrow(10), mrow(20), mrow(30)], 20);
+        assert_eq!(w.oldest, Some(10), "最旧游标应是段首");
+        assert_eq!(w.newest, Some(30), "最新游标应是段尾");
+        assert!(w.found, "目标 20 在段内，应判命中");
+
+        // 目标 25 不在段内（可能已删）：不能假装命中
+        let w2 = window_from_rows(vec![mrow(10), mrow(20), mrow(30)], 25);
+        assert!(!w2.found, "目标不在段内不得判命中");
+        assert_eq!(w2.oldest, Some(10));
+        assert_eq!(w2.newest, Some(30));
+
+        // 空段：两端游标皆 None、未命中
+        let w3 = window_from_rows(Vec::new(), 1);
+        assert_eq!(w3.oldest, None);
+        assert_eq!(w3.newest, None);
+        assert!(!w3.found);
     }
 
     /// id 必须能原样往返。

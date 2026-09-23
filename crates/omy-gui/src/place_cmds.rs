@@ -1708,6 +1708,36 @@ pub async fn remote_messages(
         .map_err(|e| to_cmd_err(&e))
 }
 
+/// 以某条消息为中心拉取一段（引用跳转 / 定位源消息用）。
+///
+/// 向更旧取约半屏、向更新取约半屏，让目标落在视口中间，且两头都还能续翻。
+/// `around` 是要定位到的消息号（来自媒体条目的 (对话,消息) 或回复 reply_to）。
+///
+/// # Errors
+///
+/// 未登录、不是 Telegram 位置、网络失败或限流时返回。
+#[tauri::command]
+pub async fn remote_messages_around(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+    dir: String,
+    around: i32,
+) -> CmdResult<omy_remote::telegram::store::MessageWindow> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        return Err(CmdError::code("remote_no_messages"));
+    };
+    // 前后各取半屏：目标居中。用 MESSAGE_PAGE 的一半作两侧量，合起来约一屏。
+    let half = MESSAGE_PAGE / 2;
+    tg.messages_around(&dir, around, half, half)
+        .await
+        .map_err(|e| to_cmd_err(&e))
+}
+
 /// 消息视图一次拉多少条。
 ///
 /// 不是「全部」：活跃对话里可能有上万条，全拉既慢又白占限流配额，

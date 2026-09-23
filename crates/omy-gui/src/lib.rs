@@ -282,6 +282,7 @@ pub fn run() {
             place_cmds::remote_browse,
             place_cmds::remote_search,
             place_cmds::remote_messages,
+            place_cmds::remote_messages_around,
             place_cmds::remote_dir_protected,
             place_cmds::remote_browse_more,
             place_cmds::remote_browse_tab,
