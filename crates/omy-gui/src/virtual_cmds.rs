@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::commands::{CmdError, CmdResult};
 use crate::places::PlaceRegistry;
-use crate::virtual_place::{Reference, SourceRef, Snapshot, VirtualRegistry};
+use crate::virtual_place::{Reference, Snapshot, VirtualRegistry};
 
 /// 引用相对真实源的可用性状态。前端据此区分三种 UI，且都不让引用消失/点崩。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -135,12 +135,14 @@ pub fn virtual_add_folder(
 
 /// 往某个虚拟位置的某个文件夹里添加一条引用。
 ///
-/// `source` 是源真实位置的稳定标识（由前端从真实位置信息构造）；`dir_id`/`file_id`
-/// 是源里的目录/文件 id；`snapshot_name`/`snapshot_size` 是显示快照（源不可达时用）。
+/// `source_place_id` 是**源真实位置的本地 id**——后端据它导出稳定标识
+/// （[`SourceRef`]，telegram user_id / webdav url+账号），前端不必知道 user_id/url。
+/// `dir_id`/`file_id` 是源里的目录/文件 id；`snapshot_*` 是显示快照（源不可达时用）。
 ///
 /// # Errors
 ///
-/// 虚拟位置或目标文件夹不存在时返回。
+/// 虚拟位置/目标文件夹不存在，或源位置认不出稳定标识（如 Telegram 还没连上拿到
+/// user_id）时返回。
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddRefReq {
@@ -148,8 +150,8 @@ pub struct AddRefReq {
     pub place_id: String,
     /// 目标文件夹 id（根为空串）。
     pub folder: String,
-    /// 源真实位置的稳定标识。
-    pub source: SourceRef,
+    /// 源真实位置的**本地 id**（后端据它导出稳定标识）。
+    pub source_place_id: String,
     /// 源目录/对话 id。
     pub dir_id: String,
     /// 源文件/消息 id。
@@ -163,15 +165,22 @@ pub struct AddRefReq {
 #[tauri::command]
 pub fn virtual_add_ref(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
     req: AddRefReq,
 ) -> CmdResult<String> {
+    // 从源真实位置导出稳定标识——认不出（缺 user_id / 非可引用类型）就拒绝，
+    // 否则会存下一条永远认领不回的死引用。
+    let source = reg
+        .get(&req.source_place_id)
+        .and_then(|p| PlaceRegistry::place_source(&p))
+        .ok_or_else(|| CmdError::code("virtual_source_unidentified"))?;
     let ref_id = format!("vr{}", crate::virtual_place::random_id());
     let done = vreg
         .with_place_mut(&req.place_id, |vp| {
             vp.root.find_mut(&req.folder).map(|f| {
                 f.refs.push(Reference {
                     ref_id: ref_id.clone(),
-                    source: req.source,
+                    source,
                     dir_id: req.dir_id,
                     file_id: req.file_id,
                     snapshot: Snapshot { name: req.snapshot_name, size: req.snapshot_size },
@@ -237,6 +246,42 @@ pub fn virtual_browse(
         entries
     });
     out.ok_or_else(|| CmdError::code("virtual_no_such_place"))
+}
+
+/// 一个虚拟位置的文件夹（扁平化，带层级深度），供树形选择对话框显示。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderNode {
+    /// 文件夹 id（根为空串）。
+    pub id: String,
+    /// 显示名（根用虚拟位置自己的名，由前端填）。
+    pub name: String,
+    /// 缩进层级（根为 0）。
+    pub depth: u32,
+}
+
+/// 列出一个虚拟位置的全部文件夹（深度优先扁平化），供「添加到虚拟远程」的树形
+/// 目标选择器一次性展开。根文件夹 id 为空串、name 为空（前端用位置名兜底）。
+///
+/// # Errors
+///
+/// 虚拟位置不存在时返回。
+#[tauri::command]
+pub fn virtual_folders(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+) -> CmdResult<Vec<FolderNode>> {
+    fn walk(f: &crate::virtual_place::VFolder, depth: u32, out: &mut Vec<FolderNode>) {
+        out.push(FolderNode { id: f.id.clone(), name: f.name.clone(), depth });
+        for c in &f.folders {
+            walk(c, depth + 1, out);
+        }
+    }
+    vreg.with_place(&place_id, |vp| {
+        let mut out = Vec::new();
+        walk(&vp.root, 0, &mut out);
+        out
+    })
+    .ok_or_else(|| CmdError::code("virtual_no_such_place"))
 }
 
 /// 只读地按文件夹 id 找节点（根为空串）。

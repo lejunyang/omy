@@ -72,6 +72,7 @@
     "lock_now": "锁定"
   },
   "busy": {
+    "working": "正在处理…",
     "loading": "正在读取…",
     "encrypting": "正在加密…",
     "deriving": "正在派生密钥…",
@@ -879,5 +880,18 @@
     "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败",
     "speed": "{{rate}}/s",
     "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
+  },
+  "virtual": {
+    "add": "新建虚拟远程",
+    "default_name": "我的收藏",
+    "name_prompt": "给这个虚拟远程起个名字",
+    "source_missing": "这条引用的来源位置当前不可用——把那个远程重新加回来后即可恢复访问。",
+    "source_locked": "来源位置已加密且未解锁，请先在侧栏解锁它再打开这条引用。",
+    "added": "已添加 {{n}} 项到虚拟远程",
+    "menu_add": "添加到虚拟远程…",
+    "pick_title": "把 {{n}} 项添加到虚拟远程",
+    "pick_hint": "选一个虚拟远程和目标文件夹。展开虚拟远程可选到具体子文件夹。",
+    "pick_empty": "还没有虚拟远程，先新建一个。",
+    "pick_confirm": "添加到这里"
   }
 }

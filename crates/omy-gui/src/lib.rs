@@ -343,6 +343,7 @@ pub fn run() {
             virtual_cmds::virtual_add_folder,
             virtual_cmds::virtual_add_ref,
             virtual_cmds::virtual_browse,
+            virtual_cmds::virtual_folders,
             virtual_cmds::virtual_delete,
             telegram_cmds::telegram_tdata_probe,
             telegram_cmds::telegram_tdata_check,

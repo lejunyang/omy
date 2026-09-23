@@ -99,6 +99,7 @@ import TransferScreen from './components/TransferScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import TgEncryptDialog from './components/TgEncryptDialog.vue';
+import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock.js';
 
@@ -1090,4 +1091,6 @@ onBeforeUnmount(() => {
     @cancel="cancelTgEncrypt"
     @submit="confirmTgEncrypt"
   />
+
+  <VirtualPickerDialog v-if="state.addToVirtual" />
 </template>

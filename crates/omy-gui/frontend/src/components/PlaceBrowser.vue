@@ -59,6 +59,10 @@ import {
   loadMoreMessages,
   loadMoreFiles,
   locateMessage,
+  activateVirtualEntry,
+  isVirtualPlace,
+  addVirtualFolder,
+  openAddToVirtual,
 } from '../store.js';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -319,6 +323,12 @@ function onEntryDbl(f) {
  * 转发、后者走解密）；只有**未解锁的加密文件**打不开，因为确实没有密码。
  * 「未能读取」条目点击则就地重试。 */
 function activate(f) {
+  // 虚拟远程里的引用条目：双击=定位到它指向的真实位置（源不可用/未解锁时给提示）。
+  // 文件夹仍走下面的 enterRemoteDir 普通分支。
+  if (f.is_ref) {
+    activateVirtualEntry(f);
+    return;
+  }
   if (f.probing || isRetrying(f)) return;
   // 「未能读取（网络）」整卡/整行可点：只重试这一条，不重载整个目录，
   // 也绝不能把它当成「密码不对」——那是 probe_failed 与锁定的根本区别。
@@ -501,6 +511,15 @@ const rmenuItems = computed(() => {
       label: i18n.t('rplace.menu_locate_source'),
     });
   }
+  // 「添加到虚拟远程」：真实位置里的文件才给（虚拟位置里的引用不再套娃）。
+  // 弹树形选择对话框选目标虚拟位置+文件夹（方案甲）。
+  if (!f.is_dir && !f.is_ref && !isVirtualPlace()) {
+    items.push({
+      key: 'add-to-virtual',
+      icon: '🗂️',
+      label: i18n.t('virtual.menu_add'),
+    });
+  }
   // 缓存相关。状态是打开菜单时异步查的，查到之前不出现（避免空操作）。
   //
   // 「转为永久」在产品上是**一次真实的下载任务**（要先把整个文件预热到
@@ -549,6 +568,8 @@ async function onMenuPick(key) {
   } else if (key === 'locate-source') {
     const mid = msgIdOf(f);
     if (mid != null) await locateMessage(mid);
+  } else if (key === 'add-to-virtual') {
+    openAddToVirtual(f);
   }
 }
 

@@ -820,3 +820,30 @@ export const telegramPhoneCancel = () => invoke('telegram_phone_cancel');
  */
 export const onTelegramPhoneLogin = (handler) =>
   listen('telegram-phone-login', (e) => handler(e.payload));
+
+
+// ---- 虚拟远程位置（本地收藏夹式，只存对真实远程文件的引用）----
+
+/** 列出所有虚拟远程位置，返回 [{ id, name }]（供侧栏）。 */
+export const virtualPlaces = () => invoke('virtual_places');
+
+/** 新建一个虚拟远程位置，返回它的 id。 */
+export const virtualCreate = (name) => invoke('virtual_create', { name });
+
+/** 在某个虚拟位置的某文件夹下新建子文件夹（parentFolder 为空=根），返回新文件夹 id。 */
+export const virtualAddFolder = (placeId, parentFolder, name) =>
+  invoke('virtual_add_folder', { placeId, parentFolder, name });
+
+/** 往某个虚拟位置的某文件夹里加一条引用（req 见 AddRefReq，camelCase）。返回 ref_id。
+ *  req: { placeId, folder, source, dirId, fileId, snapshotName, snapshotSize } */
+export const virtualAddRef = (req) => invoke('virtual_add_ref', { req });
+
+/** 浏览一个虚拟位置的某文件夹（folder 为空=根）。返回 VirtualEntry[]（含源三态）。 */
+export const virtualBrowse = (placeId, folder) =>
+  invoke('virtual_browse', { placeId, folder });
+
+/** 列出一个虚拟位置的全部文件夹（扁平化+depth），供树形目标选择器。返回 FolderNode[]。 */
+export const virtualFolders = (placeId) => invoke('virtual_folders', { placeId });
+
+/** 删除一个虚拟位置。返回是否删了。 */
+export const virtualDelete = (placeId) => invoke('virtual_delete', { placeId });

@@ -72,6 +72,7 @@
     "lock_now": "Lock"
   },
   "busy": {
+    "working": "Working…",
     "loading": "Loading…",
     "encrypting": "Encrypting…",
     "deriving": "Deriving key…",
@@ -879,5 +880,18 @@
     "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed",
     "speed": "{{rate}}/s",
     "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
+  },
+  "virtual": {
+    "add": "New virtual remote",
+    "default_name": "My collection",
+    "name_prompt": "Name this virtual remote",
+    "source_missing": "This reference's source location is currently unavailable — add that remote back to restore access.",
+    "source_locked": "The source location is encrypted and locked; unlock it in the sidebar first, then open this reference.",
+    "added": "Added {{n}} item(s) to the virtual remote",
+    "menu_add": "Add to virtual remote…",
+    "pick_title": "Add {{n}} item(s) to a virtual remote",
+    "pick_hint": "Pick a virtual remote and a target folder. Expand a virtual remote to choose a subfolder.",
+    "pick_empty": "No virtual remote yet — create one first.",
+    "pick_confirm": "Add here"
   }
 }

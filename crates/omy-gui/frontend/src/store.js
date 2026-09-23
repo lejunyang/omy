@@ -36,6 +36,11 @@ export const state = reactive({
   places: [],
   /** 已注册的远程位置，每项含 `caps` 能力位图。 */
   remotePlaces: [],
+  /** 虚拟远程位置（本地收藏夹式），每项 { id, name }。侧栏「远程」区列在真实位置之后。 */
+  virtualPlaces: [],
+  /** 「添加到虚拟远程」树形选择对话框的待添加条目（真实位置里的文件）。
+   *  { placeId, dirId, items:[{fileId,name,size}] }；null=对话框关闭。 */
+  addToVirtual: null,
   /** 当前所在的远程位置 id；为空表示在本地。 */
   remotePlace: '',
   /** 远程位置里的当前目录。 */
@@ -2082,6 +2087,73 @@ export async function setSearchMode(mode) {
 /** 刷新远程位置列表。 */
 export async function reloadRemotePlaces() {
   state.remotePlaces = await api.remotePlaceList().catch(() => []);
+  state.virtualPlaces = await api.virtualPlaces().catch(() => []);
+}
+
+/** 当前 remotePlace 是不是一个虚拟位置（id 以 v 开头且在 virtualPlaces 里）。
+ *  虚拟位置复用 remotePlace/remoteDir/remoteItems 那套状态与 PlaceBrowser 视图，
+ *  只在加载路径上分叉（走 virtualBrowse 而不是网络 list）。 */
+export function isVirtualPlace(id) {
+  const pid = id ?? state.remotePlace;
+  return !!pid && state.virtualPlaces.some((v) => v.id === pid);
+}
+
+/** 新建一个虚拟远程位置并进入它。 */
+export async function createVirtualPlace(name) {
+  const id = await api.virtualCreate(name || i18n.t('virtual.default_name'));
+  await reloadRemotePlaces();
+  await openRemotePlace(id);
+  return id;
+}
+
+/** 打开「添加到虚拟远程」树形选择对话框。entries 是真实位置里选中的一批条目。 */
+export function openAddToVirtual(entries) {
+  const items = (Array.isArray(entries) ? entries : [entries])
+    .filter((e) => e && !e.is_dir)
+    .map((e) => ({ fileId: e.id, name: e.real_name || e.name, size: e.plaintext_size ?? e.size ?? null }));
+  if (!items.length) return;
+  state.addToVirtual = { placeId: state.remotePlace, dirId: state.remoteDir, items };
+}
+
+/** 关闭「添加到虚拟远程」对话框。 */
+export function cancelAddToVirtual() {
+  state.addToVirtual = null;
+}
+
+/** 确认把待添加条目加到某个虚拟位置的某个文件夹。 */
+export async function confirmAddToVirtual(virtualPlaceId, folder) {
+  const req = state.addToVirtual;
+  if (!req || !virtualPlaceId) return;
+  let ok = 0;
+  for (const it of req.items) {
+    try {
+      await api.virtualAddRef({
+        placeId: virtualPlaceId,
+        folder: folder || '',
+        sourcePlaceId: req.placeId,
+        dirId: req.dirId,
+        fileId: it.fileId,
+        snapshotName: it.name,
+        snapshotSize: it.size,
+      });
+      ok += 1;
+    } catch (e) {
+      state.error = i18n.te(api.errCode(e), 'errors.remote_failed');
+    }
+  }
+  state.addToVirtual = null;
+  if (ok > 0) setNotice(i18n.t('virtual.added', { n: ok }));
+}
+
+/** 在当前虚拟位置的当前文件夹下新建子文件夹，然后刷新。 */
+export async function addVirtualFolder(name) {
+  if (!isVirtualPlace()) return;
+  try {
+    await api.virtualAddFolder(state.remotePlace, state.remoteDir, name);
+    await reloadRemoteDir();
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+  }
 }
 
 /** 进入一个远程位置的根目录。 */
@@ -2122,6 +2194,84 @@ export function leaveRemotePlace() {
   state.remoteDirName = '';
 }
 
+/** 列出当前虚拟位置的当前文件夹：把文件夹 + 引用映射成 remoteItems 条目。
+ *
+ * 引用带 source_state（三态）：源可用正常、源不可用灰显、源加密未解锁提示解锁。
+ * 引用条目 is_dir=false 但不是本地文件——它的 id 是 ref_id，双击走
+ * activateVirtualEntry（定位到真实位置），不走普通识别。 */
+export async function reloadVirtualDir() {
+  const place = state.remotePlace;
+  const folder = state.remoteDir;
+  state.busy = true;
+  state.busyKey = 'busy.loading';
+  state.placeError = '';
+  try {
+    const rows = await api.virtualBrowse(place, folder);
+    if (state.remotePlace !== place || state.remoteDir !== folder) return;
+    // 映射成 PlaceBrowser 认识的条目形状。文件夹 is_dir=true 用文件夹图标；
+    // 引用把源状态挂在条目上，视图据此显示灰显/锁标识。
+    state.remoteItems = rows.map((e) => ({
+      id: e.id,
+      name: e.name,
+      is_dir: e.is_dir,
+      size: e.size ?? null,
+      mtime: null,
+      is_encrypted: false,
+      unlocked: false,
+      real_name: null,
+      plaintext_size: null,
+      probe_failed: false,
+      thumb_token: null,
+      probing: false,
+      // 虚拟引用专属字段
+      is_ref: !e.is_dir,
+      source_state: e.source_state ?? null,
+      source_place: e.source_place ?? null,
+      source_dir: e.source_dir ?? null,
+      source_file: e.source_file ?? null,
+    }));
+    state.hasMoreFiles = false;
+  } catch (e) {
+    state.remoteItems = [];
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+  } finally {
+    state.busy = false;
+  }
+}
+
+/** 打开/定位一个虚拟引用条目：跳到它指向的真实位置的那个对话，并定位到该文件。
+ *
+ * 源不可用（Missing）时提示先把那个远程加回来；源加密未解锁（Locked）时提示先
+ * 解锁。可用时：切到真实位置 → 进它的对话/目录 → 定位那条消息（复用第 1 组的
+ * locateMessage）。委托真实位置读取，缓存天然共享。 */
+export async function activateVirtualEntry(entry) {
+  if (!entry || entry.is_dir) return;
+  if (entry.source_state === 'missing') {
+    setNotice(i18n.t('virtual.source_missing'));
+    return;
+  }
+  if (entry.source_state === 'locked') {
+    setNotice(i18n.t('virtual.source_locked'));
+    return;
+  }
+  // 可用：切到真实位置，进源目录，定位源文件。
+  const place = entry.source_place;
+  const dir = entry.source_dir;
+  const fileId = entry.source_file;
+  if (!place || !dir) {
+    setNotice(i18n.t('virtual.source_missing'));
+    return;
+  }
+  await openRemotePlace(place);
+  await enterRemoteDir(dir, '');
+  // Telegram 文件 id 形如 tg:chat:msg，取消息号定位（复用消息视图定位+高亮）。
+  const parts = typeof fileId === 'string' ? fileId.split(':') : [];
+  if (parts.length === 3 && parts[0] === 'tg') {
+    const msg = Number(parts[2]);
+    if (Number.isInteger(msg)) await locateMessage(msg);
+  }
+}
+
 /** 列出当前远程目录。
  *
  * 失败时清空列表并报错，而不是留着上一个目录的内容——那会让用户
@@ -2129,6 +2279,13 @@ export function leaveRemotePlace() {
  */
 export async function reloadRemoteDir() {
   if (!state.remotePlace) return;
+  // 虚拟位置：不发网络，从本地引用表组装条目（含源三态）。文件夹/引用都映射成
+  // remoteItems 里的条目，PlaceBrowser 照常渲染；引用的 is_dir=false、双击走
+  // 「定位到真实位置」而不是就地识别。
+  if (isVirtualPlace()) {
+    await reloadVirtualDir();
+    return;
+  }
   // 捕获进入时的位置/目录：读磁盘 meta 是异步的，回来前用户可能切走，
   // 回写前要校验还在同一屏（与 loadMoreFiles 的飞行校验同理）。
   const placeAtStart = state.remotePlace;
