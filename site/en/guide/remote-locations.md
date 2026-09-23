@@ -89,10 +89,12 @@ The sign-in (which contains account credentials) is encrypted and stored on this
 
 **Encryption is off by default and optional.** Accounts without an omy password stay as they are and connect automatically as before. To add a layer of omy-password protection to a sensitive account, there are two entry points:
 
-- **Right-click it in the sidebar → "Encrypt this location"**: protect its sign-in with any omy password you have currently unlocked (a vault password, Windows Hello, or a recovery code); the same menu also offers "Remove encryption" to revert to the default.
+- **Right-click it in the sidebar → "Encrypt this location"**: a password dialog opens and you **set a password right there** (typed twice to confirm, with an optional KDF strength) — the same interaction as encrypting an ordinary omy file; the same menu also offers "Remove encryption" to revert to the default.
 - **After an account is added successfully**, omy asks once whether to encrypt — you can encrypt or skip (default is not encrypted).
 
-**Once encrypted**, the location shows as encrypted (with a lock badge). On a cold start, before you type an omy password that can open it, it shows as **locked** — you can see its name but can't enter, with a prompt to unlock first; after you enter the password you're in and it connects automatically. The name stays visible while locked. **Locations that are not encrypted are unaffected** and open directly.
+The key is the password you set. If it happens to match an omy password you've already unlocked, that password can open this location too without retyping.
+
+**Once encrypted**, the location shows as encrypted (with a lock badge). On a cold start, before you type the password, it shows as **locked** — you can see its name but can't enter, with a prompt to unlock first; after you enter the correct password you're in and it connects automatically. The name stays visible while locked. **Locations that are not encrypted are unaffected** and open directly.
 
 ::: tip Most networks need a proxy
 Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. The proxy is saved along with the location.
