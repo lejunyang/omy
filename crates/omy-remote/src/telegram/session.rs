@@ -724,6 +724,27 @@ pub fn migrate_to_slots(
     migrate_to_slots_at(&path, app, keys)
 }
 
+/// [`migrate_to_slots`] 的便捷版：直接收一批裸 KEK，内部包成 `SlotKey`。
+///
+/// GUI 的 `ensure_connected` 手里是会话已解锁的 `Vec<Kek>`（没有 label/kind），
+/// 用这个免得调用方自己拼 `SlotKey`。kind/label 只用于显示，统一填占位值——
+/// 解锁靠逐把 KEK 试，不看这两个字段。
+///
+/// # Errors
+///
+/// 同 [`migrate_to_slots`]。
+pub fn migrate_to_slots_with_keks(
+    app: &AppId,
+    account: &str,
+    keks: &[Kek],
+) -> Result<bool, SessionError> {
+    let keys: Vec<SlotKey<'_>> = keks
+        .iter()
+        .map(|k| SlotKey { kek: k, kind: "vault", label: "session" })
+        .collect();
+    migrate_to_slots(app, account, &keys)
+}
+
 /// [`migrate_to_slots`] 的按路径版本（测试用）。
 ///
 /// # Errors

@@ -1012,6 +1012,23 @@ pub async fn ensure_connected(
             eprintln!("[omy] 保存补取的 user id 失败：{e}");
         }
     }
+
+    // 顺带迁移：如果这个位置的 session 还是旧格式（机器密钥加密的裸信封），
+    // 且当前会话有可用 KEK，就趁「已经连上、确认这份登录态有效」的这一刻把它
+    // 重新用 per-place 槽格式落盘。
+    //
+    // 为什么放在连上之后而不是启动即迁移：启动时可能还没有任何已解锁的 KEK，
+    // 那时迁移只能用机器密钥，等于白迁。连上之后此处 keks 里含会话已解锁的
+    // 全部密码（见调用方传的 unlock_keks），能把保护升级成「输过的 omy 密码
+    // 才能开」。migrate_to_slots 对已是新格式的文件是 no-op、失败时原文件
+    // 原样保留（见其文档与测试），所以这里出错只记日志、不影响已建好的连接。
+    if !keks.is_empty() {
+        match tgsession::migrate_to_slots_with_keks(&app, place_id, keks) {
+            Ok(true) => crate::applog::info("tg", &format!("place={place_id} 登录态已迁移到 per-place 槽")),
+            Ok(false) => {}
+            Err(e) => eprintln!("[omy] 迁移 place={place_id} 登录态失败（不影响本次连接）：{e}"),
+        }
+    }
     Ok(())
 }
 
