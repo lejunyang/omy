@@ -684,7 +684,15 @@
     "mark_pinned": "Kept offline",
     "mark_cached": "Cached; may be evicted when space runs low",
     "mark_partial": "Partially cached: {{n}}/{{total}} blocks local; may not open fully offline",
-    "refreshing": "Refreshing…"
+    "refreshing": "Refreshing…",
+    "encrypt": "Encrypt this location",
+    "encrypt_note": "Protect its sign-in with an omy password you've unlocked; you can't enter it while locked.",
+    "decrypt": "Remove encryption",
+    "encrypted": "Encrypted: needs an omy password to enter",
+    "already_encrypted": "This location is already encrypted",
+    "decrypted": "Encryption removed, default protection restored",
+    "already_plain": "This location was not encrypted",
+    "encrypt_offer": "Encrypt this Telegram location with your omy password? Once encrypted you can't enter it while locked; otherwise it keeps the default protection. You can change this anytime by right-clicking it in the sidebar."
   },
   "common": {
     "back": "Back",

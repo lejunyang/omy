@@ -3,6 +3,7 @@
 
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n.js';
+import * as api from '../api.js';
 import {
   leaveOverlays,
   state,
@@ -12,6 +13,8 @@ import {
   renameTelegramPlace,
   detachTelegramPlace,
   deleteTelegramAccount,
+  encryptTelegramPlace,
+  decryptTelegramPlace,
   removeRemotePlace,
   openTransfers,
   activeLocation,
@@ -100,6 +103,13 @@ const rmenuItems = computed(() => {
   const items = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
   if (tg) {
     items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: '✏️' });
+    // 加密是可选功能：已加密显示「取消加密」，未加密显示「加密此位置」。
+    // rmenu.encrypted 在打开菜单时异步查得（见 onPlaceContext）。
+    if (rmenu.value?.encrypted) {
+      items.push({ key: 'decrypt', label: i18n.t('rplace.decrypt'), icon: '🔓' });
+    } else {
+      items.push({ key: 'encrypt', label: i18n.t('rplace.encrypt'), icon: '🔒', note: i18n.t('rplace.encrypt_note') });
+    }
   }
   items.push({ key: 'sep' });
   items.push({
@@ -121,7 +131,13 @@ const rmenuItems = computed(() => {
 });
 
 function onPlaceContext(p, ev) {
-  rmenu.value = { place: p, x: ev.clientX, y: ev.clientY };
+  rmenu.value = { place: p, x: ev.clientX, y: ev.clientY, encrypted: false };
+  // 只有 Telegram 位置才有加密概念；异步查一次盘上格式，回来若菜单还开着就更新
+  if (p.kind === 'telegram') {
+    api.telegramPlaceEncrypted(p.id).then((enc) => {
+      if (rmenu.value?.place?.id === p.id) rmenu.value.encrypted = enc;
+    }).catch(() => {});
+  }
 }
 
 async function onPlaceMenuPick(key) {
@@ -148,6 +164,14 @@ async function onPlaceMenuPick(key) {
     } else {
       await removeRemotePlace(p.id);
     }
+    return;
+  }
+  if (key === 'encrypt') {
+    await encryptTelegramPlace(p.id);
+    return;
+  }
+  if (key === 'decrypt') {
+    await decryptTelegramPlace(p.id);
     return;
   }
   if (key === 'delacct') {

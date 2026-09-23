@@ -704,6 +704,18 @@ export const telegramPlaceDeleteAccount = (placeId) =>
 export const telegramPlaceRename = (placeId, name) =>
   invoke('telegram_place_rename', { placeId, name });
 
+/** 这个 Telegram 位置的登录态是否已加密（per-place 密码槽）。侧栏据此显示锁标识。 */
+export const telegramPlaceEncrypted = (placeId) =>
+  invoke('telegram_place_encrypted', { placeId });
+
+/** 显式加密此位置：用当前已解锁的 omy 密码保护它的登录态。返回是否真的改变了状态。 */
+export const telegramPlaceEncrypt = (placeId) =>
+  invoke('telegram_place_encrypt', { placeId });
+
+/** 取消加密此位置：转回默认（机器密钥）保护。需当前有能打开它的密码。 */
+export const telegramPlaceDecrypt = (placeId) =>
+  invoke('telegram_place_decrypt', { placeId });
+
 /** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
  *
  * 用的是 `delete_account` 而非 `detach`：用户点「退出」期望登录态真的没了，

@@ -133,8 +133,8 @@ pub async fn connect_saved(
 ///
 /// - `Unlocked` → 正常连接。
 /// - `Locked` → [`ConnectError::Locked`]（未解锁，正常态，界面提示先解锁）。
-/// - `NeedsMigration` → 用旧格式解出的登录态直接连（**能连上说明它有效**），
-///   迁移到新格式的动作交给上层在合适时机做，不在建连路径里顺手改盘。
+/// - `LegacyUnencrypted` → 未加密的正常态，用旧格式解出的登录态直接连；
+///   **不在建连路径里顺手改盘**——加密是用户显式选择的可选动作。
 /// - `Absent` → [`ConnectError::NoSession`]。
 ///
 /// # Errors
@@ -148,7 +148,7 @@ pub async fn connect_saved_with_keks(
     keks: &[omy_core::crypto::Kek],
 ) -> Result<Connection, ConnectError> {
     let saved = match session::load_with_keks(app, account, keks)? {
-        session::LoadOutcome::Unlocked(s) | session::LoadOutcome::NeedsMigration(s) => s,
+        session::LoadOutcome::Unlocked(s) | session::LoadOutcome::LegacyUnencrypted(s) => s,
         session::LoadOutcome::Locked => return Err(ConnectError::Locked),
         session::LoadOutcome::Absent => return Err(ConnectError::NoSession),
     };

@@ -2885,6 +2885,32 @@ export async function renameTelegramPlace(id, name) {
   setNotice(i18n.t('rplace.renamed'));
 }
 
+/** Telegram：显式加密这个位置——用当前已解锁的 omy 密码保护它的登录态。
+ *
+ * 失败（如还没解锁任何 omy 库）时把错误码翻成可读文案提示，不静默吞掉。 */
+export async function encryptTelegramPlace(id) {
+  try {
+    const changed = await api.telegramPlaceEncrypt(id);
+    setNotice(i18n.t(changed ? 'rplace.encrypted' : 'rplace.already_encrypted'));
+    return true;
+  } catch (e) {
+    setNotice(i18n.te(api.errCode(e), 'errors.tg_encrypt_failed'));
+    return false;
+  }
+}
+
+/** Telegram：取消加密这个位置，转回默认保护。需当前有能打开它的密码。 */
+export async function decryptTelegramPlace(id) {
+  try {
+    const changed = await api.telegramPlaceDecrypt(id);
+    setNotice(i18n.t(changed ? 'rplace.decrypted' : 'rplace.already_plain'));
+    return true;
+  } catch (e) {
+    setNotice(i18n.te(api.errCode(e), 'errors.tg_decrypt_failed'));
+    return false;
+  }
+}
+
 /** 进入远程子目录。 */
 export async function enterRemoteDir(id, name) {
   state.remoteDir = id;

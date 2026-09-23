@@ -45,6 +45,7 @@ import {
   switchLanguage,
   applyLanguage,
   afterPlaceAdded,
+  encryptTelegramPlace,
   reloadRemotePlaces,
   openPlaceBrowser,
   closePlaceBrowser,
@@ -137,6 +138,14 @@ async function onTelegramDone({ sessionSaved, proxyUrl, placeId, duplicate }) {
     // 命中已有账号：不新建、跳到已有位置，并明确告诉用户「已经加过了」——
     // 不静默（用户会以为没生效又点一次），也不报错（他没做错事）
     if (dup) setNotice(i18n.t('tg.account_already_added'));
+    else {
+      // 添加成功后的**可选**加密：默认不加密，问一次让用户选，可跳过。
+      // 取消 = 保持默认（不加密）；只有确认才转成 per-place 槽。
+      // 用 confirm 而非强制步骤：加密是可选的，不该挡在进入位置的路上。
+      if (window.confirm(i18n.t('rplace.encrypt_offer'))) {
+        await encryptTelegramPlace(id);
+      }
+    }
     await afterPlaceAdded(id);
   } catch (e) {
     // 按错误码给话，不要把 Error 对象丢进 te()——那会落到通用「内部错误」，

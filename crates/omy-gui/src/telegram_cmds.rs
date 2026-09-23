@@ -645,7 +645,6 @@ pub fn telegram_tdata_check(path: String) -> bool {
 #[tauri::command]
 pub async fn telegram_tdata_import(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
-    state: tauri::State<'_, crate::commands::Shared>,
     path: String,
     passcode: Option<String>,
     proxy_url: Option<String>,
@@ -702,7 +701,7 @@ pub async fn telegram_tdata_import(
         // 命中已有账号：不新建。用这次的登录态覆盖已有位置的 session 与连接，
         // 不留孤儿——tdata 的 session 此刻还没落盘，直接 save_current 到
         // 已有位置的 id 即可。
-        if let Err(e) = crate::place_keys::save_session_at(&state, &saved, &existing) {
+        if let Err(e) = tgsession::save_current(&saved, &existing) {
             eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
         }
         reg.update_telegram_connection(&existing, store, user_id);
@@ -733,7 +732,7 @@ pub async fn telegram_tdata_import(
     //
     // 这一步也让导入的账号**独立持有自己的 session 副本**：此后它与
     // Telegram Desktop 再无关系，桌面端退出登录或删掉 tdata 都不影响它。
-    if let Err(e) = crate::place_keys::save_session_at(&state, &saved, &id) {
+    if let Err(e) = tgsession::save_current(&saved, &id) {
         // 存不住不该让整件事失败——本次会话里它是好的。
         // 但要说出来，否则用户会以为下次还在
         eprintln!("[omy] 保存 Telegram 登录态失败：{e}");
@@ -929,6 +928,63 @@ pub fn telegram_place_rename(
     Ok(())
 }
 
+/// 这个 Telegram 位置的 session 当前是否已加密（per-place 槽格式）。
+///
+/// 供侧栏显示加密标识（锁图标）。只看盘上格式、不需要 KEK。
+///
+/// # Errors
+///
+/// 标识不合法或读盘失败时返回。
+#[tauri::command]
+pub fn telegram_place_encrypted(place_id: String) -> CmdResult<bool> {
+    tgsession::is_encrypted(&place_id)
+        .map_err(|e| CmdError::with("tg_session_unreadable", detail(&e.to_string())))
+}
+
+/// **显式加密**一个 Telegram 位置：把它的 session 转成 per-place 槽格式，
+/// 用当前会话已解锁的 omy 密码（KEK）保护。这是用户主动选择的可选操作
+/// （右键「加密此位置」或添加账号后的可选步骤），不是自动行为。
+///
+/// 已经加密时是 no-op（返回 `false`）。没有任何已解锁密码且无凭据库时无从
+/// 建槽，返回错误让界面提示「先解锁一个 omy 库再加密」。
+///
+/// # Errors
+///
+/// 无可用 KEK、读不出当前 session、或写盘失败时返回。
+#[tauri::command]
+pub fn telegram_place_encrypt(
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+) -> CmdResult<bool> {
+    let keks = crate::place_keys::unlock_keks(&state);
+    if keks.is_empty() {
+        // 一把 KEK 都没有（连机器密钥都取不到）：建不了槽，如实报
+        return Err(CmdError::code("tg_encrypt_no_key"));
+    }
+    let app = AppId::builtin();
+    tgsession::encrypt_place(&app, &place_id, &keks)
+        .map_err(|e| CmdError::with("tg_encrypt_failed", detail(&e.to_string())))
+}
+
+/// **显式取消加密**一个 Telegram 位置：转回默认（机器密钥）格式。
+///
+/// 需要当前会话里有能打开它的密码；开不了则拒绝（否则会丢登录态）。
+/// 已经是未加密时是 no-op（返回 `false`）。
+///
+/// # Errors
+///
+/// 当前密码开不了这个位置、本机无凭据库（不落明文）、或写盘失败时返回。
+#[tauri::command]
+pub fn telegram_place_decrypt(
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+) -> CmdResult<bool> {
+    let keks = crate::place_keys::unlock_keks(&state);
+    let app = AppId::builtin();
+    tgsession::decrypt_place(&app, &place_id, &keks)
+        .map_err(|e| CmdError::with("tg_decrypt_failed", detail(&e.to_string())))
+}
+
 /// 确保某个 Telegram 位置已连上；已经连上就什么都不做。
 ///
 /// 供 `remote_browse` 之类在真正用它之前调用——用户点「进入」是想看里面的
@@ -1013,22 +1069,12 @@ pub async fn ensure_connected(
         }
     }
 
-    // 顺带迁移：如果这个位置的 session 还是旧格式（机器密钥加密的裸信封），
-    // 且当前会话有可用 KEK，就趁「已经连上、确认这份登录态有效」的这一刻把它
-    // 重新用 per-place 槽格式落盘。
-    //
-    // 为什么放在连上之后而不是启动即迁移：启动时可能还没有任何已解锁的 KEK，
-    // 那时迁移只能用机器密钥，等于白迁。连上之后此处 keks 里含会话已解锁的
-    // 全部密码（见调用方传的 unlock_keks），能把保护升级成「输过的 omy 密码
-    // 才能开」。migrate_to_slots 对已是新格式的文件是 no-op、失败时原文件
-    // 原样保留（见其文档与测试），所以这里出错只记日志、不影响已建好的连接。
-    if !keks.is_empty() {
-        match tgsession::migrate_to_slots_with_keks(&app, place_id, keks) {
-            Ok(true) => crate::applog::info("tg", &format!("place={place_id} 登录态已迁移到 per-place 槽")),
-            Ok(false) => {}
-            Err(e) => eprintln!("[omy] 迁移 place={place_id} 登录态失败（不影响本次连接）：{e}"),
-        }
-    }
+    // 注意：**不在这里自动加密/迁移 session**。加密是 per-place 的可选功能，
+    // 由用户显式触发（右键「加密此位置」或添加账号后的可选步骤，见
+    // telegram_place_encrypt）。未选加密的账号连上后其落盘格式**保持不变**——
+    // 之前这里无条件把所有位置迁成 per-place 槽，违背了「默认不加密、不动未设
+    // 密码账号」的意图，已移除。keks 只用于解锁「已经加密」的位置（见上面
+    // connect_saved_with_keks），不再用于自动转格式。
     Ok(())
 }
 
@@ -1288,27 +1334,19 @@ async fn finish(app: &tauri::AppHandle, sess: &QrSession, appid: &AppId) {
     //
     // 不能为了「有个 id」就在这里先编一个：那会让位置 id 有两个来源，
     // 迟早对不上，而现象是「登录成功但重启后还要再登一次」。
-    // 用 per-place 槽格式落盘：拿当前会话已解锁的 KEK（无库时回退机器密钥）
-    // 给这份 PENDING session 建密码槽。这样用户当前输过的任一 omy 密码之后
-    // 都能解锁这个位置；没有任何库/密码时用机器密钥，等同旧的机器绑定加密。
-    use tauri::Manager as _;
-    let state = app.state::<crate::commands::Shared>();
-    let saved = match tgsession::extract(sess.session(), appid) {
-        Ok(s) => match crate::place_keys::save_session_at(&state, &s, tgsession::PENDING_ACCOUNT) {
-            Ok(crate::place_keys::SaveResult::Saved) => true,
-            Ok(crate::place_keys::SaveResult::CannotPersist) => {
-                // 本机既没解锁任何库、也没凭据库。**不退回明文**，如实告诉
-                // 用户这次登录只在本次会话有效
-                eprintln!("[omy] 本机无法安全保存 Telegram 登录态（无已解锁密码且无凭据库）");
-                false
-            }
-            Err(e) => {
-                eprintln!("[omy] Telegram 登录态保存失败：{e}");
-                false
-            }
-        },
+    // **默认不加密**：按原有格式（机器密钥的裸信封）落盘。加密是可选功能，
+    // 由用户之后显式触发（右键「加密此位置」或添加账号后的可选步骤），届时
+    // 才转成 per-place 槽。这样不设密码的账号保持原样、不被动加密。
+    let saved = match tgsession::save(sess.session(), appid, tgsession::PENDING_ACCOUNT) {
+        Ok(_) => true,
+        Err(tgsession::SessionError::NoProtector) => {
+            // 这台机器没有凭据库。**不退回明文**，如实告诉用户这次登录只在
+            // 本次会话有效
+            eprintln!("[omy] 这台机器没有可用的凭据库，Telegram 登录态不会保存");
+            false
+        }
         Err(e) => {
-            eprintln!("[omy] 抽取 Telegram 登录态失败：{e}");
+            eprintln!("[omy] Telegram 登录态保存失败：{e}");
             false
         }
     };
@@ -1806,22 +1844,15 @@ fn emit_code_sent(app: &tauri::AppHandle, shape: &omy_remote::telegram::login::C
 
 /// 手机号登录成功的收尾：与扫码同样，先落盘到 PENDING_ACCOUNT、再自证。
 async fn phone_finish(app: &tauri::AppHandle, sess: &PhoneSession) {
-    use tauri::Manager as _;
-    let state = app.state::<crate::commands::Shared>();
-    let saved = match tgsession::extract(sess.session(), sess.app()) {
-        Ok(s) => match crate::place_keys::save_session_at(&state, &s, tgsession::PENDING_ACCOUNT) {
-            Ok(crate::place_keys::SaveResult::Saved) => true,
-            Ok(crate::place_keys::SaveResult::CannotPersist) => {
-                eprintln!("[omy] 本机无法安全保存 Telegram 登录态（无已解锁密码且无凭据库）");
-                false
-            }
-            Err(e) => {
-                eprintln!("[omy] Telegram 登录态保存失败：{e}");
-                false
-            }
-        },
+    // 默认不加密，按原有格式落盘（同扫码路径）；加密由用户之后显式触发
+    let saved = match tgsession::save(sess.session(), sess.app(), tgsession::PENDING_ACCOUNT) {
+        Ok(_) => true,
+        Err(tgsession::SessionError::NoProtector) => {
+            eprintln!("[omy] 这台机器没有可用的凭据库，Telegram 登录态不会保存");
+            false
+        }
         Err(e) => {
-            eprintln!("[omy] 抽取 Telegram 登录态失败：{e}");
+            eprintln!("[omy] Telegram 登录态保存失败：{e}");
             false
         }
     };

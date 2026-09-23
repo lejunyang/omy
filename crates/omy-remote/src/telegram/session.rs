@@ -584,11 +584,12 @@ pub enum LoadOutcome {
     Unlocked(SavedSession),
     /// 是新格式，但当前这批 KEK 都开不了它的槽——即未解锁（正常态，不是错误）。
     Locked,
-    /// 是旧格式（机器密钥加密的裸 Envelope），需要迁移到 per-place 槽。
-    ///
-    /// 带回旧格式解出的 `SavedSession`，让迁移逻辑直接拿去重新用新格式落盘，
-    /// 不必再解一次。**仅当机器密钥仍可用时**才解得出；解不出则为 `Locked`。
-    NeedsMigration(SavedSession),
+    /// 是旧格式（机器密钥加密的裸 Envelope）——即**未加密的正常态**，可直接
+    /// 使用，不是待迁移。加密是可选功能：用户没显式加密过的位置就一直是这个
+    /// 形态。带回解出的 `SavedSession` 供连接使用；也供用户显式选择「加密此
+    /// 位置」时（`migrate_to_slots`）直接拿去转槽格式。**仅当机器密钥仍可用
+    /// 时**才解得出；解不出则为 `Locked`。
+    LegacyUnencrypted(SavedSession),
     /// 没存过（首次使用），正常态。
     Absent,
 }
@@ -692,7 +693,7 @@ pub fn load_with_keks_from(
     // 回退：旧格式是裸 Envelope（机器密钥加密）。能解出就标记「需迁移」，
     // 解不出（换了机器/清了钥匙串）就当锁着——两者都不是「没存过」
     match load_from(path, app) {
-        Ok(Some(saved)) => Ok(LoadOutcome::NeedsMigration(saved)),
+        Ok(Some(saved)) => Ok(LoadOutcome::LegacyUnencrypted(saved)),
         Ok(None) => Ok(LoadOutcome::Absent),
         // 机器密钥不可用 → 旧文件解不开。它确实存过，只是这台机器打不开了，
         // 当作「锁着」比报错更贴切（迁移那步会在有 KEK 时重试）
@@ -745,6 +746,70 @@ pub fn migrate_to_slots_with_keks(
     migrate_to_slots(app, account, &keys)
 }
 
+/// 这个账号的 session 当前是否是「已加密」（per-place 槽）格式。
+///
+/// 只看盘上格式，不需要 KEK：有 `fmt` 标记即已加密，裸 Envelope 即未加密。
+/// 供界面显示加密标识用。
+///
+/// # Errors
+///
+/// 标识不合法或读盘失败时返回；文件不存在返回 `Ok(false)`（没存过≠已加密）。
+pub fn is_encrypted(account: &str) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(serde_json::from_str::<StoredSession>(&text)
+            .is_ok_and(|st| st.fmt == STORED_FMT)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(SessionError::Io(e.to_string())),
+    }
+}
+
+/// 显式加密一个位置：把它的 session 转成 per-place 槽格式。
+///
+/// 与迁移是同一个动作，但语义是**用户主动选择**而非自动。已经是加密格式时
+/// 是 no-op（返回 `false`）。用当前会话已解锁的 `keks` 建槽。
+///
+/// # Errors
+///
+/// 读不出当前 session、无可用 KEK、槽创建或写盘失败时返回。
+pub fn encrypt_place(app: &AppId, account: &str, keks: &[Kek]) -> Result<bool, SessionError> {
+    migrate_to_slots_with_keks(app, account, keks)
+}
+
+/// 显式取消加密一个位置：把它的 session 转回默认（机器密钥裸信封）格式。
+///
+/// 需要 `keks` 先解开当前的槽（拿到明文 session），再用机器密钥重新落盘。
+/// 已经是未加密格式时是 no-op（返回 `false`）。
+///
+/// 原子替换（写临时文件→rename），失败时原文件原样保留——与迁移同样的
+/// 「不出半状态」保证。
+///
+/// # Errors
+///
+/// 当前是加密格式但 `keks` 解不开（[`SessionError::Undecryptable`]）、
+/// 本机无凭据库（[`SessionError::NoProtector`]，此时**不落明文**）、
+/// 读写失败时返回。
+pub fn decrypt_place(app: &AppId, account: &str, keks: &[Kek]) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    // 先确认它确实是加密格式，并用 keks 解出明文 session
+    let saved = match load_with_keks_from(&path, app, keks)? {
+        // 已是未加密格式：no-op
+        LoadOutcome::LegacyUnencrypted(_) => return Ok(false),
+        LoadOutcome::Unlocked(s) => s,
+        // 加密着但当前 keks 开不了：不能取消（否则会丢登录态）
+        LoadOutcome::Locked => return Err(SessionError::Undecryptable),
+        LoadOutcome::Absent => return Ok(false),
+    };
+    // 用机器密钥重新落盘成默认格式。拿不到凭据库时拒绝——不落明文
+    let tmp = path.with_extension("json.decrypting");
+    seal_and_write(&saved, &tmp, protect_key())?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        SessionError::Io(e.to_string())
+    })?;
+    Ok(true)
+}
+
 /// [`migrate_to_slots`] 的按路径版本（测试用）。
 ///
 /// # Errors
@@ -756,9 +821,9 @@ pub fn migrate_to_slots_at(
     keys: &[SlotKey<'_>],
 ) -> Result<bool, SessionError> {
     // 先判断这是不是待迁移的旧格式。用空 KEK 集合探测：新格式会返回 Locked，
-    // 旧格式（机器密钥可解）会返回 NeedsMigration
+    // 旧格式（机器密钥可解）会返回 LegacyUnencrypted
     let saved = match load_with_keks_from(path, app, &[])? {
-        LoadOutcome::NeedsMigration(s) => s,
+        LoadOutcome::LegacyUnencrypted(s) => s,
         // 已是新格式 / 没存过 / 锁着（机器密钥都解不开，无从迁移）
         _ => return Ok(false),
     };
@@ -786,6 +851,32 @@ mod tests {
         Kek::from_key(SecretKey::from_bytes(core::array::from_fn(|i| {
             (i as u8).wrapping_mul(31) ^ seed
         })))
+    }
+
+    /// 测试辅助：按路径判断是否加密（is_encrypted 是按 account 的，测试用临时路径）。
+    fn is_encrypted_at(path: &std::path::Path) -> bool {
+        match std::fs::read_to_string(path) {
+            Ok(t) => serde_json::from_str::<StoredSession>(&t).is_ok_and(|st| st.fmt == STORED_FMT),
+            Err(_) => false,
+        }
+    }
+    /// 测试辅助：按路径加密（= 迁移到槽）。
+    fn encrypt_place_at(path: &std::path::Path, app: &AppId, keks: &[Kek]) -> Result<bool, SessionError> {
+        let keys: Vec<SlotKey<'_>> = keks.iter().map(|k| SlotKey { kek: k, kind: "vault", label: "s" }).collect();
+        migrate_to_slots_at(path, app, &keys)
+    }
+    /// 测试辅助：按路径取消加密。复刻 decrypt_place 的路径版逻辑。
+    fn decrypt_place_at(path: &std::path::Path, app: &AppId, keks: &[Kek]) -> Result<bool, SessionError> {
+        let saved = match load_with_keks_from(path, app, keks)? {
+            LoadOutcome::LegacyUnencrypted(_) => return Ok(false),
+            LoadOutcome::Unlocked(s) => s,
+            LoadOutcome::Locked => return Err(SessionError::Undecryptable),
+            LoadOutcome::Absent => return Ok(false),
+        };
+        let tmp = path.with_extension("json.decrypting");
+        seal_and_write(&saved, &tmp, protect_key())?;
+        std::fs::rename(&tmp, path).map_err(|e| SessionError::Io(e.to_string()))?;
+        Ok(true)
     }
 
     /// 造一个带 auth key 的数据中心项。
@@ -1242,7 +1333,7 @@ mod tests {
             Ok(LoadOutcome::Locked) => {}
             other => panic_load("错误密码应为 Locked", other),
         }
-        // 空 KEK → 新格式也应 Locked（不是 NeedsMigration）
+        // 空 KEK → 新格式也应 Locked（不是 LegacyUnencrypted）
         match load_with_keks_from(&path, &AppId::builtin(), &[]) {
             Ok(LoadOutcome::Locked) => {}
             other => panic_load("新格式无 KEK 应 Locked", other),
@@ -1284,10 +1375,10 @@ mod tests {
         let path = dir.join(TEST_FILE);
         // 造旧格式：裸 Envelope（机器密钥）
         save_to(&saved(2040), &path).expect("写旧格式");
-        // 探测：应识别为 NeedsMigration
+        // 探测：应识别为 LegacyUnencrypted（未加密可用）
         match load_with_keks_from(&path, &AppId::builtin(), &[]) {
-            Ok(LoadOutcome::NeedsMigration(_)) => {}
-            other => panic_load("旧格式应识别为待迁移", other),
+            Ok(LoadOutcome::LegacyUnencrypted(_)) => {}
+            other => panic_load("旧格式应识别为未加密可用", other),
         }
 
         // 会话解锁（拿到 KEK）后迁移
@@ -1300,7 +1391,7 @@ mod tests {
         .expect("迁移不该报错");
         assert!(migrated, "旧格式必须被迁移");
 
-        // 迁移后：新 KEK 能开，机器密钥那条路（空 KEK 探测）不再是 NeedsMigration
+        // 迁移后：新 KEK 能开，机器密钥那条路（空 KEK 探测）不再是 LegacyUnencrypted
         match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x33)]) {
             Ok(LoadOutcome::Unlocked(back)) => assert!(has_auth_key(&back), "迁后 auth key 必须在"),
             other => panic_load("迁后新密码应解出", other),
@@ -1350,6 +1441,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 显式加密 / 取消加密往返：encrypt_place 后 is_encrypted 为真、能用 KEK 开；
+    /// decrypt_place 后转回默认格式、is_encrypted 为假、机器密钥能开、内容不丢。
+    ///
+    /// 不这样会怎样：加密/取消是用户手动操作，来回切必须无损——任一方向丢了
+    /// auth key 就是把用户登录态弄没了。
+    #[test]
+    fn encrypt_then_decrypt_roundtrip() {
+        if protect_key().is_none() {
+            eprintln!("跳过：没有可用凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-enc-dec");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        // 起点：默认（未加密）格式
+        save_to(&saved(2040), &path).expect("写默认格式");
+        assert!(!is_encrypted_at(&path), "起点应未加密");
+
+        // 加密：用一把 KEK 转槽
+        let pw = tkek(0x61);
+        assert!(encrypt_place_at(&path, &AppId::builtin(), &[tkek(0x61)]).expect("加密"), "应真的加密");
+        assert!(is_encrypted_at(&path), "加密后应标记为已加密");
+        // 加密后：正确 KEK 能开、auth key 在
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x61)]) {
+            Ok(LoadOutcome::Unlocked(b)) => assert!(has_auth_key(&b), "加密后 auth key 必须在"),
+            other => panic_load("加密后应能用 KEK 解出", other),
+        }
+        let _ = pw;
+
+        // 取消加密：转回默认格式
+        assert!(decrypt_place_at(&path, &AppId::builtin(), &[tkek(0x61)]).expect("取消加密"), "应真的取消");
+        assert!(!is_encrypted_at(&path), "取消后应回未加密");
+        // 取消后：机器密钥（旧路径）能开、auth key 在、内容一致
+        match load_from(&path, &AppId::builtin()) {
+            Ok(Some(b)) => {
+                assert!(has_auth_key(&b), "取消加密后 auth key 必须在");
+                assert_eq!(b.home_dc, 2, "内容不得丢");
+            }
+            _ => panic!("取消加密后应能按默认格式解开"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **默认不加密**：旧格式文件被 load_with_keks 读取后，即使会话里有 KEK，
+    /// 文件也**逐字节不变**——加密是显式动作，load 绝不顺手转格式。
+    ///
+    /// 不这样会怎样：这正是本次纠偏要防的回归。之前 load/连接路径会把所有旧格式
+    /// 自动迁成 per-place 槽，等于把不设密码的账号也强行加密了。这条断言钉死
+    /// 「读一遍不改盘」，防止再退回自动全加密。
+    #[test]
+    fn loading_legacy_never_rewrites_it() {
+        if protect_key().is_none() {
+            eprintln!("跳过：没有可用凭据后端，造不出旧格式文件");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-no-auto-encrypt");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        save_to(&saved(2040), &path).expect("写旧格式");
+        let before = std::fs::read(&path).expect("读原文件");
+        assert!(
+            !String::from_utf8_lossy(&before).contains("\"fmt\""),
+            "基线：应是旧格式（无 fmt 标记）"
+        );
+
+        // 带一把 KEK 去 load——即便有 KEK，也不该触发任何转换
+        for _ in 0..3 {
+            match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x77)]) {
+                Ok(LoadOutcome::LegacyUnencrypted(_)) => {}
+                other => panic_load("旧格式应报未加密、不自动转", other),
+            }
+        }
+        let after = std::fs::read(&path).expect("读回");
+        assert_eq!(before, after, "load 旧格式不得改动文件（默认不加密）");
+        assert!(
+            !String::from_utf8_lossy(&after).contains("\"fmt\""),
+            "load 之后仍应是旧格式，绝不能被自动转成 per-place 槽"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 一个密码开两个位置：同一把 KEK 分别给两个账号建槽，都能各自解出。
     #[test]
     fn one_password_opens_two_places() {
@@ -1377,7 +1549,7 @@ mod tests {
         let tag = match got {
             Ok(LoadOutcome::Unlocked(_)) => "Unlocked",
             Ok(LoadOutcome::Locked) => "Locked",
-            Ok(LoadOutcome::NeedsMigration(_)) => "NeedsMigration",
+            Ok(LoadOutcome::LegacyUnencrypted(_)) => "LegacyUnencrypted",
             Ok(LoadOutcome::Absent) => "Absent",
             Err(_) => "Err",
         };

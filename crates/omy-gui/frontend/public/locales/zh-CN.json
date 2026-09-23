@@ -684,7 +684,15 @@
     "mark_pinned": "永久保留：离线也能打开",
     "mark_cached": "已缓存：空间不足时可能被清掉",
     "mark_partial": "部分缓存：{{n}}/{{total}} 块在本地，断网可能打不全",
-    "refreshing": "正在刷新…"
+    "refreshing": "正在刷新…",
+    "encrypt": "加密此位置",
+    "encrypt_note": "用你已解锁的 omy 密码保护它的登录态；之后未解锁时进不去。",
+    "decrypt": "取消加密",
+    "encrypted": "已加密：需 omy 密码才能进入",
+    "already_encrypted": "这个位置已经是加密的",
+    "decrypted": "已取消加密，恢复默认保护",
+    "already_plain": "这个位置本来就未加密",
+    "encrypt_offer": "要用你的 omy 密码加密这个 Telegram 位置吗？加密后未解锁时进不去；不加密则保持默认保护。可以之后在侧栏右键随时改。"
   },
   "common": {
     "back": "返回",
