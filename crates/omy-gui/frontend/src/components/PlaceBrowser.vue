@@ -23,7 +23,7 @@
  * 不支持的能力**整项不出现而非置灰**：灰按钮会让人去找怎么启用它。
  */
 
-import { computed, ref } from 'vue';
+import { computed, ref, watch, nextTick } from 'vue';
 import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
 import AppShell from './AppShell.vue';
@@ -58,6 +58,7 @@ import {
   showMediaTabs,
   loadMoreMessages,
   loadMoreFiles,
+  locateMessage,
 } from '../store.js';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -491,6 +492,15 @@ const rmenuItems = computed(() => {
       label: i18n.t('rplace.menu_decrypt_local'),
     });
   }
+  // 「定位源消息」：从文件/媒体条目跳回消息时间线并高亮那条。
+  // 只在能解析出消息号（id 形如 tg:chat:msg 三段）且当前不在消息栏时给。
+  if (!f.is_dir && msgIdOf(f) != null && state.remoteTab !== 'messages') {
+    items.push({
+      key: 'locate-source',
+      icon: '💬',
+      label: i18n.t('rplace.menu_locate_source'),
+    });
+  }
   // 缓存相关。状态是打开菜单时异步查的，查到之前不出现（避免空操作）。
   //
   // 「转为永久」在产品上是**一次真实的下载任务**（要先把整个文件预热到
@@ -536,8 +546,42 @@ async function onMenuPick(key) {
     await pinRemoteFile(f);
   } else if (key === 'unpin') {
     await unpinRemoteFile(f);
+  } else if (key === 'locate-source') {
+    const mid = msgIdOf(f);
+    if (mid != null) await locateMessage(mid);
   }
 }
+
+/** 从一个 Telegram 文件/媒体条目里解析出它所在消息的消息号。
+ *
+ * id 形如 `tg:<chat>:<msg>`（三段）；对话列表的 `tg:<chat>`（两段）没有消息号，
+ * 返回 null。按结构（段数）判，不猜——与后端 encode() 的形状对应。 */
+function msgIdOf(f) {
+  if (!f || typeof f.id !== 'string') return null;
+  const parts = f.id.split(':');
+  if (parts.length !== 3 || parts[0] !== 'tg') return null;
+  const n = Number(parts[2]);
+  return Number.isInteger(n) ? n : null;
+}
+
+/** 高亮某条消息时滚动到它并做一次脉冲高亮，然后清掉高亮标记。
+ *
+ * 滚动放在视图层：这里有 DOM。用 [data-msgid] 结构定位（不按文字），nextTick
+ * 等消息行渲染完再滚。脉冲高亮靠 .msgrow.hl 的 CSS 动画，动画跑完把 highlightMsg
+ * 清掉，避免同一条永远挂着高亮态。 */
+watch(
+  () => state.highlightMsg,
+  async (mid) => {
+    if (mid == null) return;
+    await nextTick();
+    const el = document.querySelector(`.msgrow[data-msgid="${mid}"]`);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // 高亮保留一段时间做脉冲，再清掉（CSS 动画 ~1.6s）
+    window.setTimeout(() => {
+      if (state.highlightMsg === mid) state.highlightMsg = null;
+    }, 1800);
+  },
+);
 
 /** 当前目录可写吗（决定上传按钮出不出现）。
  *
@@ -957,7 +1001,7 @@ function rowTitle(f) {
                 v-for="m in g.rows"
                 :key="m.message"
                 class="msgrow"
-                :class="{ out: m.outgoing, hasfile: !!m.file_id }"
+                :class="{ out: m.outgoing, hasfile: !!m.file_id, hl: m.message === state.highlightMsg }"
                 data-tg="msgrow"
                 :data-msgid="m.message"
               >

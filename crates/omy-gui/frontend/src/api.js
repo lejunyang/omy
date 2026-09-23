@@ -525,6 +525,12 @@ export const remoteCacheFileStat = (placeId, path, size) =>
 export const remoteMessages = (placeId, dir, before = null) =>
   invoke('remote_messages', { placeId, dir, before });
 
+/** 以某条消息为中心拉取一段（引用跳转 / 定位源消息）。
+ *  返回 { rows, oldest, newest, found }：rows 升序、两端游标供双向续翻、
+ *  found 表示目标是否真的拉到了（拉不到别假装定位成功）。 */
+export const remoteMessagesAround = (placeId, dir, around) =>
+  invoke('remote_messages_around', { placeId, dir, around });
+
 /** 列出一个远程目录容器里的条目。
  *
  * 参数是 `remotePlaceOpen` 颁发的播放句柄 token，不是位置 id + 路径：

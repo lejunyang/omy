@@ -124,6 +124,8 @@ export const state = reactive({
   /** 消息视图的数据。与 remoteItems 分开：一个是「这个对话里有哪些文件」，
    *  一个是「这个对话里发生过什么」，来源和生命周期都不同。 */
   remoteMessages: [],
+  /** 引用跳转 / 定位源消息命中的那条消息号；高亮它、滚到它。null 表示无高亮。 */
+  highlightMsg: null,
   /** 还有没有更多文件可加载。 */
   hasMoreFiles: false,
   /** 正在加载更多文件。 */
@@ -1835,6 +1837,48 @@ export async function loadMessagesFirstPage() {
   } catch (e) {
     // 有缓存就保留，别让一次网络抖动把已看到的消息抹掉
     if (!cached || !cached.length) state.remoteMessages = [];
+    state.placeError = i18n.te(api.errCode(e), i18n.te('remote_failed'));
+  } finally {
+    state.loadingMessages = false;
+  }
+}
+
+/** 定位到某条消息（引用跳转 / 媒体「定位源消息」）。
+ *
+ * 切到消息栏 → 用 remoteMessagesAround 把目标居中拉进来（前后各半屏）→
+ * 高亮并滚到它。目标没拉到（已删/超范围）时不假装成功，给一行提示。
+ *
+ * around 是目标消息号（来自媒体条目 id 的 (对话,消息)，或消息 reply_to）。 */
+export async function locateMessage(around) {
+  if (!state.remotePlace || !state.remoteDir || !around) return;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  // 切到消息栏（若不在）。remoteViewMode 驱动模板渲染消息时间线。
+  state.remoteTab = 'messages';
+  state.remoteViewMode = 'messages';
+  state.loadingMessages = true;
+  state.placeError = '';
+  api.uiLog('locate-msg');
+  try {
+    const win = await api.remoteMessagesAround(place, dir, around);
+    // 回写前校验没切走
+    if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    state.remoteMessages = win.rows || [];
+    // 缓存这段（键同消息栏首屏），二次进入不空屏
+    remoteMsgCache.set(remoteDirKey(place, dir), state.remoteMessages);
+    // 两端都可能还有更多：oldest 之前有更旧、newest 之后有更新。
+    // 现有 hasMoreMessages 只表达"向更旧"，双向续翻的向下那半留待第3步窗口化时接。
+    state.hasMoreMessages = state.remoteMessages.length > 0;
+    if (win.found) {
+      // 命中：高亮 + 滚到它。滚动交给视图层（它有 DOM），这里只置高亮号，
+      // 由 PlaceBrowser 的 watch 做 scrollIntoView + 脉冲高亮。
+      state.highlightMsg = around;
+    } else {
+      // 目标已删或超出可取范围：不假装定位成功
+      state.highlightMsg = null;
+      state.placeError = i18n.t('msgs.locate_not_found');
+    }
+  } catch (e) {
     state.placeError = i18n.te(api.errCode(e), i18n.te('remote_failed'));
   } finally {
     state.loadingMessages = false;

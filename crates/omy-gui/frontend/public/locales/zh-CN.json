@@ -637,6 +637,7 @@
     "menu_open": "打开",
     "menu_preview": "预览",
     "menu_decrypt_local": "解密到本地…",
+    "menu_locate_source": "定位源消息",
     "decrypt_pick_title": "选择保存解密文件的文件夹",
     "decrypt_failed": "解密到本地失败",
     "decrypted_local": "已解密 {{name}}，保存到 {{dir}}",
@@ -847,7 +848,8 @@
     "stat": "本屏 {{total}} 条消息，其中 {{files}} 条带文件、{{texts}} 条纯文本",
     "load_more": "加载更早的消息",
     "loading_more": "正在加载…",
-    "no_more": "没有更早的消息了"
+    "no_more": "没有更早的消息了",
+    "locate_not_found": "没找到这条消息，可能已被删除"
   },
   "xfer": {
     "title": "传输管理",

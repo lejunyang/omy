@@ -637,6 +637,7 @@
     "menu_open": "Open",
     "menu_preview": "Preview",
     "menu_decrypt_local": "Decrypt to local…",
+    "menu_locate_source": "Go to source message",
     "decrypt_pick_title": "Choose a folder to save the decrypted file",
     "decrypt_failed": "Failed to decrypt to local",
     "decrypted_local": "Decrypted {{name}} into {{dir}}",
@@ -847,7 +848,8 @@
     "stat": "{{total}} messages on this screen — {{files}} with files, {{texts}} text-only",
     "load_more": "Load earlier messages",
     "loading_more": "Loading…",
-    "no_more": "No earlier messages"
+    "no_more": "No earlier messages",
+    "locate_not_found": "Message not found — it may have been deleted"
   },
   "xfer": {
     "title": "Transfers",
