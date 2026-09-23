@@ -135,6 +135,7 @@
 | 两级缩略图（stripped 占位秒出 + 清晰图后台补）| ✅ 已验证（真机） | 一级 `photoStrippedSize` 首屏铺满、二级 `getFile` 清晰档后台替换。真机 30/30 升级（naturalWidth 几十→147×320/320×240），限流 8 路走 remote-entry 通道 |
 | 清晰缩略图会话内不退回占位（缓存复用）| ✅ 已验证（真机） | 修了一个 bug：清晰图只在 remoteItems、没写回 remoteDirCache，二次进对话退回 stripped 又重拉。修法：升级事件写透缓存 + 刷新沿用缓存 token。真机：进→退→再进 400ms 内 token 一致、naturalWidth 148~273 不退回 |
 | 清晰缩略图**落盘、重启后仍清晰** | ✅ 已验证（真机重启） | 本轮把 ⑤ 从内存转磁盘（`<缓存根>/rthumbs`）：thumb_full 先查盘、拉回写盘。真机：会话1 进对话写 30 个 .jpg → **完全关闭重开** → 再进 1.2s 内已清晰(naturalWidth 与会话1 一致)、rthumbs 仍 30 个(未重下)。单测 place_thumbs_disk_survives_restart 用双实例锁死 |
+| 除永久层外**全部缓存落磁盘 LRU**（重启保留）| ✅ 已验证（真机重启） | 本轮把①对话列表②头像③媒体列表快照从"内存·重启丢"转磁盘：①③走 `remote_meta_put/get`(BlockCache meta blob，与内容块共用临时层 LRU 与 2GiB 上限)、②头像走 rthumbs。真机：会话1 Joh 列表网络 2586ms→**关应用重开**→117ms 出(读磁盘 meta，22×)；rthumbs 32→86。明文边界：①②③存公开信息，.omy 真实名不入任何落盘路径(列表快照落盘前剥 thumb_token、browse 返回不含真实名)。LRU 冲突：元数据 KB 级且常读、atime 最新不被挤；单测 meta_blob_survives_restart_and_obeys_lru 验重启命中+超限淘汰。分层表见 15 号文档 §5.2.5 |
 | 缓存角标「部分缓存」态（大视频只下几块）| ✅ 已实现（映射+数据源已验，live 截图待网络） | 卡片角标加 ◐ 灰「部分缓存」：`cached_blocks>0 && !fully_cached`。数据源 stat_file 后端单测覆盖(partial/full)；已缓存●绿/永久📌蓝的 live 真机在上一轮已验(见懒加载行)。本轮 partial 的 live 截图因 pin 反复 remote_prefetch_failed（网络无法完成 2.2MB 下载）未捕到，如实标注 |
 | 列表视图显示上传/发送时间 | ✅ 已验证（真机） | `collect_media` 把 `mtime` 设为消息日期，RemoteEntry 透传；列表视图行新增时间列（网格保持简洁）。真机列表 30 行显示 `2026/9/21 09:40:46` 等真实时间。窄屏隐藏时间列保住文件名 |
 | `.omy` 落文件栏、缩略图用自己文件头 | ✅ 已验证（真机） | Lol/omytest 文件栏 6 个 .omy 全识别为锁定态，识别走既有 `probe_remote_entry` |

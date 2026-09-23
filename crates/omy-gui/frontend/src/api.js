@@ -650,6 +650,14 @@ export const remoteBrowseMore = (placeId, dir, before) =>
 export const remoteBrowseTab = (placeId, dir, tab, before, limit) =>
   invoke('remote_browse_tab', { placeId, dir, tab, before: before || 0, limit: limit || 0 });
 
+/** 元数据 blob 落盘缓存（对话列表/文件列表快照）：字节数组进磁盘 LRU。 */
+export const remoteMetaPut = (kind, key, bytes) =>
+  invoke('remote_meta_put', { kind, key, data: Array.from(bytes) });
+
+/** 读回元数据 blob；未命中返回 null。返回字节数组。 */
+export const remoteMetaGet = (kind, key) =>
+  invoke('remote_meta_get', { kind, key });
+
 /** 一页多少条。界面据它判断还有没有更多。 */
 export const remotePageSize = () => invoke('remote_page_size');
 

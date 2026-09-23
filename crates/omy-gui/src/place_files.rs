@@ -69,6 +69,22 @@ impl RemoteCache {
         self.inner.lock().ok()?.clone()
     }
 
+    /// 存一份元数据 blob（对话列表 / 列表快照等），落进同一临时层 LRU。
+    /// 缓存目录不可用时静默忽略（降级为不缓存）。
+    pub fn put_meta(&self, kind: &str, key: &str, data: &[u8]) {
+        if let Ok(g) = self.inner.lock() {
+            if let Some(c) = g.as_ref() {
+                c.put_meta(kind, key, data);
+            }
+        }
+    }
+
+    /// 读一份元数据 blob。未命中 / 缓存不可用返回 `None`。
+    #[must_use]
+    pub fn get_meta(&self, kind: &str, key: &str) -> Option<Vec<u8>> {
+        self.inner.lock().ok()?.as_ref()?.get_meta(kind, key)
+    }
+
     /// 当前缓存占用字节数。
     #[must_use]
     pub fn used(&self) -> u64 {

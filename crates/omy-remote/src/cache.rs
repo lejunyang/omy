@@ -509,6 +509,39 @@ impl BlockCache {
         write_block(&target, data);
     }
 
+    /// 元数据命名空间前缀。对话列表/头像/列表快照等**不是文件内容块**，但同样
+    /// 值得跨重启缓存。把它们当作 `place = "meta:<kind>"` 的整块 blob 存进同一
+    /// 临时层：**天然共用 LRU、同一 `cache_limit`、同一淘汰**，除永久层外一切都
+    /// 在 LRU 里——这正是「不再另造一套缓存设施」的做法。
+    ///
+    /// 元数据永远走临时层（不 pin）：它会变、也不值得永久占坑。
+    fn meta_place(kind: &str) -> String {
+        format!("meta:{kind}")
+    }
+
+    /// 存一份元数据 blob（整块，block=0）。`kind` 分命名空间（dialogs/avatar/
+    /// list/...），`key` 建议带新鲜度因子或用内容 hash，见各调用点。
+    ///
+    /// 写完顺手 `evict` 一次，让元数据也受 `cache_limit` 约束、不无限堆积。
+    pub fn put_meta(&self, kind: &str, key: &str, data: &[u8]) {
+        let place = Self::meta_place(kind);
+        write_block(&self.path_of(&place, key, 0), data);
+        // 元数据通常很小，但海量小对象累积也可能超限；写后淘汰一次。
+        // keep 为空：元数据没有「正在使用中不能删」的块（读到就整体拿走了）。
+        self.evict(&[]);
+    }
+
+    /// 读一份元数据 blob。未命中或读失败返回 `None`（降级为走网络重取）。
+    #[must_use]
+    pub fn get_meta(&self, kind: &str, key: &str) -> Option<Vec<u8>> {
+        let place = Self::meta_place(kind);
+        let p = self.path_of(&place, key, 0);
+        let data = std::fs::read(&p).ok()?;
+        // 命中即更新访问时间，供 LRU 判「最近用过」
+        filetime_touch(&p, std::time::SystemTime::now());
+        Some(data)
+    }
+
     /// 按 LRU 淘汰到上限以内。
     ///
     /// 只遍历临时层（`self.root`）。永久层根本不在遍历范围内——「不参与淘汰」
@@ -939,6 +972,56 @@ mod tests {
         assert!(c.stat_file("nas", "/a\u{1}v1", 3).fully_cached);
         // 另一个文件（不同版本键）的缓存不能算到这个文件头上
         assert_eq!(c.stat_file("nas", "/a\u{1}v2", 3).cached_blocks, 0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 元数据 blob 落盘：写盘 → **换新实例（模拟重启）** → 仍能读回；
+    /// 且它落在临时层、受 LRU 淘汰、超限时被清；不同 (kind,key) 不串。
+    ///
+    /// 不这样会怎样：元数据只在内存里的话，重启后对话列表/列表快照全丢、每次
+    /// 开应用都重新走网络——正是用户报的「重启全部重新加载」。用独立实例读回
+    /// 才能排除「只是内存 HashMap 还在」的假通过。
+    #[test]
+    fn meta_blob_survives_restart_and_obeys_lru() {
+        let d = tmp("meta-blob");
+        let payload = b"[{\"name\":\"a.jpg\",\"size\":123}]".to_vec();
+        // 会话1：写盘（上限很大，不触发淘汰）
+        {
+            let c = BlockCache::new(&d, 100 * 1024 * 1024).expect("建缓存");
+            assert!(c.get_meta("list", "p3\0tg:1\0media").is_none(), "空目录读不到");
+            c.put_meta("list", "p3\0tg:1\0media", &payload);
+            assert_eq!(
+                c.get_meta("list", "p3\0tg:1\0media").as_deref(),
+                Some(&payload[..]),
+                "同实例写完能读回"
+            );
+        }
+        // 会话2（新实例=重启）：仍能读回
+        {
+            let c = BlockCache::new(&d, 100 * 1024 * 1024).expect("重开缓存");
+            assert_eq!(
+                c.get_meta("list", "p3\0tg:1\0media").as_deref(),
+                Some(&payload[..]),
+                "重启后（新实例）必须仍能读回，否则等于没落盘"
+            );
+            // 不同 kind / key 不串
+            assert!(c.get_meta("dialogs", "p3\0tg:1\0media").is_none(), "kind 不同不该命中");
+            assert!(c.get_meta("list", "p3\0tg:2\0media").is_none(), "key 不同不该命中");
+        }
+        // LRU：把上限压到极小、灌一堆元数据，超限的被淘汰（永久层不参与、这里也没 pin）
+        {
+            let c = BlockCache::new(&d, 4096).expect("小上限缓存");
+            let big: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+            for i in 0..10 {
+                c.put_meta("list", &format!("k{i}"), &big);
+            }
+            // put_meta 每次写后 evict，总量应被压到上限附近，不会 10*3000 无限堆
+            assert!(
+                c.used() <= 4096 + big.len() as u64,
+                "元数据也必须受 cache_limit LRU 约束，实际 used={}",
+                c.used()
+            );
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 

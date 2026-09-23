@@ -2081,6 +2081,10 @@ export function leaveRemotePlace() {
  */
 export async function reloadRemoteDir() {
   if (!state.remotePlace) return;
+  // 捕获进入时的位置/目录：读磁盘 meta 是异步的，回来前用户可能切走，
+  // 回写前要校验还在同一屏（与 loadMoreFiles 的飞行校验同理）。
+  const placeAtStart = state.remotePlace;
+  const dirAtStart = state.remoteDir;
   state.busy = true;
   state.busyKey = 'busy.loading';
   state.placeError = '';
@@ -2112,10 +2116,22 @@ export async function reloadRemoteDir() {
   const tab = inDialog ? state.remoteTab : '';
   // 缓存键带上分栏：同一对话的媒体栏和文件栏是两批内容，共用一个键会串。
   const ckey = remoteDirKey(state.remotePlace, state.remoteDir, tab);
-  const cachedRows = remoteDirCache.get(ckey);
+  let cachedRows = remoteDirCache.get(ckey);
   if (cachedRows && cachedRows.length) {
     state.remoteItems = cachedRows;
     void refreshCacheStats(state.remotePlace, cachedRows);
+  } else {
+    // 内存未命中（多半是重启后首次）：尝试读磁盘 meta 缓存，先把上次这一屏
+    // 摆出来，避免空屏等网络。磁盘里存的行不带 thumb_token（见落盘处的说明），
+    // 缩略图/头像由后台事件重新补上。
+    const diskRows = await loadDirSnapshotFromDisk(ckey);
+    if (diskRows && diskRows.length
+        && state.remotePlace === placeAtStart && state.remoteDir === dirAtStart) {
+      cachedRows = diskRows;
+      remoteDirCache.set(ckey, diskRows);
+      state.remoteItems = diskRows;
+      void refreshCacheStats(state.remotePlace, diskRows);
+    }
   }
 
   try {
@@ -2143,6 +2159,10 @@ export async function reloadRemoteDir() {
     }
     state.remoteItems = rows;
     remoteDirCache.set(ckey, rows);
+    // 写透磁盘 meta（重启后可先出）：去掉 thumb_token——它是会话内 PlaceThumbs
+    // 的句柄，重启后失效，存了会让重启后短暂显示裂图。缩略图/头像自有各自的
+    // 磁盘缓存(rthumbs)与后台回填，列表 meta 只负责「名字/大小/结构」这一层。
+    void saveDirSnapshotToDisk(ckey, rows);
     void refreshCacheStats(state.remotePlace, rows);
     // 取满一页就假定还有更多。只对「对话内层」成立：根目录列的是对话
     // （不分页），WebDAV 的 PROPFIND 也是一次列全。对话内按本次请求的
@@ -2387,6 +2407,36 @@ const remoteEntryBuffer = new Map();
 
 /** 暂存区的键。用 \u0000 分隔是因为它不可能出现在位置 id 或对话 id 里；
  *  用 ':' 会和 Telegram 的 `tg:<对话>:<消息>` 撞上。 */
+/** 把一屏列表快照存进磁盘 meta 缓存（kind='list'）。
+ *  去掉 thumb_token（会话句柄，重启失效）；只留名字/大小/结构等可明文项。
+ *  真实文件名(.omy 解密名)不在 browse 返回里、不会进这里，隐私安全。 */
+async function saveDirSnapshotToDisk(key, rows) {
+  try {
+    const slim = rows.map((r) => {
+      const { thumb_token, ...rest } = r;
+      return rest;
+    });
+    const json = JSON.stringify(slim);
+    const bytes = new TextEncoder().encode(json);
+    await api.remoteMetaPut('list', key, bytes);
+  } catch {
+    // 缓存是附加项，写不进只降级为「重启后走网络」，不影响浏览
+  }
+}
+
+/** 从磁盘 meta 缓存读回一屏列表快照；未命中/损坏返回 null。 */
+async function loadDirSnapshotFromDisk(key) {
+  try {
+    const bytes = await api.remoteMetaGet('list', key);
+    if (!bytes || !bytes.length) return null;
+    const json = new TextDecoder().decode(new Uint8Array(bytes));
+    const rows = JSON.parse(json);
+    return Array.isArray(rows) ? rows : null;
+  } catch {
+    return null;
+  }
+}
+
 function remoteDirKey(placeId, dir, tab) {
   // tab 只在**内容缓存**里带上（同一对话媒体栏/文件栏是两批内容）。
   // 识别事件的暂存区仍用不带 tab 的 2 参数键：识别结果按文件 id 贴，

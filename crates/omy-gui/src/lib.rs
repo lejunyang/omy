@@ -302,6 +302,8 @@ pub fn run() {
             place_cmds::remote_cache_open_dir,
             place_cmds::remote_cache_file_stat,
             place_cmds::remote_cache_file_stats,
+            place_cmds::remote_meta_put,
+            place_cmds::remote_meta_get,
             place_cmds::remote_cache_remove_file,
             place_cmds::remote_cache_list_pinned,
             place_cmds::remote_cache_unpin_by_key,

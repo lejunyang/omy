@@ -268,12 +268,25 @@ fn spawn_avatar_backfill(
         for (chat, photo) in jobs {
             let sem = Arc::clone(&sem);
             let store = Arc::clone(&store);
+            let thumbs = Arc::clone(&thumbs);
+            let place_id = place_id.clone();
             set.spawn(async move {
+                let disk_key = format!("avatar:{place_id}:{chat}");
+                // 先查磁盘：头像上次落过盘就直接读盘、不发网络（重启后仍有头像）
+                if let Some(cached) = thumbs.disk_image(&disk_key) {
+                    let tg = store.as_telegram()?;
+                    tg.set_conversation_avatar(chat, Some(cached.clone()));
+                    return Some((chat, Some(cached)));
+                }
                 let _permit = sem.acquire_owned().await.ok()?;
                 let tg = store.as_telegram()?;
                 let bytes = tg.download_avatar(&photo).await;
-                // 写回对话缓存，让下次 refresh 命中缓存、不再重下
+                // 写回对话缓存（内存），让本次会话内 refresh 命中、不重下
                 tg.set_conversation_avatar(chat, bytes.clone());
+                // 头像是 Telegram 侧公开信息，落盘可接受；重启后从盘恢复
+                if let Some(b) = &bytes {
+                    thumbs.persist_image(&disk_key, b);
+                }
                 Some((chat, bytes))
             });
         }
@@ -1698,6 +1711,43 @@ pub async fn remote_messages(
 /// 不是「全部」：活跃对话里可能有上万条，全拉既慢又白占限流配额，
 /// 而用户在时间线上一次也看不完这么多。
 const MESSAGE_PAGE: usize = 25;
+
+/// 存一份元数据 blob（对话列表 / 文件列表快照等）到磁盘 LRU 缓存。
+///
+/// 前端把 `remoteDirCache` 里的一屏内容序列化成字节传进来，落进 BlockCache
+/// 的临时层——**与内容块共用同一 LRU、同一 `cache_limit`、同一淘汰**。重启后
+/// 前端用 `remote_meta_get` 读回，实现「重启仍先出缓存、再后台刷新」。
+///
+/// # 明文落盘的边界
+///
+/// dialogs / list 这两类 kind 存的是对话名、文件的密文名(远端 id)、大小、
+/// 时间等——都是浏览时本就展示、Telegram 侧公开的信息，可明文落盘。**调用方
+/// 必须保证不把解密后的 .omy 真实文件名塞进来**（那是隐私）：真实名只在
+/// 会话内存里、随 `remote-entry` 识别事件产生，不进入这条落盘路径。
+///
+/// # Errors
+///
+/// 从不返回错误：缓存写不进只降级为不缓存，不该让浏览失败。
+#[tauri::command]
+pub fn remote_meta_put(
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    kind: String,
+    key: String,
+    data: Vec<u8>,
+) {
+    cache.put_meta(&kind, &key, &data);
+}
+
+/// 读一份元数据 blob。未命中返回 `None`（前端据此走网络重取）。
+#[tauri::command]
+#[must_use]
+pub fn remote_meta_get(
+    cache: tauri::State<'_, Arc<RemoteCache>>,
+    kind: String,
+    key: String,
+) -> Option<Vec<u8>> {
+    cache.get_meta(&kind, &key)
+}
 
 /// 查询单个远程文件在本地密文块缓存里的覆盖情况（不下载载荷）。
 #[tauri::command]
