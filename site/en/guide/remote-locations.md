@@ -85,7 +85,14 @@ Click the Telegram icon in the sidebar. There are two routes:
 After importing, omy and the desktop client **share a single sign-in session**, not two: signing out in the desktop client ends it in omy as well.
 :::
 
-The sign-in is encrypted and stored on this machine, then reused on the next launch. It follows the same path as WebDAV passwords — the key is held by the system credential store, and **omy never falls back to storing it in plain text** when that store is unavailable. The cost is signing in again on every launch.
+The sign-in (which contains account credentials) is encrypted and stored on this machine. It plugs into omy's password system: **each Telegram location has its own key, protected by the omy passwords you already use**.
+
+- Any omy password you have currently unlocked (a vault password, Windows Hello, or a recovery code) can open the location — you don't set a separate password just for it.
+- So if you use passwords, on a cold start before you type one, the Telegram location shows as **locked**: you can see its name but can't enter, with a prompt to unlock first. Once you enter an omy password that can open it, you're in and it connects automatically.
+- If you have no omy password at all, the location is protected by a machine-bound key and needs no password to unlock — the same as before; you can add password protection later once you set a password.
+- If the machine has no system credential store at all, omy **still never falls back to plain text**: the sign-in only lasts for the current session, at the cost of signing in again on every launch.
+
+Sign-ins carried over from older versions **migrate automatically** to this encrypted scheme the next time you connect to that location and it is confirmed still valid — **no re-login needed**.
 
 ::: tip Most networks need a proxy
 Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. The proxy is saved along with the location.
