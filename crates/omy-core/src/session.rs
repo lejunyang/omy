@@ -415,6 +415,23 @@ impl SessionKeys {
             .collect()
     }
 
+    /// 列出会话里**全部**已解锁凭据的 KEK 副本，不按 vault_salt 过滤。
+    ///
+    /// # 为什么需要一个「不分库」的入口
+    ///
+    /// [`Self::all_for`] 按 `vault_salt` 过滤，服务的是「打开某个 vault 里的
+    /// 文件」——那里 KEK 必须与文件所属 vault 的盐匹配。但远程位置的密码槽
+    /// 不属于任何 vault：它按位置自己的 uuid 派生槽密钥（见
+    /// `omy-remote` 的 `place_secret`），解锁时要拿**所有**已输入过的密码去
+    /// 试，无论它当初是为哪个库输的。这正是「输过任一密码就能开设了该密码的
+    /// 位置」的实现基础。
+    ///
+    /// 返回的是 KEK 副本，调用方用完即析构清零。
+    #[must_use]
+    pub fn all_keks(&self) -> Vec<Kek> {
+        self.cache.values().map(Kek::duplicate).collect()
+    }
+
     /// 缓存中的凭据数量。
     #[must_use]
     pub fn len(&self) -> usize {

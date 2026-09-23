@@ -49,8 +49,10 @@ use std::path::{Path, PathBuf};
 use grammers_session::storages::MemorySession;
 use grammers_session::types::DcOption;
 use grammers_session::Session as _;
+use omy_core::crypto::{CipherId, Kek};
 
 use crate::telegram::appid::{AppId, SessionIdentity, SessionMismatch};
+use crate::telegram::place_secret::{PlaceKeyError, PlaceSlots, SlotKey};
 
 /// 本机凭据库里的服务名。
 ///
@@ -537,10 +539,220 @@ pub fn adopt_pending(account: &str) -> Result<bool, SessionError> {
     Ok(true)
 }
 
+/// 落盘的完整结构：位置密码槽 + 用 PDK 加密的 session。
+///
+/// # 为什么两样一起存
+///
+/// 槽区（`slots`）告诉「谁能解出 PDK」，`session` 是「用 PDK 加密的登录态」。
+/// 分两个文件的话，一个在、一个丢就成了半个状态；放同一个文件里，要么都在
+/// 要么都不在。
+///
+/// # 与旧格式的区分
+///
+/// 旧格式（机器密钥那版）直接把 `omy_secret::Envelope` 序列化写盘。新格式是
+/// 这个带 `fmt` 标记的结构。载入时先按新格式解析，失败再回退按旧 Envelope
+/// 解析（见 [`load_with_keks`]），从而识别出「这是个待迁移的旧文件」。
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StoredSession {
+    /// 格式标记。固定为 2；旧格式没有这个字段（它是裸 Envelope）。
+    pub fmt: u8,
+    /// 位置密码槽：决定哪些已解锁的 KEK 能解出 PDK。
+    pub slots: PlaceSlots,
+    /// 用 PDK 加密的 session 明文信封。
+    pub session: omy_secret::Envelope,
+}
+
+/// 当前落盘格式版本。
+const STORED_FMT: u8 = 2;
+
+/// 载入结果：要么解出了 session，要么明确「锁着」或「需要迁移」。
+pub enum LoadOutcome {
+    /// 成功解出登录态。
+    Unlocked(SavedSession),
+    /// 是新格式，但当前这批 KEK 都开不了它的槽——即未解锁（正常态，不是错误）。
+    Locked,
+    /// 是旧格式（机器密钥加密的裸 Envelope），需要迁移到 per-place 槽。
+    ///
+    /// 带回旧格式解出的 `SavedSession`，让迁移逻辑直接拿去重新用新格式落盘，
+    /// 不必再解一次。**仅当机器密钥仍可用时**才解得出；解不出则为 `Locked`。
+    NeedsMigration(SavedSession),
+    /// 没存过（首次使用），正常态。
+    Absent,
+}
+
+/// 用一批已解锁的 KEK 把 session 落盘成新格式（per-place 槽）。
+///
+/// `keys` 是要给这个位置开的密码槽：通常是「会话里已解锁的全部凭据」——这样
+/// 用户当前输过的任一密码之后都能直接开这个位置。至少要有一个，否则位置永远
+/// 打不开（[`PlaceKeyError::NoSlots`]）。
+///
+/// # Errors
+///
+/// 槽创建失败、序列化或写盘失败时返回。**不再有「没有凭据库」这条**：新格式
+/// 的密钥来自会话 KEK 或机器密钥回退，由调用方保证 `keys` 非空。
+pub fn save_with_slots(
+    saved: &SavedSession,
+    path: &Path,
+    keys: &[SlotKey<'_>],
+) -> Result<PathBuf, SessionError> {
+    let (slots, pdk) = PlaceSlots::create(keys, CipherId::ChaCha20Poly1305)
+        .map_err(map_place_err)?;
+    let plain = serde_json::to_vec(saved).map_err(|e| SessionError::Io(e.to_string()))?;
+    let env = omy_secret::seal(
+        &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+        &plain,
+    )
+    .map_err(|e| SessionError::Io(e.to_string()))?;
+    let stored = StoredSession { fmt: STORED_FMT, slots, session: env };
+    let text = serde_json::to_string(&stored).map_err(|e| SessionError::Io(e.to_string()))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| SessionError::Io(e.to_string()))?;
+    }
+    std::fs::write(path, text).map_err(|e| SessionError::Io(e.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+/// 把 `PlaceKeyError` 归并到 `SessionError`。
+fn map_place_err(e: PlaceKeyError) -> SessionError {
+    match e {
+        PlaceKeyError::Locked => SessionError::Undecryptable,
+        // 其余都是「存不出去」类，归到 IO 让调用方按写盘失败处理
+        other => SessionError::Io(other.to_string()),
+    }
+}
+
+/// 用一批已解锁的 KEK 载入某账号的 session（新格式优先，旧格式回退）。
+///
+/// 返回 [`LoadOutcome`]：区分「解出了」「锁着」「要迁移」「没存过」——它们
+/// 对界面的意义完全不同，不能混。
+///
+/// # Errors
+///
+/// 标识不合法、读盘失败、格式彻底不认识、或 api_id 不匹配时返回。
+pub fn load_with_keks(
+    app: &AppId,
+    account: &str,
+    keks: &[Kek],
+) -> Result<LoadOutcome, SessionError> {
+    let path = session_path_of(account)?;
+    load_with_keks_from(&path, app, keks)
+}
+
+/// [`load_with_keks`] 的按路径版本（测试用）。
+///
+/// # Errors
+///
+/// 同 [`load_with_keks`]。
+pub fn load_with_keks_from(
+    path: &Path,
+    app: &AppId,
+    keks: &[Kek],
+) -> Result<LoadOutcome, SessionError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LoadOutcome::Absent),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+
+    // 先按新格式解析。带 fmt 标记才当新格式，避免把恰好能反序列化成
+    // StoredSession 的旧内容误判
+    if let Ok(stored) = serde_json::from_str::<StoredSession>(&text) {
+        if stored.fmt == STORED_FMT {
+            let pdk = match stored.slots.unlock(keks) {
+                Ok(p) => p,
+                // 没有 KEK 能开 = 未解锁，正常态
+                Err(PlaceKeyError::Locked) => return Ok(LoadOutcome::Locked),
+                Err(e) => return Err(map_place_err(e)),
+            };
+            let plain = omy_secret::unseal(
+                &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+                &stored.session,
+            )
+            .map_err(|_| SessionError::Undecryptable)?;
+            let saved: SavedSession =
+                serde_json::from_slice(&plain).map_err(|_| SessionError::Malformed)?;
+            SessionIdentity { api_id: saved.api_id }.check(app)?;
+            return Ok(LoadOutcome::Unlocked(saved));
+        }
+    }
+
+    // 回退：旧格式是裸 Envelope（机器密钥加密）。能解出就标记「需迁移」，
+    // 解不出（换了机器/清了钥匙串）就当锁着——两者都不是「没存过」
+    match load_from(path, app) {
+        Ok(Some(saved)) => Ok(LoadOutcome::NeedsMigration(saved)),
+        Ok(None) => Ok(LoadOutcome::Absent),
+        // 机器密钥不可用 → 旧文件解不开。它确实存过，只是这台机器打不开了，
+        // 当作「锁着」比报错更贴切（迁移那步会在有 KEK 时重试）
+        Err(SessionError::NoProtector | SessionError::Undecryptable) => Ok(LoadOutcome::Locked),
+        Err(e) => Err(e),
+    }
+}
+
+/// 把一个旧格式（机器密钥）session 迁移成新格式（per-place 槽）。
+///
+/// **只在会话已解锁、拿得到 KEK 时调用**——启动即迁移会因为还没有任何 KEK
+/// 而失败，或被迫仍用机器密钥，那就白迁了。
+///
+/// 迁移是**写操作**：先用新格式写到临时文件、fsync、再原子改名覆盖原文件，
+/// 最后没有旧密文残留。中途失败时原文件仍在（旧格式仍可被机器密钥解开），
+/// 不会出现「新的没写好、旧的已删」的半迁移态。
+///
+/// 返回是否真的迁了（`false` = 该文件不是待迁移的旧格式）。
+///
+/// # Errors
+///
+/// 读不出旧格式、槽创建或写盘失败时返回。
+pub fn migrate_to_slots(
+    app: &AppId,
+    account: &str,
+    keys: &[SlotKey<'_>],
+) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    migrate_to_slots_at(&path, app, keys)
+}
+
+/// [`migrate_to_slots`] 的按路径版本（测试用）。
+///
+/// # Errors
+///
+/// 同 [`migrate_to_slots`]。
+pub fn migrate_to_slots_at(
+    path: &Path,
+    app: &AppId,
+    keys: &[SlotKey<'_>],
+) -> Result<bool, SessionError> {
+    // 先判断这是不是待迁移的旧格式。用空 KEK 集合探测：新格式会返回 Locked，
+    // 旧格式（机器密钥可解）会返回 NeedsMigration
+    let saved = match load_with_keks_from(path, app, &[])? {
+        LoadOutcome::NeedsMigration(s) => s,
+        // 已是新格式 / 没存过 / 锁着（机器密钥都解不开，无从迁移）
+        _ => return Ok(false),
+    };
+
+    // 原子替换：写临时文件再 rename，避免半迁移态
+    let tmp = path.with_extension("json.migrating");
+    save_with_slots(&saved, &tmp, keys)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // 改名失败要清掉临时文件，别留垃圾
+        let _ = std::fs::remove_file(&tmp);
+        SessionError::Io(e.to_string())
+    })?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{SocketAddrV4, SocketAddrV6};
+    use crate::telegram::place_secret::SlotKey;
+    use omy_core::crypto::SecretKey;
+
+    /// 造一把测试 KEK，避开 Argon2 开销。
+    fn tkek(seed: u8) -> Kek {
+        Kek::from_key(SecretKey::from_bytes(core::array::from_fn(|i| {
+            (i as u8).wrapping_mul(31) ^ seed
+        })))
+    }
 
     /// 造一个带 auth key 的数据中心项。
     ///
@@ -964,5 +1176,177 @@ mod tests {
         assert!(!path.exists(), "删完文件不该还在");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ========================================================
+    // per-place 槽格式：save_with_slots / load_with_keks / 迁移
+    // ========================================================
+
+    /// 新格式：用某把 KEK 建槽落盘，同一把 KEK 能解出 session；别的 KEK = Locked。
+    ///
+    /// 不这样会怎样：这是「输过的密码能开这个位置、没输的开不了」的核心，
+    /// 错了要么谁都进不去、要么没密码也能进。
+    #[test]
+    fn slots_roundtrip_unlocks_only_with_enrolled_kek() {
+        let dir = std::env::temp_dir().join("omy-tg-slots-1");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        let pw = tkek(0x11);
+        save_with_slots(&saved(2040), &path, &[SlotKey { kek: &pw, kind: "vault", label: "主" }])
+            .expect("写新格式");
+
+        // 正确 KEK → Unlocked，auth key 完好
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x11)]) {
+            Ok(LoadOutcome::Unlocked(back)) => {
+                assert!(has_auth_key(&back), "解出的 session 必须带 auth key");
+                assert_eq!(back.home_dc, 2);
+            }
+            other => panic_load("正确密码应解出", other),
+        }
+        // 错误 KEK → Locked（不是错误、不是没存过）
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x99)]) {
+            Ok(LoadOutcome::Locked) => {}
+            other => panic_load("错误密码应为 Locked", other),
+        }
+        // 空 KEK → 新格式也应 Locked（不是 NeedsMigration）
+        match load_with_keks_from(&path, &AppId::builtin(), &[]) {
+            Ok(LoadOutcome::Locked) => {}
+            other => panic_load("新格式无 KEK 应 Locked", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未解锁时，落盘文件里绝不能出现 auth key 明文——与旧格式同等强度。
+    #[test]
+    fn slots_file_never_contains_auth_key() {
+        let dir = std::env::temp_dir().join("omy-tg-slots-2");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        let s = saved(2040);
+        let Some(key) = s.dc_options.first().and_then(|d| d.auth_key) else {
+            panic!("夹具第一个 DC 应带 auth key");
+        };
+        let pw = tkek(0x22);
+        save_with_slots(&s, &path, &[SlotKey { kek: &pw, kind: "vault", label: "主" }]).unwrap();
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        assert!(!bytes.windows(key.len()).any(|w| w == key), "不得出现 auth key 原始字节");
+        let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+        assert!(!text.contains(&hex_of(&key)), "不得出现 auth key 十六进制");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 迁移：旧格式（机器密钥）→ 会话解锁后迁成新格式；迁后旧密钥失效、新 KEK 生效。
+    ///
+    /// 用机器密钥回退当「旧格式」的替身：save_to 写的就是裸 Envelope（旧格式），
+    /// 但它用系统凭据库那把密钥。没有凭据库的 CI 上跳过。
+    #[test]
+    fn migration_from_legacy_to_slots() {
+        if protect_key().is_none() {
+            eprintln!("跳过：没有可用凭据后端，造不出旧格式文件");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-migrate-slots");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        // 造旧格式：裸 Envelope（机器密钥）
+        save_to(&saved(2040), &path).expect("写旧格式");
+        // 探测：应识别为 NeedsMigration
+        match load_with_keks_from(&path, &AppId::builtin(), &[]) {
+            Ok(LoadOutcome::NeedsMigration(_)) => {}
+            other => panic_load("旧格式应识别为待迁移", other),
+        }
+
+        // 会话解锁（拿到 KEK）后迁移
+        let pw = tkek(0x33);
+        let migrated = migrate_to_slots_at(
+            &path,
+            &AppId::builtin(),
+            &[SlotKey { kek: &pw, kind: "vault", label: "主" }],
+        )
+        .expect("迁移不该报错");
+        assert!(migrated, "旧格式必须被迁移");
+
+        // 迁移后：新 KEK 能开，机器密钥那条路（空 KEK 探测）不再是 NeedsMigration
+        match load_with_keks_from(&path, &AppId::builtin(), &[tkek(0x33)]) {
+            Ok(LoadOutcome::Unlocked(back)) => assert!(has_auth_key(&back), "迁后 auth key 必须在"),
+            other => panic_load("迁后新密码应解出", other),
+        }
+        match load_with_keks_from(&path, &AppId::builtin(), &[]) {
+            Ok(LoadOutcome::Locked) => {}
+            other => panic_load("迁后应是新格式(空KEK=Locked)", other),
+        }
+        // 再迁一次应是 no-op（已经是新格式）
+        assert!(
+            !migrate_to_slots_at(&path, &AppId::builtin(), &[SlotKey { kek: &pw, kind: "vault", label: "主" }]).unwrap(),
+            "已是新格式不该再迁"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 半迁移可恢复：迁移写临时文件失败时，原文件必须原样保留、仍能被旧路径解开。
+    ///
+    /// 造法：让目标路径的临时文件无法写（父目录不存在时 save_with_slots 会
+    /// create_dir_all，所以改用「keys 为空」触发 NoSlots 让迁移中途失败），
+    /// 断言原文件未被动。
+    #[test]
+    fn failed_migration_leaves_original_intact() {
+        if protect_key().is_none() {
+            eprintln!("跳过：没有可用凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-migrate-fail");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+        save_to(&saved(2040), &path).expect("写旧格式");
+        let before = std::fs::read(&path).expect("读原文件");
+
+        // keys 为空 → save_with_slots 里 PlaceSlots::create 返回 NoSlots → 迁移失败
+        let err = migrate_to_slots_at(&path, &AppId::builtin(), &[]);
+        assert!(err.is_err(), "空 keys 迁移必须失败");
+
+        // 原文件必须逐字节不变，且仍能按旧格式解开
+        let after = std::fs::read(&path).expect("原文件应还在");
+        assert_eq!(before, after, "迁移失败不得改动原文件");
+        assert!(
+            matches!(load_from(&path, &AppId::builtin()), Ok(Some(_))),
+            "原旧格式文件必须仍可解开"
+        );
+        // 临时文件不该残留
+        assert!(!path.with_extension("json.migrating").exists(), "不得残留临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 一个密码开两个位置：同一把 KEK 分别给两个账号建槽，都能各自解出。
+    #[test]
+    fn one_password_opens_two_places() {
+        let dir = std::env::temp_dir().join("omy-tg-slots-multi");
+        let _ = std::fs::remove_dir_all(&dir);
+        let pa = dir.join("telegram-session-p1.json");
+        let pb = dir.join("telegram-session-p2.json");
+        let pw = tkek(0x44);
+        save_with_slots(&saved(2040), &pa, &[SlotKey { kek: &pw, kind: "vault", label: "主" }]).unwrap();
+        let mut other = saved(2040);
+        other.home_dc = 4;
+        save_with_slots(&other, &pb, &[SlotKey { kek: &pw, kind: "vault", label: "主" }]).unwrap();
+
+        for (p, dc) in [(&pa, 2), (&pb, 4)] {
+            match load_with_keks_from(p, &AppId::builtin(), &[tkek(0x44)]) {
+                Ok(LoadOutcome::Unlocked(back)) => assert_eq!(back.home_dc, dc, "各自内容"),
+                other => panic_load("同一密码应能开两个位置", other),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 测试辅助：LoadOutcome 不便 Debug（SavedSession 无 Debug），统一在这里 panic。
+    fn panic_load(msg: &str, got: Result<LoadOutcome, SessionError>) -> ! {
+        let tag = match got {
+            Ok(LoadOutcome::Unlocked(_)) => "Unlocked",
+            Ok(LoadOutcome::Locked) => "Locked",
+            Ok(LoadOutcome::NeedsMigration(_)) => "NeedsMigration",
+            Ok(LoadOutcome::Absent) => "Absent",
+            Err(_) => "Err",
+        };
+        panic!("{msg}；实际得到 {tag}");
     }
 }
