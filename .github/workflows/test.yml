@@ -276,6 +276,24 @@ jobs:
         # 构建不报错，测试也不失败，只有肉眼能发现，所以必须单独检查
         run: python spikes/check-i18n-keys.py
 
+      # 前端 UI/逻辑测试（vitest + happy-dom）。mock 掉后端 IPC，专门覆盖
+      # 时间线编排与组件模板行为（引用跳转不重载整区、合并保序、双向续翻、
+      # 局部 loading、吸顶等）。真实滚动几何仍由 CDP 端到端探针覆盖，这里不碰。
+      # pnpm 版本与 windows/android 任务固定同一个（lockfileVersion 9.0）。
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 9.15.1
+
+      - name: 前端测试
+        working-directory: crates/omy-gui/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+
   # ---- 内置 FFmpeg：验证发出去的那份 ----
 
   ffmpeg-build:

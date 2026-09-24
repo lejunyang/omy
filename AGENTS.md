@@ -239,6 +239,10 @@ CRLF 会被原样写进库。
 
 - `cargo test`、`cargo clippy -- -D warnings` 必须通过。
   omy-gui 禁用 `unwrap` / `expect` / `panic` / 切片索引。
+- 改了前端要跑 `cd crates\omy-gui\frontend; pnpm test`（vitest，happy-dom）。
+  UI 测试 mock 掉后端 IPC，覆盖状态编排与组件模板行为；真实滚动几何/手感仍归
+  CDP 端到端探针，**别在 vitest 里断言布局尺寸或 virtua 的窗口化**——
+  happy-dom 不做布局，那类断言要么恒真要么随机失败。
 - 改了前端文案要跑 `python spikes\check-i18n-keys.py`，并确认中英键一致。
 - 改了用户可见行为要 review `site/` 里对应的说明，中英两份都改。
 - 改了 `site/` 要跑 `cd site; bun run build` 确认能构建（死链会让它失败）。
