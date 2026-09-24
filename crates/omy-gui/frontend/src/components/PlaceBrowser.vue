@@ -490,6 +490,16 @@ const rmenuItems = computed(() => {
   const f = rmenu.value?.entry;
   if (!f) return [];
   const items = [];
+  if (f.is_ref) {
+    // 引用条目：菜单只给「定位到真实位置」。源不可用/未解锁时仍给（点了给对应
+    // 提示），让用户知道这条引用指向哪、为什么打不开，而不是右键空无一物。
+    items.push({
+      key: 'locate-ref',
+      icon: '📍',
+      label: i18n.t('virtual.menu_locate'),
+    });
+    return items;
+  }
   items.push({
     key: 'open',
     icon: f.is_dir ? '📁' : '👁️',
@@ -570,6 +580,8 @@ async function onMenuPick(key) {
     if (mid != null) await locateMessage(mid);
   } else if (key === 'add-to-virtual') {
     openAddToVirtual(f);
+  } else if (key === 'locate-ref') {
+    activateVirtualEntry(f);
   }
 }
 

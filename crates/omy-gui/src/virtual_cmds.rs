@@ -59,11 +59,15 @@ fn resolve_state(reg: &PlaceRegistry, r: &Reference) -> (SourceState, Option<Str
     match reg.resolve_source(&r.source) {
         None => (SourceState::Missing, None),
         Some(place) => {
-            // 源在。若它是加密的 Telegram 位置且未解锁，视为 Locked。
-            // 这里用「能不能列它的根」不划算（要发网络）；改用位置是否已连接的
-            // 轻量判断——加密未解锁的位置在 ensure_connected 前 store 是占位。
-            // 简化：Telegram 位置若 store 尚未真正连接（无 client）判 Locked。
+            // 源在。只有「加密且当前打不开」才算 Locked——要提示先解锁。
+            //
+            // 不能用「未连接」当 Locked：绝大多数位置在冷启动后、真正进去之前都
+            // 是未连接占位（懒连接），把它们全判 Locked 会让指向未加密账号的引用
+            // 也报「先解锁源位置」而点不开——而定位跳转本就会触发 ensure_connected
+            // 顺带把它连上。所以未加密的位置一律 Available（跳转时按需连接）；
+            // 只有加密位置才进一步看是否已解锁（已连接=已解出登录态=可用）。
             let locked = place.kind == "telegram"
+                && omy_remote::telegram::session::is_encrypted(&place.id).unwrap_or(false)
                 && place
                     .store
                     .as_telegram()
