@@ -2098,10 +2098,18 @@ export function isVirtualPlace(id) {
   return !!pid && state.virtualPlaces.some((v) => v.id === pid);
 }
 
-/** 新建一个虚拟远程位置并进入它。 */
-export async function createVirtualPlace(name) {
+/** 新建一个虚拟远程位置，只建不进入（返回新 id）。
+ *  供「添加到虚拟远程」对话框空态用：那里正在往里加引用，建完不能把用户从当前
+ *  真实位置卷走——否则加了一半人就跳到别处去了。 */
+export async function createVirtualPlaceOnly(name) {
   const id = await api.virtualCreate(name || i18n.t('virtual.default_name'));
   await reloadRemotePlaces();
+  return id;
+}
+
+/** 新建一个虚拟远程位置并进入它（侧栏「新建虚拟远程」入口用：用户就是想进去建东西）。 */
+export async function createVirtualPlace(name) {
+  const id = await createVirtualPlaceOnly(name);
   await openRemotePlace(id);
   return id;
 }
@@ -3153,6 +3161,20 @@ export async function decryptTelegramPlace(id) {
     setNotice(i18n.t(changed ? 'rplace.decrypted' : 'rplace.already_plain'));
     return true;
   } catch (e) {
+    // 会话里没有能开这个位置的 KEK（它用独立密码加密、当前没解锁过那个密码）：
+    // 不是失败，弹框收现场密码走 decrypt_pw。这也是把误加密位置解回来的途径。
+    if (api.errCode(e) === 'tg_decrypt_no_key' || api.errCode(e) === 'tg_decrypt_failed') {
+      const pw = window.prompt(i18n.t('rplace.decrypt_pw_prompt'));
+      if (pw === null) return false; // 取消
+      try {
+        const changed = await api.telegramPlaceDecryptPw(id, pw);
+        setNotice(i18n.t(changed ? 'rplace.decrypted' : 'rplace.already_plain'));
+        return true;
+      } catch (e2) {
+        setNotice(i18n.te(api.errCode(e2), 'errors.tg_decrypt_failed'));
+        return false;
+      }
+    }
     setNotice(i18n.te(api.errCode(e), 'errors.tg_decrypt_failed'));
     return false;
   }

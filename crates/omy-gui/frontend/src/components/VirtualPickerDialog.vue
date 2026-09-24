@@ -11,7 +11,7 @@
 import { ref, onMounted } from 'vue';
 import * as i18n from '../i18n.js';
 import * as api from '../api.js';
-import { state, confirmAddToVirtual, cancelAddToVirtual, createVirtualPlace } from '../store.js';
+import { state, confirmAddToVirtual, cancelAddToVirtual, createVirtualPlaceOnly } from '../store.js';
 
 /** 每个虚拟位置的展开态与文件夹列表：{ id, name, expanded, folders:[{id,name,depth}] }。 */
 const places = ref([]);
@@ -60,7 +60,7 @@ async function submit() {
 async function newVirtual() {
   const name = window.prompt(i18n.t('virtual.name_prompt'));
   if (name === null) return;
-  await createVirtualPlace(name.trim());
+  await createVirtualPlaceOnly(name.trim());
   await load();
 }
 

@@ -18,6 +18,7 @@ import {
   removeRemotePlace,
   openTransfers,
   activeLocation,
+  createVirtualPlace,
 } from '../store.js';
 import ContextMenu from './ContextMenu.vue';
 
@@ -188,6 +189,16 @@ async function goRemote(p) {
   emit('navigate');
 }
 
+/** 新建一个虚拟远程位置：弹名字→建→进入。虚拟位置复用 remotePlace 那套状态与
+ *  云盘视图，所以进入方式和真实位置一样走 openPlaceBrowserAt。 */
+async function onNewVirtual() {
+  const name = window.prompt(i18n.t('virtual.name_prompt'));
+  if (name === null) return; // 取消
+  const id = await createVirtualPlace(name.trim());
+  if (id) await openPlaceBrowserAt(id);
+  emit('navigate');
+}
+
 /** 常用目录的标签要翻译，磁盘根用原名。
  *
  * `real_name` 优先：可移除卷（SD 卡、U 盘）的名字由系统给出，
@@ -295,6 +306,24 @@ function iconOf(place) {
     <button class="sitem" data-rp="add" @click="$emit('add-place')">
       <span aria-hidden="true">➕</span>
       <span class="stext">{{ i18n.t('rplace.add') }}</span>
+    </button>
+    <!-- 虚拟远程位置：本地收藏夹式，只存对真实位置文件的引用，不连服务器。
+         图标用 🗂️ 与真实位置的 ☁️ 区分，让用户一眼看出这是本地虚拟的。 -->
+    <button
+      v-for="v in state.virtualPlaces"
+      :key="v.id"
+      class="sitem"
+      :class="{ sel: isActive('remote', v.id) }"
+      :data-vp="v.id"
+      :title="v.name"
+      @click="goRemote(v)"
+    >
+      <span aria-hidden="true">🗂️</span>
+      <span class="stext">{{ v.name }}</span>
+    </button>
+    <button class="sitem" data-vp="new" @click="onNewVirtual">
+      <span aria-hidden="true">➕</span>
+      <span class="stext">{{ i18n.t('virtual.add') }}</span>
     </button>
     <!-- Telegram 单独一个入口，不混进「连接远程位置」那个 WebDAV 表单：
          它的登录方式完全不同（扫码，不是填地址和密码），塞进同一个表单
