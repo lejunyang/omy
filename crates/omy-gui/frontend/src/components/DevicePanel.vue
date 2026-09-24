@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 设备面板：设备库、已配对设备、局域网发现、配对、共享。
  *
  * # 为什么设备库要单独输一次密码
@@ -20,32 +20,33 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import * as api from '../api.js';
-import * as i18n from '../i18n.js';
+import * as api from '../api';
+import * as i18n from '../i18n';
 
 const emit = defineEmits(['close', 'connect']);
 
 /* 设备库 */
-const status = ref({ exists: false, opened: false, paired_count: 0 });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const status = ref<any>({ exists: false, opened: false, paired_count: 0 });
 const storePassword = ref('');
 const busy = ref(false);
 const error = ref('');
 
 /* 列表 */
-const paired = ref([]);
-const found = ref([]);
+const paired = ref<any[]>([]);
+const found = ref<any[]>([]);
 const scanning = ref(false);
 
 /* 配对 */
-const pair = ref({ phase: 'idle' });
+const pair = ref<any>({ phase: 'idle' });
 const pairAddr = ref('');
 const pairPin = ref('');
 const showConnect = ref(false);
 
 /* 共享 */
-const share = ref({ running: false });
+const share = ref<any>({ running: false });
 
-let timer = null;
+let timer: number | null = null;
 
 const opened = computed(() => status.value.opened);
 
@@ -185,9 +186,9 @@ function useDevice(d) {
 onMounted(async () => {
   await refresh();
   // 配对进行中要看到进展，所以轮询；其余时候也刷一下共享状态
-  timer = setInterval(refresh, 1500);
+  timer = window.setInterval(refresh, 1500);
 });
-onBeforeUnmount(() => clearInterval(timer));
+onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
 </script>
 
 <template>

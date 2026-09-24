@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 输入一个名字：重命名与新建文件夹共用。
  *
  * 两者的界面只差标题和初始值，逻辑（校验、回车提交、Esc 取消）完全一样。
@@ -6,7 +6,7 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 /** 校验问题 → 文案键。
  *

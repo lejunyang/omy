@@ -11,11 +11,11 @@
 
 import { createApp } from 'vue';
 import App from './App.vue';
-import * as api from './api.js';
-import * as i18n from './i18n.js';
-import { initTheme, syncThemeFromConfig } from './theme.js';
-import * as store from './store.js';
-import { state } from './store.js';
+import * as api from './api';
+import * as i18n from './i18n';
+import { initTheme, syncThemeFromConfig } from './theme';
+import * as store from './store';
+import { state } from './store';
 import './styles/app.css';
 
 async function boot() {

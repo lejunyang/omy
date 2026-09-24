@@ -30,7 +30,7 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 }
 
 // 用 hoisted 持有同一份 state，让测试代码与被 mock 的 store 模块共享对象。
-const hst = vi.hoisted(() => ({}));
+const hst: { state: any } = vi.hoisted(() => ({ state: {} as any }));
 
 vi.mock('../store.js', async () => {
   const { reactive, computed } = await import('vue');
@@ -141,7 +141,7 @@ const WindowListStub = defineComponent({
 });
 
 import PlaceBrowser from './PlaceBrowser.vue';
-import { state, locateMessage } from '../store.js';
+import { state, locateMessage } from '../store';
 
 /** 同一天的三条消息：纯文本、带引用、带文件。date 取当前秒保证归一组。 */
 function seedMessages() {

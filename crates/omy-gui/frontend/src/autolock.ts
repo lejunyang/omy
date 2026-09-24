@@ -21,7 +21,7 @@
  */
 
 import { ref } from 'vue';
-import * as api from './api.js';
+import * as api from './api';
 
 /** 上次活跃时间戳。 */
 let lastActive = Date.now();

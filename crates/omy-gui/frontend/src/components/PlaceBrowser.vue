@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 云盘视图：浏览远程位置（WebDAV / Telegram）里的文件并点播。
  *
  * # 与 RemoteScreen（局域网对端）的区别
@@ -24,8 +24,9 @@
  */
 
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import * as i18n from '../i18n.js';
-import { isMobile } from '../viewport.js';
+import * as i18n from '../i18n';
+import { isMobile } from '../viewport';
+import type { MessageRow, MessageListItem, RemoteEntry } from '../types';
 import AppShell from './AppShell.vue';
 import ContextMenu from './ContextMenu.vue';
 import WindowList from './WindowList.vue';
@@ -65,13 +66,13 @@ import {
   isVirtualPlace,
   addVirtualFolder,
   openAddToVirtual,
-} from '../store.js';
+} from '../store';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
 // 碰巧也能冒泡，但看声明就不知道这个组件会发什么，
 // 而且一旦事件名与原生事件撞上就会出问题
 const emit = defineEmits([
-  'open', 'close', 'pick', 'devices', 'lang',
+  'open', 'close', 'pick', 'devices', 'lang', 'add',
   'telegram', 'settings', 'lock', 'quick-unlock', 'need-unlock',]);
 
 /** 当前位置元信息。 */
@@ -182,7 +183,7 @@ async function jumpToPlaceRoot() {
  * 点**当前段**（最后一段，就是眼前这个目录/对话）时不导航、只刷新：
  * 导航到「自己」在 Telegram 对话上会走进畸形分支（dir 变成 tg:-数字 再报
  * 远程操作失败）。点当前对话名的语义本就是「刷新当前」。 */
-async function jump(c, isCurrent) {
+async function jump(c: { dir: string }, isCurrent: boolean) {
   if (isCurrent) {
     await reloadRemoteDir();
     return;
@@ -197,9 +198,9 @@ async function jump(c, isCurrent) {
  *
  * 分组键用**本地日期**而不是 UTC：用户看到的「今天」得是他自己的今天。 */
 const messageGroups = computed(() => {
-  const out = [];
-  let cur = null;
-  for (const m of state.remoteMessages) {
+  const out: { key: string; label: string; rows: MessageRow[] }[] = [];
+  let cur: { key: string; label: string; rows: MessageRow[] } | null = null;
+  for (const m of state.remoteMessages as MessageRow[]) {
     const key = dayKey(m.date);
     if (!cur || cur.key !== key) {
       cur = { key, label: dayLabel(m.date), rows: [] };
@@ -213,7 +214,7 @@ const messageGroups = computed(() => {
 /** 把分组标题 + 消息行拍平成一维数组，供 VList 单列窗口化渲染。
  *  每个 group 先出一个 type:'group' 的标题行，再出它的各条 type:'msg' 行。
  *  这样长列表只渲染视口附近一批、DOM 节点数恒定，而分组标题仍在正确位置。 */
-const messageItems = computed(() => {
+const messageItems = computed<MessageListItem[]>(() => {
   const out = [];
   for (const g of messageGroups.value) {
     out.push({ type: 'group', key: 'g:' + g.key, label: g.label });
@@ -255,7 +256,7 @@ function recomputeGridColumns() {
   if (col !== gridColumns.value) gridColumns.value = col;
 }
 /** 把 visible 分块成行（网格窗口化用）。列表视图不用它（单列直接窗口化）。 */
-const gridRows = computed(() => {
+const gridRows = computed<{ key: string; cells: (RemoteEntry | null)[] }[]>(() => {
   const cols = gridColumns.value;
   const rows = [];
   for (let i = 0; i < visible.value.length; i += cols) {
@@ -816,7 +817,7 @@ function fmtDate(sec) {
  * 复用 onOpen 那条路：同一个 id、同一套识别与预览。另写一份的话，
  * 文件视图修了预览、消息视图还是老样子。
  */
-async function openFromMessage(m) {
+async function openFromMessage(m: MessageRow) {
   if (!m.file_id) return;
   // 走与文件视图**完全相同**的那条路（onEntryDbl）：同一个 id、同一套识别
   // 与预览。另写一份的话，文件视图修了预览、消息视图还是老样子。

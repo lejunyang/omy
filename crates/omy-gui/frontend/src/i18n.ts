@@ -19,8 +19,8 @@ import { ref, computed } from 'vue';
 /** 支持的语言。顺序决定「切换语言」按钮的轮转次序。 */
 export const LANGS = ['zh-CN', 'en'];
 
-const bundle = ref({});
-const errors = ref({});
+const bundle = ref<Record<string, unknown>>({});
+const errors = ref<Record<string, string>>({});
 const current = ref('en');
 
 /** 当前语言标签（响应式）。 */
@@ -49,18 +49,21 @@ export function nextLang() {
  * 返回键名而不是空串是有意的：界面上出现 `view.empty_title`
  * 这样的字符串一眼就能看出是漏翻译，而空白会被当成布局问题查半天。
  */
-export function t(key, params) {
-  let node = bundle.value;
+/** 插值参数：键 -> 任意可转字符串的值。 */
+export type I18nParams = Record<string, string | number | boolean | null | undefined>;
+
+export function t(key: string, params?: I18nParams): string {
+  let node: unknown = bundle.value;
   for (const part of key.split('.')) {
     if (node == null || typeof node !== 'object') return key;
-    node = node[part];
+    node = (node as Record<string, unknown>)[part];
   }
   if (typeof node !== 'string') return key;
   return interpolate(node, params);
 }
 
 /** 带复数的文案。 */
-export function tn(key, count, params) {
+export function tn(key: string, count: number, params?: I18nParams): string {
   // 中文没有单复数，但仍走同一套键：文案文件里两个键写同样的内容。
   // 这样切语言时代码不用分支判断。
   const suffix = count === 1 ? '_one' : '_other';
@@ -71,13 +74,13 @@ export function tn(key, count, params) {
 }
 
 /** 翻译后端返回的错误码。 */
-export function te(code, fallback) {
+export function te(code?: string, fallback?: string): string {
   if (typeof code === 'string' && errors.value[code]) return errors.value[code];
   return fallback || errors.value.internal || code || '';
 }
 
 /** `{{name}}` 插值。 */
-function interpolate(s, params) {
+function interpolate(s: string, params?: I18nParams): string {
   if (!params) return s;
   return s.replace(/\{\{(\w+)\}\}/g, (m, k) =>
     Object.hasOwn(params, k) ? String(params[k]) : m,
@@ -89,7 +92,7 @@ function interpolate(s, params) {
  * 单位用 KB/MB/GB（1024 进制）。虽然严格说该叫 KiB，
  * 但文件管理器普遍这么显示，跟随用户既有认知。
  */
-export function formatSize(bytes) {
+export function formatSize(bytes?: number | null): string {
   if (bytes == null) return '';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let v = Number(bytes);
@@ -108,7 +111,7 @@ export function formatSize(bytes) {
 }
 
 /** 时长格式化，毫秒 → `1:23:45` 或 `12:34`。 */
-export function formatDuration(ms) {
+export function formatDuration(ms?: number | null): string {
   if (ms == null) return '';
   const total = Math.floor(Number(ms) / 1000);
   const h = Math.floor(total / 3600);

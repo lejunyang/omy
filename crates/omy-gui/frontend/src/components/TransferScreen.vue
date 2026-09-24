@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * 统一传输管理页：下载 / 上传 / 永久保留三类任务的汇总。
  *
@@ -13,9 +13,9 @@
  * 会让全部任务同时进入等待，分散显示时看起来像三个互不相关的故障。
  */
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
-import * as api from '../api.js';
-import * as i18n from '../i18n.js';
-import { state } from '../store.js';
+import * as api from '../api';
+import * as i18n from '../i18n';
+import { state } from '../store';
 import AppShell from './AppShell.vue';
 
 const emit = defineEmits([

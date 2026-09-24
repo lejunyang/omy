@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 添加一个远程位置（WebDAV）。
  *
  * # 为什么默认不勾「允许写入」
@@ -16,8 +16,8 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
 
 const emit = defineEmits(['added', 'cancel']);
 

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 还原对话框：把加密文件解出来放到磁盘上。
  *
  * # 为什么目标位置是单选而不是一个路径输入框
@@ -13,12 +13,12 @@
  */
 
 import { ref, computed } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
 
 const props = defineProps({
   /** 待还原的条目（已解锁的加密文件）。 */
-  targets: { type: Array, required: true },
+  targets: { type: Array as () => any[], required: true },
   /** 当前所在目录，作为「还原到当前目录」的落点显示。 */
   currentDir: { type: String, default: '' },
   busy: { type: Boolean, default: false },

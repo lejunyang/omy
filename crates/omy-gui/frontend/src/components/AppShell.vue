@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * 主界面外壳：标题栏 + 侧栏 + 内容区。
  *
@@ -20,9 +20,9 @@
  */
 import { ref, watch } from 'vue';
 
-import { isMobile } from '../viewport.js';
-import { state } from '../store.js';
-import * as i18n from '../i18n.js';
+import { isMobile } from '../viewport';
+import { state } from '../store';
+import * as i18n from '../i18n';
 import SideBar from './SideBar.vue';
 
 defineProps({

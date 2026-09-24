@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 加密对话框。
  *
  * 选项取自 `docs/research/appendix/ui-prototype.html` 的加密对话框，
@@ -6,13 +6,13 @@
  */
 
 import { ref, computed, onMounted } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
 import VideoDialog from './VideoDialog.vue';
 
 const props = defineProps({
   /** 待加密的条目。 */
-  targets: { type: Array, required: true },
+  targets: { type: Array as () => any[], required: true },
   busy: { type: Boolean, default: false },
 });
 

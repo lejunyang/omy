@@ -31,13 +31,13 @@ export function errCode(e) {
 /* ---------------- 文件浏览（不需要密码） ---------------- */
 
 /** 列出一个目录的内容。目录 + 普通文件 + 加密文件，一次一层。 */
-export const browseDirectory = (dir) => invoke('browse_directory', { dir });
+export const browseDirectory = (dir: any): Promise<any> => invoke('browse_directory', { dir });
 
 /** 侧栏的起点：常用目录与磁盘根。 */
-export const listPlaces = () => invoke('list_places');
+export const listPlaces = (): Promise<any> => invoke('list_places');
 
 /** 上一级目录。已在根时返回 null。 */
-export const parentOf = (path) => invoke('parent_of', { path });
+export const parentOf = (path: any): Promise<any> => invoke('parent_of', { path });
 
 /* ---------------- 存储权限（安卓） ---------------- */
 
@@ -47,17 +47,17 @@ export const parentOf = (path) => invoke('parent_of', { path });
  * `{ granted: true, mode: 'not-applicable' }`——桌面端进程本来就能
  * 读写文件系统，前端不必为此分叉。
  */
-export const storageAccess = () => invoke('storage_access');
+export const storageAccess = (): Promise<any> => invoke('storage_access');
 
 /** 申请存储访问权限。
  *
  * 安卓 API 30+ 会跳到系统设置页，这个 Promise 要等到用户从设置页
  * 返回才 resolve，可能是几十秒。返回的状态是重新实查的结果。
  */
-export const requestStorageAccess = () => invoke('request_storage_access');
+export const requestStorageAccess = (): Promise<any> => invoke('request_storage_access');
 
 /** 探测单个文件是不是加密文件、当前会话能否打开。 */
-export const probeOne = (path) => invoke('probe_one', { path });
+export const probeOne = (path: any): Promise<any> => invoke('probe_one', { path });
 
 /* ---------------- 视频处理（加密之前） ---------------- */
 
@@ -69,14 +69,13 @@ export const probeOne = (path) => invoke('probe_one', { path });
  * 编码器，但用户随时可以换成完整版（`OMY_FFMPEG` 优先级最高）。
  * `refresh` 为真时绕过后端缓存重新探测，供「我换了 FFmpeg」的场景。
  */
-export const videoCapabilities = (refresh = false) =>
-  invoke('video_capabilities', { refresh });
+export const videoCapabilities = (refresh: any = false): Promise<any> => invoke('video_capabilities', { refresh });
 
 /** 探测一个未加密的本地视频，取容器 / 编码 / 分辨率 / 时长 / 播放分级。
  *
  * 传 token 而不是路径：路径会让任何注入的脚本都能读任意文件。
  */
-export const videoInfo = (token) => invoke('video_info', { token });
+export const videoInfo = (token: any): Promise<any> => invoke('video_info', { token });
 
 /** 转封装或压缩一个视频，产出磁盘上的中间文件。
  *
@@ -86,18 +85,18 @@ export const videoInfo = (token) => invoke('video_info', { token });
  * 产物是 `.omytmp-` 前缀的临时文件，**调用方有责任**在用完或取消后调
  * `discardConverted` 删掉它——那可能是几个 GB。
  */
-export const convertVideo = (req) => invoke('convert_video', { req });
+export const convertVideo = (req: any): Promise<any> => invoke('convert_video', { req });
 
 /** 删除转换产生的中间文件。
  *
  * 后端只删 `.omytmp-` 前缀的文件，所以这个接口不能被用来删任意文件。
  */
-export const discardConverted = (token) => invoke('discard_converted', { token });
+export const discardConverted = (token: any): Promise<any> => invoke('discard_converted', { token });
 
 /* ---------------- 加密 ---------------- */
 
 /** 加密一批路径。成功后密码会自动进入会话。 */
-export const encryptPaths = (req) => invoke('encrypt_paths', { req });
+export const encryptPaths = (req: any): Promise<any> => invoke('encrypt_paths', { req });
 
 /** 事件名必须与后端 `ENCRYPT_PROGRESS_EVENT` 完全一致。
  *
@@ -112,7 +111,7 @@ export const ENCRYPT_PROGRESS_EVENT = 'encrypt://progress';
  * `done` / `total` 都是**明文**字节：压缩后密文大小与明文脱节，
  * 按密文报会让进度条走得莫名其妙。
  */
-export const onEncryptProgress = (handler) =>
+export const onEncryptProgress = (handler: (payload: any) => void): Promise<() => void> =>
   listen(ENCRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
 
 /* ---------------- 还原（解密到磁盘） ---------------- */
@@ -124,7 +123,7 @@ export const onEncryptProgress = (handler) =>
  * - `target_dir` 传 null 表示还原到加密文件所在目录
  * - `overwrite` 默认 false，同名已存在时报 `target_exists`
  */
-export const decryptPaths = (req) => invoke('decrypt_paths', { req });
+export const decryptPaths = (req: any): Promise<any> => invoke('decrypt_paths', { req });
 
 /** 事件名必须与后端 `DECRYPT_PROGRESS_EVENT` 完全一致。理由同上。
  *
@@ -134,7 +133,7 @@ export const decryptPaths = (req) => invoke('decrypt_paths', { req });
 export const DECRYPT_PROGRESS_EVENT = 'decrypt://progress';
 
 /** 订阅还原进度，返回取消订阅的函数。载荷字段与加密进度一致。 */
-export const onDecryptProgress = (handler) =>
+export const onDecryptProgress = (handler: (payload: any) => void): Promise<() => void> =>
   listen(DECRYPT_PROGRESS_EVENT, (e) => handler(e.payload));
 
 /* ---------------- 密码管理 ---------------- */
@@ -147,7 +146,7 @@ export const onDecryptProgress = (handler) =>
  *
  * 只改文件头，载荷一个字节都不动，所以再大的文件也是毫秒级。
  */
-export const manageKey = (req) => invoke('manage_key', { req });
+export const manageKey = (req: any): Promise<any> => invoke('manage_key', { req });
 
 /**
  * 读取一个文件的槽位清单。
@@ -155,8 +154,7 @@ export const manageKey = (req) => invoke('manage_key', { req });
  * 要密码：槽位目录是加密的。可否认模式下返回 managed=false 与空清单，
  * 那不是「读取失败」，是设计如此——界面据此显示说明而非清单。
  */
-export const listSlots = (path, password) =>
-  invoke('list_slots', { req: { path, password } });
+export const listSlots = (path: any, password: any): Promise<any> => invoke('list_slots', { req: { path, password } });
 
 /**
  * 这个位置能不能用 Windows Hello 免密解锁。
@@ -164,17 +162,16 @@ export const listSlots = (path, password) =>
  * 不会弹 Hello——用户只是打开界面，为此弹指纹很突兀。代价是它只回答
  * 「密文在不在」，不保证还解得开（清除 TPM 之后仍报 true）。
  */
-export const deviceKeyStatus = (dir) => invoke('device_key_status', { dir });
+export const deviceKeyStatus = (dir: any): Promise<any> => invoke('device_key_status', { dir });
 
 /** 用设备密钥解锁。会弹 Hello。 */
-export const deviceKeyUnlock = (dir) => invoke('device_key_unlock', { dir });
+export const deviceKeyUnlock = (dir: any): Promise<any> => invoke('device_key_unlock', { dir });
 
 /** 给这个位置启用免密解锁。需要先验一次密码，之后会弹 Hello。 */
-export const deviceKeyEnroll = (path, password) =>
-  invoke('device_key_enroll', { path, password });
+export const deviceKeyEnroll = (path: any, password: any): Promise<any> => invoke('device_key_enroll', { path, password });
 
 /** 关闭免密解锁。只清这台机器上保管的密钥，文件不动。 */
-export const deviceKeyForget = (dir) => invoke('device_key_forget', { dir });
+export const deviceKeyForget = (dir: any): Promise<any> => invoke('device_key_forget', { dir });
 
 /**
  * 只重试上次失败的那些文件。
@@ -185,7 +182,7 @@ export const deviceKeyForget = (dir) => invoke('device_key_forget', { dir });
  *
  * 不重跑整个操作，是因为重跑会拿旧密码去开已经改好的文件，产生一堆假失败。
  */
-export const retryKeyFiles = (req) => invoke('retry_key_files', { req });
+export const retryKeyFiles = (req: any): Promise<any> => invoke('retry_key_files', { req });
 
 /**
  * 生成恢复码并挂到文件上。
@@ -194,7 +191,7 @@ export const retryKeyFiles = (req) => invoke('retry_key_files', { req });
  * 超出对话框生命周期的状态里。我们后端不保存它的明文，用户错过就得重新
  * 生成一份（旧的随之作废）。
  */
-export const generateRecovery = (req) => invoke('generate_recovery', { req });
+export const generateRecovery = (req: any): Promise<any> => invoke('generate_recovery', { req });
 
 /**
  * 用恢复码打开文件并设置新密码。
@@ -204,171 +201,159 @@ export const generateRecovery = (req) => invoke('generate_recovery', { req });
  * 而 `recovery_mismatch` 表示码本身没抄错、只是不属于这个文件。
  * 这两种处境的处置方式相反，界面不能压成同一句话。
  */
-export const restoreWithRecovery = (req) => invoke('restore_with_recovery', { req });
+export const restoreWithRecovery = (req: any): Promise<any> => invoke('restore_with_recovery', { req });
 
 /* ---------------- 会话 ---------------- */
 
 /** 探测目录里有哪些 vault（每个有独立的 salt）。 */
-export const vaultParamsOf = (dir) => invoke('vault_params_of', { dir });
+export const vaultParamsOf = (dir: any): Promise<any> => invoke('vault_params_of', { dir });
 
 /** 用一组 vault 参数派生密钥并解锁。 */
-export const unlock = (label, password, vaults) =>
-  invoke('unlock', { label, password, vaults });
+export const unlock = (label: any, password: any, vaults: any): Promise<any> => invoke('unlock', { label, password, vaults });
 
 /** 取远程位置当前目录里所有加密文件的 vault 参数。
  *
  * 远程没有本地目录可探测，所以不能走 `unlockDirectory`——
  * 那条路径要求 `state.cwd`，在远程位置里它是空的。
  */
-export const remotePlaceVaults = (placeId, dir) =>
-  invoke('remote_place_vaults', { placeId, dir });
+export const remotePlaceVaults = (placeId: any, dir: any): Promise<any> => invoke('remote_place_vaults', { placeId, dir });
 
 /** 对一个目录直接试密码：探测 vault + 派生，一步到位。 */
-export const unlockDirectory = (dir, password) =>
-  invoke('unlock_directory', { dir, password });
+export const unlockDirectory = (dir: any, password: any): Promise<any> => invoke('unlock_directory', { dir, password });
 
 /** 锁定。后端会清空文件列表与会话密钥。 */
-export const lock = () => invoke('lock');
+export const lock = (): Promise<any> => invoke('lock');
 
 /** 当前是否已解锁。 */
-export const isUnlocked = () => invoke('is_unlocked');
+export const isUnlocked = (): Promise<any> => invoke('is_unlocked');
 
 /** 已装载的凭据数量。 */
-export const credentialCount = () => invoke('credential_count');
+export const credentialCount = (): Promise<any> => invoke('credential_count');
 
 /* ---------------- 常规文件操作 ---------------- */
 
 /** 删除文件或目录。`toTrash` 为 true 进系统回收站。 */
-export const deletePaths = (paths, toTrash = true) =>
-  invoke('delete_paths', { req: { paths, to_trash: toTrash } });
+export const deletePaths = (paths: any, toTrash: any = true): Promise<any> => invoke('delete_paths', { req: { paths, to_trash: toTrash } });
 
 /** 重命名。返回新的完整路径。 */
-export const renamePath = (path, name) =>
-  invoke('rename_path', { req: { path, name } });
+export const renamePath = (path: any, name: any): Promise<any> => invoke('rename_path', { req: { path, name } });
 
 /** 在 parent 下新建文件夹。返回新目录的完整路径。 */
-export const createFolder = (parent, name) =>
-  invoke('create_folder', { req: { parent, name } });
+export const createFolder = (parent: any, name: any): Promise<any> => invoke('create_folder', { req: { parent, name } });
 
 /* ---------------- 文件 ---------------- */
 
 /** 扫描目录，返回文件列表（含锁定项）。 */
-export const scanDirectory = (dir, recursive = true) =>
-  invoke('scan_directory', { dir, recursive });
+export const scanDirectory = (dir: any, recursive: any = true): Promise<any> => invoke('scan_directory', { dir, recursive });
 
 /** 取当前列表。 */
-export const listFiles = () => invoke('list_files');
+export const listFiles = (): Promise<any> => invoke('list_files');
 
 /** 补齐单个文件的媒体元信息。 */
 /** 列出目录容器里的条目。文件必须已解锁。 */
-export const listContainer = (id) => invoke("list_container", { id });
+export const listContainer = (id: any): Promise<any> => invoke("list_container", { id });
 
-export const enrichFile = (id) => invoke('enrich_file', { id });
+export const enrichFile = (id: any): Promise<any> => invoke('enrich_file', { id });
 
 /** 已扫描过的根目录。 */
-export const listRoots = () => invoke('list_roots');
+export const listRoots = (): Promise<any> => invoke('list_roots');
 
 /* ---------------- 环境 ---------------- */
 
 /** 自定义协议的 URL 前缀。各平台形式不同，必须问后端。 */
-export const streamBase = () => invoke('stream_base');
+export const streamBase = (): Promise<any> => invoke('stream_base');
 
 /** 系统语言。 */
-export const getLanguage = () => invoke('get_language');
+export const getLanguage = (): Promise<any> => invoke('get_language');
 
 /** 告知后端当前语言（影响后端产生的文案，如原生对话框标题）。 */
-export const setLanguage = (lang) => invoke('set_language', { lang });
+export const setLanguage = (lang: any): Promise<any> => invoke('set_language', { lang });
 
 /* ---------------- 原生对话框 ---------------- */
 
 /** 弹出目录选择器。用户取消时返回 null。 */
-export const pickFolder = (title) => invoke('pick_folder', { title });
+export const pickFolder = (title: any): Promise<any> => invoke('pick_folder', { title });
 
 /** 弹出文件选择器。用户取消时返回 null。 */
-export const pickFiles = (title) => invoke('pick_files', { title });
+export const pickFiles = (title: any): Promise<any> => invoke('pick_files', { title });
 
 /* ---------------- 设备库 ---------------- */
 
 /** 设备库状态。未打开时也能问——界面据此决定显示「设置」还是「输入」密码。 */
-export const deviceStatus = () => invoke('device_status');
+export const deviceStatus = (): Promise<any> => invoke('device_status');
 
 /** 打开或创建设备库。首次调用会创建本机身份。 */
-export const openDeviceStore = (password) => invoke('open_device_store', { password });
+export const openDeviceStore = (password: any): Promise<any> => invoke('open_device_store', { password });
 
 /** 关闭设备库，抹掉内存里的身份。 */
-export const closeDeviceStore = () => invoke('close_device_store');
+export const closeDeviceStore = (): Promise<any> => invoke('close_device_store');
 
 /** 已配对设备列表。 */
-export const pairedDevices = () => invoke('paired_devices');
+export const pairedDevices = (): Promise<any> => invoke('paired_devices');
 
 /** 改本机设备名。这个名字会广播到局域网。 */
-export const renameDevice = (name) => invoke('rename_device', { name });
+export const renameDevice = (name: any): Promise<any> => invoke('rename_device', { name });
 
 /** 吊销一台设备。对方**下次连接**才会被拒绝。 */
-export const revokeDevice = (fingerprint) => invoke('revoke_device', { fingerprint });
+export const revokeDevice = (fingerprint: any): Promise<any> => invoke('revoke_device', { fingerprint });
 
 /* ---------------- 局域网 ---------------- */
 
 /** 搜索局域网设备。 */
-export const discoverDevices = (timeoutSecs = 4) =>
-  invoke('discover_devices', { timeoutSecs });
+export const discoverDevices = (timeoutSecs: any = 4): Promise<any> => invoke('discover_devices', { timeoutSecs });
 
 /** 开始等待对方连入，立刻返回配对码。 */
-export const pairListen = (port = 0, expiresDays = 0) =>
-  invoke('pair_listen', { port, expiresDays });
+export const pairListen = (port: any = 0, expiresDays: any = 0): Promise<any> => invoke('pair_listen', { port, expiresDays });
 
 /** 主动连接对方完成配对。 */
-export const pairWith = (addr, pin, expiresDays = 0) =>
-  invoke('pair_with', { addr, pin, expiresDays });
+export const pairWith = (addr: any, pin: any, expiresDays: any = 0): Promise<any> => invoke('pair_with', { addr, pin, expiresDays });
 
 /** 查询配对进展。配对要等人操作，所以轮询这个。 */
-export const pairStatus = () => invoke('pair_status');
+export const pairStatus = (): Promise<any> => invoke('pair_status');
 
 /** 取消配对，配对码立即作废。 */
-export const pairCancel = () => invoke('pair_cancel');
+export const pairCancel = (): Promise<any> => invoke('pair_cancel');
 
 /* ---------------- 共享 ---------------- */
 
 /** 开始共享一个目录。**不需要文件密码**：服务端只搬运密文。 */
-export const startShare = (dir, port = 0, advertise = true) =>
-  invoke('start_share', { dir, port, advertise });
+export const startShare = (dir: any, port: any = 0, advertise: any = true): Promise<any> => invoke('start_share', { dir, port, advertise });
 
 /** 停止共享。会注销 mDNS 广播。 */
-export const stopShare = () => invoke('stop_share');
+export const stopShare = (): Promise<any> => invoke('stop_share');
 
 /** 共享服务状态。 */
-export const shareStatus = () => invoke('share_status');
+export const shareStatus = (): Promise<any> => invoke('share_status');
 
 /* ---------------- 连接远端 ---------------- */
 
 /** 连接一台已配对设备。addr 留空时自动在局域网里找。 */
-export const remoteConnect = (fingerprint, addr = null) =>
-  invoke('remote_connect', { fingerprint, addr });
+export const remoteConnect = (fingerprint: any, addr: any = null): Promise<any> => invoke('remote_connect', { fingerprint, addr });
 
 /** 断开远端连接。 */
-export const remoteDisconnect = () => invoke('remote_disconnect');
+export const remoteDisconnect = (): Promise<any> => invoke('remote_disconnect');
 
 /** 拉取远端文件列表。每次都重新拉——对方可能改了共享内容。 */
-export const remoteList = () => invoke('remote_list');
+export const remoteList = (): Promise<any> => invoke('remote_list');
 
 /** 远端连接状态。 */
-export const remoteStatus = () => invoke('remote_status');
+export const remoteStatus = (): Promise<any> => invoke('remote_status');
 
 /** 输入新密码后重新解析远端列表。不重新拉，省一次往返。 */
-export const remoteRelock = () => invoke('remote_relock');
+export const remoteRelock = (): Promise<any> => invoke('remote_relock');
 
 /** 远端文件里出现过的 vault 参数（已去重）。 */
-export const remoteVaults = () => invoke('remote_vaults');
+export const remoteVaults = (): Promise<any> => invoke('remote_vaults');
 
 /** 用系统默认程序打开一个未加密文件。
  *
  * 只接受后端登记过的 token，前端拿不到「打开任意路径」的能力——
  * 这也是没有引入 opener 插件的原因。
  */
-export const openExternal = (token) => invoke('open_external', { token });
+export const openExternal = (token: any): Promise<any> => invoke('open_external', { token });
 
 /** 在系统文件管理器里定位一个文件。加密文件也适用。 */
-export const revealInFolder = (token) => invoke('reveal_in_folder', { token });
+export const revealInFolder = (token: any): Promise<any> => invoke('reveal_in_folder', { token });
 
 /* ---------------- 设置 ---------------- */
 
@@ -376,35 +361,35 @@ export const revealInFolder = (token) => invoke('reveal_in_folder', { token });
  *
  * 一次取全部而不是逐项：设置页要显示十几项，逐项调用就是十几次 IPC。
  */
-export const configGet = () => invoke('config_get');
+export const configGet = (): Promise<any> => invoke('config_get');
 
 /** 写回整份配置。
  *
  * 同样整份写：分项写回会出现「改了两项、第一项成功第二项失败」的
  * 半截状态，而配置文件本身是原子写的，整份回写反而更安全。
  */
-export const configSet = (config) => invoke('config_set', { config });
+export const configSet = (config: any): Promise<any> => invoke('config_set', { config });
 
 /** 查询配置文件与缓存/数据目录的位置。
  *
  * 便携模式下用户需要知道拷走哪个目录能带走全部状态。
  */
-export const configPaths = () => invoke('config_paths');
+export const configPaths = (): Promise<any> => invoke('config_paths');
 
 /** 上报一条用户操作到日志（仅传写死的动作标识，不传用户内容）。
  *  发了就算，失败也不影响操作——日志是辅助设施。 */
-export const uiLog = (action, detail) => {
+export const uiLog = (action: string, detail?: string | null): void => {
   try { invoke('ui_log', { action, detail: detail || null }); } catch { /* 忽略 */ }
 };
 
 /** 在系统文件管理器里打开日志目录（仅桌面端）。 */
-export const openLogDir = () => invoke('open_log_dir');
+export const openLogDir = (): Promise<any> => invoke('open_log_dir');
 
 /**
  * 应用版本与 OMYFILE 格式版本，供设置页「关于」显示。
  * 版本来自后端编译期常量，避免在前端写死后发版漏改。
  */
-export const appAbout = () => invoke('app_about');
+export const appAbout = (): Promise<any> => invoke('app_about');
 
 /* ---------------- 远程位置（WebDAV） ---------------- */
 
@@ -413,8 +398,7 @@ export const appAbout = () => invoke('app_about');
  * 凭据只进后端，不留在前端——它们在 WebView 里没有任何用途，
  * 留着只是多一处泄露面。
  */
-export const remotePlaceAdd = (p) =>
-  invoke('remote_place_add', {
+export const remotePlaceAdd = (p: any): Promise<any> => invoke('remote_place_add', {
     name: p.name,
     url: p.url,
     username: p.username || '',
@@ -424,10 +408,10 @@ export const remotePlaceAdd = (p) =>
   });
 
 /** 列出已注册的远程位置。返回项含 `caps` 能力位图。 */
-export const remotePlaceList = () => invoke('remote_place_list');
+export const remotePlaceList = (): Promise<any> => invoke('remote_place_list');
 
 /** 移除一个远程位置。 */
-export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
+export const remotePlaceRemove = (id: any): Promise<any> => invoke('remote_place_remove', { id });
 
 /** 浏览远程目录，返回已识别加密状态的条目。
  *
@@ -435,8 +419,7 @@ export const remotePlaceRemove = (id) => invoke('remote_place_remove', { id });
  * 前者是没读到（网络），后者是密码不对。界面必须分开显示，
  * 否则用户会对着网络故障反复试密码。
  */
-export const remoteBrowse = (placeId, dir) =>
-  invoke('remote_browse', { placeId, dir });
+export const remoteBrowse = (placeId: any, dir: any): Promise<any> => invoke('remote_browse', { placeId, dir });
 
 /** 查询某个远程目录下的**有效**能力（按目录，不是位置级的那个上界）。
  *
@@ -444,25 +427,23 @@ export const remoteBrowse = (placeId, dir) =>
  * 上界：同一位置里有的目录可写、有的只读。照上界渲染会点亮必然失败的菜单项，
  * 所以进目录后要用这个命令收窄。失败时**按只读处理**，不要回落到上界。
  */
-export const remoteEffectiveCaps = (placeId, dir) =>
-  invoke('remote_effective_caps', { placeId, dir });
+export const remoteEffectiveCaps = (placeId: any, dir: any): Promise<any> => invoke('remote_effective_caps', { placeId, dir });
 
 /** 重新探测远程目录里的单个文件（「未能读取」条目就地重试，不重载整屏）。 */
-export const remoteProbeEntry = (placeId, id, size, name) =>
-  invoke('remote_probe_entry', { placeId, id, size, name: name ?? null });
+export const remoteProbeEntry = (placeId: any, id: any, size: any, name: any): Promise<any> => invoke('remote_probe_entry', { placeId, id, size, name: name ?? null });
 
 /**
  * 订阅「边扫边出」：remote_browse 先返回一屏骨架，后台每识别完一个文件
  * 就推一条 payload `{ place_id, dir, entry }`，前端就地替换同 id 骨架。
  * 返回 unlisten。
  */
-export const onRemoteEntry = (handler) =>
+export const onRemoteEntry = (handler: (payload: any) => void): Promise<() => void> =>
   listen('remote-entry', (e) => handler(e.payload));
+
 
 /** 把已解锁的远程 `.omy` 流式解密到本地目录（只读位置也保留的主要用途）。
  *  嵌套文件引用走 snake_case（与 EncryptRequest 等一致），顶层参数走 camelCase。 */
-export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
-  invoke('remote_decrypt_to_local', {
+export const remoteDecryptToLocal = (placeId: any, path: any, size: any, destDir: any): Promise<any> => invoke('remote_decrypt_to_local', {
     req: { place_id: placeId, path, size },
     destDir,
   });
@@ -482,35 +463,30 @@ export const remoteDecryptToLocal = (placeId, path, size, destDir) =>
  * 返回的是**候选集**：服务端搜的是消息文字与说明，omy 加密文件的真实文件名
  * 它永远没有。精筛要在本地按解出来的名字再做一轮。
  */
-export const remoteSearch = (placeId, dir, query) =>
-  invoke('remote_search', { placeId, dir, query });
+export const remoteSearch = (placeId: any, dir: any, query: any): Promise<any> => invoke('remote_search', { placeId, dir, query });
 
-export const remotePlaceOpen = (placeId, path, size, name) =>
-  invoke('remote_place_open', {
+export const remotePlaceOpen = (placeId: string, path: string, size: number, name?: string | null): Promise<any> => invoke('remote_place_open', {
     target: { placeId, path, size, name: name ?? null },
   });
 
 /** 关闭一个远程播放来源（播放结束时调用）。 */
-export const remotePlaceClose = (token) =>
-  invoke('remote_place_close', { token });
+export const remotePlaceClose = (token: any): Promise<any> => invoke('remote_place_close', { token });
 
 /** 查询远程密文缓存用量 {used, limit, root}。 */
-export const remoteCacheUsage = () => invoke('remote_cache_usage');
+export const remoteCacheUsage = (): Promise<any> => invoke('remote_cache_usage');
 
 /** 立即清空远程密文缓存，返回清空后占用。 */
-export const remoteCacheClear = () => invoke('remote_cache_clear');
+export const remoteCacheClear = (): Promise<any> => invoke('remote_cache_clear');
 
 /** 缓存设置变更后让后端按新上限/目录重建缓存。 */
-export const remoteCacheApply = (limit, cacheDir) =>
-  invoke('remote_cache_apply', { limit, cacheDir });
+export const remoteCacheApply = (limit: any, cacheDir: any): Promise<any> => invoke('remote_cache_apply', { limit, cacheDir });
 
 /** 在系统文件管理器中打开缓存目录（桌面端）。 */
-export const remoteCacheOpenDir = () => invoke('remote_cache_open_dir');
+export const remoteCacheOpenDir = (): Promise<any> => invoke('remote_cache_open_dir');
 
 /** 查单个远程文件的密文块缓存覆盖情况：
  *  {cached_blocks,total_blocks,cached_bytes,fully_cached}，不下载载荷。 */
-export const remoteCacheFileStat = (placeId, path, size) =>
-  invoke('remote_cache_file_stat', {
+export const remoteCacheFileStat = (placeId: any, path: any, size: any): Promise<any> => invoke('remote_cache_file_stat', {
     req: { place_id: placeId, path, size },
   });
 
@@ -522,19 +498,16 @@ export const remoteCacheFileStat = (placeId, path, size) =>
  * 广播频道没有这个视图（ToS 3.3 的 sponsored messages 要求），
  * 后端会回 `tg_broadcast_no_messages`。
  */
-export const remoteMessages = (placeId, dir, before = null) =>
-  invoke('remote_messages', { placeId, dir, before });
+export const remoteMessages = (placeId: any, dir: any, before: any = null): Promise<any> => invoke('remote_messages', { placeId, dir, before });
 
 /** 以某条消息为中心拉取一段（引用跳转 / 定位源消息）。
  *  返回 { rows, oldest, newest, found }：rows 升序、两端游标供双向续翻、
  *  found 表示目标是否真的拉到了（拉不到别假装定位成功）。 */
-export const remoteMessagesAround = (placeId, dir, around) =>
-  invoke('remote_messages_around', { placeId, dir, around });
+export const remoteMessagesAround = (placeId: any, dir: any, around: any): Promise<any> => invoke('remote_messages_around', { placeId, dir, around });
 
 /** 拉取某条消息**之后（更新方向）**的一页（新→旧）。
  *  引用跳到历史中间后往顶部滚，用它把更新的消息补到列表头部。 */
-export const remoteMessagesAfter = (placeId, dir, after) =>
-  invoke('remote_messages_after', { placeId, dir, after });
+export const remoteMessagesAfter = (placeId: any, dir: any, after: any): Promise<any> => invoke('remote_messages_after', { placeId, dir, after });
 
 /** 列出一个远程目录容器里的条目。
  *
@@ -543,16 +516,14 @@ export const remoteMessagesAfter = (placeId, dir, after) =>
  *
  * 只读头部，不下载载荷——几百 MB 的容器也能先「进去看看」。
  */
-export const remoteListContainer = (token) =>
-  invoke('remote_list_container', { token });
+export const remoteListContainer = (token: any): Promise<any> => invoke('remote_list_container', { token });
 
 /** 把一个远程文件转为永久缓存。
  *
  * **这是一次真实的下载任务**：会把整个文件的密文块都取到本地，耗时与文件
  * 大小成正比。只打标记的话「永久」只是承诺不是事实——下次离线打开照样失败。
  */
-export const remoteCachePin = (placeId, path, size, name) =>
-  invoke('remote_cache_pin', {
+export const remoteCachePin = (placeId: any, path: any, size: any, name: any): Promise<any> => invoke('remote_cache_pin', {
     req: { place_id: placeId, path, size, name },
   });
 
@@ -561,8 +532,7 @@ export const remoteCachePin = (placeId, path, size, name) =>
  * 内容会搬回临时层，也就是**重新计入上限、重新参与淘汰**，可能很快被清掉。
  * 那正是「取消永久」该有的语义；只改标记的话空间不会真的还回来。
  */
-export const remoteCacheUnpin = (placeId, path, size) =>
-  invoke('remote_cache_unpin', {
+export const remoteCacheUnpin = (placeId: any, path: any, size: any): Promise<any> => invoke('remote_cache_unpin', {
     req: { place_id: placeId, path, size },
   });
 
@@ -571,12 +541,10 @@ export const remoteCacheUnpin = (placeId, path, size) =>
  * 逐个返回成败：部分成功是常态，压成一个布尔的话用户不知道哪些传上去了，
  * 再传一次就产生重复文件。
  */
-export const remoteUpload = (placeId, dir, paths) =>
-  invoke('remote_upload', { placeId, dir, paths });
+export const remoteUpload = (placeId: any, dir: any, paths: any): Promise<any> => invoke('remote_upload', { placeId, dir, paths });
 
 /** 删除单个远程文件的本地密文块，返回 {freed_bytes}；只读位置也允许。 */
-export const remoteCacheRemoveFile = (placeId, path, size) =>
-  invoke('remote_cache_remove_file', {
+export const remoteCacheRemoveFile = (placeId: any, path: any, size: any): Promise<any> => invoke('remote_cache_remove_file', {
     req: { place_id: placeId, path, size },
   });
 
@@ -587,7 +555,7 @@ export const remoteCacheRemoveFile = (placeId, path, size) =>
  * 要在**开始扫码之前**问：答案为否时先告诉用户「这台机器上登录态存不住，
  * 每次启动都要重新扫一次」，而不是等他扫完了才说。
  */
-export const telegramCanPersist = () => invoke('telegram_can_persist');
+export const telegramCanPersist = (): Promise<any> => invoke('telegram_can_persist');
 
 /** 列出所有被转为「永久保留」的文件。
  *
@@ -598,15 +566,14 @@ export const telegramCanPersist = () => invoke('telegram_can_persist');
  *
  * `key` 含文件版本哈希，是缓存里的身份、不是能拿去浏览的路径，
  * 界面当成不透明标识即可。 */
-export const remoteCacheListPinned = () => invoke('remote_cache_list_pinned');
+export const remoteCacheListPinned = (): Promise<any> => invoke('remote_cache_list_pinned');
 
 /** 取消某个文件的永久保留并把它占的空间释放掉，返回释放的字节数。
  *
  * 按缓存键操作、不碰网络，所以离线时、甚至那个远程位置已经被删掉之后，
  * 依然能清。这里是直接删而不是搬回临时层：从「管理永久缓存」点取消的
  * 动机基本只有腾空间，搬回临时层磁盘一个字节都没少。 */
-export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
-  invoke('remote_cache_unpin_by_key', { place, key, totalBlocks });
+export const remoteCacheUnpinByKey = (place: any, key: any, totalBlocks: any): Promise<any> => invoke('remote_cache_unpin_by_key', { place, key, totalBlocks });
 
 /** 扫码登录时 session 的暂存账号名，必须与后端 `PENDING_ACCOUNT` 一致。
  *
@@ -619,122 +586,104 @@ export const remoteCacheUnpinByKey = (place, key, totalBlocks) =>
 export const TG_PENDING_ACCOUNT = 'pending';
 
 /** 当前全部传输任务（下载 / 上传 / 永久保留三类汇总）。 */
-export const transferList = () => invoke('transfer_list');
+export const transferList = (): Promise<any> => invoke('transfer_list');
 
 /** 取消一条任务。执行体会在下一个分片边界干净退出。 */
-export const transferCancel = (id) => invoke('transfer_cancel', { id });
+export const transferCancel = (id: any): Promise<any> => invoke('transfer_cancel', { id });
 
 /** 重试一条失败任务。只对可重试的失败有意义（磁盘满 / 认证失效不给按钮），
  *  重跑走断点续传：已缓存的块不会重下。 */
-export const transferRetry = (id) => invoke('transfer_retry', { id });
+export const transferRetry = (id: any): Promise<any> => invoke('transfer_retry', { id });
 
 /** 全部暂停 / 全部继续。 */
-export const transferPauseAll = (paused) =>
-  invoke('transfer_pause_all', { paused });
+export const transferPauseAll = (paused: any): Promise<any> => invoke('transfer_pause_all', { paused });
 
 /** 清除已结束的任务（完成 / 失败 / 取消）。 */
-export const transferClearDone = () => invoke('transfer_clear_done');
+export const transferClearDone = (): Promise<any> => invoke('transfer_clear_done');
 
 /** 当前用的是内置 api_id 还是用户自己的。不返回 api_hash（它是凭据）。 */
-export const telegramApiIdStatus = () => invoke('telegram_api_id_status');
+export const telegramApiIdStatus = (): Promise<any> => invoke('telegram_api_id_status');
 
 /** 保存用户自己的 api_id / api_hash。格式不合法时报 tg_bad_api_id。 */
-export const telegramApiIdSave = (apiId, apiHash) =>
-  invoke('telegram_api_id_save', { apiId, apiHash });
+export const telegramApiIdSave = (apiId: any, apiHash: any): Promise<any> => invoke('telegram_api_id_save', { apiId, apiHash });
 
 /** 恢复使用内置的那一份。 */
-export const telegramApiIdReset = () => invoke('telegram_api_id_reset');
+export const telegramApiIdReset = (): Promise<any> => invoke('telegram_api_id_reset');
 
 /** 登录之前先自检能不能连到 Telegram。
  *
  * 返回 `{status, elapsed_ms, via_proxy}`（snake_case，同本仓库其它命令），status 是
  * `ok` | `bad_proxy` | `no_route`。三种要分开显示：用户该做的事不同。 */
-export const telegramCheckConnection = (proxyUrl) =>
-  invoke('telegram_check_connection', { proxyUrl });
+export const telegramCheckConnection = (proxyUrl: any): Promise<any> => invoke('telegram_check_connection', { proxyUrl });
 
 /** 批量查一批远程文件的缓存状态（本地查询，不碰网络）。 */
-export const remoteCacheFileStats = (reqs) =>
-  invoke('remote_cache_file_stats', { reqs });
+export const remoteCacheFileStats = (reqs: any): Promise<any> => invoke('remote_cache_file_stats', { reqs });
 
 /** 从某条消息之前再取一页文件（对话即目录的位置才有）。 */
-export const remoteBrowseMore = (placeId, dir, before) =>
-  invoke('remote_browse_more', { placeId, dir, before });
+export const remoteBrowseMore = (placeId: any, dir: any, before: any): Promise<any> => invoke('remote_browse_more', { placeId, dir, before });
 
 /** 按媒体分栏列对话：tab=media/file/link/audio/gif，before=0 为首屏，
  *  limit 前端按视口估。 */
-export const remoteBrowseTab = (placeId, dir, tab, before, limit) =>
-  invoke('remote_browse_tab', { placeId, dir, tab, before: before || 0, limit: limit || 0 });
+export const remoteBrowseTab = (placeId: any, dir: any, tab: any, before: any, limit: any): Promise<any> => invoke('remote_browse_tab', { placeId, dir, tab, before: before || 0, limit: limit || 0 });
 
 /** 元数据 blob 落盘缓存（对话列表/文件列表快照）：字节数组进磁盘 LRU。 */
-export const remoteMetaPut = (kind, key, bytes) =>
-  invoke('remote_meta_put', { kind, key, data: Array.from(bytes) });
+export const remoteMetaPut = (kind: any, key: any, bytes: any): Promise<any> => invoke('remote_meta_put', { kind, key, data: Array.from(bytes) });
 
 /** 读回元数据 blob；未命中返回 null。返回字节数组。 */
-export const remoteMetaGet = (kind, key) =>
-  invoke('remote_meta_get', { kind, key });
+export const remoteMetaGet = (kind: any, key: any): Promise<any> => invoke('remote_meta_get', { kind, key });
 
 /** 一页多少条。界面据它判断还有没有更多。 */
-export const remotePageSize = () => invoke('remote_page_size');
+export const remotePageSize = (): Promise<any> => invoke('remote_page_size');
 
 /** 当前对话是否开了「受保护内容」。
  *
  * 只影响是否显示一行告知。非 Telegram 位置恒为 false。 */
-export const remoteDirProtected = (placeId, dir) =>
-  invoke('remote_dir_protected', { placeId, dir });
+export const remoteDirProtected = (placeId: any, dir: any): Promise<any> => invoke('remote_dir_protected', { placeId, dir });
 
 /** 给代理输入框的默认值：已有 Telegram 位置的代理 > 系统代理 > 空。
  *
  * 不让用户对着空框猜。开了 Clash 那类「全局代理」的机器上尤其要紧——
  * 它只接管系统代理层的流量，不接管 MTProto 那种裸 TCP，所以「我开了
  * 全局代理」并不等于 omy 能直连，而这一点用户没有理由知道。 */
-export const telegramSuggestProxy = () => invoke('telegram_suggest_proxy');
+export const telegramSuggestProxy = (): Promise<any> => invoke('telegram_suggest_proxy');
 
 /** 这份登录态可用吗（判的是 auth key 在不在，不是文件在不在）。
  *
  * 多账号之后 session 按账号分别存放，所以必须指明问的是哪一份——
  * 不分账号地问「有没有登录过」，会让加第二个账号时显示成已登录。 */
-export const telegramHasSession = (placeId) =>
-  invoke('telegram_has_session', { placeId });
+export const telegramHasSession = (placeId: any): Promise<any> => invoke('telegram_has_session', { placeId });
 
 /** 只把位置从列表里摘掉，**保留本机登录态**：之后可以直接加回来、不必重扫。
  *
  * 与 `telegramPlaceDeleteAccount` 的区别是后者不可撤销，所以分成两个命令、
  * 界面上也分成两个入口——做成一个带开关的入口，少点一下就会走到
  * 破坏性更强的那一侧。 */
-export const telegramPlaceDetach = (placeId) =>
-  invoke('telegram_place_detach', { placeId });
+export const telegramPlaceDetach = (placeId: any): Promise<any> => invoke('telegram_place_detach', { placeId });
 
 /** 删除账号：摘掉位置**并**删掉本机登录态，下次要重新扫码或导入 tdata。 */
-export const telegramPlaceDeleteAccount = (placeId) =>
-  invoke('telegram_place_delete_account', { placeId });
+export const telegramPlaceDeleteAccount = (placeId: any): Promise<any> => invoke('telegram_place_delete_account', { placeId });
 
 /** 改这个位置在本机的显示名。只改本地，不动服务端的账号资料。
  *
  * 默认名取服务端昵称，但两个账号完全可能同名（同一个人的大小号），
  * 那时侧栏上就分不清谁是谁，所以必须允许改。 */
-export const telegramPlaceRename = (placeId, name) =>
-  invoke('telegram_place_rename', { placeId, name });
+export const telegramPlaceRename = (placeId: any, name: any): Promise<any> => invoke('telegram_place_rename', { placeId, name });
 
 /** 这个 Telegram 位置的登录态是否已加密（per-place 密码槽）。侧栏据此显示锁标识。 */
-export const telegramPlaceEncrypted = (placeId) =>
-  invoke('telegram_place_encrypted', { placeId });
+export const telegramPlaceEncrypted = (placeId: any): Promise<any> => invoke('telegram_place_encrypted', { placeId });
 
 /** 显式加密此位置：用**现场输入的密码**保护登录态（与普通文件加密同款）。
  *  kdfProfile: interactive/moderate/sensitive。返回是否真的改变了状态。 */
-export const telegramPlaceEncrypt = (placeId, password, kdfProfile = 'moderate') =>
-  invoke('telegram_place_encrypt', { placeId, password, kdfProfile });
+export const telegramPlaceEncrypt = (placeId: any, password: any, kdfProfile: any = 'moderate'): Promise<any> => invoke('telegram_place_encrypt', { placeId, password, kdfProfile });
 
 /** 取消加密此位置：转回默认（机器密钥）保护。需当前有能打开它的密码。 */
-export const telegramPlaceDecrypt = (placeId) =>
-  invoke('telegram_place_decrypt', { placeId });
+export const telegramPlaceDecrypt = (placeId: any): Promise<any> => invoke('telegram_place_decrypt', { placeId });
 
 /** 用现场输入的密码解锁一个锁定的加密位置。返回是否解出。 */
-export const telegramPlaceUnlock = (placeId, password) =>
-  invoke('telegram_place_unlock', { placeId, password });
+export const telegramPlaceUnlock = (placeId: any, password: any): Promise<any> => invoke('telegram_place_unlock', { placeId, password });
 
 /** 用现场输入的密码取消加密一个位置（当前会话没有它 KEK 时走这条）。返回是否改动。 */
-export const telegramPlaceDecryptPw = (placeId, password) =>
-  invoke('telegram_place_decrypt_pw', { placeId, password });
+export const telegramPlaceDecryptPw = (placeId: any, password: any): Promise<any> => invoke('telegram_place_decrypt_pw', { placeId, password });
 
 /** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
  *
@@ -743,8 +692,7 @@ export const telegramPlaceDecryptPw = (placeId, password) =>
  *
  * 登录对话框传 `TG_PENDING_ACCOUNT`（此时位置尚未创建），
  * 命令里的 `reg.remove` 那一步对它是空操作。 */
-export const telegramForgetSession = (placeId) =>
-  invoke('telegram_place_delete_account', { placeId });
+export const telegramForgetSession = (placeId: any): Promise<any> => invoke('telegram_place_delete_account', { placeId });
 
 /** 探测 tdata 导入的前提：客户端在不在跑、有没有自动找到 tdata。
  *
@@ -753,11 +701,11 @@ export const telegramForgetSession = (placeId) =>
  * 给路径输入框，而不是显示「未检测到」——那等于把「需要你补个信息」
  * 显示成「不支持」，用户看到就走了。
  */
-export const telegramTdataProbe = () => invoke('telegram_tdata_probe');
+export const telegramTdataProbe = (): Promise<any> => invoke('telegram_tdata_probe');
 
 /** 这个路径像 tdata 吗。用于即时反馈：选错目录当场说，
  *  而不是等用户填完密码、点了导入、跑完一轮解密才报错。 */
-export const telegramTdataCheck = (path) => invoke('telegram_tdata_check', { path });
+export const telegramTdataCheck = (path: any): Promise<any> => invoke('telegram_tdata_check', { path });
 
 /** 从 tdata 导入登录态并连接，返回位置 id。
  *
@@ -765,94 +713,84 @@ export const telegramTdataCheck = (path) => invoke('telegram_tdata_check', { pat
  * 有没有设置事先无法预知，所以第一次调用不传；若报
  * `tg_tdata_need_passcode` 再向用户要，然后带着它重调。
  */
-export const telegramTdataImport = (path, passcode, proxyUrl) =>
-  invoke('telegram_tdata_import', { path, passcode, proxyUrl });
+export const telegramTdataImport = (path: any, passcode: any, proxyUrl: any): Promise<any> => invoke('telegram_tdata_import', { path, passcode, proxyUrl });
 
 /** 开始扫码登录。立刻返回，进度走 `onTelegramLogin` 推送。
  *
  * `proxyUrl` 可空。后端会先归一化——grammers 只认 socks5://，
  * 而系统代理给出的通常是 http:// 形式。
  */
-export const telegramLoginStart = (proxyUrl) =>
-  invoke('telegram_login_start', { proxyUrl: proxyUrl || null });
+export const telegramLoginStart = (proxyUrl: any): Promise<any> => invoke('telegram_login_start', { proxyUrl: proxyUrl || null });
 
 /** 提交两步验证的云密码。 */
-export const telegramSubmitPassword = (password) =>
-  invoke('telegram_submit_password', { password });
+export const telegramSubmitPassword = (password: any): Promise<any> => invoke('telegram_submit_password', { password });
 
 /** 取消登录（关掉登录界面时必须调，否则那条连接会一直占着配额）。 */
-export const telegramLoginCancel = () => invoke('telegram_login_cancel');
+export const telegramLoginCancel = (): Promise<any> => invoke('telegram_login_cancel');
 
 /** 用已保存的登录态连上 Telegram，并注册成一个远程位置，返回位置 id。
  *
  * 幂等：已经连过就返回原来那个 id，不会在侧栏里堆出两个 Telegram。
  */
-export const telegramPlaceConnect = (proxyUrl) =>
-  invoke('telegram_place_connect', { proxyUrl: proxyUrl || null });
+export const telegramPlaceConnect = (proxyUrl: any): Promise<any> => invoke('telegram_place_connect', { proxyUrl: proxyUrl || null });
 
 /**
  * 订阅扫码登录进度。payload 形如 `{ phase, ... }`：
  * `connecting` / `qr` / `migrating` / `need_password` / `done` / `failed`。
  * 返回 unlisten。
  */
-export const onTelegramLogin = (handler) =>
+export const onTelegramLogin = (handler: (payload: any) => void): Promise<() => void> =>
   listen('telegram-login', (e) => handler(e.payload));
 
 // ---- 手机号登录（与扫码并列的一条路）----
 
 /** 开始手机号登录。立刻返回，进度走 `onTelegramPhoneLogin` 推送。 */
-export const telegramPhoneStart = (proxyUrl) =>
-  invoke('telegram_phone_start', { proxyUrl: proxyUrl || null });
+export const telegramPhoneStart = (proxyUrl: any): Promise<any> => invoke('telegram_phone_start', { proxyUrl: proxyUrl || null });
 
 /** 提交手机号（含国家码，如 +8613800138000）。 */
-export const telegramPhoneSubmitPhone = (phone) =>
-  invoke('telegram_phone_submit_phone', { phone });
+export const telegramPhoneSubmitPhone = (phone: any): Promise<any> => invoke('telegram_phone_submit_phone', { phone });
 
 /** 提交验证码。 */
-export const telegramPhoneSubmitCode = (code) =>
-  invoke('telegram_phone_submit_code', { code });
+export const telegramPhoneSubmitCode = (code: any): Promise<any> => invoke('telegram_phone_submit_code', { code });
 
 /** 提交手机号登录的 2FA 云密码。 */
-export const telegramPhoneSubmitPassword = (password) =>
-  invoke('telegram_phone_submit_password', { password });
+export const telegramPhoneSubmitPassword = (password: any): Promise<any> => invoke('telegram_phone_submit_password', { password });
 
 /** 请求重新发码。 */
-export const telegramPhoneResend = () => invoke('telegram_phone_resend');
+export const telegramPhoneResend = (): Promise<any> => invoke('telegram_phone_resend');
 
 /** 取消手机号登录。 */
-export const telegramPhoneCancel = () => invoke('telegram_phone_cancel');
+export const telegramPhoneCancel = (): Promise<any> => invoke('telegram_phone_cancel');
 
 /**
  * 订阅手机号登录进度。payload 形如 `{ phase, ... }`：
  * `connecting` / `awaiting_phone` / `code_sent` / `need_password` /
  * `done` / `failed`。返回 unlisten。
  */
-export const onTelegramPhoneLogin = (handler) =>
+export const onTelegramPhoneLogin = (handler: (payload: any) => void): Promise<() => void> =>
   listen('telegram-phone-login', (e) => handler(e.payload));
 
 
 // ---- 虚拟远程位置（本地收藏夹式，只存对真实远程文件的引用）----
 
 /** 列出所有虚拟远程位置，返回 [{ id, name }]（供侧栏）。 */
-export const virtualPlaces = () => invoke('virtual_places');
+export const virtualPlaces = (): Promise<any> => invoke('virtual_places');
 
 /** 新建一个虚拟远程位置，返回它的 id。 */
-export const virtualCreate = (name) => invoke('virtual_create', { name });
+export const virtualCreate = (name: any): Promise<any> => invoke('virtual_create', { name });
 
 /** 在某个虚拟位置的某文件夹下新建子文件夹（parentFolder 为空=根），返回新文件夹 id。 */
-export const virtualAddFolder = (placeId, parentFolder, name) =>
-  invoke('virtual_add_folder', { placeId, parentFolder, name });
+export const virtualAddFolder = (placeId: any, parentFolder: any, name: any): Promise<any> => invoke('virtual_add_folder', { placeId, parentFolder, name });
 
 /** 往某个虚拟位置的某文件夹里加一条引用（req 见 AddRefReq，camelCase）。返回 ref_id。
  *  req: { placeId, folder, source, dirId, fileId, snapshotName, snapshotSize } */
-export const virtualAddRef = (req) => invoke('virtual_add_ref', { req });
+export const virtualAddRef = (req: any): Promise<any> => invoke('virtual_add_ref', { req });
 
 /** 浏览一个虚拟位置的某文件夹（folder 为空=根）。返回 VirtualEntry[]（含源三态）。 */
-export const virtualBrowse = (placeId, folder) =>
-  invoke('virtual_browse', { placeId, folder });
+export const virtualBrowse = (placeId: any, folder: any): Promise<any> => invoke('virtual_browse', { placeId, folder });
 
 /** 列出一个虚拟位置的全部文件夹（扁平化+depth），供树形目标选择器。返回 FolderNode[]。 */
-export const virtualFolders = (placeId) => invoke('virtual_folders', { placeId });
+export const virtualFolders = (placeId: any): Promise<any> => invoke('virtual_folders', { placeId });
 
 /** 删除一个虚拟位置。返回是否删了。 */
-export const virtualDelete = (placeId) => invoke('virtual_delete', { placeId });
+export const virtualDelete = (placeId: any): Promise<any> => invoke('virtual_delete', { placeId });

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 根组件。
  *
  * 负责编排四件事：文件管理器主体、加密对话框、解锁对话框、预览层。
@@ -25,8 +25,8 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import * as api from './api.js';
-import * as i18n from './i18n.js';
+import * as api from './api';
+import * as i18n from './i18n';
 import {
   state,
   navigate,
@@ -84,7 +84,7 @@ import {
   keyManageable,
   revealEntry,
   closeTransfers,
-} from './store.js';
+} from './store';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
 import RestoreDialog from './components/RestoreDialog.vue';
@@ -104,7 +104,7 @@ import TgEncryptDialog from './components/TgEncryptDialog.vue';
 import TgUnlockDialog from './components/TgUnlockDialog.vue';
 import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
-import { initAutoLock, configureAutoLock } from './autolock.js';
+import { initAutoLock, configureAutoLock } from './autolock';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);

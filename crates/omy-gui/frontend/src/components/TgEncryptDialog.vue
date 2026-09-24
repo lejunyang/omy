@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 加密一个 Telegram 远程位置——输密码保护它的登录态。
  *
  * 与普通 omy 文件加密同款交互：输密码 + 再输一次确认 + 选 KDF 强度。
@@ -8,7 +8,7 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 defineProps({
   /** 位置显示名，放标题里让用户确认加密的是哪个账号。 */

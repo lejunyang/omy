@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 右键菜单（触屏上是长按菜单）。
  *
  * # 为什么菜单项由父组件传进来
@@ -15,18 +15,32 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
+
+/** 右键菜单里一项。分隔线用 key 'sep'，其余字段按场景可选。 */
+interface MenuItem {
+  key: string;
+  label?: string;
+  icon?: string;
+  danger?: boolean;
+  disabled?: boolean;
+  hint?: string;
+  note?: string;
+}
 
 const props = defineProps({
   /** 菜单项：`{ key, label, icon, danger?, disabled?, hint?, note? }`。
    *  hint 是原生悬浮短标注；note 是显示在标签下方、与标签左对齐的长说明。 */
-  items: { type: Array, required: true },
+  items: { type: Array as () => MenuItem[], required: true },
   /** 触发位置（视口坐标）。 */
   x: { type: Number, required: true },
   y: { type: Number, required: true },
 });
 
-const emit = defineEmits(['pick', 'close']);
+const emit = defineEmits<{
+  (e: 'pick', key: string): void;
+  (e: 'close'): void;
+}>();
 
 const menu = useTemplateRef('menu');
 /** 实际渲染位置。先按触发点摆，测到尺寸后再夹进视口。 */
@@ -38,8 +52,8 @@ const pos = ref({ left: props.x, top: props.y });
  * 或者菜单以分隔线开头/结尾。
  */
 const groups = computed(() => {
-  const out = [];
-  let cur = [];
+  const out: MenuItem[][] = [];
+  let cur: MenuItem[] = [];
   for (const it of props.items) {
     if (it.key === 'sep') {
       if (cur.length) out.push(cur);
@@ -52,13 +66,13 @@ const groups = computed(() => {
   return out;
 });
 
-function pick(item) {
+function pick(item: MenuItem) {
   if (item.disabled) return;
   emit('pick', item.key);
 }
 
 /** Esc 关闭。菜单是模态的，键盘用户必须有退出手段。 */
-function onKey(ev) {
+function onKey(ev: KeyboardEvent) {
   if (ev.key === 'Escape') {
     ev.preventDefault();
     emit('close');
@@ -103,7 +117,7 @@ onMounted(async () => {
   }
   pos.value = { left, top };
   // 聚焦第一项可用项，让键盘能接着操作
-  el.querySelector('.mi:not([disabled])')?.focus();
+  (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus();
 });
 
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));

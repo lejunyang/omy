@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** Telegram 扫码登录。
  *
  * 界面口径以 `docs/research/appendix/telegram-remote-prototype.html` 第 2 节为准。
@@ -22,8 +22,8 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
 
 const emit = defineEmits(['done', 'cancel']);
 

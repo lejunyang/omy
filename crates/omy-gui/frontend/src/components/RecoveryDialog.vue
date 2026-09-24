@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 恢复码对话框：生成一份新的，或用已有的重设密码。
  *
  * # 为什么不并进 KeyDialog
@@ -26,7 +26,7 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 const props = defineProps({
   /** 目标条目，需要 path 与显示名。 */

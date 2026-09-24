@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 主界面：文件管理器。
  *
  * 布局取自 `docs/research/appendix/ui-prototype.html`：
@@ -7,8 +7,8 @@
  */
 
 import { computed, ref, watch } from 'vue';
-import * as i18n from '../i18n.js';
-import { isMobile } from '../viewport.js';
+import * as i18n from '../i18n';
+import { isMobile } from '../viewport';
 import {
   state,
   visibleEntries,
@@ -27,7 +27,7 @@ import {
   clearSelection,
   clearNotice,
   setView,
-} from '../store.js';
+} from '../store';
 import AppShell from './AppShell.vue';
 import EntryCard from './EntryCard.vue';
 

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts" generic="T">
 /** 窗口化列表封装：用 virtua 的 Virtualizer 把 omy 里的长列表窗口化，只渲染视口
  * 附近一批、滚出去的回收，DOM 节点数恒定（与总条数无关）——大群里往下翻几百上千
  * 条也不卡。三处长列表（消息 / 文件列表 / 文件网格按行分块）共用这一个封装。
@@ -8,6 +8,9 @@
  * `scrollRef` 指到那个外层滚动容器，在它里面做窗口化；VList 会自建滚动容器、要求
  * 自己有确定高度，套进 `.content` 里高度塌成 0、什么都不渲染（实测踩过）。
  *
+ * 用 `<script setup generic="T">`：插槽里的 item 保留具体类型（消息行 / 文件条目 /
+ * 网格行），不被抹成 unknown——组件内消费 item 时才能拿到字段提示与检查。
+ *
  * - `items`：数据数组；默认插槽 `{ item, index }` 渲染单条。
  * - `scrollParent`：外层滚动容器 DOM（不传则用直接父元素）。
  * - `@reach-end` / `@reach-start`：接近底部/顶部触发，用于双向无限加载。
@@ -16,27 +19,47 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue';
 import { Virtualizer } from 'virtua/vue';
 
-const props = defineProps({
-  items: { type: Array, required: true },
-  scrollParent: { type: Object, default: null },
-  endThreshold: { type: Number, default: 600 },
-  /**
-   * 列表数据是否会在**头部插入**（virtua 的 shift）。消息时间线往顶部续翻、把
-   * 更新的消息 prepend 到数组开头时必须为 true：virtua 会按「距底部」锚定滚动，
-   * 否则头部一插入内容，所有现有行被整体下推，视觉上就是列表猛地跳一下。
-   *
-   * 只有消息列表传 true（它唯一会 prepend）；文件列表只在末尾追加，保持 false。
-   */
-  shift: { type: Boolean, default: false },
-  /** 距顶部多少 px 内视为「到顶」，触发 reach-start。 */
-  startThreshold: { type: Number, default: 600 },
-});
-const emit = defineEmits(['reach-end', 'reach-start']);
-const vh = ref(null);
+/** scrollToIndex 的对齐方式（与 virtua 的 ScrollToIndexOpts 对齐）。 */
+interface ScrollToIndexOpts {
+  align?: 'start' | 'center' | 'end' | 'nearest';
+  smooth?: boolean;
+  offset?: number;
+}
+/** 需要暴露给父组件的 Virtualizer 最小句柄形状（只用到 scrollToIndex）。 */
+interface VirtualizerHandle {
+  scrollToIndex(index: number, opts?: ScrollToIndexOpts): void;
+}
+
+const props = withDefaults(
+  defineProps<{
+    items: T[];
+    scrollParent?: HTMLElement | null;
+    endThreshold?: number;
+    /**
+     * 列表数据是否会在**头部插入**（virtua 的 shift）。消息时间线往顶部续翻、把
+     * 更新的消息 prepend 到数组开头时必须为 true：virtua 会按「距底部」锚定滚动，
+     * 否则头部一插入内容，所有现有行被整体下推，视觉上就是列表猛地跳一下。
+     */
+    shift?: boolean;
+    /** 距顶部多少 px 内视为「到顶」，触发 reach-start。 */
+    startThreshold?: number;
+  }>(),
+  {
+    scrollParent: null,
+    endThreshold: 600,
+    shift: false,
+    startThreshold: 600,
+  },
+);
+const emit = defineEmits<{
+  (e: 'reach-end'): void;
+  (e: 'reach-start'): void;
+}>();
+const vh = ref<VirtualizerHandle | null>(null);
 
 /** 滚动容器当前视口高度（px）。缓冲大小按它动态估算，所以不能写死。 */
 const viewportH = ref(0);
-let resizeRO = null;
+let resizeRO: ResizeObserver | null = null;
 
 // scrollParent 在进入位置/挂载后才拿到（是个模板 ref），用 watch 而不是
 // onMounted 接观察：元素一出现就量一次、窗口或容器尺寸变化时持续更新；
@@ -84,7 +107,7 @@ const buffer = computed(() => {
   return Math.min(MAX_BUFFER, Math.max(MIN_BUFFER, Math.round(h * 1.5)));
 });
 
-function onScroll() {
+function onScroll(): void {
   const h = vh.value;
   const sc = props.scrollParent;
   if (!h || !sc) return;
@@ -94,7 +117,7 @@ function onScroll() {
   if (sc.scrollTop <= props.startThreshold) emit('reach-start');
 }
 
-function scrollToIndex(index, opts) {
+function scrollToIndex(index: number, opts?: ScrollToIndexOpts): void {
   vh.value?.scrollToIndex(index, opts || { align: 'center' });
 }
 defineExpose({ scrollToIndex });
@@ -110,7 +133,7 @@ defineExpose({ scrollToIndex });
     @scroll="onScroll"
   >
     <template #default="{ item, index }">
-      <slot :item="item" :index="index" />
+      <slot :item="(item as T)" :index="index" />
     </template>
   </Virtualizer>
 </template>

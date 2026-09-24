@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 预览层。
  *
  * # 三条来自实测的硬约束，改动前请先读完
@@ -20,15 +20,15 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
-import { playing } from '../autolock.js';
-import * as i18n from '../i18n.js';
+import { playing } from '../autolock';
+import * as i18n from '../i18n';
 import {
   fileUrl,
   remoteFileUrl,
   plainUrl,
   containerItemUrl,
   placeFileUrl,
-} from '../store.js';
+} from '../store';
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -88,11 +88,11 @@ async function loadText() {
 
 /** 把媒体错误码翻译成人话。 */
 function onMediaError() {
-  const code = media.value?.error?.code ?? 0;
+  const code = (media.value as HTMLMediaElement | null)?.error?.code ?? 0;
   mediaError.value = i18n.te(`media_error_${code}`, i18n.te('preview_failed'));
 }
 
-function onKey(e) {
+function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close');
 }
 
@@ -110,11 +110,11 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
   // 先停掉媒体再移除节点
-  const el = media.value;
+  const el = media.value as HTMLMediaElement | null;
   if (el && (kind.value === 'video' || kind.value === 'audio')) {
-    el.pause?.();
+    el.pause();
     el.removeAttribute('src');
-    el.load?.();
+    el.load();
   }
   // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
   // 自动锁定就永远不会触发——那等于这个功能默默失效了

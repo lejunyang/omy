@@ -1,9 +1,9 @@
-<script setup>
+<script setup lang="ts">
 /** 侧栏：位置 + 附近设备。 */
 
 import { ref, computed } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
 import {
   leaveOverlays,
   state,
@@ -20,7 +20,7 @@ import {
   activeLocation,
   createVirtualPlace,
   promptTgUnlock,
-} from '../store.js';
+} from '../store';
 import ContextMenu from './ContextMenu.vue';
 
 /** 这一项是不是当前位置。
@@ -102,7 +102,7 @@ const rmenuItems = computed(() => {
   const p = rmenu.value?.place;
   if (!p) return [];
   const tg = hasLocalSession(p);
-  const items = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
+  const items: any[] = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
   if (tg) {
     items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: '✏️' });
     // 加密是可选功能：已加密显示「取消加密」，未加密显示「加密此位置」。

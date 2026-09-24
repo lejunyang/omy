@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 「添加到虚拟远程」的树形目标选择对话框（方案甲）。
  *
  * 列出所有虚拟远程位置；点开一个展开它的文件夹树（含根）；选中一个目标节点后
@@ -9,9 +9,9 @@
  */
 
 import { ref, onMounted } from 'vue';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
-import { state, confirmAddToVirtual, cancelAddToVirtual, createVirtualPlaceOnly } from '../store.js';
+import * as i18n from '../i18n';
+import * as api from '../api';
+import { state, confirmAddToVirtual, cancelAddToVirtual, createVirtualPlaceOnly } from '../store';
 
 /** 每个虚拟位置的展开态与文件夹列表：{ id, name, expanded, folders:[{id,name,depth}] }。 */
 const places = ref([]);

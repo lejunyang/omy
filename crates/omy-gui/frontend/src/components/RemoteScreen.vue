@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 远端视图：浏览一台已连接设备共享的加密文件。
  *
  * # 为什么不复用文件管理器的那套渲染
@@ -19,9 +19,9 @@
  */
 
 import { computed } from 'vue';
-import * as i18n from '../i18n.js';
-import { isMobile } from '../viewport.js';
-import { state, remoteThumbUrl, disconnectRemote, reloadRemote } from '../store.js';
+import * as i18n from '../i18n';
+import { isMobile } from '../viewport';
+import { state, remoteThumbUrl, disconnectRemote, reloadRemote } from '../store';
 
 const emit = defineEmits(['open', 'unlock']);
 

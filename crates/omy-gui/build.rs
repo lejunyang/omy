@@ -37,7 +37,15 @@ fn main() {
 
     // 前端源码变化时重跑。列出具体子路径而不是整个 frontend/，
     // 否则 node_modules 的任何变动都会触发重建
-    for sub in ["src", "public", "index.html", "vite.config.js", "package.json"] {
+    for sub in [
+        "src",
+        "public",
+        "index.html",
+        "vite.config.ts",
+        "vitest.config.ts",
+        "tsconfig.json",
+        "package.json",
+    ] {
         println!("cargo:rerun-if-changed={}", frontend.join(sub).display());
     }
 

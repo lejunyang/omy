@@ -24,8 +24,9 @@
  */
 
 import { reactive, computed, watch } from 'vue';
-import * as api from './api.js';
-import * as i18n from './i18n.js';
+import * as api from './api';
+import * as i18n from './i18n';
+import type { MessageRow, MessageWindow, RemoteEntry } from './types';
 
 export const state = reactive({
   /** 当前目录路径。空串表示还在「起点」页。 */
@@ -247,13 +248,13 @@ export const state = reactive({
  * 重复调用会取消上一个计时器，否则连续两次操作时，第一次的计时器
  * 会把第二条提示提前撤掉。
  */
-let noticeTimer = 0;
+let noticeTimer: number = 0;
 export function setNotice(text, ms = 4000) {
   state.notice = text;
-  if (noticeTimer) clearTimeout(noticeTimer);
+  if (noticeTimer) window.clearTimeout(noticeTimer);
   noticeTimer = 0;
   if (!text) return;
-  noticeTimer = setTimeout(() => {
+  noticeTimer = window.setTimeout(() => {
     state.notice = '';
     noticeTimer = 0;
   }, ms);
@@ -261,7 +262,7 @@ export function setNotice(text, ms = 4000) {
 
 /** 立刻清掉提示（用户点 ✕ 时调用）。 */
 export function clearNotice() {
-  if (noticeTimer) clearTimeout(noticeTimer);
+  if (noticeTimer) window.clearTimeout(noticeTimer);
   noticeTimer = 0;
   state.notice = '';
 }
@@ -860,7 +861,12 @@ export async function enterRemoteContainer(f) {
   state.busyKey = 'busy.loading';
   state.placeError = '';
   try {
-    const opened = await api.remotePlaceOpen(state.remotePlace, f.id, f.size || 0);
+    const opened = await api.remotePlaceOpen(
+      state.remotePlace,
+      (f as { id: string; size?: number }).id,
+      (f as { id: string; size?: number }).size || 0,
+      undefined,
+    );
     if (!opened || !opened.token) {
       state.placeError = i18n.te('container_failed');
       return false;
@@ -984,10 +990,10 @@ export async function setView(v) {
  * 连续进入多级目录（双击进入、上级、面包屑）会在短时间内触发多次 navigate，
  * 每次都读改写配置既浪费也可能乱序，去抖后只记最后停留的目录。
  */
-let lastDirTimer = null;
+let lastDirTimer: number | null = null;
 function schedulePersistLastDir(dir) {
-  if (lastDirTimer) clearTimeout(lastDirTimer);
-  lastDirTimer = setTimeout(() => {
+  if (lastDirTimer) window.clearTimeout(lastDirTimer);
+  lastDirTimer = window.setTimeout(() => {
     lastDirTimer = null;
     api.configGet().then((c) => {
       if (c.ui && c.ui.last_dir !== dir) {
@@ -1393,7 +1399,10 @@ export async function retryKeyFiles() {
     setNotice(i18n.t('keymgmt.done_retry', { n: r.files_changed }));
     return r;
   } catch (e) {
-    const p = e && typeof e === 'object' ? e.params : null;
+    const p =
+      e && typeof e === 'object'
+        ? (e as { params?: { files?: unknown[]; paths?: unknown[] } }).params ?? null
+      : null;
     const files = p && Array.isArray(p.files) ? p.files : [];
     const paths = p && Array.isArray(p.paths) ? p.paths : [];
     if (files.length > 0) await reload();
@@ -1520,7 +1529,10 @@ export async function manageKey(req) {
     // 部分失败要说清是哪些文件。i18n.te() 只按码取文案、不做插值，
     // 后端带过来的清单会被丢掉——只剩一句「部分文件改写失败」，用户既
     // 不知道该处理什么，也无法判断损失多大
-    const p = e && typeof e === 'object' ? e.params : null;
+    const p =
+      e && typeof e === 'object'
+        ? (e as { params?: { files?: unknown[]; paths?: unknown[] } }).params ?? null
+      : null;
     const files = p && Array.isArray(p.files) ? p.files : [];
     const paths = p && Array.isArray(p.paths) ? p.paths : [];
     // 攒好重试要用的东西。密码用 req.current 而不是 req.next：失败的文件
@@ -1580,7 +1592,7 @@ export async function tryDeviceUnlock() {
     }
     return opened > 0;
   } catch (e) {
-    state.error = i18n.te(e);
+    state.error = i18n.te(e instanceof Error ? e.message : String(e ?? ''));
     return false;
   } finally {
     state.busy = false;
@@ -1827,13 +1839,13 @@ export const currentCaps = computed(() => {
  */
 /** 消息视图缓存：`位置\x00目录` -> 消息行数组。
  *  二次进入某对话的消息栏时先出缓存、再后台刷新，别每次全量重拉。 */
-const remoteMsgCache = new Map();
+const remoteMsgCache = new Map<string, MessageRow[]>();
 
 /** 加载消息栏首屏（带缓存优先）。
  *
  * 先出缓存（若有），再拉服务端刷新。缓存/刷新都写回 remoteMsgCache。
  * 与文件栏的 reloadRemoteDir 同一种「缓存先出 + 后台刷新」节奏。 */
-export async function loadMessagesFirstPage() {
+export async function loadMessagesFirstPage(): Promise<void> {
   if (!state.remotePlace || !state.remoteDir) return;
   const place = state.remotePlace;
   const dir = state.remoteDir;
@@ -1883,7 +1895,7 @@ export async function loadMessagesFirstPage() {
  * 而不是把整个内容区清空重载成一个方向不明的新列表。
  *
  * around 是目标消息号（来自媒体条目 id 的 (对话,消息)，或消息 reply_to）。 */
-export async function locateMessage(around) {
+export async function locateMessage(around: number): Promise<void> {
   if (!state.remotePlace || !state.remoteDir || !around) return;
   const place = state.remotePlace;
   const dir = state.remoteDir;
@@ -1898,7 +1910,7 @@ export async function locateMessage(around) {
   try {
     // 目标已在当前列表：不发请求，直接交给视图层高亮滚动（小圈也立刻消失）。
     const present = state.remoteMessages.some((m) => m.message === around);
-    let win = null;
+    let win: MessageWindow | null = null;
     if (!present) {
       win = await api.remoteMessagesAround(place, dir, around);
       if (state.remotePlace !== place || state.remoteDir !== dir) return;
@@ -1957,7 +1969,7 @@ export async function locateMessage(around) {
  * 与 loadMoreMessages（向更旧、追加到末尾）对称：取当前最新一条之后的一页，
  * 合并去重到列表**头部**。视图层会在请求前后做滚动位置锚定，视觉上原地不动。
  */
-export async function loadNewerMessages() {
+export async function loadNewerMessages(): Promise<void> {
   if (state.loadingNewer || !state.hasNewerMessages) return;
   if (!state.remotePlace || !state.remoteDir) return;
   const newest = state.remoteMessages[0];
@@ -2183,7 +2195,7 @@ export async function reloadRemotePlaces() {
 /** 当前 remotePlace 是不是一个虚拟位置（id 以 v 开头且在 virtualPlaces 里）。
  *  虚拟位置复用 remotePlace/remoteDir/remoteItems 那套状态与 PlaceBrowser 视图，
  *  只在加载路径上分叉（走 virtualBrowse 而不是网络 list）。 */
-export function isVirtualPlace(id) {
+export function isVirtualPlace(id?: string | null) {
   const pid = id ?? state.remotePlace;
   return !!pid && state.virtualPlaces.some((v) => v.id === pid);
 }
@@ -2244,7 +2256,7 @@ export async function confirmAddToVirtual(virtualPlaceId, folder) {
 }
 
 /** 在当前虚拟位置的当前文件夹下新建子文件夹，然后刷新。 */
-export async function addVirtualFolder(name) {
+export async function addVirtualFolder(name?: string | null) {
   if (!isVirtualPlace()) return;
   try {
     await api.virtualAddFolder(state.remotePlace, state.remoteDir, name);
@@ -2615,7 +2627,7 @@ export async function loadMoreFiles() {
   }
 }
 
-export async function loadMoreMessages() {
+export async function loadMoreMessages(): Promise<void> {
   if (state.loadingMore || !state.hasMoreMessages) return;
   if (!state.remotePlace || !state.remoteDir) return;
   const oldest = state.remoteMessages.at(-1);
@@ -2759,7 +2771,7 @@ async function loadDirSnapshotFromDisk(key) {
   }
 }
 
-function remoteDirKey(placeId, dir, tab) {
+function remoteDirKey(placeId: string, dir: string, tab?: string): string {
   // tab 只在**内容缓存**里带上（同一对话媒体栏/文件栏是两批内容）。
   // 识别事件的暂存区仍用不带 tab 的 2 参数键：识别结果按文件 id 贴，
   // 与它属于哪一栏无关，两者共用同一个函数但传参不同。
@@ -3332,7 +3344,7 @@ export async function confirmTgUnlock(password) {
 }
 
 /** 进入远程子目录。 */
-export async function enterRemoteDir(id, name) {
+export async function enterRemoteDir(id: string, name?: string) {
   state.remoteDir = id;
   // 换对话/回根都回到默认媒体栏：留着上个对话选的栏，会让用户以为
   // 新对话「只有链接」之类（其实是停在链接栏且新对话没链接）

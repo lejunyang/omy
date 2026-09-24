@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 视频处理对话框。
  *
  * 取代原先加密对话框里那个孤零零的「取帧时间点」输入框：这里能看着画面
@@ -21,10 +21,10 @@
  */
 
 import { ref, computed, watch, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
-import { playing as mediaActive } from '../autolock.js';
-import * as i18n from '../i18n.js';
-import * as api from '../api.js';
-import { plainUrl } from '../store.js';
+import { playing as mediaActive } from '../autolock';
+import * as i18n from '../i18n';
+import * as api from '../api';
+import { plainUrl } from '../store';
 
 const props = defineProps({
   /** 要处理的条目，需含 `token`（由 browse_directory 下发）与 `name`。 */
@@ -470,7 +470,7 @@ const needsConvert = computed(() => proc.value !== 'none' && !converted.value);
               step="0.04"
               :value="at"
               :aria-label="i18n.t('video.seek')"
-              @input="seekTo(Number($event.target.value))"
+              @input="seekTo(Number(($event.target as HTMLInputElement).value))"
             />
             <span class="vtc">{{ fmtTime(at) }} / {{ fmtTime(duration) }}</span>
           </div>

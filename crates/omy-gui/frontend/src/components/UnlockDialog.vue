@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 输密码解锁当前目录。
  *
  * 双击一个锁着的加密文件时弹出。解锁的粒度是**目录**而不是单个文件：
@@ -13,7 +13,7 @@
  */
 
 import { ref, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 defineProps({
   busy: { type: Boolean, default: false },

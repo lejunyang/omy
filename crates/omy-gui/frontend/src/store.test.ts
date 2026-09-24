@@ -27,8 +27,8 @@ vi.mock('./api.js', () => ({
   uiLog: vi.fn(),
 }));
 
-import * as api from './api.js';
-import { state, locateMessage, loadNewerMessages, loadMoreMessages } from './store.js';
+import * as api from './api';
+import { state, locateMessage, loadNewerMessages, loadMoreMessages } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
 const m = (message) => ({ message });
@@ -67,7 +67,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
     state.remoteMessages = windowRows(100, 90);
     await locateMessage(95);
 
-    expect(api.remoteMessagesAround).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAround)).not.toHaveBeenCalled();
     expect(state.loadingMessages).toBe(false);
     // 内联期间置过定位号，结束后清掉（小圈由这个字段驱动）。
     expect(state.locatingMsg).toBeNull();
@@ -79,7 +79,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
     // 跳转前在看最新一段 #110..#100；引用指向历史中的 #50。
     state.remoteMessages = windowRows(110, 100);
     // 服务端返回以 50 为中心的降序窗口 #62..#38，两头都取满=都能续翻。
-    api.remoteMessagesAround.mockResolvedValue({
+    vi.mocked(api.remoteMessagesAround).mockResolvedValue({
       rows: windowRows(62, 38),
       oldest: 38,
       newest: 62,
@@ -90,7 +90,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
 
     await locateMessage(50);
 
-    expect(api.remoteMessagesAround).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.remoteMessagesAround)).toHaveBeenCalledTimes(1);
     expect(state.loadingMessages).toBe(false); // 内联：不能整屏重载
     expect(state.highlightMsg).toBe(50);
 
@@ -113,7 +113,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
     // 现有 #105..#90（16 条），窗口 #100..#76（25 条），重叠 #100..#90（11 条）。
     // 目标必须是窗口内、且不在现有段里的一条（#85），否则根本不会发起拉取。
     state.remoteMessages = windowRows(105, 90);
-    api.remoteMessagesAround.mockResolvedValue({
+    vi.mocked(api.remoteMessagesAround).mockResolvedValue({
       rows: windowRows(100, 76),
       oldest: 76,
       newest: 100,
@@ -133,7 +133,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
 
   it('目标已删（found=false）：不高亮、给未找到提示，但保留拉回的上下文', async () => {
     state.remoteMessages = windowRows(110, 100);
-    api.remoteMessagesAround.mockResolvedValue({
+    vi.mocked(api.remoteMessagesAround).mockResolvedValue({
       rows: windowRows(62, 38),
       oldest: 38,
       newest: 62,
@@ -152,7 +152,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
 
   it('请求飞行途中切走了对话：晚到的结果不得写回当前对话', async () => {
     state.remoteMessages = windowRows(110, 100);
-    api.remoteMessagesAround.mockImplementation(async () => {
+    vi.mocked(api.remoteMessagesAround).mockImplementation(async () => {
       // 请求在飞时用户切到了别的对话
       state.remotePlace = 'p2';
       return { rows: windowRows(62, 38), found: true, has_older: true, has_newer: true };
@@ -167,7 +167,7 @@ describe('locateMessage — 已在消息时间线上的内联跳转', () => {
 
   it('网络失败：内联时保留现有列表，不用空/错误态盖掉正在看的时间线', async () => {
     state.remoteMessages = windowRows(110, 100);
-    api.remoteMessagesAround.mockRejectedValue(new Error('flood'));
+    vi.mocked(api.remoteMessagesAround).mockRejectedValue(new Error('flood'));
 
     await locateMessage(50);
 
@@ -183,7 +183,7 @@ describe('locateMessage — 从文件栏/外部进入（非内联）', () => {
     state.remoteMessages = [];
     // 记录 loadingMessages 在执行过程中确实被置过 true（finally 会清回 false）。
     let sawLoading = false;
-    api.remoteMessagesAround.mockImplementation(async () => {
+    vi.mocked(api.remoteMessagesAround).mockImplementation(async () => {
       sawLoading = state.loadingMessages;
       return { rows: windowRows(62, 38), found: true, has_older: true, has_newer: true };
     });
@@ -202,7 +202,7 @@ describe('locateMessage — 从文件栏/外部进入（非内联）', () => {
   it('非内联且失败：清空列表并报错', async () => {
     state.remoteViewMode = 'files';
     state.remoteMessages = [];
-    api.remoteMessagesAround.mockRejectedValue(new Error('net'));
+    vi.mocked(api.remoteMessagesAround).mockRejectedValue(new Error('net'));
 
     await locateMessage(50);
 
@@ -217,11 +217,11 @@ describe('双向续翻', () => {
     state.remoteMessages = windowRows(62, 38);
     state.hasNewerMessages = true;
     // after 游标取当前最新 #62，返回它之后的一页 #87..#63（新→旧，取满 25）。
-    api.remoteMessagesAfter.mockResolvedValue(windowRows(87, 63));
+    vi.mocked(api.remoteMessagesAfter).mockResolvedValue(windowRows(87, 63));
 
     await loadNewerMessages();
 
-    expect(api.remoteMessagesAfter).toHaveBeenCalledWith('p1', 'tg:-100', 62);
+    expect(vi.mocked(api.remoteMessagesAfter)).toHaveBeenCalledWith('p1', 'tg:-100', 62);
     const ids = state.remoteMessages.map((r) => r.message);
     expect(ids).toHaveLength(50);
     expect(ids[0]).toBe(87);
@@ -233,7 +233,7 @@ describe('双向续翻', () => {
   it('向新取不满一页：到对话最新，关闭 hasNewerMessages', async () => {
     state.remoteMessages = windowRows(70, 60);
     state.hasNewerMessages = true;
-    api.remoteMessagesAfter.mockResolvedValue(windowRows(75, 71)); // 只有 5 条
+    vi.mocked(api.remoteMessagesAfter).mockResolvedValue(windowRows(75, 71)); // 只有 5 条
 
     await loadNewerMessages();
 
@@ -246,7 +246,7 @@ describe('双向续翻', () => {
     state.remoteMessages = windowRows(62, 38);
     state.hasNewerMessages = false;
     await loadNewerMessages();
-    expect(api.remoteMessagesAfter).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAfter)).not.toHaveBeenCalled();
   });
 
   it('加载中重入被忽略（不并发拉两页）', async () => {
@@ -254,18 +254,18 @@ describe('双向续翻', () => {
     state.hasNewerMessages = true;
     state.loadingNewer = true;
     await loadNewerMessages();
-    expect(api.remoteMessagesAfter).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAfter)).not.toHaveBeenCalled();
   });
 
   it('到底 loadMoreMessages：把更旧一页 append 到末尾（原行为不被向新逻辑带偏）', async () => {
     state.remoteMessages = windowRows(62, 38);
     state.hasMoreMessages = true;
     // remoteMessages(place, dir, before) 取当前最旧 #38 之前的一页。
-    api.remoteMessages.mockResolvedValue(windowRows(37, 13));
+    vi.mocked(api.remoteMessages).mockResolvedValue(windowRows(37, 13));
 
     await loadMoreMessages();
 
-    expect(api.remoteMessages).toHaveBeenCalledWith('p1', 'tg:-100', 38);
+    expect(vi.mocked(api.remoteMessages)).toHaveBeenCalledWith('p1', 'tg:-100', 38);
     const ids = state.remoteMessages.map((r) => r.message);
     expect(ids).toHaveLength(50);
     expect(ids[0]).toBe(62);

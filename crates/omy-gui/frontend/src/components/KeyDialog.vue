@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 密码管理对话框：给一个已加密文件增删改密码，或重新加密。
  *
  * # 为什么前三个操作放在一起
@@ -27,7 +27,7 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 const props = defineProps({
   /** 目标条目，需要 path 与显示名。 */
@@ -212,7 +212,7 @@ function submit() {
         <!-- 逐条列出没改成的文件。只说「部分文件失败」用户无从下手：
              不知道该处理什么，也判断不了损失有多大 -->
         <ul v-if="errorFiles.length" class="failed">
-          <li v-for="f in errorFiles" :key="f">{{ f }}</li>
+          <li v-for="f in errorFiles" :key="String(f)">{{ f }}</li>
         </ul>
         <!-- 重试按钮挨着清单放：它作用于上面这些文件，隔远了看不出关系。
              不放进底部按钮区——那里是取消/提交，混进去会被当成另一种提交。

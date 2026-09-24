@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 设置：PC 是左列分类的弹窗，移动端是列表 + 二级页。
  *
  * # 为什么需要这个组件
@@ -20,11 +20,11 @@
  */
 
 import { ref, computed, onMounted } from 'vue';
-import * as i18n from '../i18n.js';
-import { isMobile } from '../viewport.js';
-import { theme, setTheme } from '../theme.js';
-import * as api from '../api.js';
-import { state, setNotice, reloadRemotePlaces } from '../store.js';
+import * as i18n from '../i18n';
+import { isMobile } from '../viewport';
+import { theme, setTheme } from '../theme';
+import * as api from '../api';
+import { state, setNotice, reloadRemotePlaces } from '../store';
 
 const emit = defineEmits(['close', 'lang', 'lock', 'devices', 'places']);
 
@@ -53,7 +53,7 @@ const clearing = ref(false);
 const loadedCount = ref(0);
 
 /** 关于页的版本信息，来自后端编译期常量。 */
-const aboutInfo = ref({ app_version: '', format_major: 1, format_minor: 0 });
+const aboutInfo = ref<any>({});
 
 /** 已连接的远程位置数量，设置主页「已连接的位置」摘要用。
  *  单独拉一次，不依赖此刻是否正开着云盘浏览器（那里才会 reload 列表）。 */
@@ -325,7 +325,7 @@ function goMobile(key) {
 
 /** 进入「密文缓存」二级页（PC 与移动共用同一 pane）。 */
 function openCachePane() {
-  // isMobile 是 readonly(ref)，在 <script> 里必须取 .value，
+  // isMobile 是 readonly(ref)，在 <script lang="ts"> 里必须取 .value，
   // 直接判断 ref 对象永远为真——那会让桌面端也走移动分支、PC 缓存页进不去
   if (isMobile.value) {
     mobileStack.value.push(mobilePane.value);
@@ -492,7 +492,7 @@ async function openLogDir() {
               id="m-set-language"
               data-sf="m_language"
               :value="cfg.ui.language"
-              @change="onLanguage($event.target.value)"
+              @change="onLanguage(($event.target as HTMLInputElement).value)"
             >
               <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
               <option value="zh-CN">简体中文</option>
@@ -505,7 +505,7 @@ async function openLogDir() {
               id="m-set-theme"
               data-sf="m_theme"
               :value="cfg.ui.theme"
-              @change="onTheme($event.target.value)"
+              @change="onTheme(($event.target as HTMLInputElement).value)"
             >
               <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
               <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
@@ -583,7 +583,7 @@ async function openLogDir() {
           <template v-if="(isMobile ? mobilePane : pane) === 'general'">
             <div class="row">
               <label class="lb">{{ i18n.t('settings.language') }}</label>
-              <select data-sf="language" :value="cfg.ui.language" @change="onLanguage($event.target.value)">
+              <select data-sf="language" :value="cfg.ui.language" @change="onLanguage(($event.target as HTMLInputElement).value)">
                 <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
                 <option value="zh-CN">简体中文</option>
                 <option value="en">English</option>
@@ -591,7 +591,7 @@ async function openLogDir() {
             </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.theme') }}</label>
-              <select data-sf="theme" :value="cfg.ui.theme" @change="onTheme($event.target.value)">
+              <select data-sf="theme" :value="cfg.ui.theme" @change="onTheme(($event.target as HTMLInputElement).value)">
                 <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
                 <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
                 <option value="light">{{ i18n.t('settings.theme_light') }}</option>
@@ -956,7 +956,7 @@ async function openLogDir() {
                 type="text"
                 data-sf="device_name"
                 :value="cfg.serve.device_name || ''"
-                @input="cfg.serve.device_name = $event.target.value"
+                @input="cfg.serve.device_name = ($event.target as HTMLInputElement).value"
               />
             </div>
             <div class="row">

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 解锁一个已加密的 Telegram 远程位置——输密码进入。
  *
  * 与加密对话框配套：加密时现场设密码，锁定后（冷启动/未解锁）在这里现场输密码
@@ -8,7 +8,7 @@
  */
 
 import { ref, computed, onMounted, useTemplateRef } from 'vue';
-import * as i18n from '../i18n.js';
+import * as i18n from '../i18n';
 
 defineProps({
   /** 位置显示名，放标题里让用户确认解锁的是哪个账号。 */

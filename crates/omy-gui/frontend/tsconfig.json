@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+
+    /* 与 vite.config.js / 生产构建一致的两条硬约束：
+       只用 vue 运行时（CSP script-src 'self'，禁带编译器的完整版）；
+       产物 es2022。这里再开 isolatedModules，配合逐文件转译。 */
+    "jsx": "preserve",
+    "strict": true,
+    /* 从无类型 JS 存量迁移的**过渡**配置：noImplicitAny 与 strictNullChecks
+       先关掉。这个前端原本零类型，逐文件迁移时这两项会冒出一千六百多个
+       “参数隐式 any / 可能为 null”——绝大多数在 Tauri IPC 边界与回调上，
+       短期全标注噪音远大于收益，还会逼出大量 `as any` 把类型系统架空。
+
+       迁移策略（见 AGENTS.md「前端 TypeScript」）：核心数据模型在 types.ts
+       显式标注（消息行、远程条目、传输任务等），新代码写真正的类型；随模块
+       重构逐个把它们打开，最终目标是 strict 全绿，而不是靠 any 混过去。
+       其余严格项（noImplicitThis / alwaysStrict 等）随 strict 保持开启。 */
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    /* 未使用检查也先关：迁移只改后缀与 lang，不做顺手删代码，避免「类型化」
+       提交里混进行为/引用变化。清理未用项应单独一次提交。 */
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Vite/Vitest 负责真正的模块解析与扩展名补全，TS 这里允许
+       导入省略 .ts/.vue 后缀（bundler 模式默认 allowImportingTsExtensions=false，
+       所以源码里一律不带后缀，靠 Vite 解析）。 */
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "useDefineForClassFields": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vitest.config.ts"]
+}

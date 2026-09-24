@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /** 文件网格里的一项。
  *
  * # 三种形态，结构上互斥
@@ -13,10 +13,10 @@
  */
 
 import { computed, ref, onBeforeUnmount } from 'vue';
-import * as i18n from '../i18n.js';
-import { thumbUrl, state } from '../store.js';
-import { useThumbLoad } from '../thumbload.js';
-import { isMobile } from '../viewport.js';
+import * as i18n from '../i18n';
+import { thumbUrl, state } from '../store';
+import { useThumbLoad } from '../thumbload';
+import { isMobile } from '../viewport';
 
 const props = defineProps({
   entry: { type: Object, required: true },
