@@ -2461,11 +2461,14 @@ export async function reloadRemoteDir() {
     }
   }
 
+  // 对话内分栏：首屏请求量按视口估并对齐到整行（见 viewportFillCount）。
+  // 在请求前算一次并复用，别在拿到结果后再算——那时窗口可能已被拖宽，
+  // 用新值去判 hasMore 会和「实际请求的条数」对不上。
+  const firstFill = inDialog ? viewportFillCount() : 0;
   try {
     const rows = inDialog
-      // 首屏 limit 按视口估：填满可见网格 + 一屏缓冲，别拍一个固定 N
       ? await api.remoteBrowseTab(
-          state.remotePlace, state.remoteDir, tab, 0, viewportFillCount(),
+          state.remotePlace, state.remoteDir, tab, 0, firstFill,
         )
       : await api.remoteBrowse(state.remotePlace, state.remoteDir);
     // 从缓存里把**已升级的清晰缩略图 token**带到刷新回来的新行上。
@@ -2495,7 +2498,7 @@ export async function reloadRemoteDir() {
     // （不分页），WebDAV 的 PROPFIND 也是一次列全。对话内按本次请求的
     // limit 判（不是固定 pageSize），因为分栏首屏 limit 是按视口算的。
     state.hasMoreFiles = inDialog
-      ? rows.length >= viewportFillCount()
+      ? rows.length >= firstFill
       : (!!state.remoteDir && rows.length >= state.pageSize);
     // 骨架刚落地，把 await 期间早到的识别结果补贴上去。
     // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
@@ -2601,7 +2604,8 @@ export async function loadMoreFiles() {
   const dir = state.remoteDir;
   const inDialog = isTelegramDialog();
   const tab = inDialog ? state.remoteTab : '';
-  const lim = viewportFillCount();
+  // 续翻同样对齐到整行：否则每一页都可能末行缺几块、网格右侧出现空位。
+  const lim = inDialog ? alignToGrid(viewportFillCount()) : viewportFillCount();
   state.loadingMoreFiles = true;
   try {
     // 对话内按当前分栏续拉（同一个类型 filter），否则走无过滤的 more
@@ -2806,28 +2810,78 @@ function tagConversations(rows) {
   return rows;
 }
 
-/** 首屏该拉多少条：填满可见网格 + 一屏缓冲。
+/** 文件网格的几何，由 PlaceBrowser 的 recomputeGridColumns 实测后写回。
  *
- * 官方那样「填满视口就够、别一次拉几百条」。按卡片估行列数：网格卡片约
- * 132px 宽、156px 高（见 PlaceBrowser 的 .grid 覆盖）。估不出来（无 DOM、
- * 尺寸为 0）时给一个稳妥的默认，宁可略多一点也不要首屏留空。 */
-function viewportFillCount() {
-  const FALLBACK = 30;
+ * store 自己读不到「虚拟行」的真实高度（行是 WindowList 里的 flex 容器），
+ * 所以列数与行高都由视图层供给。默认值只在视图还没挂载的极早时刻兜底。 */
+export interface GridLayout {
+  /** 每行卡片数。 */
+  cols: number;
+  /** 一行卡片的高度（px，含行间距）。 */
+  rowH: number;
+}
+const CARD_MIN_W = 122;
+const GRID_GAP = 10;
+const CARD_ROW_H = 156;
+const DEFAULT_GRID_LAYOUT: GridLayout = { cols: 4, rowH: CARD_ROW_H };
+
+/** 当前文件网格布局。视图层用 setGridLayout 更新；读时给默认值兜底。 */
+let currentGridLayout: GridLayout = { ...DEFAULT_GRID_LAYOUT };
+export function setGridLayout(layout: GridLayout): void {
+  currentGridLayout = { cols: Math.max(1, Math.round(layout.cols) || 1), rowH: layout.rowH || CARD_ROW_H };
+}
+
+/** 把任意条数向上取整到「整行卡片数」的倍数。
+ *
+ *  请求 N 条但 N 不是列数整数倍时，最后一行永远填不满、右侧留空——这正是
+ *  「网格多出几个空位」的原因。对齐到整行后首屏与每一次续翻都铺满整行。 */
+export function alignToGrid(n: number, cols: number = currentGridLayout.cols): number {
+  const c = Math.max(1, Math.round(cols) || 1);
+  return Math.ceil(Math.max(0, n) / c) * c;
+}
+
+/**
+ * 首屏该拉多少条：填满可见网格 + 一屏缓冲，并**对齐到整行**。
+ *
+ * 为什么必须对齐列数：网格是「每行固定 cols 个」，请求条数若不是 cols 的整数
+ * 倍，最后一行就缺几块、留下空位。向上取整到整行既铺满当前可见区域，也让下方
+ * 多预备一行，滚到时不露白。
+ *
+ * 几何常量与 PlaceBrowser 的 .grid 覆盖保持一致（见同文件样式注释）：
+ * 卡片最小宽 122px、列/行间距 10px、远程卡片行高约 156px。
+ */
+/** content 左右 padding 余量（与 .content 的 padding 对应，视图层另有实测列数，
+ *  这里只在视图还没供给布局时的兜底估算用）。 */
+const GRID_H_PAD = 28;
+const FILL_MIN = 15;
+const FILL_MAX = 100; // 后端单次也封顶 100
+
+function viewportFillCount(): number {
+  const { cols, rowH } = currentGridLayout;
   try {
-    const grid = document.querySelector('.pb .grid, .pbroot .grid');
-    const host = grid?.parentElement || document.querySelector('.pb, .pbroot');
-    if (!host) return FALLBACK;
-    const w = host.clientWidth || 0;
-    const h = host.clientHeight || 0;
-    if (w < 40 || h < 40) return FALLBACK;
-    const cols = Math.max(1, Math.floor(w / 132));
-    const rows = Math.max(1, Math.ceil(h / 156));
-    // 可见格数 + 一屏缓冲，夹在 [15, 100]：太小翻页太频繁、太大又违背
-    // 「填满即可」的初衷，后端也封顶 100
-    const n = cols * rows * 2;
-    return Math.min(100, Math.max(15, n));
+    // 优先用视图实测的列数；没有时再按容器宽兜底估一次
+    let useCols = cols;
+    const host = document.querySelector('.content');
+    if (host) {
+      const w = (host.clientWidth || 0) - GRID_H_PAD;
+      if (w >= 40) {
+        useCols = Math.max(1, Math.floor((w + GRID_GAP) / (CARD_MIN_W + GRID_GAP)));
+      }
+      const h = host.clientHeight || 0;
+      if (h >= 40) {
+        const visibleRows = Math.max(1, Math.ceil(h / rowH));
+        // 总条数 = 列数 × 行数；行数取「可见 + 一屏缓冲」（*2），
+        // 再向上取整到整行，保证铺满当前网格且下方多预备一屏。
+        // 注意是 cols*rows，不是只算行数——漏乘 cols 会让宽屏列多时
+        // 首屏只拉几行，网格大片留空。
+        const n = alignToGrid(useCols * visibleRows * 2, useCols);
+        return Math.min(FILL_MAX, Math.max(FILL_MIN, n));
+      }
+    }
+    // 无可用几何：按「至少 3 整行」兜底，再夹到上下限
+    return Math.min(FILL_MAX, Math.max(FILL_MIN, alignToGrid(useCols * 3, useCols)));
   } catch {
-    return FALLBACK;
+    return Math.min(FILL_MAX, Math.max(FILL_MIN, alignToGrid(cols * 3, cols)));
   }
 }
 
