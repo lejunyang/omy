@@ -102,6 +102,8 @@ vi.mock('../store.js', async () => {
     isVirtualPlace: () => false,
     addVirtualFolder: noop,
     openAddToVirtual: noop,
+    // 网格几何回写：测试不关心，给空实现（组件 onMounted 会调）
+    setGridLayout: noop,
   };
 });
 

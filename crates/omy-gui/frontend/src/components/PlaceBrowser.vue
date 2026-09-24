@@ -66,6 +66,7 @@ import {
   isVirtualPlace,
   addVirtualFolder,
   openAddToVirtual,
+  setGridLayout,
 } from '../store';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -246,14 +247,23 @@ let searchRO = null;
 /** 文件视图窗口化：网格是多列的，VList/Virtualizer 是单列，所以把 visible 分块成
  *  「每行 N 个」的行数组，每个虚拟条目渲染一行 flex 卡片；这样多列网格也能窗口化、
  *  DOM 节点数恒定。列数按滚动容器宽度 / 卡片最小宽(122+gap) 估，随窗口宽度变化。 */
+/** 远程文件网格几何常量。必须与 store.ts 的 viewportFillCount 和
+ *  本组件 <style> 里的 .grid/.card 覆盖保持同一数值（122 / 10 / 行高 156）；
+ *  改其中一处必须同步另外两处，否则「请求条数」和「实际每行卡片数」对不上。 */
+const GRID_CARD_MIN_W = 122;
+const GRID_GAP_PX = 10;
+const GRID_ROW_H_PX = 156;
 const gridColumns = ref(4);
 function recomputeGridColumns() {
   const el = contentEl.value;
   if (!el) return;
   // .grid 用 minmax(122px,1fr) + gap 10px；容器有效宽度里能塞几个 122+10
   const w = el.clientWidth - 28; // 减去 content 左右 padding 余量
-  const col = Math.max(1, Math.floor((w + 10) / (122 + 10)));
+  const col = Math.max(1, Math.floor((w + GRID_GAP_PX) / (GRID_CARD_MIN_W + GRID_GAP_PX)));
   if (col !== gridColumns.value) gridColumns.value = col;
+  // 把实测几何回写给 store：请求文件数量要按这个列数向上取整到整行，
+  // 否则拉回的条数不能被列数整除，最后一行永远缺几块、右侧留空位。
+  setGridLayout({ cols: col, rowH: GRID_ROW_H_PX });
 }
 /** 把 visible 分块成行（网格窗口化用）。列表视图不用它（单列直接窗口化）。 */
 const gridRows = computed<{ key: string; cells: (RemoteEntry | null)[] }[]>(() => {
@@ -275,10 +285,15 @@ const fileWindow = ref(null);
 /** 监听滚动容器宽度变化，重算网格列数（窗口拉宽/变窄时每行卡片数跟着变）。 */
 let gridRO = null;
 onMounted(() => {
-  recomputeGridColumns();
-  if (contentEl.value && typeof ResizeObserver !== 'undefined') {
-    gridRO = new ResizeObserver(() => { recomputeGridColumns(); measureSearchBar(); });
-    gridRO.observe(contentEl.value);
+  // 只在真有滚动容器时回写网格几何；recomputeGridColumns 内部也会再判空。
+  // 组件在位置列表层就已挂载，那时还没有 .content，直接调会读到空——不致命，
+  // 但 ResizeObserver 观察 null 会抛错，故整个包在有元素的前提下。
+  if (contentEl.value) {
+    recomputeGridColumns();
+    if (typeof ResizeObserver !== 'undefined') {
+      gridRO = new ResizeObserver(() => { recomputeGridColumns(); measureSearchBar(); });
+      gridRO.observe(contentEl.value);
+    }
   }
 });
 // 搜索栏只在「进入某个位置后」才渲染，而本组件在位置列表层就已挂载——onMounted 时
