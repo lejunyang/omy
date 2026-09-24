@@ -19,6 +19,7 @@ import {
   openTransfers,
   activeLocation,
   createVirtualPlace,
+  promptTgUnlock,
 } from '../store.js';
 import ContextMenu from './ContextMenu.vue';
 
@@ -107,7 +108,10 @@ const rmenuItems = computed(() => {
     // 加密是可选功能：已加密显示「取消加密」，未加密显示「加密此位置」。
     // rmenu.encrypted 在打开菜单时异步查得（见 onPlaceContext）。
     if (rmenu.value?.encrypted) {
-      items.push({ key: 'decrypt', label: i18n.t('rplace.decrypt'), icon: '🔓' });
+      // 已加密：给「解锁」（输密码进入）和「取消加密」两个入口。锁定态下用户最
+      // 需要的是解锁进入——没有它加密位置一锁就进不去了。
+      items.push({ key: 'unlock', label: i18n.t('rplace.unlock'), icon: '🔓' });
+      items.push({ key: 'decrypt', label: i18n.t('rplace.decrypt'), icon: '🔑' });
     } else {
       items.push({ key: 'encrypt', label: i18n.t('rplace.encrypt'), icon: '🔒', note: i18n.t('rplace.encrypt_note') });
     }
@@ -165,6 +169,10 @@ async function onPlaceMenuPick(key) {
     } else {
       await removeRemotePlace(p.id);
     }
+    return;
+  }
+  if (key === 'unlock') {
+    promptTgUnlock(p.id);
     return;
   }
   if (key === 'encrypt') {

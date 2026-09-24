@@ -698,7 +698,14 @@
     "encrypt_offer": "要给这个 Telegram 位置设个密码加密吗？加密后未解锁时进不去；不加密则保持默认保护。可以之后在侧栏右键随时改。",
     "encrypt_title": "加密「{{name}}」",
     "encrypt_dialog_hint": "设一个密码保护这个位置的登录态。加密后，下次冷启动要输它才能进入；已经解锁过同一个 omy 密码的话也能直接开。",
-    "encrypt_submit": "加密"
+    "encrypt_submit": "加密",
+    "unlock": "解锁",
+    "unlock_title": "解锁「{{name}}」",
+    "unlock_dialog_hint": "这个位置已加密。输入它的密码进入；已解锁过同一个 omy 密码的话，那个密码也能开。",
+    "unlock_submit": "解锁",
+    "unlock_wrong": "密码不对，请重试",
+    "unlocked": "已解锁",
+    "locked_hint": "这个位置已加密，请输入密码解锁"
   },
   "common": {
     "back": "返回",
@@ -890,6 +897,7 @@
     "source_locked": "来源位置已加密且未解锁，请先在侧栏解锁它再打开这条引用。",
     "added": "已添加 {{n}} 项到虚拟远程",
     "menu_add": "添加到虚拟远程…",
+    "menu_locate": "定位到真实位置",
     "pick_title": "把 {{n}} 项添加到虚拟远程",
     "pick_hint": "选一个虚拟远程和目标文件夹。展开虚拟远程可选到具体子文件夹。",
     "pick_empty": "还没有虚拟远程，先新建一个。",

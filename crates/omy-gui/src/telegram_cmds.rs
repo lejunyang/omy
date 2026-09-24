@@ -1035,11 +1035,28 @@ pub fn telegram_place_unlock(
     }
     let session_keks = crate::place_keys::session_keks(&state);
     let app = AppId::builtin();
+    // 先验证密码能解出 session（也确认它确实是加密格式）
     match tgsession::unlock_place_with_password(&app, &place_id, password.as_bytes(), &session_keks) {
-        Ok(Some(_)) => Ok(true),
-        Ok(None) => Err(CmdError::code("tg_unlock_not_encrypted")),
-        Err(_) => Err(CmdError::code("tg_unlock_wrong")),
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(CmdError::code("tg_unlock_not_encrypted")),
+        Err(_) => return Err(CmdError::code("tg_unlock_wrong")),
     }
+    // 关键：把这个位置密码派生出的 KEK 装进会话。只验证不留钥匙的话，紧接着
+    // 进入位置时 ensure_connected 的 unlock_keks 里没有能开它槽的钥匙，会再次
+    // Locked——表现为「输对密码后又弹一次解锁框、进不去」。装进去之后后续连接
+    // 就能用它解开槽。会话密码建的槽（pw_kdf 为 None）走不到这里、也不需要，
+    // 因为它的 KEK 本就在 session_keks 里。
+    if let Ok(Some((kek, salt))) = tgsession::place_password_kek(&place_id, password.as_bytes()) {
+        state.with_session(|sess| {
+            sess.add_kek(
+                "远程位置密码",
+                omy_core::session::CredentialKind::Vault,
+                &salt,
+                kek,
+            )
+        });
+    }
+    Ok(true)
 }
 
 /// 用**现场输入的密码**取消加密一个位置：解出明文 session、用机器密钥重落默认格式。

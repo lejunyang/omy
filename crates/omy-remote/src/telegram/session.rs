@@ -894,6 +894,44 @@ pub fn unlock_place_with_password(
     Ok(Some(saved))
 }
 
+/// 验证现场密码能否解开这个加密位置，能则返回**它派生出的 KEK 及其 salt**。
+///
+/// 供 GUI 解锁流程：光验证密码没用——`telegram_place_unlock` 若只判对错、不把这把
+/// KEK 装进会话，那么紧接着的 `connect_saved_with_keks(unlock_keks)` 里根本没有能开
+/// 这个位置槽的钥匙，会再次 `Locked`，表现为「输对密码后又弹一次解锁框、进不去」。
+/// 把这把 KEK 交回去装进会话后，后续连接就能用它解开槽。
+///
+/// 返回 `Ok(None)`：不是加密格式 / 没存过。`Undecryptable`：密码开不了。
+///
+/// # Errors
+///
+/// 读盘失败、解析失败、密码开不了时返回。
+pub fn place_password_kek(
+    account: &str,
+    password: &[u8],
+) -> Result<Option<(Kek, [u8; 16])>, SessionError> {
+    let path = session_path_of(account)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+    let stored = match serde_json::from_str::<StoredSession>(&text) {
+        Ok(st) if st.fmt == STORED_FMT => st,
+        _ => return Ok(None), // 不是加密格式
+    };
+    let Some(kdf) = stored.slots.pw_kdf.clone() else {
+        // 没有密码槽（旧的纯 KEK 槽）：这条路不适用
+        return Ok(None);
+    };
+    let kek = kdf.derive(password).map_err(|_| SessionError::Undecryptable)?;
+    // 派生出来还要确认真能开槽——错密码也会派生出一把（错的）KEK
+    if !stored.slots.can_unlock(std::slice::from_ref(&kek)) {
+        return Err(SessionError::Undecryptable);
+    }
+    Ok(Some((kek, kdf.salt)))
+}
+
 /// 用**现场输入的密码**取消加密：解出明文 session，再用机器密钥重落成默认格式。
 ///
 /// 与 [`decrypt_place`] 的区别：那条用会话已解锁的 KEK 解（要求密码此前已解锁过

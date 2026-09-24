@@ -698,7 +698,14 @@
     "encrypt_offer": "Set a password to encrypt this Telegram location? Once encrypted you can't enter it while locked; otherwise it keeps the default protection. You can change this anytime by right-clicking it in the sidebar.",
     "encrypt_title": "Encrypt \"{{name}}\"",
     "encrypt_dialog_hint": "Set a password to protect this location's sign-in. Once encrypted, the next cold start needs it to enter; a matching omy password you've already unlocked opens it too.",
-    "encrypt_submit": "Encrypt"
+    "encrypt_submit": "Encrypt",
+    "unlock": "Unlock",
+    "unlock_title": "Unlock “{{name}}”",
+    "unlock_dialog_hint": "This location is encrypted. Enter its password to open it; if you have already unlocked the same omy password, that one works too.",
+    "unlock_submit": "Unlock",
+    "unlock_wrong": "Wrong password, try again",
+    "unlocked": "Unlocked",
+    "locked_hint": "This location is encrypted — enter the password to unlock"
   },
   "common": {
     "back": "Back",
@@ -890,6 +897,7 @@
     "source_locked": "The source location is encrypted and locked; unlock it in the sidebar first, then open this reference.",
     "added": "Added {{n}} item(s) to the virtual remote",
     "menu_add": "Add to virtual remote…",
+    "menu_locate": "Go to real location",
     "pick_title": "Add {{n}} item(s) to a virtual remote",
     "pick_hint": "Pick a virtual remote and a target folder. Expand a virtual remote to choose a subfolder.",
     "pick_empty": "No virtual remote yet — create one first.",

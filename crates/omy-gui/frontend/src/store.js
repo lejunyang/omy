@@ -135,6 +135,12 @@ export const state = reactive({
   tgEncryptFor: null,
   /** 加密对话框是否正在提交（跑 Argon2 派生 + 写盘时置忙）。 */
   tgEncryptBusy: false,
+  /** 正在为哪个锁定的加密 Telegram 位置弹解锁对话框。{id,name} 或 null。 */
+  tgUnlockFor: null,
+  /** 解锁对话框是否正在提交（跑 Argon2 派生时置忙）。 */
+  tgUnlockBusy: false,
+  /** 解锁上一次输错的提示文案（非空即在密码框下红字）。 */
+  tgUnlockError: '',
   /** 还有没有更多文件可加载。 */
   hasMoreFiles: false,
   /** 正在加载更多文件。 */
@@ -2391,8 +2397,15 @@ export async function reloadRemoteDir() {
     // 清空的话一次网络抖动就让整屏变空，而那些文件其实都还在
     if (!cachedRows || !cachedRows.length) state.remoteItems = [];
     state.hasMoreFiles = false;
-    // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
-    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    // 位置是加密态且未解锁：不是错误，弹解锁密码框让用户输密码进入。
+    // 这是「加密位置锁定后如何进入」的入口——否则加密位置一锁就再进不去。
+    if (api.errCode(e) === 'tg_locked') {
+      promptTgUnlock(placeAtStart);
+      state.placeError = i18n.t('rplace.locked_hint');
+    } else {
+      // 用云盘视图自己的错误位，不弹底部全局条——那是给本地操作留的
+      state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    }
   } finally {
     state.busy = false;
     state.busyKey = '';
@@ -3177,6 +3190,48 @@ export async function decryptTelegramPlace(id) {
     }
     setNotice(i18n.te(api.errCode(e), 'errors.tg_decrypt_failed'));
     return false;
+  }
+}
+
+/** 弹出「解锁这个加密位置」对话框。id 是锁定的 Telegram 位置。 */
+export function promptTgUnlock(id) {
+  const p = state.remotePlaces.find((x) => x.id === id);
+  state.tgUnlockFor = { id, name: p?.name || '' };
+  state.tgUnlockError = '';
+}
+
+/** 关掉解锁对话框（取消）。 */
+export function cancelTgUnlock() {
+  state.tgUnlockFor = null;
+  state.tgUnlockBusy = false;
+  state.tgUnlockError = '';
+}
+
+/** 用对话框里输的密码解锁并进入。密码对→进入该位置；错→就地红字提示可重试。 */
+export async function confirmTgUnlock(password) {
+  const target = state.tgUnlockFor;
+  if (!target || !password) return false;
+  state.tgUnlockBusy = true;
+  state.tgUnlockError = '';
+  try {
+    const ok = await api.telegramPlaceUnlock(target.id, password);
+    if (!ok) {
+      state.tgUnlockError = i18n.t('rplace.unlock_wrong');
+      return false;
+    }
+    // 解出登录态后进入该位置：走 openRemotePlace 让它连上并列内容
+    state.tgUnlockFor = null;
+    await openRemotePlace(target.id);
+    setNotice(i18n.t('rplace.unlocked'));
+    return true;
+  } catch (e) {
+    // 密码错后端返回 tg_unlock_wrong；其余错误给通用提示
+    state.tgUnlockError = api.errCode(e) === 'tg_unlock_wrong'
+      ? i18n.t('rplace.unlock_wrong')
+      : i18n.te(api.errCode(e), 'errors.remote_failed');
+    return false;
+  } finally {
+    state.tgUnlockBusy = false;
   }
 }
 

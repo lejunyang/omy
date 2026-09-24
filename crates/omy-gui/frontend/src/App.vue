@@ -48,6 +48,8 @@ import {
   encryptTelegramPlace,
   confirmTgEncrypt,
   cancelTgEncrypt,
+  confirmTgUnlock,
+  cancelTgUnlock,
   reloadRemotePlaces,
   openPlaceBrowser,
   closePlaceBrowser,
@@ -99,6 +101,7 @@ import TransferScreen from './components/TransferScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import TgEncryptDialog from './components/TgEncryptDialog.vue';
+import TgUnlockDialog from './components/TgUnlockDialog.vue';
 import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock.js';
@@ -1090,6 +1093,15 @@ onBeforeUnmount(() => {
     :busy="state.tgEncryptBusy"
     @cancel="cancelTgEncrypt"
     @submit="confirmTgEncrypt"
+  />
+
+  <TgUnlockDialog
+    v-if="state.tgUnlockFor"
+    :name="state.tgUnlockFor.name"
+    :busy="state.tgUnlockBusy"
+    :error="state.tgUnlockError"
+    @cancel="cancelTgUnlock"
+    @submit="confirmTgUnlock"
   />
 
   <VirtualPickerDialog v-if="state.addToVirtual" />
