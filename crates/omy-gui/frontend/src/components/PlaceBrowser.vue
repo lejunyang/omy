@@ -23,11 +23,12 @@
  * 不支持的能力**整项不出现而非置灰**：灰按钮会让人去找怎么启用它。
  */
 
-import { computed, ref, watch, nextTick } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n.js';
 import { isMobile } from '../viewport.js';
 import AppShell from './AppShell.vue';
 import ContextMenu from './ContextMenu.vue';
+import WindowList from './WindowList.vue';
 import {
   state,
   currentCaps,
@@ -206,6 +207,62 @@ const messageGroups = computed(() => {
     cur.rows.push(m);
   }
   return out;
+});
+
+/** 把分组标题 + 消息行拍平成一维数组，供 VList 单列窗口化渲染。
+ *  每个 group 先出一个 type:'group' 的标题行，再出它的各条 type:'msg' 行。
+ *  这样长列表只渲染视口附近一批、DOM 节点数恒定，而分组标题仍在正确位置。 */
+const messageItems = computed(() => {
+  const out = [];
+  for (const g of messageGroups.value) {
+    out.push({ type: 'group', key: 'g:' + g.key, label: g.label });
+    for (const m of g.rows) out.push({ type: 'msg', key: 'm:' + m.message, m });
+  }
+  return out;
+});
+
+/** 外层滚动容器（.content），传给 WindowList 作 scrollRef。 */
+const contentEl = ref(null);
+/** 文件视图窗口化：网格是多列的，VList/Virtualizer 是单列，所以把 visible 分块成
+ *  「每行 N 个」的行数组，每个虚拟条目渲染一行 flex 卡片；这样多列网格也能窗口化、
+ *  DOM 节点数恒定。列数按滚动容器宽度 / 卡片最小宽(122+gap) 估，随窗口宽度变化。 */
+const gridColumns = ref(4);
+function recomputeGridColumns() {
+  const el = contentEl.value;
+  if (!el) return;
+  // .grid 用 minmax(122px,1fr) + gap 10px；容器有效宽度里能塞几个 122+10
+  const w = el.clientWidth - 28; // 减去 content 左右 padding 余量
+  const col = Math.max(1, Math.floor((w + 10) / (122 + 10)));
+  if (col !== gridColumns.value) gridColumns.value = col;
+}
+/** 把 visible 分块成行（网格窗口化用）。列表视图不用它（单列直接窗口化）。 */
+const gridRows = computed(() => {
+  const cols = gridColumns.value;
+  const rows = [];
+  for (let i = 0; i < visible.value.length; i += cols) {
+    const cells = visible.value.slice(i, i + cols);
+    // 补齐到整行：不足的填 null，模板渲染成透明占位，保持卡片宽度一致
+    while (cells.length < cols) cells.push(null);
+    rows.push({ key: 'r' + i, cells });
+  }
+  return rows;
+});
+/** 消息视图的窗口化句柄，供 locate 定位滚动用。 */
+const msgWindow = ref(null);
+/** 文件视图（网格/列表）的 VList 句柄。 */
+const fileWindow = ref(null);
+
+/** 监听滚动容器宽度变化，重算网格列数（窗口拉宽/变窄时每行卡片数跟着变）。 */
+let gridRO = null;
+onMounted(() => {
+  recomputeGridColumns();
+  if (contentEl.value && typeof ResizeObserver !== 'undefined') {
+    gridRO = new ResizeObserver(() => recomputeGridColumns());
+    gridRO.observe(contentEl.value);
+  }
+});
+onBeforeUnmount(() => {
+  if (gridRO) { gridRO.disconnect(); gridRO = null; }
 });
 
 /** 本地日期的分组键（同一天的消息归一组）。 */
@@ -608,6 +665,14 @@ watch(
   async (mid) => {
     if (mid == null) return;
     await nextTick();
+    // 窗口化后目标行可能不在 DOM 里，不能只靠 scrollIntoView。先用 messageItems
+    // 里的下标让 VList 滚到目标（会把它渲染出来并居中），渲染后再高亮。
+    const idx = messageItems.value.findIndex((it) => it.type === 'msg' && it.m.message === mid);
+    if (idx >= 0 && msgWindow.value) {
+      msgWindow.value.scrollToIndex(idx, { align: 'center' });
+      await nextTick();
+    }
+    // 兜底/补偿：滚到后目标已在 DOM，再 scrollIntoView 精确居中（列表视图/其它情况）
     const el = document.querySelector(`.msgrow[data-msgid="${mid}"]`);
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     // 高亮保留一段时间做脉冲，再清掉（CSS 动画 ~1.6s）
@@ -849,7 +914,7 @@ function rowTitle(f) {
       </div>
     </div>
 
-    <div class="content">
+    <div class="content" ref="contentEl">
       <!-- 一、位置列表 -->
       <div v-if="!state.remotePlace" class="list">
         <div v-if="!state.remotePlaces.length" class="empty">
@@ -1029,62 +1094,63 @@ function rowTitle(f) {
                 texts: state.remoteMessages.length - messageWithFile,
               }) }}
             </div>
-            <template v-for="g in messageGroups" :key="g.key">
-              <div class="msggroup" data-tg="msggroup">{{ g.label }}</div>
-              <div
-                v-for="m in g.rows"
-                :key="m.message"
-                class="msgrow"
-                :class="{ out: m.outgoing, hasfile: !!m.file_id, hl: m.message === state.highlightMsg }"
-                data-tg="msgrow"
-                :data-msgid="m.message"
-              >
-              <div class="msgmeta">
-                <span class="msgid">#{{ m.message }}</span>
-                <span class="msgdate">{{ fmtTime(m.date) }}</span>
-                <span v-if="m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
-                <!-- 回复引用：点它跳到被引用的原消息并高亮（reply_to 是对话内消息号）。
-                     做成可点的小条而不是纯文字，让「这是能跳的」显而易见。 -->
-                <button
-                  v-if="m.reply_to"
-                  type="button"
-                  class="msgreply"
-                  data-tg="msgreply"
-                  @click="locateMessage(m.reply_to)"
+            <!-- 窗口化：VList 只渲染视口附近一批、滚出去的回收，DOM 节点数恒定，
+                 大群里往下翻几百上千条也不卡。分组标题与消息行拍平成 messageItems
+                 一维数组，靠 item.type 区分渲染。滚动触底自动加载更早（分页往
+                 末尾追加更旧内容）。 -->
+            <WindowList
+              ref="msgWindow"
+              class="msgvlist"
+              :items="messageItems"
+              :scroll-parent="contentEl"
+              @reach-end="() => { if (state.hasMoreMessages && !state.loadingMore) loadMoreMessages(); }"
+            >
+              <template #default="{ item: it }">
+                <div v-if="it.type === 'group'" class="msggroup" data-tg="msggroup">{{ it.label }}</div>
+                <div
+                  v-else
+                  class="msgrow"
+                  :class="{ out: it.m.outgoing, hasfile: !!it.m.file_id, hl: it.m.message === state.highlightMsg }"
+                  data-tg="msgrow"
+                  :data-msgid="it.m.message"
                 >
-                  {{ i18n.t('msgs.reply_to', { id: m.reply_to }) }}
-                </button>
-              </div>
-              <!-- 带文件的消息：点它就打开那个文件，走与文件视图完全相同的
-                   那条路（同一个 id、同一套识别与预览），不另写一份 -->
-              <button
-                v-if="m.file_id"
-                class="msgfile"
-                :data-tg-file="m.file_id"
-                @click="openFromMessage(m)"
-              >
-                <!-- 有缩略图就用图，没有回落到回形针。
-                     缩略图是服务端已有的小图（几 KB），直接内联；
-                     不为它再建一套 token 通道——那是文件视图那条路径的做法，
-                     在这里只会多一处要维护的东西 -->
-                <span v-if="!m.thumb" aria-hidden="true">📎</span>
-                <span v-else class="mfthumb" data-tg="msgthumb">
-                  <img :src="thumbUrl(m.thumb)" alt="" loading="lazy" />
-                  <!-- 时长角标压在缩略图右下角，与各家客户端一致 -->
-                  <i v-if="m.duration" class="mfdur" data-tg="msgdur">
-                    {{ fmtDur(m.duration) }}
-                  </i>
-                </span>
-                <span class="mfname">{{ m.file_name }}</span>
-                <span class="mfsize">{{ i18n.formatSize(m.file_size || 0) }}</span>
-              </button>
-              <!-- 纯文本消息是正常的一行，不是「缺了文件」的残缺条目 -->
-              <div v-if="m.text" class="msgtext">{{ m.text }}</div>
-              <div v-else-if="!m.file_id" class="msgtext dim">
-                {{ i18n.t('msgs.no_file') }}
-              </div>
-              </div>
-            </template>
+                  <div class="msgmeta">
+                    <span class="msgid">#{{ it.m.message }}</span>
+                    <span class="msgdate">{{ fmtTime(it.m.date) }}</span>
+                    <span v-if="it.m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
+                    <button
+                      v-if="it.m.reply_to"
+                      type="button"
+                      class="msgreply"
+                      data-tg="msgreply"
+                      @click="locateMessage(it.m.reply_to)"
+                    >
+                      {{ i18n.t('msgs.reply_to', { id: it.m.reply_to }) }}
+                    </button>
+                  </div>
+                  <button
+                    v-if="it.m.file_id"
+                    class="msgfile"
+                    :data-tg-file="it.m.file_id"
+                    @click="openFromMessage(it.m)"
+                  >
+                    <span v-if="!it.m.thumb" aria-hidden="true">📎</span>
+                    <span v-else class="mfthumb" data-tg="msgthumb">
+                      <img :src="thumbUrl(it.m.thumb)" alt="" loading="lazy" />
+                      <i v-if="it.m.duration" class="mfdur" data-tg="msgdur">
+                        {{ fmtDur(it.m.duration) }}
+                      </i>
+                    </span>
+                    <span class="mfname">{{ it.m.file_name }}</span>
+                    <span class="mfsize">{{ i18n.formatSize(it.m.file_size || 0) }}</span>
+                  </button>
+                  <div v-if="it.m.text" class="msgtext">{{ it.m.text }}</div>
+                  <div v-else-if="!it.m.file_id" class="msgtext dim">
+                    {{ i18n.t('msgs.no_file') }}
+                  </div>
+                </div>
+              </template>
+            </WindowList>
 
             <!-- 加载更早。桌面给显式按钮，移动端靠滚动触底——
                  小屏上常驻按钮会一直吃掉可视高度 -->
@@ -1142,10 +1208,22 @@ function rowTitle(f) {
           </div>
         </div>
 
-        <div v-if="state.view === 'grid'" class="grid">
+        <!-- 网格窗口化：多列网格分块成「每行 N 个」，每个虚拟条目渲染一行 flex
+             卡片，DOM 节点数恒定。列数按容器宽度估（gridColumns）。 -->
+        <WindowList
+          v-if="state.view === 'grid'"
+          ref="fileWindow"
+          class="gridwin"
+          :items="gridRows"
+          :scroll-parent="contentEl"
+          @reach-end="() => { if (state.remoteDir && state.hasMoreFiles && !state.loadingMoreFiles) loadMoreFiles(); }"
+        >
+          <template #default="{ item: row }">
+          <div class="grid gridrow">
+          <template v-for="(f, ci) in row.cells" :key="f ? f.id : 'pad' + ci">
+          <div v-if="!f" class="cellpad" aria-hidden="true"></div>
           <div
-            v-for="f in visible"
-            :key="f.id"
+            v-else
             class="card"
             :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
             :title="rowTitle(f)"
@@ -1195,11 +1273,22 @@ function rowTitle(f) {
               <template v-else>{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</template>
             </div>
           </div>
-        </div>
+          </template>
+          </div>
+          </template>
+        </WindowList>
 
-        <div v-else-if="state.view !== 'grid'" class="list">
+        <!-- 列表视图窗口化：单列直接窗口化 visible。 -->
+        <WindowList
+          v-else-if="state.view !== 'grid'"
+          ref="fileWindow"
+          class="listwin"
+          :items="visible"
+          :scroll-parent="contentEl"
+          @reach-end="() => { if (state.remoteDir && state.hasMoreFiles && !state.loadingMoreFiles) loadMoreFiles(); }"
+        >
+          <template #default="{ item: f }">
           <div
-            v-for="f in visible"
             :key="f.id"
             class="lrow"
             :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
@@ -1232,7 +1321,8 @@ function rowTitle(f) {
               <template v-else-if="!f.unlocked">{{ i18n.t('kind.encrypted') }}</template>
             </span>
           </div>
-        </div>
+          </template>
+        </WindowList>
 
         <!-- 加载更多文件。只在对话内层出现——根目录列的是对话、不分页。
              没有更多时不画按钮而是明说，免得放一个点了没反应的入口 -->
@@ -1430,6 +1520,22 @@ function rowTitle(f) {
 .grid {
   grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
   gap: 10px;
+}
+/* 窗口化后每个虚拟条目是「一行卡片」：改用 flex 横排，卡片等宽填满。
+   分块时已按容器宽算好每行个数，这里只负责把这一行摆开。 */
+.grid.gridrow {
+  display: flex;
+  gap: 10px;
+  padding-block-end: 10px;
+}
+.grid.gridrow > .card {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* 最后一行不足一整行时，用占位撑住，避免仅有的一两张卡片被拉满整行宽 */
+.grid.gridrow > .cellpad {
+  flex: 1 1 0;
+  min-width: 0;
 }
 .card {
   padding: 9px;

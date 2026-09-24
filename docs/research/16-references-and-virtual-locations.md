@@ -356,12 +356,20 @@ prepend 锚定的完整度不如 virtua；一批 `vue-virtual-list-*` 小库要�
    "能不能定位"取决于它。**先做**。
 2. **定位 + 高亮 + 视图切换**（媒体右键"定位源消息"→切消息视图→滚到目标→高亮；
    消息 `reply_to` 跳转）——此时即便**仍全量渲染**，功能已可用**可交付**。
-3. **用 virtua 做窗口化虚拟滚动**（渲染层替换）——**媒体五分栏（多列网格虚拟化）
-   + 消息视图（单列不定高）共用同一套窗口化**，缩略图懒加载改成**只对窗口内的行**
-   触发。纯性能重构，独立上线，不阻塞 1、2。
+3. **用 virtua 做窗口化虚拟滚动**（渲染层替换）——**已实现**。媒体五分栏（多列
+   网格：按 `gridColumns` 分块成「每行 N 个」的行，行级窗口化）+ 消息视图（分组
+   标题与消息行拍平成一维 `messageItems` 单列窗口化）+ 文件列表视图，三处共用
+   `WindowList.vue`（内部用 virtua 的 `Virtualizer`，`scrollRef` 指外层 `.content`
+   滚动容器）。缩略图是 `<img loading="lazy">` 原生懒加载、随 DOM 回收自动失效，
+   不留悬空 observer。locate 定位改用 `Virtualizer.scrollToIndex(index)`（窗口化后
+   目标行可能不在 DOM，纯 scrollIntoView 会失效）+ DOM 兜底居中。
+   **真机验证（Joh 大群）DOM 节点数恒定、不随总数涨**：消息 675 条→约 19 个
+   `.msgrow`；媒体网格 450 个文件→约 40 个 `.card`（6 行）；列表 420 个→约
+   19~27 个 `.lrow`；右键"定位源消息"滚到目标并高亮居中（msgid 5374，top≈视口中）。
+   包体积 app.js 271KB→278KB（+7KB，与 virtua ~3kB gzip 相符，无异常膨胀）。
 
-**选型决定**：见本文；决策日志另记一条（DEC-28 待补）：GUI 虚拟滚动采用 virtua
-（MIT、~3kB、Vue3 适配、内置 shift 锚定与 scrollToIndex）。
+**选型决定**：GUI 虚拟滚动采用 virtua（MIT、~3kB、Vue3 适配、内置 shift 锚定与
+scrollToIndex），已落地，见上第 3 步。
 
 来源：virtua 仓库与 npm（`github.com/inokawa/virtua`，npm `virtua@0.52.x`，
 License MIT）；Telegram Web 加载策略（webk/webz 的视口渲染 + `overflow-anchor`）；

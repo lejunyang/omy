@@ -11,6 +11,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.11.1
         version: 2.11.1
+      virtua:
+        specifier: ^0.52.7
+        version: 0.52.7(vue@3.5.42)
       vue:
         specifier: ^3.5.42
         version: 3.5.42
@@ -317,6 +320,32 @@ packages:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
 
+  virtua@0.52.7:
+    resolution: {integrity: sha512-3xdhgKCbetu7Gez+DJfjmE+1zI7tsCN+07ZpUBhABDyqqT5r+fji6c0vmQCZlxI8o022d/LdIm2E/9T/LE9rPA==}
+    peerDependencies:
+      '@angular/common': '>=20.0.0'
+      '@angular/core': '>=20.0.0'
+      react: '>=16.14.0'
+      react-dom: '>=16.14.0'
+      solid-js: '>=1.0'
+      svelte: '>=5.0'
+      vue: '>=3.2'
+    peerDependenciesMeta:
+      '@angular/common':
+        optional: true
+      '@angular/core':
+        optional: true
+      react:
+        optional: true
+      react-dom:
+        optional: true
+      solid-js:
+        optional: true
+      svelte:
+        optional: true
+      vue:
+        optional: true
+
   vite@8.2.2:
     resolution: {integrity: sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -603,6 +632,10 @@ snapshots:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
+
+  virtua@0.52.7(vue@3.5.42):
+    optionalDependencies:
+      vue: 3.5.42
 
   vite@8.2.2:
     dependencies:
