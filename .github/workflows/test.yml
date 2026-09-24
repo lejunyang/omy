@@ -288,10 +288,13 @@ jobs:
         with:
           version: 9.15.1
 
-      - name: 前端测试
+      - name: 前端类型检查与测试
         working-directory: crates/omy-gui/frontend
+        # build 脚本本身已含 vue-tsc --noEmit；这里单独跑 typecheck 让类型错误在
+        # 更早、日志更短的一步失败，再跑 vitest。
         run: |
           pnpm install --frozen-lockfile
+          pnpm typecheck
           pnpm test
 
   # ---- 内置 FFmpeg：验证发出去的那份 ----

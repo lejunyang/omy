@@ -239,10 +239,25 @@ CRLF 会被原样写进库。
 
 - `cargo test`、`cargo clippy -- -D warnings` 必须通过。
   omy-gui 禁用 `unwrap` / `expect` / `panic` / 切片索引。
-- 改了前端要跑 `cd crates\omy-gui\frontend; pnpm test`（vitest，happy-dom）。
+- 改了前端要跑 `cd crates\omy-gui\frontend; pnpm typecheck`（vue-tsc）与
+  `pnpm test`（vitest，happy-dom）；`pnpm build` 已含 typecheck。
   UI 测试 mock 掉后端 IPC，覆盖状态编排与组件模板行为；真实滚动几何/手感仍归
   CDP 端到端探针，**别在 vitest 里断言布局尺寸或 virtua 的窗口化**——
   happy-dom 不做布局，那类断言要么恒真要么随机失败。
+
+### 前端 TypeScript 约定
+
+前端是 TS（`.ts` + `<script setup lang="ts">`），配置在
+`crates/omy-gui/frontend/tsconfig.json`。从无类型 JS 迁移过来，`strict` 开着，
+但 `noImplicitAny` 与 `strictNullChecks` **暂时关闭**（存量 IPC 载荷上千处，
+一次性标注只会逼出大量 `as any`）。约束：
+
+- **新代码写真正的类型**，不要顺手再堆隐式 any；跨组件共享的实体形状放
+  `src/types.ts`（消息行、远程条目、传输任务等）。
+- Tauri IPC 边界在 `src/api.ts`：返回 `Promise<any>` 是有意的过渡态，消费处应
+  收敛成具体类型，而不是把 any 继续往外传。
+- 目标是随模块重构逐步把这两个开关打开；改动某个模块时，顺手把它内部的
+  隐式 any 消掉，而不是扩大 any 的范围。
 - 改了前端文案要跑 `python spikes\check-i18n-keys.py`，并确认中英键一致。
 - 改了用户可见行为要 review `site/` 里对应的说明，中英两份都改。
 - 改了 `site/` 要跑 `cd site; bun run build` 确认能构建（死链会让它失败）。
