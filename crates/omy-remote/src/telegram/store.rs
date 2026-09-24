@@ -769,26 +769,57 @@ pub struct MessageRow {
 /// `newest` 用于继续向更新翻（现有 `messages` 只有向旧一个方向，这里补齐双向）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageWindow {
-    /// 这段消息，按消息号**升序**（旧 → 新）。
+    /// 这段消息，按消息号**降序**（新 → 旧）。
+    ///
+    /// 与 [`TelegramStore::messages`]（普通 getHistory 本来就是新→旧）保持同一
+    /// 顺序契约：前端时间线始终是新消息在顶部，两种拉取路径拿到的数组可以直接
+    /// 拼接，不用再按方向决定要不要 reverse。曾经这里返回升序，前端却按新→旧
+    /// 渲染，跳转后整条时间线是倒的——表现为「跳完往上滑很快就到顶、看不到之前
+    /// 的新消息」。
     pub rows: Vec<MessageRow>,
     /// 这段里最旧一条的消息号（继续向旧翻的 `before` 游标）；空段为 `None`。
     pub oldest: Option<i32>,
-    /// 这段里最新一条的消息号（继续向新翻的游标）；空段为 `None`。
+    /// 这段里最新一条的消息号（继续向新翻的 `after` 游标）；空段为 `None`。
     pub newest: Option<i32>,
     /// 是否真的把目标那条拉到了。拉不到（已删/超范围）时上层不该假装定位成功。
     pub found: bool,
+    /// 最旧一条之前**是否还有更旧的消息**（旧方向是否取满了请求的条数）。
+    ///
+    /// 用「拉取条数是否到上限」判，而不是让前端自己数：前端不知道请求的页大小，
+    /// 两半屏拼起来后边界条数更容易算错。误判 true 只是多拉一次空页并自愈成
+    /// false；误判 false 会让时间线在历史中间断掉，用户以为对话到了头。
+    pub has_older: bool,
+    /// 最新一条之后**是否还有更新的消息**（新方向是否取满了请求的条数）。与
+    /// `has_older` 对称：引用跳到历史中间时，往顶部滚要能继续拉回更新的消息。
+    pub has_newer: bool,
 }
 
-/// 由一段**已升序**的消息行与目标号，算出 [`MessageWindow`] 的两端游标与命中标记。
+/// 由一段**已降序**（新→旧）的消息行与目标号，组装 [`MessageWindow`]。
 ///
-/// 抽成纯函数（不碰 client）是为了能单测这段"端游标 + 命中"的推导——这是引用
-/// 跳转"能否继续双向翻、能否判定位成功"的判据，拉取本身要真 client、无法单测，
-/// 但这段推导不该跟着一起沉默。
-fn window_from_rows(rows: Vec<MessageRow>, around: i32) -> MessageWindow {
-    let oldest = rows.first().map(|r| r.message);
-    let newest = rows.last().map(|r| r.message);
+/// `older_full` / `newer_full` 是两个方向的取数是否取满了各自请求的条数，取满
+/// 才**可能**还有下一页（见 [`MessageWindow::has_older`]）。
+///
+/// 抽成纯函数（不碰 client）是为了能单测这段"端游标 + 命中 + 双向是否还有更多"
+/// 的推导——这是引用跳转"能否继续双向翻、能否判定位成功"的判据，拉取本身要真
+/// client、无法单测，但这段推导不该跟着一起沉默。
+fn window_from_rows(
+    rows: Vec<MessageRow>,
+    around: i32,
+    older_full: bool,
+    newer_full: bool,
+) -> MessageWindow {
+    // rows 约定为新→旧：最新一条在段首、最旧一条在段尾，别再按升序取首尾。
+    let newest = rows.first().map(|r| r.message);
+    let oldest = rows.last().map(|r| r.message);
     let found = rows.iter().any(|r| r.message == around);
-    MessageWindow { rows, oldest, newest, found }
+    MessageWindow {
+        rows,
+        oldest,
+        newest,
+        found,
+        has_older: older_full,
+        has_newer: newer_full,
+    }
 }
 
 /// Telegram 驱动。
@@ -1574,8 +1605,8 @@ impl TelegramStore {
     /// - 更新半区：`offset_id(around).reverse(true)`（reverse 把 offset_id 当
     ///   min_id，取更新的一段、旧→新），排除 around 自己避免重复。
     ///
-    /// 返回按消息号**升序**排好的一段（旧 → 新），并额外给出这段的两端游标，
-    /// 供上层判断「还能不能再往两头拉」。
+    /// 返回按消息号**降序**排好的一段（新 → 旧，与 [`Self::messages`] 同向），并
+    /// 额外给出两端游标与「两头是否还能续翻」，供上层判断「还能不能再往两头拉」。
     ///
     /// # Errors
     ///
@@ -1593,11 +1624,16 @@ impl TelegramStore {
             self.refresh_conversations().await?;
         }
         let peer = self.peer_ref(chat).await?;
+        // 在更旧半区取数后赋值（取满 = 还有更旧），先声明不设初值：
+        // 给个 false 再无条件覆盖会产生 unused_assignments 警告（clippy -D warnings）。
+        let older_full;
 
         // 更旧半区（含目标）：offset_id 是 exclusive 的，用 around+1 把 around 收进来。
+        // iter_messages 默认按**新→旧**返回，older 拿到的就是 around 及更旧的一段。
         let mut older = Vec::new();
         {
-            let mut it = client.iter_messages(peer).limit(before + 1);
+            let older_limit = before + 1;
+            let mut it = client.iter_messages(peer).limit(older_limit);
             it = it.offset_id(around.saturating_add(1));
             loop {
                 match it.next().await {
@@ -1606,12 +1642,15 @@ impl TelegramStore {
                     Err(e) => return Err(map_rpc(&e)),
                 }
             }
+            // 取满请求条数才可能还有更旧的（空对话/到头时少于这个数）。
+            older_full = older.len() >= older_limit;
         }
         // 更新半区（不含目标）：用 reverse 模式从 around 向**更新**方向取。
         // MessageIter 没有 add_offset，但 reverse(true) 会把 offset_id 当作
-        // min_id（取 id > offset_id 的消息，即更新的），并按旧→新返回，正好是
+        // min_id（取 id > offset_id 的消息，即更新的），按旧→新返回，正好是
         // around 之后的一段；around 自己不含（min_id 是 exclusive 下界）。
         let mut newer = Vec::new();
+        let mut newer_full = false;
         if after > 0 {
             let mut it = client
                 .iter_messages(peer)
@@ -1625,15 +1664,61 @@ impl TelegramStore {
                     Err(e) => return Err(map_rpc(&e)),
                 }
             }
+            newer_full = newer.len() >= after;
         }
 
-        // 合并成升序（旧→新），按消息号去重（两半区的边界可能有重叠/目标重复）。
+        // 合并并按消息号**降序**（新→旧）排：与普通 messages() 的返回方向一致，
+        // rows_from_messages 保持入参顺序，所以这里要显式排好再交给它。
+        // 两半区理论上不相交（older <= around < newer），去重只是防御边界重复。
         let mut all = older;
         all.extend(newer);
-        all.sort_by_key(grammers_client::message::Message::id);
+        all.sort_unstable_by_key(|m| std::cmp::Reverse(m.id()));
         all.dedup_by_key(|m| m.id());
         let rows = self.rows_from_messages(chat, all);
-        Ok(window_from_rows(rows, around))
+        Ok(window_from_rows(rows, around, older_full, newer_full))
+    }
+
+    /// 拉取某条消息**之后（更新方向）**的一页消息。
+    ///
+    /// 供引用跳转后的**双向续翻**：时间线新消息在顶部，用户从被跳到的历史位置往
+    /// 顶部滚时，要把当前段**最新一条之后**的消息补到列表头部。普通
+    /// [`Self::messages`] 只有 `before`（向更旧）一个方向，reverse 模式又按旧→新
+    /// 返回，直接拼进新→旧的列表会倒序——这里在边界处统一转成新→旧再返回。
+    ///
+    /// `after` 是 exclusive 下界（取 id > after），不含游标那条本身。
+    ///
+    /// # Errors
+    ///
+    /// 未登录、对话不存在、网络失败或限流时返回。
+    pub async fn messages_after(
+        &self,
+        dir_id: &str,
+        limit: usize,
+        after: i32,
+    ) -> Result<Vec<MessageRow>> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+        let client = self.client()?;
+        if self.conversation(chat).is_none() {
+            self.refresh_conversations().await?;
+        }
+        let peer = self.peer_ref(chat).await?;
+        let mut msgs = Vec::new();
+        let mut it = client
+            .iter_messages(peer)
+            .limit(limit)
+            .offset_id(after)
+            .reverse(true);
+        loop {
+            match it.next().await {
+                Ok(Some(m)) => msgs.push(m),
+                Ok(None) => break,
+                Err(e) => return Err(map_rpc(&e)),
+            }
+        }
+        // reverse 迭代器按旧→新返回；rows_from_messages 保持入参顺序，所以先转成
+        // 新→旧，让返回方向与 messages()/messages_around() 完全一致。
+        msgs.reverse();
+        Ok(self.rows_from_messages(chat, msgs))
     }
 
     /// 取一个文件的下载位置；缓存里没有就重新列一次那个对话。
@@ -2062,30 +2147,35 @@ mod tests {
         }
     }
 
-    /// window_from_rows：两端游标取升序段的首尾，命中标记看目标是否在段内。
+    /// window_from_rows：入参按**降序**（新→旧）摆，最新游标取段首、最旧取段尾；
+    /// 命中看目标在不在段内；双向 has_more 直接透传取数是否取满。
     ///
-    /// 不这样会怎样：oldest/newest 取错端，用户往上/往下翻就会拿错游标、
-    /// 重复拉同一段或跳过一段；found 判错会让"目标已删"被当成定位成功、
-    /// 界面高亮一条根本不存在的消息。
+    /// 不这样会怎样：oldest/newest 取错端，用户往两头翻就会拿错游标、重复拉同一
+    /// 段或跳过一段；found 判错会让"目标已删"被当成定位成功、界面高亮一条根本不
+    /// 存在的消息；has_more 判错会让时间线在历史中间断掉。
     #[test]
     fn window_cursors_and_found() {
-        // 升序段 [10,20,30]，目标 20 在段内
-        let w = window_from_rows(vec![mrow(10), mrow(20), mrow(30)], 20);
-        assert_eq!(w.oldest, Some(10), "最旧游标应是段首");
-        assert_eq!(w.newest, Some(30), "最新游标应是段尾");
+        // 降序段 [30,20,10]（新→旧），目标 20 在段内；两头都取满 = 两头都能续翻
+        let w = window_from_rows(vec![mrow(30), mrow(20), mrow(10)], 20, true, true);
+        assert_eq!(w.oldest, Some(10), "最旧游标应是段尾");
+        assert_eq!(w.newest, Some(30), "最新游标应是段首");
         assert!(w.found, "目标 20 在段内，应判命中");
+        assert!(w.has_older && w.has_newer, "两头取满应都还能续翻");
 
-        // 目标 25 不在段内（可能已删）：不能假装命中
-        let w2 = window_from_rows(vec![mrow(10), mrow(20), mrow(30)], 25);
+        // 目标 25 不在段内（可能已删）：不能假装命中；取数没取满就不能再翻
+        let w2 = window_from_rows(vec![mrow(30), mrow(20), mrow(10)], 25, false, true);
         assert!(!w2.found, "目标不在段内不得判命中");
         assert_eq!(w2.oldest, Some(10));
         assert_eq!(w2.newest, Some(30));
+        assert!(!w2.has_older, "旧方向没取满，不得再续翻");
+        assert!(w2.has_newer);
 
-        // 空段：两端游标皆 None、未命中
-        let w3 = window_from_rows(Vec::new(), 1);
+        // 空段：两端游标皆 None、未命中、两头都没有更多
+        let w3 = window_from_rows(Vec::new(), 1, false, false);
         assert_eq!(w3.oldest, None);
         assert_eq!(w3.newest, None);
         assert!(!w3.found);
+        assert!(!w3.has_older && !w3.has_newer);
     }
 
     /// id 必须能原样往返。

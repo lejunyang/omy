@@ -1745,6 +1745,37 @@ pub async fn remote_messages_around(
         .map_err(|e| to_cmd_err(&e))
 }
 
+/// 拉取某条消息**之后（更新方向）**的一页消息（引用跳转后续翻用）。
+///
+/// 时间线新消息在顶部：用户跳到历史中间一条后往**上（顶部）**滚，越过这段最新
+/// 一条时要能继续取回它之后的消息。普通 [`remote_messages`] 只有 `before`（向更旧）
+/// 一个方向，补不齐跳上去之后的那半边，所以单独加这条。
+///
+/// 返回仍是新→旧的一页，`after` 为游标（exclusive 下界，取 id > after）。
+///
+/// # Errors
+///
+/// 未登录、不是 Telegram 位置、网络失败或限流时返回。
+#[tauri::command]
+pub async fn remote_messages_after(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+    dir: String,
+    after: i32,
+) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let omy_remote::PlaceStore::Telegram(tg) = place.store.as_ref() else {
+        return Err(CmdError::code("remote_no_messages"));
+    };
+    tg.messages_after(&dir, MESSAGE_PAGE, after)
+        .await
+        .map_err(|e| to_cmd_err(&e))
+}
+
 /// 消息视图一次拉多少条。
 ///
 /// 不是「全部」：活跃对话里可能有上万条，全拉既慢又白占限流配额，

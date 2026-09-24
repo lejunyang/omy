@@ -58,6 +58,7 @@ import {
   MEDIA_TABS,
   showMediaTabs,
   loadMoreMessages,
+  loadNewerMessages,
   loadMoreFiles,
   locateMessage,
   activateVirtualEntry,
@@ -1115,16 +1116,23 @@ function rowTitle(f) {
             <div class="title">{{ i18n.t('msgs.empty') }}</div>
           </div>
           <div v-else class="msglist" data-tg="msglist">
+            <!-- 顶部续翻（向更新）。引用跳到历史中间后往顶部滚，到顶自动把更新的
+                 消息 prepend 进来；加载中给一个小转圈，不挡整个内容区。 -->
+            <div v-if="state.loadingNewer" class="msgedge" data-tg="msgloading-newer">
+              <span class="edgespin" aria-hidden="true"></span>
+            </div>
             <!-- 窗口化：VList 只渲染视口附近一批、滚出去的回收，DOM 节点数恒定，
                  大群里往下翻几百上千条也不卡。分组标题与消息行拍平成 messageItems
-                 一维数组，靠 item.type 区分渲染。滚动触底自动加载更早（分页往
-                 末尾追加更旧内容）。 -->
+                 一维数组，靠 item.type 区分渲染。触底追加更旧、到顶 prepend 更新
+                 （shift 让头部插入时滚动位置锚定在原条目上，视觉不跳）。 -->
             <WindowList
               ref="msgWindow"
               class="msgvlist"
               :items="messageItems"
               :scroll-parent="contentEl"
+              shift
               @reach-end="() => { if (state.hasMoreMessages && !state.loadingMore) loadMoreMessages(); }"
+              @reach-start="() => { if (state.hasNewerMessages && !state.loadingNewer) loadNewerMessages(); }"
             >
               <template #default="{ item: it }">
                 <div
@@ -1148,10 +1156,20 @@ function rowTitle(f) {
                       v-if="it.m.reply_to"
                       type="button"
                       class="msgreply"
+                      :class="{ busy: state.locatingMsg === it.m.reply_to }"
+                      :disabled="state.locatingMsg === it.m.reply_to"
                       data-tg="msgreply"
                       @click="locateMessage(it.m.reply_to)"
                     >
-                      {{ i18n.t('msgs.reply_to', { id: it.m.reply_to }) }}
+                      <span>{{ i18n.t('msgs.reply_to', { id: it.m.reply_to }) }}</span>
+                      <!-- 内联定位的 loading 只画在被点的那条引用右边：不重拉整个
+                           内容区（对齐 Telegram 官方的引用跳转）。 -->
+                      <span
+                        v-if="state.locatingMsg === it.m.reply_to"
+                        class="replyspin"
+                        data-tg="replyspin"
+                        aria-hidden="true"
+                      ></span>
                     </button>
                   </div>
                   <button
@@ -1679,6 +1697,34 @@ function rowTitle(f) {
   font-size: 11px;
   font-weight: 600;
   color: var(--fg2);
+}
+/* 顶部「向更新续翻」的一行：只放一个小转圈，不占可视高度太多 */
+.msgedge {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+.edgespin {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pb-spin 0.7s linear infinite;
+}
+/* 引用按钮内联 loading：按钮右侧的小圆圈。按钮在转圈期间不可点。 */
+.msgreply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.msgreply .replyspin {
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: pb-spin 0.6s linear infinite;
 }
 .rowactions {
   margin-left: auto;

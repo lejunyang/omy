@@ -531,6 +531,11 @@ export const remoteMessages = (placeId, dir, before = null) =>
 export const remoteMessagesAround = (placeId, dir, around) =>
   invoke('remote_messages_around', { placeId, dir, around });
 
+/** 拉取某条消息**之后（更新方向）**的一页（新→旧）。
+ *  引用跳到历史中间后往顶部滚，用它把更新的消息补到列表头部。 */
+export const remoteMessagesAfter = (placeId, dir, after) =>
+  invoke('remote_messages_after', { placeId, dir, after });
+
 /** 列出一个远程目录容器里的条目。
  *
  * 参数是 `remotePlaceOpen` 颁发的播放句柄 token，不是位置 id + 路径：

@@ -147,12 +147,20 @@ export const state = reactive({
   loadingMoreFiles: false,
   /** 后端一页多少条。用来判断「取满了就可能还有」。 */
   pageSize: 100,
-  /** 还有没有更早的消息可加载。取回的条数少于一页就说明到头了。 */
+  /** 还有没有更早的消息可加载（向下/向旧）。取回的条数少于一页就说明到头了。 */
   hasMoreMessages: false,
+  /** 还有没有更新的消息可加载（向上/向新）。引用跳到历史中间时为 true。 */
+  hasNewerMessages: false,
   /** 正在加载更早。 */
   loadingMore: false,
-  /** 消息视图正在加载。 */
+  /** 正在加载更新（列表顶部续翻）。 */
+  loadingNewer: false,
+  /** 消息视图正在加载（仅首次进栏/从文件栏切来等整屏加载时为 true；
+   *  引用跳转复用已在屏的时间线时**不**置它，避免整个内容区闪成加载态）。 */
   loadingMessages: false,
+  /** 引用跳转正在为哪条消息取上下文；非 null 时只在那个引用按钮上转小圈，
+   *  不动整个内容区。null 表示当前没有内联定位在飞。 */
+  locatingMsg: null,
   /** 服务端搜索返回的候选集。与 remoteItems 分开存。
    *
    * 不复用 remoteItems：那是「当前目录里有什么」，而搜索结果可能来自别的
@@ -1849,6 +1857,9 @@ export async function loadMessagesFirstPage() {
     remoteMsgCache.set(key, rows);
     // 取满一页就假定还有更早的。少于一页说明到头了——不靠「下一次返回空」
     state.hasMoreMessages = rows.length >= 25;
+    // 首屏取的就是最新消息，上面不可能再有更新的；引用跳转残留的向新开关在这里
+    // 必须关掉，否则到顶会触发一个必空的向新续翻。
+    state.hasNewerMessages = false;
   } catch (e) {
     // 有缓存就保留，别让一次网络抖动把已看到的消息抹掉
     if (!cached || !cached.length) state.remoteMessages = [];
@@ -1860,43 +1871,116 @@ export async function loadMessagesFirstPage() {
 
 /** 定位到某条消息（引用跳转 / 媒体「定位源消息」）。
  *
- * 切到消息栏 → 用 remoteMessagesAround 把目标居中拉进来（前后各半屏）→
- * 高亮并滚到它。目标没拉到（已删/超范围）时不假装成功，给一行提示。
+ * 两种入口，两种加载粒度：
+ * - 已经在消息时间线上（点消息里的「回复 #N」）：**不重拉整屏**，只把 locatingMsg
+ *   置成目标号（视图在引用按钮右侧转一个小圈）。目标已在当前列表里就直接高亮
+ *   滚动；不在再用 remoteMessagesAround 拉它前后一段，并**合并**进现有列表而不是
+ *   替换——这样跳转前后的消息都还在，往回滚不会「很快到顶」。
+ * - 从文件栏 / 外部（媒体条目「定位源消息」、虚拟引用）进来：时间线还没加载，
+ *   才置 loadingMessages 整屏拉一段。
+ *
+ * 对齐 Telegram 官方：跳转是「以目标消息为锚点开一个窗口、双向都能继续翻」，
+ * 而不是把整个内容区清空重载成一个方向不明的新列表。
  *
  * around 是目标消息号（来自媒体条目 id 的 (对话,消息)，或消息 reply_to）。 */
 export async function locateMessage(around) {
   if (!state.remotePlace || !state.remoteDir || !around) return;
   const place = state.remotePlace;
   const dir = state.remoteDir;
-  // 切到消息栏（若不在）。remoteViewMode 驱动模板渲染消息时间线。
+  // 已经在消息时间线（含已有数据）：内联跳转，不闪整屏加载。
+  const inline = state.remoteViewMode === 'messages' && state.remoteMessages.length > 0;
   state.remoteTab = 'messages';
   state.remoteViewMode = 'messages';
-  state.loadingMessages = true;
   state.placeError = '';
+  if (!inline) state.loadingMessages = true;
+  state.locatingMsg = around;
   api.uiLog('locate-msg');
   try {
-    const win = await api.remoteMessagesAround(place, dir, around);
-    // 回写前校验没切走
-    if (state.remotePlace !== place || state.remoteDir !== dir) return;
-    state.remoteMessages = win.rows || [];
-    // 缓存这段（键同消息栏首屏），二次进入不空屏
-    remoteMsgCache.set(remoteDirKey(place, dir), state.remoteMessages);
-    // 两端都可能还有更多：oldest 之前有更旧、newest 之后有更新。
-    // 现有 hasMoreMessages 只表达"向更旧"，双向续翻的向下那半留待第3步窗口化时接。
-    state.hasMoreMessages = state.remoteMessages.length > 0;
-    if (win.found) {
-      // 命中：高亮 + 滚到它。滚动交给视图层（它有 DOM），这里只置高亮号，
-      // 由 PlaceBrowser 的 watch 做 scrollIntoView + 脉冲高亮。
-      state.highlightMsg = around;
-    } else {
-      // 目标已删或超出可取范围：不假装定位成功
-      state.highlightMsg = null;
-      state.placeError = i18n.t('msgs.locate_not_found');
+    // 目标已在当前列表：不发请求，直接交给视图层高亮滚动（小圈也立刻消失）。
+    const present = state.remoteMessages.some((m) => m.message === around);
+    let win = null;
+    if (!present) {
+      win = await api.remoteMessagesAround(place, dir, around);
+      if (state.remotePlace !== place || state.remoteDir !== dir) return;
     }
+    if (win) {
+      const incoming = win.rows || [];
+      if (inline) {
+        // 合并而非替换：跳转点之前（更新）与之后（更旧）的已加载消息都保留，
+        // 去重后统一按新→旧排。这样往顶部回滚能看到跳转前的新消息，不会
+        // 「滑一点就到顶」。
+        const seen = new Set();
+        const merged = [];
+        for (const m of [...incoming, ...state.remoteMessages]) {
+          if (seen.has(m.message)) continue;
+          seen.add(m.message);
+          merged.push(m);
+        }
+        merged.sort((a, b) => b.message - a.message);
+        state.remoteMessages = merged;
+      } else {
+        state.remoteMessages = incoming;
+      }
+      remoteMsgCache.set(remoteDirKey(place, dir), state.remoteMessages);
+      // 双向续翻开关以服务端返回的 has_older/has_newer 为准；老形状兜底：
+      // 有数据就先允许向旧翻。
+      state.hasMoreMessages =
+        typeof win.has_older === 'boolean'
+          ? win.has_older
+          : incoming.length > 0;
+      state.hasNewerMessages =
+        typeof win.has_newer === 'boolean'
+          ? win.has_newer
+          : false;
+      if (!win.found) {
+        // 目标已删或超出可取范围：不假装定位成功（仍保留拉回的上下文）。
+        state.highlightMsg = null;
+        state.placeError = i18n.t('msgs.locate_not_found');
+        return;
+      }
+    }
+    // 命中（本来就在列表，或新窗口里找到）：置高亮号，由 PlaceBrowser 的
+    // watch 滚到它并做脉冲高亮。
+    state.highlightMsg = around;
   } catch (e) {
+    // 内联失败时保留现有列表，不用错误态把用户正在看的时间线盖掉
+    if (!inline) state.remoteMessages = [];
     state.placeError = i18n.te(api.errCode(e), i18n.te('remote_failed'));
   } finally {
     state.loadingMessages = false;
+    state.locatingMsg = null;
+  }
+}
+
+/** 往**更新**方向续翻一页（引用跳到历史中间后，列表顶部继续拉回更新的消息）。
+ *
+ * 与 loadMoreMessages（向更旧、追加到末尾）对称：取当前最新一条之后的一页，
+ * 合并去重到列表**头部**。视图层会在请求前后做滚动位置锚定，视觉上原地不动。
+ */
+export async function loadNewerMessages() {
+  if (state.loadingNewer || !state.hasNewerMessages) return;
+  if (!state.remotePlace || !state.remoteDir) return;
+  const newest = state.remoteMessages[0];
+  if (!newest) return;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  state.loadingNewer = true;
+  try {
+    const rows = await api.remoteMessagesAfter(place, dir, newest.message);
+    if (state.remotePlace !== place || state.remoteDir !== dir) return;
+    const seen = new Set(state.remoteMessages.map((m) => m.message));
+    const fresh = (rows || []).filter((m) => !seen.has(m.message));
+    if (fresh.length) {
+      // 新页是新→旧、且都比当前段新；整体放在头部即可，组按新→旧排不用再排。
+      state.remoteMessages = [...fresh, ...state.remoteMessages];
+      remoteMsgCache.set(remoteDirKey(place, dir), state.remoteMessages);
+    }
+    // 取不满一页说明已经到对话最新。
+    state.hasNewerMessages = (rows || []).length >= 25 && fresh.length > 0;
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
+  } finally {
+    state.loadingNewer = false;
   }
 }
 
@@ -2205,6 +2289,12 @@ export function leaveRemotePlace() {
   // 消息视图也要复位：留着会让下次进另一个对话时先显示上一个对话的消息
   state.remoteViewMode = 'files';
   state.remoteMessages = [];
+  state.hasMoreMessages = false;
+  state.hasNewerMessages = false;
+  state.loadingMore = false;
+  state.loadingNewer = false;
+  state.locatingMsg = null;
+  state.highlightMsg = null;
   state.remoteDirName = '';
 }
 
@@ -2315,6 +2405,12 @@ export async function reloadRemoteDir() {
   // 换目录就清掉上一个对话的消息，否则切到消息视图会先闪一屏别的对话的内容
   state.remoteMessages = [];
   state.remoteViewMode = 'files';
+  state.hasMoreMessages = false;
+  state.hasNewerMessages = false;
+  state.loadingMore = false;
+  state.loadingNewer = false;
+  state.locatingMsg = null;
+  state.highlightMsg = null;
   refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
   // 本次重载的暂存区从空开始：留着上一次的会把已被服务端改动过的
   // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）
