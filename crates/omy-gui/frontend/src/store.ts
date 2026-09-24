@@ -2267,9 +2267,19 @@ export async function addVirtualFolder(name?: string | null) {
 }
 
 /** 进入一个远程位置的根目录。 */
-export async function openRemotePlace(id) {
+/** 单调递增的「浏览代号」。
+ *
+ * 每次 reloadRemoteDir 入口 +1（含不触网的虚拟浏览）。openRemotePlace 切位置、
+ * enterRemoteDir 进目录、setRemoteTab 换栏都会触发它，于是「A 加载中点 B」时
+ * A 捕获的代号必然落后、回写被丢弃——与搜索 searchSeq 同一模式。 */
+let browseSeq = 0;
+
+export async function openRemotePlace(id, opts?: { skipReload?: boolean }) {
   // 上报"切到某个远程位置/账号"（记 redact 后的短标识，不记位置名）
   api.uiLog('open-place', id ? `#${id}` : '');
+  // 无论接下来刷不刷文件栏，先 +1 作废上一个位置/目录所有在飞的浏览回写，
+  // 否则上一屏晚到的 browse 结果会把这个位置的内容覆盖掉（浏览竞态）。
+  browseSeq += 1;
   state.remotePlace = id;
   state.remoteDir = '';
   // 切账号先清掉上一个账号的列表：不清的话，切到一个**从没加载过**的账号时
@@ -2277,6 +2287,10 @@ export async function openRemotePlace(id) {
   // reloadRemoteDir 随后若命中缓存会立刻把内容摆回来，所以有缓存的账号仍是
   // 「先出缓存」，不受影响——三态就此区分开。
   state.remoteItems = [];
+  // skipReload：调用方紧接着要直接进某个对话的消息时间线（虚拟引用「定位到
+  // 真实位置」），此时先拉根目录对话列表纯属浪费一次请求，还会让界面先在文件
+  // 视图闪一下根列表再跳消息 tab。由调用方负责随后加载目标视图。
+  if (opts?.skipReload) return;
   await reloadRemoteDir();
 }
 
@@ -2318,12 +2332,27 @@ export function leaveRemotePlace() {
 export async function reloadVirtualDir() {
   const place = state.remotePlace;
   const folder = state.remoteDir;
+  // 捕获本次浏览代号（reloadRemoteDir 已先 +1），回写前比对，防切走后覆盖。
+  const seq = browseSeq;
   state.busy = true;
   state.busyKey = 'busy.loading';
   state.placeError = '';
+  // 虚拟位置只有「文件」没有消息时间线。从「定位到真实位置的消息视图」再点回
+  // 虚拟位置时若不复位，会停在上一个真实对话的消息视图——表现为点了虚拟位置
+  // 「没反应」（其实是没切回文件网格）。tab 一并复位到默认媒体栏。
+  state.remoteViewMode = 'files';
+  state.remoteTab = 'media';
+  state.remoteMessages = [];
+  state.hasMoreMessages = false;
+  state.hasNewerMessages = false;
+  state.loadingMore = false;
+  state.loadingNewer = false;
+  state.locatingMsg = null;
+  state.highlightMsg = null;
   try {
     const rows = await api.virtualBrowse(place, folder);
-    if (state.remotePlace !== place || state.remoteDir !== folder) return;
+    if (seq !== browseSeq || state.remotePlace !== place
+        || state.remoteDir !== folder) return;
     // 映射成 PlaceBrowser 认识的条目形状。文件夹 is_dir=true 用文件夹图标；
     // 引用把源状态挂在条目上，视图据此显示灰显/锁标识。
     state.remoteItems = rows.map((e) => ({
@@ -2337,7 +2366,9 @@ export async function reloadVirtualDir() {
       real_name: null,
       plaintext_size: null,
       probe_failed: false,
-      thumb_token: null,
+      // 后端对源可用的引用复用真实位置已落盘的清晰缩略图磁盘缓存（零网络），
+      // 读不到就是 null，前端回退类型图标。
+      thumb_token: e.thumb_token ?? null,
       probing: false,
       // 虚拟引用专属字段
       is_ref: !e.is_dir,
@@ -2347,11 +2378,22 @@ export async function reloadVirtualDir() {
       source_file: e.source_file ?? null,
     }));
     state.hasMoreFiles = false;
+    // 缓存角标：引用的缓存落在**真实位置**名下（委托读取时缓存 key 是源
+    // place + 源 file_id，与在真实位置直接打开同一文件完全相同），不能用
+    // 虚拟位置自己的 id 去查——那必然查不到、角标永远不亮。
+    void refreshVirtualCacheStats(rows);
   } catch (e) {
-    state.remoteItems = [];
-    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    if (seq === browseSeq) {
+      state.remoteItems = [];
+      state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    }
   } finally {
-    state.busy = false;
+    // 只有仍是最新一次浏览时才清 busy：旧请求晚回来不能把新位置的加载圈关掉，
+    // 否则用户会看到 B 位置的大加载圈莫名消失、内容却还没到。
+    if (seq === browseSeq) {
+      state.busy = false;
+      state.busyKey = '';
+    }
   }
 }
 
@@ -2370,7 +2412,7 @@ export async function activateVirtualEntry(entry) {
     setNotice(i18n.t('virtual.source_locked'));
     return;
   }
-  // 可用：切到真实位置，进源目录，定位源文件。
+  // 可用：切到真实位置，进源目录，**直接进消息时间线**定位源文件。
   const place = entry.source_place;
   const dir = entry.source_dir;
   const fileId = entry.source_file;
@@ -2378,9 +2420,17 @@ export async function activateVirtualEntry(entry) {
     setNotice(i18n.t('virtual.source_missing'));
     return;
   }
-  await openRemotePlace(place);
-  await enterRemoteDir(dir, '');
-  // Telegram 文件 id 形如 tg:chat:msg，取消息号定位（复用消息视图定位+高亮）。
+  // 先切真实位置但**跳过根目录文件加载**：紧接着要直接进目标对话的消息时间线，
+  // 先列一遍对话既浪费请求，又会让界面在文件视图闪一下根列表再跳消息 tab。
+  await openRemotePlace(place, { skipReload: true });
+  // 直接把目标对话置为当前目录并切到消息栏，再定位。
+  state.remoteDir = dir;
+  state.remoteTab = 'messages';
+  state.remoteViewMode = 'messages';
+  state.remoteDirName = '';
+  api.uiLog('enter-dir');
+  // Telegram 文件 id 形如 tg:chat:msg，取消息号定位（locateMessage 会加载该消息
+  // 所在的时间线窗口并高亮；消息视图首屏由它负责，无需先刷文件网格）。
   const parts = typeof fileId === 'string' ? fileId.split(':') : [];
   if (parts.length === 3 && parts[0] === 'tg') {
     const msg = Number(parts[2]);
@@ -2395,6 +2445,10 @@ export async function activateVirtualEntry(entry) {
  */
 export async function reloadRemoteDir() {
   if (!state.remotePlace) return;
+  // 单调递增的「浏览代号」：每次进入/切换位置、目录、分栏都 +1。任何异步浏览
+  // （含不触网的虚拟浏览）回写前都要比对自己捕获的序号——用户在 A 加载中点 B，
+  // A 的结果晚回来时代号已落后，整份丢弃，绝不允许把 B 的内容覆盖成 A。
+  browseSeq += 1;
   // 虚拟位置：不发网络，从本地引用表组装条目（含源三态）。文件夹/引用都映射成
   // remoteItems 里的条目，PlaceBrowser 照常渲染；引用的 is_dir=false、双击走
   // 「定位到真实位置」而不是就地识别。
@@ -2402,10 +2456,16 @@ export async function reloadRemoteDir() {
     await reloadVirtualDir();
     return;
   }
-  // 捕获进入时的位置/目录：读磁盘 meta 是异步的，回来前用户可能切走，
-  // 回写前要校验还在同一屏（与 loadMoreFiles 的飞行校验同理）。
+  // 捕获进入时的位置/目录与本次浏览代号：读磁盘 meta、列目录都是异步的，
+  // 回来前用户可能切走/切栏/切到虚拟位置，回写前要校验还在同一屏且是最新一次
+  // （代号由 reloadRemoteDir 入口统一 +1，比逐字段比对多挡「位置目录恰好相同但
+  // 中间切出去又切回」的情况）。
   const placeAtStart = state.remotePlace;
   const dirAtStart = state.remoteDir;
+  const browseToken = browseSeq;
+  const stale = () => browseToken !== browseSeq
+      || state.remotePlace !== placeAtStart
+      || state.remoteDir !== dirAtStart;
   state.busy = true;
   state.busyKey = 'busy.loading';
   state.placeError = '';
@@ -2452,8 +2512,7 @@ export async function reloadRemoteDir() {
     // 摆出来，避免空屏等网络。磁盘里存的行不带 thumb_token（见落盘处的说明），
     // 缩略图/头像由后台事件重新补上。
     const diskRows = await loadDirSnapshotFromDisk(ckey);
-    if (diskRows && diskRows.length
-        && state.remotePlace === placeAtStart && state.remoteDir === dirAtStart) {
+    if (diskRows && diskRows.length && !stale()) {
       cachedRows = diskRows;
       remoteDirCache.set(ckey, diskRows);
       state.remoteItems = tagConversations(diskRows);
@@ -2464,6 +2523,10 @@ export async function reloadRemoteDir() {
   // 对话内分栏：首屏请求量按视口估并对齐到整行（见 viewportFillCount）。
   // 在请求前算一次并复用，别在拿到结果后再算——那时窗口可能已被拖宽，
   // 用新值去判 hasMore 会和「实际请求的条数」对不上。
+  // 读磁盘快照（一次异步 IPC）期间用户已经切走/切栏：这次网络请求的结果回来也会
+  // 被序号守卫丢弃，索性不发。busy 不在这里清——它属于正在进行的新一次浏览，
+  // 由那次浏览自己的 finally 复位。
+  if (stale()) return;
   const firstFill = inDialog ? viewportFillCount() : 0;
   try {
     const rows = inDialog
@@ -2487,6 +2550,7 @@ export async function reloadRemoteDir() {
         if (pt) r.thumb_token = pt;
       }
     }
+    if (stale()) return;
     state.remoteItems = tagConversations(rows);
     remoteDirCache.set(ckey, rows);
     // 写透磁盘 meta（重启后可先出）：去掉 thumb_token——它是会话内 PlaceThumbs
@@ -2504,6 +2568,8 @@ export async function reloadRemoteDir() {
     // 少了这一句，识别快于 browse 返回时整屏都会卡在「识别中」
     applyBufferedRemoteEntries();
   } catch (e) {
+    // 作废的请求（用户已切走）失败了不该清当前屏，更不该弹属于旧位置的错误。
+    if (stale()) return;
     // 有缓存就保留：刷新失败不该把用户已经看到的内容抹掉。
     // 清空的话一次网络抖动就让整屏变空，而那些文件其实都还在
     if (!cachedRows || !cachedRows.length) state.remoteItems = [];
@@ -2518,8 +2584,11 @@ export async function reloadRemoteDir() {
       state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
     }
   } finally {
-    state.busy = false;
-    state.busyKey = '';
+    // 只有仍是最新一次浏览时才清 busy（理由同 reloadVirtualDir）。
+    if (!stale()) {
+      state.busy = false;
+      state.busyKey = '';
+    }
   }
 }
 
@@ -2562,12 +2631,48 @@ export async function refreshCacheStats(place, items) {
     // 卡片标识不知道，要退出再进才刷新——因为两者看的不是同一份数据。
     const next = { ...state.remoteCacheStat };
     files.forEach((f, i) => {
-      if (stats[i]) next[remoteFileCacheKey(place, f.id)] = stats[i];
+      if (stats[i]) next[remoteFileCacheKeyFor(f, place)] = stats[i];
     });
     state.remoteCacheStat = next;
   } catch {
     // 查不到就不画标识。这是附加信息，失败不该影响浏览本身
   }
+}
+
+/** 批量拉一批**虚拟引用**条目的缓存状态。
+ *
+ * 引用的缓存归属在各自的**源真实位置**：同一屏引用可能来自多个位置，按
+ * source_place 分组、每组一次 remoteCacheFileStats（path 用源 file_id），
+ * 结果写进 remoteFileCacheKeyFor 会命中的源 key。纯本地查询（读缓存索引、
+ * 不触网），与 refreshCacheStats 同样失败静默。 */
+async function refreshVirtualCacheStats(entries) {
+  const refs = (entries || []).filter(
+    (e) => e && !e.is_dir && e.source_state === 'available'
+      && e.source_place && e.source_file);
+  if (!refs.length) return;
+  const groups = new Map();
+  for (const e of refs) {
+    const g = groups.get(e.source_place) || [];
+    g.push(e);
+    groups.set(e.source_place, g);
+  }
+  const next = { ...state.remoteCacheStat };
+  for (const [place, list] of groups) {
+    try {
+      const stats = await api.remoteCacheFileStats(
+        list.map((e) => ({
+          place_id: place, path: e.source_file, size: e.size || 0, name: e.name,
+        })),
+      );
+      if (!Array.isArray(stats)) continue;
+      list.forEach((e, i) => {
+        if (stats[i]) next[remoteFileCacheKeyFor(e)] = stats[i];
+      });
+    } catch {
+      // 单组查不到不影响其它源位置的标识
+    }
+  }
+  state.remoteCacheStat = next;
 }
 
 /** 取后端的分页大小。启动时问一次就够——它是编译期常量。 */
@@ -3011,10 +3116,17 @@ export async function decryptRemoteToLocal(f) {
   }
 }
 
-/** 远程单文件缓存状态在 state.remoteCacheStat 里的键。 */
-function remoteFileCacheKey(placeId, path) {
+/** 远程单文件缓存状态在 state.remoteCacheStat 里的键。
+ *
+ * 虚拟引用的密文缓存是**委托真实位置**读取时落下的，key 与在真实位置直接打开
+ * 同一文件完全相同（源 place + 源 file_id）；所以这里对引用条目解析到源，而不是
+ * 用虚拟位置自己的 id（那样必然查不到、角标永远不亮）。普通条目维持
+ * 「当前位置 + 条目 id」。 */
+export function remoteFileCacheKeyFor(f, fallbackPlace?: string | null) {
+  const place = (f?.is_ref ? f.source_place : null) ?? fallbackPlace ?? state.remotePlace;
+  const path = f?.is_ref ? f.source_file : f?.id;
   // 控制字符分隔，正常路径里不会出现，避免 place/path 粘连
-  return `${placeId}\u{1}${path}`;
+  return `${place}\u{1}${path}`;
 }
 
 /**
@@ -3027,8 +3139,10 @@ export async function requestRemoteFileCache(f) {
   // 于是普通文件的右键菜单里永远没有「转为永久」，而后端明明支持。
   if (!state.remotePlace || !f || f.is_dir) return;
   try {
-    const stat = await api.remoteCacheFileStat(state.remotePlace, f.id, f.size || 0);
-    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    const stat = await api.remoteCacheFileStat(
+      (f.is_ref ? f.source_place : state.remotePlace) || state.remotePlace,
+      f.is_ref ? f.source_file : f.id, f.size || 0);
+    const key = remoteFileCacheKeyFor(f);
     state.remoteCacheStat = { ...state.remoteCacheStat, [key]: stat };
   } catch {
     // 查不到（非加密 / 头部读取失败）就当无缓存：菜单本就可以没有这一项，不打扰用户
@@ -3038,7 +3152,7 @@ export async function requestRemoteFileCache(f) {
 /** 读取已查询过的单文件缓存状态（供菜单响应式判断是否显示「从缓存中移除」）。 */
 export function remoteFileCache(f) {
   if (!f || !state.remotePlace) return null;
-  return state.remoteCacheStat[remoteFileCacheKey(state.remotePlace, f.id)] || null;
+  return state.remoteCacheStat[remoteFileCacheKeyFor(f)] || null;
 }
 
 /** 选本地文件上传到当前远程目录。
@@ -3159,7 +3273,7 @@ export async function removeRemoteFileCache(f) {
   if (!state.remotePlace || !f || f.is_dir) return false;
   try {
     const r = await api.remoteCacheRemoveFile(state.remotePlace, f.id, f.size || 0);
-    const key = remoteFileCacheKey(state.remotePlace, f.id);
+    const key = remoteFileCacheKeyFor(f);
     const prev = state.remoteCacheStat[key];
     const zero = {
       cached_blocks: 0,

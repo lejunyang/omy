@@ -21,6 +21,13 @@ vi.mock('./api.js', () => ({
   remoteMessagesAround: vi.fn(),
   remoteMessagesAfter: vi.fn(),
   remoteMessages: vi.fn(),
+  // 任务 #8（虚拟引用/浏览竞态）用到的命令，全部 mock 掉，绝不出网。
+  virtualBrowse: vi.fn(),
+  remoteBrowse: vi.fn(),
+  remoteBrowseTab: vi.fn(),
+  remoteCacheFileStats: vi.fn(),
+  remoteMetaGet: vi.fn(),
+  remoteEffectiveCaps: vi.fn(),
   // 失败路径 store 会用 errCode 取错误码；测试里错误都是普通 Error，给 undefined
   // 让它走兜底文案即可（与真实取不到 code 时的行为一致）。
   errCode: () => undefined,
@@ -28,7 +35,17 @@ vi.mock('./api.js', () => ({
 }));
 
 import * as api from './api';
-import { state, locateMessage, loadNewerMessages, loadMoreMessages } from './store';
+import {
+  state,
+  locateMessage,
+  loadNewerMessages,
+  loadMoreMessages,
+  reloadVirtualDir,
+  activateVirtualEntry,
+  openRemotePlace,
+  reloadRemoteDir,
+  remoteFileCacheKeyFor,
+} from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
 const m = (message) => ({ message });
@@ -274,5 +291,215 @@ describe('双向续翻', () => {
     expect(state.hasMoreMessages).toBe(true);
     // 向新开关不应被向旧续翻改动
     expect(state.hasNewerMessages).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 任务 #8：虚拟引用（缩略图/缓存角标/直接跳消息 tab）与远程浏览竞态
+// ---------------------------------------------------------------------------
+
+/** 一个可控的 Promise：测试里先发起加载、在请求飞行途中切位置，再放行旧请求。 */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+/** 造一条虚拟引用的后端行（virtual_browse 返回的形状）。 */
+const vref = (over: Record<string, unknown> = {}) => ({
+  id: 'vr1',
+  name: 'a.jpg',
+  is_dir: false,
+  size: 1234,
+  source_state: 'available',
+  source_place: 'p1',
+  source_dir: 'tg:-100',
+  source_file: 'tg:-100:38',
+  thumb_token: null,
+  ...over,
+});
+
+describe('虚拟位置浏览 reloadVirtualDir', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'v1',
+      remoteDir: '',
+      remoteTab: 'media',
+      remoteViewMode: 'messages', // 故意留在消息视图，验证进虚拟位置会复位成文件
+      remoteMessages: [{ message: 9 }],
+      virtualPlaces: [{ id: 'v1' }, { id: 'v2' }],
+      remotePlaces: [],
+      remoteItems: [],
+      remoteCacheStat: {},
+      busy: false,
+      busyKey: '',
+      placeError: '',
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.remoteCacheFileStats).mockResolvedValue([]);
+  });
+
+  it('后端给的 thumb_token 透传到卡片；并复位掉残留的消息视图/tab', async () => {
+    vi.mocked(api.virtualBrowse).mockResolvedValue([
+      vref({ thumb_token: 'piabc' }),
+    ]);
+    await reloadVirtualDir();
+
+    expect(state.remoteItems).toHaveLength(1);
+    expect(state.remoteItems[0].thumb_token).toBe('piabc');
+    expect(state.remoteItems[0].is_ref).toBe(true);
+    // 从「定位到真实位置的消息视图」返回虚拟位置，必须回到文件网格，否则界面
+    // 还停在上一个真实对话的消息时间线，看起来就是「点虚拟位置没反应」。
+    expect(state.remoteViewMode).toBe('files');
+    expect(state.remoteTab).toBe('media');
+    expect(state.remoteMessages).toEqual([]);
+    expect(state.hasMoreFiles).toBe(false);
+  });
+
+  it('为引用按**源真实位置**批量查缓存角标（不是用虚拟位置 id）', async () => {
+    vi.mocked(api.virtualBrowse).mockResolvedValue([
+      vref({ id: 'vr1', source_place: 'p1', source_file: 'tg:-100:38' }),
+      vref({ id: 'vr2', source_place: 'p9', source_file: 'tg:-200:55' }),
+    ]);
+    vi.mocked(api.remoteCacheFileStats)
+      // 两个源位置各查一次，分别返回「整文件已缓存」「部分缓存」。
+      .mockResolvedValueOnce([{ cached_blocks: 4, total_blocks: 4, cached_bytes: 10, fully_cached: true, pinned: false }])
+      .mockResolvedValueOnce([{ cached_blocks: 1, total_blocks: 4, cached_bytes: 2, fully_cached: false, pinned: false }]);
+
+    await reloadVirtualDir();
+
+    expect(vi.mocked(api.remoteCacheFileStats)).toHaveBeenCalledTimes(2);
+    // 第一条查询必须带源位置 p1 和源 file_id，而不是虚拟位置 v1 / 引用 id vr1。
+    const p1Call = vi.mocked(api.remoteCacheFileStats).mock.calls
+      .find((c) => c[0][0].place_id === 'p1');
+    expect(p1Call?.[0][0].path).toBe('tg:-100:38');
+    // remoteFileCache（卡片角标）按条目解析到源 key 后能命中。
+    const f1 = state.remoteItems.find((x) => x.id === 'vr1');
+    expect(f1).toBeTruthy();
+    expect(remoteFileCacheKeyFor(f1)).toBe('p1\u0001tg:-100:38');
+  });
+
+  it('missing/locked 的引用不发缓存查询，也不尝试缩略图', async () => {
+    vi.mocked(api.virtualBrowse).mockResolvedValue([
+      vref({ id: 'vr1', source_state: 'missing', source_place: null }),
+    ]);
+    await reloadVirtualDir();
+    expect(vi.mocked(api.remoteCacheFileStats)).not.toHaveBeenCalled();
+    expect(state.remoteItems[0].thumb_token).toBeNull();
+  });
+});
+
+describe('activateVirtualEntry — 定位到真实位置直接进消息 tab', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'v1',
+      remoteDir: '',
+      remoteTab: 'media',
+      remoteViewMode: 'files',
+      remoteMessages: [],
+      remoteDirName: '虚拟',
+      highlightMsg: null,
+      virtualPlaces: [{ id: 'v1' }],
+      remoteItems: [],
+    });
+    vi.clearAllMocks();
+  });
+
+  const entry = {
+    is_dir: false,
+    source_state: 'available',
+    source_place: 'p1',
+    source_dir: 'tg:-100',
+    source_file: 'tg:-100:38',
+  };
+
+  it('不加载根/文件栏：只切消息时间线并定位高亮', async () => {
+    vi.mocked(api.remoteMessagesAround).mockResolvedValue({
+      rows: [{ message: 38 }], found: true, has_older: false, has_newer: false,
+    });
+    await activateVirtualEntry(entry);
+
+    // 关键：不能先刷一遍文件网格（那会先闪「文件」tab 再跳「消息」tab）。
+    expect(vi.mocked(api.remoteBrowse)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteBrowseTab)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.virtualBrowse)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAround)).toHaveBeenCalledTimes(1);
+    expect(state.remotePlace).toBe('p1');
+    expect(state.remoteDir).toBe('tg:-100');
+    expect(state.remoteTab).toBe('messages');
+    expect(state.remoteViewMode).toBe('messages');
+    expect(state.highlightMsg).toBe(38);
+  });
+
+  it('源 missing：只提示，不切位置不发请求', async () => {
+    await activateVirtualEntry({ ...entry, source_state: 'missing', source_place: null });
+    expect(state.remotePlace).toBe('v1');
+    expect(vi.mocked(api.remoteMessagesAround)).not.toHaveBeenCalled();
+  });
+});
+
+describe('远程浏览竞态：A 加载中点 B，A 的结果不得覆盖 B', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: '',
+      remoteDir: '',
+      remoteTab: 'media',
+      remoteViewMode: 'files',
+      remoteMessages: [],
+      virtualPlaces: [{ id: 'v1' }, { id: 'v2' }],
+      remotePlaces: [],
+      remoteItems: [],
+      busy: false,
+      busyKey: '',
+      placeError: '',
+      remoteDirCaps: null,
+      remoteProtected: false,
+      hasMoreFiles: false,
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.remoteMetaGet).mockResolvedValue(null); // 无磁盘快照
+    vi.mocked(api.remoteEffectiveCaps).mockResolvedValue(null);
+  });
+
+  it('两个虚拟位置：旧位置晚到的 virtual_browse 结果被整份丢弃', async () => {
+    const a = deferred<unknown[]>();
+    vi.mocked(api.virtualBrowse)
+      .mockImplementationOnce(() => a.promise as Promise<never>)
+      .mockResolvedValueOnce([vref({ id: 'B', source_place: 'p2' })]);
+    vi.mocked(api.remoteCacheFileStats).mockResolvedValue([]);
+
+    const p1 = openRemotePlace('v1'); // 不 await：A 挂起
+    await Promise.resolve(); await Promise.resolve();
+    const p2 = openRemotePlace('v2'); // 用户在 A 加载中点了 B
+    await p2;
+    expect(state.remoteItems.map((x) => x.id)).toEqual(['B']);
+
+    a.resolve([vref({ id: 'A', source_place: 'p1' })]); // A 这时候才回来
+    await p1;
+
+    expect(state.remotePlace).toBe('v2');
+    expect(state.remoteItems.map((x) => x.id)).toEqual(['B']); // 没被 A 覆盖
+    expect(state.busy).toBe(false);
+  });
+
+  it('两个真实位置：旧位置晚到的网络 browse 结果被序号守卫丢弃', async () => {
+    const a = deferred<unknown[]>();
+    vi.mocked(api.remoteBrowse)
+      .mockImplementationOnce(() => a.promise as Promise<never>)
+      .mockResolvedValueOnce([{ id: 'B', is_dir: false }]);
+
+    const p1 = openRemotePlace('p1');
+    await Promise.resolve(); await Promise.resolve();
+    const p2 = openRemotePlace('p2');
+    await p2;
+    expect(state.remoteItems.map((x) => x.id)).toEqual(['B']);
+
+    a.resolve([{ id: 'A', is_dir: false }]);
+    await p1;
+
+    expect(state.remotePlace).toBe('p2');
+    expect(state.remoteItems.map((x) => x.id)).toEqual(['B']);
+    expect(state.busy).toBe(false);
   });
 });
