@@ -323,10 +323,11 @@ function onEntryDbl(f) {
  * 转发、后者走解密）；只有**未解锁的加密文件**打不开，因为确实没有密码。
  * 「未能读取」条目点击则就地重试。 */
 function activate(f) {
-  // 虚拟远程里的引用条目：双击=定位到它指向的真实位置（源不可用/未解锁时给提示）。
-  // 文件夹仍走下面的 enterRemoteDir 普通分支。
+  // 虚拟远程里的引用条目：双击=**原地预览/播放**它指向的真实文件（委托源读、
+  // 缓存共享），不切走当前虚拟位置。「定位到真实位置」是右键菜单项。
+  // 源不可用/未解锁时不弹空预览，由父组件的 onOpenPlace 按源状态给提示。
   if (f.is_ref) {
-    activateVirtualEntry(f);
+    if (!f.is_dir) emit('open', f);
     return;
   }
   if (f.probing || isRetrying(f)) return;

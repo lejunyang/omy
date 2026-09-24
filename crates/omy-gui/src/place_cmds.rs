@@ -997,6 +997,13 @@ pub async fn remote_place_open(
         size,
         name,
     } = target;
+    // 先确保这个位置已连上。平时打开文件前都先浏览过它、连接已就绪；但**虚拟位置
+    // 里原地预览一条引用**是直接按源坐标 (source_place, source_file) 打开、可能从没
+    // 进过那个源位置，它还是未连接占位。不在这里连上的话，下面读头部会失败。
+    // ensure_connected 幂等：已连接就 no-op，未加密位置按需连、加密未解锁返回 Locked
+    // （前端据此走解锁流程）。
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state))
+        .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;

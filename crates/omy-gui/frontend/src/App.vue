@@ -271,11 +271,33 @@ async function onOpenPlace(f) {
     state.error = i18n.t('rplace.open_failed');
     return;
   }
+  // 虚拟位置里的引用：**原地预览**——不切走当前虚拟位置，按引用记的源坐标
+  // (source_place, source_file) 委托真实位置打开。缓存 key 用源坐标，与直接在
+  // 真实位置打开同一文件完全相同，命中已下的块、不重复下载。
+  // 源三态：missing/locked 不弹空预览，给对应提示（locked 时引导去解锁源位置）。
+  let openPlace = state.remotePlace;
+  let openId = f.id;
+  if (f.is_ref) {
+    if (f.source_state === 'missing') {
+      state.error = i18n.t('virtual.source_missing');
+      return;
+    }
+    if (f.source_state === 'locked') {
+      state.error = i18n.t('virtual.source_locked');
+      return;
+    }
+    if (!f.source_place || !f.source_file) {
+      state.error = i18n.t('virtual.source_missing');
+      return;
+    }
+    openPlace = f.source_place;
+    openId = f.source_file;
+  }
   try {
     // 名字要一起传：普通文件的 MIME 靠它推，而 Telegram 的 id
     // （tg:<对话>:<消息>）里没有扩展名
     const r = await api.remotePlaceOpen(
-      state.remotePlace, f.id, size, f.real_name || f.name);
+      openPlace, openId, size, f.real_name || f.name);
     if (r.token) {
       placePreview.value = {
         id: r.token,
