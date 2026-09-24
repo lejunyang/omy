@@ -123,6 +123,8 @@ Entering the location shows the conversation list; opening a conversation shows 
 
 Each conversation also has a **message view** that lists messages over time with files as the through-line, so a message carrying a file can be opened directly. For broadcast channels the message view is **read-only browsing** (you can read it, but omy does not implement sponsored messages — see the note below).
 
+When a message carries a "reply #N" reference, clicking it jumps to the referenced message: while loading, only a small spinner appears next to the reference — the whole list is not reloaded. If the target is outside the loaded range, omy fetches a window centered on it and highlights the message. After the jump the timeline **continues in both directions** — scroll down for older messages and up (toward the top) for newer ones; the messages from before the jump are kept.
+
 Search comes in two forms, and the interface keeps them clearly apart:
 
 - **Filter locally**: narrows the entries already listed. The search term is not sent anywhere.
