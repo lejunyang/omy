@@ -696,12 +696,15 @@ watch(
     // 里的下标让 VList 滚到目标（会把它渲染出来并居中），渲染后再高亮。
     const idx = messageItems.value.findIndex((it) => it.type === 'msg' && it.m.message === mid);
     if (idx >= 0 && msgWindow.value) {
+      // scrollToIndex 是即时、精确的虚拟列表定位（不是平滑滚动）。
+      //
+      // 不要在这里再补一次 behavior:'smooth' 的 scrollIntoView：平滑滚动途中
+      // virtua 持续回收/挂载条目、改变 scrollHeight，浏览器平滑滚动会追着移动
+      // 的目标跑好几秒，期间贴着边缘经过会被无限加载误判成「翻到边」而循环触发。
+      // 目标行用索引定位（窗口化后也在），居中一次即可。
       msgWindow.value.scrollToIndex(idx, { align: 'center' });
       await nextTick();
     }
-    // 兜底/补偿：滚到后目标已在 DOM，再 scrollIntoView 精确居中（列表视图/其它情况）
-    const el = document.querySelector(`.msgrow[data-msgid="${mid}"]`);
-    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     // 高亮保留一段时间做脉冲，再清掉（CSS 动画 ~1.6s）
     window.setTimeout(() => {
       if (state.highlightMsg === mid) state.highlightMsg = null;
