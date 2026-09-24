@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use crate::commands::{CmdError, CmdResult};
+use crate::place_files::PlaceThumbs;
 use crate::places::PlaceRegistry;
 use crate::virtual_place::{Reference, Snapshot, VirtualRegistry};
 
@@ -52,6 +53,15 @@ pub struct VirtualEntry {
     /// 引用的源文件 id（跳转/定位用）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
+    /// 引用文件的缩略图句柄。
+    ///
+    /// 虚拟位置本身不连服务器、不存缩略图；这里复用**真实位置已落盘的清晰
+    /// 缩略图磁盘缓存**（`<缓存根>/rthumbs`，按源文件 id `tg:<chat>:<msg>`
+    /// 内容寻址命名）：用户只要在真实位置浏览过该文件，虚拟卡片就能零网络
+    /// 出图。读不到（从没在真实位置加载过）就为 `None`，前端回退类型图标——
+    /// **不在这里现拉**，避免用户打开虚拟位置就对每条引用打一遍 Telegram 请求。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumb_token: Option<String>,
 }
 
 /// 判断一条引用当前的源状态，并（若可用）认领出本地 place_id。
@@ -212,6 +222,7 @@ pub fn virtual_add_ref(
 pub fn virtual_browse(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    thumbs: tauri::State<'_, Arc<PlaceThumbs>>,
     place_id: String,
     folder: String,
 ) -> CmdResult<Vec<VirtualEntry>> {
@@ -231,11 +242,20 @@ pub fn virtual_browse(
                 source_place: None,
                 source_dir: None,
                 source_file: None,
+                thumb_token: None,
             });
         }
         // 引用在后，带源状态
         for r in &node.refs {
             let (state, place) = resolve_state(&reg, r);
+            // 缩略图只对「源可用」的引用尝试，且纯读磁盘缓存、不触网。
+            let thumb_token = if state == SourceState::Available {
+                thumbs
+                    .disk_image(&r.file_id)
+                    .and_then(|b| thumbs.insert_image(b))
+            } else {
+                None
+            };
             entries.push(VirtualEntry {
                 id: r.ref_id.clone(),
                 name: r.snapshot.name.clone(),
@@ -245,6 +265,7 @@ pub fn virtual_browse(
                 source_place: place,
                 source_dir: Some(r.dir_id.clone()),
                 source_file: Some(r.file_id.clone()),
+                thumb_token,
             });
         }
         entries
