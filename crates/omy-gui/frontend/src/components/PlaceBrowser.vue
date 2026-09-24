@@ -223,6 +223,24 @@ const messageItems = computed(() => {
 
 /** 外层滚动容器（.content），传给 WindowList 作 scrollRef。 */
 const contentEl = ref(null);
+/** 吸顶搜索栏元素与内容区顶部 padding：
+ *  - 搜索栏用负 margin 横向铺满内容区，吸顶时要顶到滚动容器最上沿，所以 sticky
+ *    top 取内容区 padding-top 的**负值**（停在 padding 内沿会留一条缝，内容从缝
+ *    上面划过去）；
+ *  - 日期组标题要贴在吸顶搜索栏**正下方**，top = 搜索栏高 + 同一份 padding。
+ *  搜索栏窄屏会换成两行，高度不能写死，用 ResizeObserver 实测。 */
+const searchBarEl = ref(null);
+const searchBarH = ref(0);
+const contentPadTop = ref(0);
+const searchBarTop = computed(() => -contentPadTop.value);
+const msgGroupTop = computed(() => searchBarH.value + contentPadTop.value);
+function measureSearchBar() {
+  if (searchBarEl.value) searchBarH.value = searchBarEl.value.offsetHeight;
+  if (contentEl.value) {
+    contentPadTop.value = parseFloat(getComputedStyle(contentEl.value).paddingTop) || 0;
+  }
+}
+let searchRO = null;
 /** 文件视图窗口化：网格是多列的，VList/Virtualizer 是单列，所以把 visible 分块成
  *  「每行 N 个」的行数组，每个虚拟条目渲染一行 flex 卡片；这样多列网格也能窗口化、
  *  DOM 节点数恒定。列数按滚动容器宽度 / 卡片最小宽(122+gap) 估，随窗口宽度变化。 */
@@ -257,12 +275,28 @@ let gridRO = null;
 onMounted(() => {
   recomputeGridColumns();
   if (contentEl.value && typeof ResizeObserver !== 'undefined') {
-    gridRO = new ResizeObserver(() => recomputeGridColumns());
+    gridRO = new ResizeObserver(() => { recomputeGridColumns(); measureSearchBar(); });
     gridRO.observe(contentEl.value);
   }
 });
+// 搜索栏只在「进入某个位置后」才渲染，而本组件在位置列表层就已挂载——onMounted 时
+// ref 还是 null，进入位置后它才出现。watch 这个模板 ref：元素一挂载就量一次并接上
+// 观察，卸载时断开；不能只在 onMounted 里接（那时根本还没有这个元素）。
+watch(
+  searchBarEl,
+  (el) => {
+    if (searchRO) { searchRO.disconnect(); searchRO = null; }
+    if (el && typeof ResizeObserver !== 'undefined') {
+      measureSearchBar();
+      searchRO = new ResizeObserver(() => measureSearchBar());
+      searchRO.observe(el);
+    }
+  },
+  { flush: 'post' },
+);
 onBeforeUnmount(() => {
   if (gridRO) { gridRO.disconnect(); gridRO = null; }
+  if (searchRO) { searchRO.disconnect(); searchRO = null; }
 });
 
 /** 本地日期的分组键（同一天的消息归一组）。 */
@@ -291,11 +325,6 @@ function fmtTime(unixSecs) {
     .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-/** 本屏消息里带文件的条数。
- *
- * 把它显示出来，是为了让「筛选判据有没有退化成文件视图」这件事
- * **从界面上就能看出来**（§7.8）：消息数应当大于带文件数，
- * 两者相等就说明纯文本消息被漏掉了。此前这个事实只存在于测试输出里。 */
 /** 缩略图字节转 data URL。
  *
  * 后端给的是 Vec<u8>，序列化成 JS 数组。几 KB 的小图，内联开销可以忽略。 */
@@ -312,10 +341,6 @@ function fmtDur(secs) {
   const m = Math.floor(s / 60);
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
-
-const messageWithFile = computed(
-  () => state.remoteMessages.filter((m) => !!m.file_id).length,
-);
 
 /** 当前打开的是不是 Telegram 位置。
  *
@@ -978,7 +1003,12 @@ function rowTitle(f) {
       <template v-else>
         <!-- 搜索栏。之前这一屏根本没有输入框（输入框在 MainScreen 顶栏，
              而这是一个独立整屏），于是本地过滤形同虚设——用户没法输入。 -->
-        <div class="searchbar" data-pb="searchbar">
+        <div
+          class="searchbar stickybar"
+          ref="searchBarEl"
+          :style="{ top: searchBarTop + 'px' }"
+          data-pb="searchbar"
+        >
           <span aria-hidden="true">🔍</span>
           <input
             v-model="state.query"
@@ -1085,15 +1115,6 @@ function rowTitle(f) {
             <div class="title">{{ i18n.t('msgs.empty') }}</div>
           </div>
           <div v-else class="msglist" data-tg="msglist">
-            <!-- 本屏统计。消息数与带文件数的差值就是纯文本消息数——
-                 把它显示出来，用户才能看出筛选判据没有退化成文件视图 -->
-            <div class="msgstat" data-tg="msgstat">
-              {{ i18n.t('msgs.stat', {
-                total: state.remoteMessages.length,
-                files: messageWithFile,
-                texts: state.remoteMessages.length - messageWithFile,
-              }) }}
-            </div>
             <!-- 窗口化：VList 只渲染视口附近一批、滚出去的回收，DOM 节点数恒定，
                  大群里往下翻几百上千条也不卡。分组标题与消息行拍平成 messageItems
                  一维数组，靠 item.type 区分渲染。滚动触底自动加载更早（分页往
@@ -1106,7 +1127,12 @@ function rowTitle(f) {
               @reach-end="() => { if (state.hasMoreMessages && !state.loadingMore) loadMoreMessages(); }"
             >
               <template #default="{ item: it }">
-                <div v-if="it.type === 'group'" class="msggroup" data-tg="msggroup">{{ it.label }}</div>
+                <div
+                  v-if="it.type === 'group'"
+                  class="msggroup"
+                  :style="{ top: msgGroupTop + 'px' }"
+                  data-tg="msggroup"
+                >{{ it.label }}</div>
                 <div
                   v-else
                   class="msgrow"
@@ -1627,21 +1653,31 @@ function rowTitle(f) {
   background: #fee2e2;
   border-color: #fca5a5;
 }
-/* 组标题粘顶：长列表滚动时始终知道正在看哪一天 */
+/* 搜索栏吸顶：往下滚动后搜索框与媒体 tabs 仍常驻可见。
+   用与内容区左右 padding 等大的负 margin 横向铺满吸顶条、再用 padding 把内部
+   内容顶回原对齐——这样背景能盖住从下方划过去的列表，而输入框/tabs 位置不变。
+   sticky 的 top 由内联样式给（内容区 padding-top 的负值），桌面/移动各自适配。 */
+.stickybar {
+  position: sticky;
+  z-index: 20;
+  margin-inline: calc(var(--sp) * -3.5);
+  /* 补偿负 margin 用掉的内容区 padding，再保留 .searchbar 原有的 2px 内边距，
+     这样铺满吸顶后输入框/tabs 的视觉位置与不吸顶时完全一致。 */
+  padding-inline: calc(var(--sp) * 3.5 + 2px);
+  padding-block: 8px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+/* 组标题粘在搜索栏**正下方**（top 由实测高度驱动）：长列表滚动时始终知道正在
+   看哪一天，又不会被吸顶搜索栏盖住。 */
 .msggroup {
   position: sticky;
-  top: 0;
-  z-index: 1;
+  z-index: 10;
   padding: 6px 10px;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   font-size: 11px;
   font-weight: 600;
-  color: var(--fg2);
-}
-.msgstat {
-  padding: 6px 10px;
-  font-size: 11.5px;
   color: var(--fg2);
 }
 .rowactions {
@@ -1682,8 +1718,11 @@ function rowTitle(f) {
      对比过三种放法：①跟输入框行末（换行时跳到第二行、且把该行内容挤窄）；
      ②单独占一行（凭空多一行、且一个小圈占满宽显得空）；③绝对定位右上角
      （不占流、稳定）——选③。 */
-  .searchbar {
-    position: relative;
+  /* 吸顶条窄屏铺满量跟随移动端内容区 padding（比桌面小）。position 保持
+       sticky——这里若写 relative 会让搜索栏吸顶直接失效。 */
+  .stickybar {
+    margin-inline: calc(var(--sp) * -2.5);
+    padding-inline: calc(var(--sp) * 2.5 + 2px);
   }
   .searchbar .refspin {
     position: absolute;

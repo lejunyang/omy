@@ -857,7 +857,6 @@
     "outgoing": "我发的",
     "today": "今天",
     "yesterday": "昨天",
-    "stat": "本屏 {{total}} 条消息，其中 {{files}} 条带文件、{{texts}} 条纯文本",
     "load_more": "加载更早的消息",
     "loading_more": "正在加载…",
     "no_more": "没有更早的消息了",
