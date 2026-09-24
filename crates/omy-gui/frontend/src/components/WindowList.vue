@@ -13,7 +13,7 @@
  *
  * - `items`：数据数组；默认插槽 `{ item, index }` 渲染单条。
  * - `scrollParent`：外层滚动容器 DOM（不传则用直接父元素）。
- * - `@reach-end` / `@reach-start`：接近底部/顶部触发，用于双向无限加载。
+ * - `@reach-end` / `@reach-start`：滚动**停下**且贴边时触发，用于双向无限加载。
  * - 暴露 `scrollToIndex`，供"定位到某条并高亮"。
  */
 import { ref, computed, watch, onBeforeUnmount } from 'vue';
@@ -61,14 +61,66 @@ const vh = ref<VirtualizerHandle | null>(null);
 const viewportH = ref(0);
 let resizeRO: ResizeObserver | null = null;
 
+/** 连续这么久没有新的 scroll 事件，才认为「滚动停下」。
+ *  用户惯性滚动末端两次 scroll 事件间隔通常 30~100ms；取 150ms 留余量。 */
+const SETTLE_MS = 150;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+/** 本轮静止是否已经上报过到边：保证一次停靠只加载一页，离开边缘后复位。 */
+let edgeFired = false;
+
+/** 到边判定。只在滚动**静止 SETTLE_MS** 后跑，且每轮静止最多各方向一次。
+ *
+ * 这是无限加载循环的根因防线：
+ * - 早先在每个 scroll 事件里「贴边就上报」。引用跳转是程序化平滑滚动，虚拟列表
+ *   在途中持续改变 scrollHeight，浏览器平滑滚动追着移动目标连续产生 scroll 事件、
+ *   scrollTop 每帧跨越大几百 px 并长时间贴在阈值内——于是没有翻页意图也疯狂续翻，
+ *   新加载又继续改变高度，形成正反馈（CDP 实测 scrollTop 十几秒涨 4 万 px 不停）。
+ * - 现在静止前根本不判定；高速滚动会不断重置计时器，永远到不了判定点。
+ *   用户真正翻到边是减速到停，scroll 事件停止 150ms 后判定一次，配合 store 的
+ *   loading 标志，一次停靠只加载一页。 */
+function checkEdge(): void {
+  const sc = props.scrollParent;
+  if (!sc) return;
+  const rest = sc.scrollHeight - (sc.scrollTop + sc.clientHeight);
+  const atEnd = rest <= props.endThreshold;
+  const atStart = sc.scrollTop <= props.startThreshold;
+  // 不在任何边缘：复位锁，允许下次停靠再次触发
+  if (!atEnd && !atStart) {
+    edgeFired = false;
+    return;
+  }
+  if (edgeFired) return;
+  edgeFired = true;
+  if (atEnd) emit('reach-end');
+  if (atStart) emit('reach-start');
+}
+
+function onScroll(): void {
+  // 任何滚动都重置静止计时；程序化高速滚动因此永远无法「静止」，不会误触发
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(checkEdge, SETTLE_MS);
+}
+
+function bindScroll(el: HTMLElement): void {
+  el.addEventListener('scroll', onScroll, { passive: true });
+}
+function unbindScroll(el: HTMLElement | null): void {
+  el?.removeEventListener('scroll', onScroll);
+}
+
 // scrollParent 在进入位置/挂载后才拿到（是个模板 ref），用 watch 而不是
 // onMounted 接观察：元素一出现就量一次、窗口或容器尺寸变化时持续更新；
 // 元素换掉（不同视图复用本组件）时断开旧的、改观察新的。
 watch(
   () => props.scrollParent,
-  (el) => {
+  (el, oldEl) => {
+    if (oldEl) unbindScroll(oldEl);
     if (resizeRO) { resizeRO.disconnect(); resizeRO = null; }
-    if (!el || typeof ResizeObserver === 'undefined') return;
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+    edgeFired = false;
+    if (!el) return;
+    bindScroll(el);
+    if (typeof ResizeObserver === 'undefined') return;
     viewportH.value = el.clientHeight;
     resizeRO = new ResizeObserver(() => {
       viewportH.value = el.clientHeight;
@@ -79,6 +131,8 @@ watch(
 );
 onBeforeUnmount(() => {
   if (resizeRO) resizeRO.disconnect();
+  unbindScroll(props.scrollParent);
+  if (settleTimer) clearTimeout(settleTimer);
 });
 
 /** 缓冲下限/上限（px）。
@@ -107,16 +161,6 @@ const buffer = computed(() => {
   return Math.min(MAX_BUFFER, Math.max(MIN_BUFFER, Math.round(h * 1.5)));
 });
 
-function onScroll(): void {
-  const h = vh.value;
-  const sc = props.scrollParent;
-  if (!h || !sc) return;
-  const rest = sc.scrollHeight - (sc.scrollTop + sc.clientHeight);
-  if (rest <= props.endThreshold) emit('reach-end');
-  // 到顶：消息时间线往顶部滚是「往更新翻」，与到底（往更旧翻）对称。
-  if (sc.scrollTop <= props.startThreshold) emit('reach-start');
-}
-
 function scrollToIndex(index: number, opts?: ScrollToIndexOpts): void {
   vh.value?.scrollToIndex(index, opts || { align: 'center' });
 }
@@ -130,7 +174,6 @@ defineExpose({ scrollToIndex });
     :scroll-ref="scrollParent || undefined"
     :buffer-size="buffer"
     :shift="shift"
-    @scroll="onScroll"
   >
     <template #default="{ item, index }">
       <slot :item="(item as T)" :index="index" />
