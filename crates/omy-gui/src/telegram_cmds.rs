@@ -1042,6 +1042,29 @@ pub fn telegram_place_unlock(
     }
 }
 
+/// 用**现场输入的密码**取消加密一个位置：解出明文 session、用机器密钥重落默认格式。
+///
+/// 与 `telegram_place_decrypt` 的区别：那条用会话已解锁的 KEK 解（要求密码此前已
+/// 解锁过某个库）；这条收现场密码，专治「用独立密码加密、当前会话没有它 KEK」的
+/// 位置。已经是未加密时 no-op（返回 false）。
+///
+/// # Errors
+///
+/// 密码为空 `tg_unlock_empty_pw`；密码开不了 `tg_decrypt_wrong`；本机无凭据库
+/// （不落明文）或写盘失败 `tg_decrypt_failed`。
+#[tauri::command]
+pub fn telegram_place_decrypt_pw(place_id: String, password: String) -> CmdResult<bool> {
+    if password.is_empty() {
+        return Err(CmdError::code("tg_unlock_empty_pw"));
+    }
+    let app = AppId::builtin();
+    match tgsession::decrypt_place_with_password(&app, &place_id, password.as_bytes()) {
+        Ok(changed) => Ok(changed),
+        Err(tgsession::SessionError::Undecryptable) => Err(CmdError::code("tg_decrypt_wrong")),
+        Err(e) => Err(CmdError::with("tg_decrypt_failed", detail(&e.to_string()))),
+    }
+}
+
 /// 确保某个 Telegram 位置已连上；已经连上就什么都不做。
 ///
 /// 供 `remote_browse` 之类在真正用它之前调用——用户点「进入」是想看里面的

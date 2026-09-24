@@ -894,6 +894,67 @@ pub fn unlock_place_with_password(
     Ok(Some(saved))
 }
 
+/// 用**现场输入的密码**取消加密：解出明文 session，再用机器密钥重落成默认格式。
+///
+/// 与 [`decrypt_place`] 的区别：那条用会话已解锁的 KEK 解（要求密码此前已解锁过
+/// 某个库、KEK 在会话里）；这条收现场密码，专治「用独立密码加密的位置、当前会话
+/// 里没有它的 KEK」——不给密码就取消不了。
+///
+/// 原子替换、失败原文件不动、无凭据库不落明文（同 [`decrypt_place`]）。
+///
+/// # Errors
+///
+/// 不是加密格式返回 `Ok(false)`；密码开不了返回 [`SessionError::Undecryptable`]；
+/// 本机无凭据库返回 [`SessionError::NoProtector`]；读写失败时返回。
+pub fn decrypt_place_with_password(
+    app: &AppId,
+    account: &str,
+    password: &[u8],
+) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    decrypt_place_with_password_at(&path, app, password)
+}
+
+/// [`decrypt_place_with_password`] 的按路径版本，供测试直接对临时文件跑往返，
+/// 不依赖真实 account 目录。两者共用同一逻辑，改一处即可。
+fn decrypt_place_with_password_at(
+    path: &std::path::Path,
+    app: &AppId,
+    password: &[u8],
+) -> Result<bool, SessionError> {
+    // 读回加密格式；不是 fmt2（旧格式/无法解析）时这条路不适用，返回 false
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+    let stored = match serde_json::from_str::<StoredSession>(&text) {
+        Ok(st) if st.fmt == STORED_FMT => st,
+        _ => return Ok(false),
+    };
+    // 用现场密码（不带会话 KEK，走纯密码槽）解出 PDK → 明文 session
+    let pdk = stored
+        .slots
+        .unlock_with_password(password, &[])
+        .map_err(|_| SessionError::Undecryptable)?;
+    let plain = omy_secret::unseal(
+        &crate::telegram::place_secret::pdk_as_protect_key(&pdk),
+        &stored.session,
+    )
+    .map_err(|_| SessionError::Undecryptable)?;
+    let saved: SavedSession =
+        serde_json::from_slice(&plain).map_err(|_| SessionError::Malformed)?;
+    SessionIdentity { api_id: saved.api_id }.check(app)?;
+    // 用机器密钥重落成默认格式。拿不到凭据库时拒绝——不落明文
+    let tmp = path.with_extension("json.decrypting");
+    seal_and_write(&saved, &tmp, protect_key())?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        SessionError::Io(e.to_string())
+    })?;
+    Ok(true)
+}
+
 /// 显式取消加密一个位置：把它的 session 转回默认（机器密钥裸信封）格式。
 ///
 /// 需要 `keks` 先解开当前的槽（拿到明文 session），再用机器密钥重新落盘。
@@ -1626,6 +1687,65 @@ mod tests {
         match load_with_keks_from(&path, &AppId::builtin(), &[]) {
             Ok(LoadOutcome::Locked) => {}
             other => panic_load("现场密码加密的位置仅机器密钥不该解开", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 现场密码取消加密往返：save_with_password 加密后，decrypt_place_with_password_at
+    /// 用对的密码能转回默认格式（机器密钥可开、auth key 在、内容不丢）；错密码
+    /// Undecryptable 且原文件不动；对未加密文件是 no-op（Ok(false)）。
+    ///
+    /// 不这样会怎样：这条命令专治「用独立密码加密、当前会话没有它 KEK」的位置的
+    /// 取消加密（也是把误加密的位置解回来的唯一途径）。若解出后没原子替换或落错
+    /// 密钥，用户会得到一个既开不了又转不回的半坏文件；错密码若不保原文件，一次
+    /// 手滑就毁掉登录态。
+    #[test]
+    fn typed_password_decrypt_roundtrip_at_path() {
+        use omy_core::crypto::Argon2Params;
+        if protect_key().is_none() {
+            eprintln!("跳过：没有可用凭据后端");
+            return;
+        }
+        let dir = std::env::temp_dir().join("omy-tg-pw-dec");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(TEST_FILE);
+
+        // 未加密文件：no-op
+        save_to(&saved(2040), &path).expect("写默认格式");
+        assert!(
+            !decrypt_place_with_password_at(&path, &AppId::builtin(), b"whatever")
+                .expect("未加密应 no-op"),
+            "未加密文件取消加密应返回 false"
+        );
+
+        // 现场密码加密
+        save_with_password(&saved(2040), &path, b"s3cret", Argon2Params::TEST_WEAK, &[])
+            .expect("现场密码加密写盘");
+        assert!(is_encrypted_at(&path), "加密后应标记已加密");
+
+        // 错密码：Undecryptable，且原文件仍是加密态（没被破坏）
+        assert!(
+            matches!(
+                decrypt_place_with_password_at(&path, &AppId::builtin(), b"wrong"),
+                Err(SessionError::Undecryptable)
+            ),
+            "错密码必须报 Undecryptable"
+        );
+        assert!(is_encrypted_at(&path), "错密码不得改动原加密文件");
+        assert!(!path.with_extension("json.decrypting").exists(), "不得残留临时文件");
+
+        // 对密码：转回默认格式，机器密钥能开、auth key 在、内容不丢
+        assert!(
+            decrypt_place_with_password_at(&path, &AppId::builtin(), b"s3cret").expect("对密码取消加密"),
+            "对密码应真的取消加密"
+        );
+        assert!(!is_encrypted_at(&path), "取消后应回未加密格式");
+        match load_from(&path, &AppId::builtin()) {
+            Ok(Some(b)) => {
+                assert!(has_auth_key(&b), "取消加密后 auth key 必须在");
+                assert_eq!(b.home_dc, 2, "内容不得丢");
+            }
+            _ => panic!("取消加密后应能按默认格式解开"),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

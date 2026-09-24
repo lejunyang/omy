@@ -727,6 +727,10 @@ export const telegramPlaceDecrypt = (placeId) =>
 export const telegramPlaceUnlock = (placeId, password) =>
   invoke('telegram_place_unlock', { placeId, password });
 
+/** 用现场输入的密码取消加密一个位置（当前会话没有它 KEK 时走这条）。返回是否改动。 */
+export const telegramPlaceDecryptPw = (placeId, password) =>
+  invoke('telegram_place_decrypt_pw', { placeId, password });
+
 /** 退出账号：连本机保存的登录态一起删掉，下次要重新扫码或导入 tdata。
  *
  * 用的是 `delete_account` 而非 `detach`：用户点「退出」期望登录态真的没了，

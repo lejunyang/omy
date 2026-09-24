@@ -338,6 +338,7 @@ pub fn run() {
             telegram_cmds::telegram_place_encrypt,
             telegram_cmds::telegram_place_decrypt,
             telegram_cmds::telegram_place_unlock,
+            telegram_cmds::telegram_place_decrypt_pw,
             virtual_cmds::virtual_places,
             virtual_cmds::virtual_create,
             virtual_cmds::virtual_add_folder,
