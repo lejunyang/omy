@@ -27,7 +27,9 @@ vi.mock('./api.js', () => ({
   remoteBrowseTab: vi.fn(),
   remoteCacheFileStats: vi.fn(),
   remoteMetaGet: vi.fn(),
+  remoteMetaPut: vi.fn(),
   remoteEffectiveCaps: vi.fn(),
+  remoteDirProtected: vi.fn(),
   // 失败路径 store 会用 errCode 取错误码；测试里错误都是普通 Error，给 undefined
   // 让它走兜底文案即可（与真实取不到 code 时的行为一致）。
   errCode: () => undefined,
@@ -45,6 +47,9 @@ import {
   openRemotePlace,
   reloadRemoteDir,
   remoteFileCacheKeyFor,
+  locateFile,
+  fileTabForName,
+  tgMsgOfId,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -418,7 +423,7 @@ describe('activateVirtualEntry — 定位到真实位置直接进消息 tab', ()
     vi.mocked(api.remoteMessagesAround).mockResolvedValue({
       rows: [{ message: 38 }], found: true, has_older: false, has_newer: false,
     });
-    await activateVirtualEntry(entry);
+    await activateVirtualEntry(entry, 'msg');
 
     // 关键：不能先刷一遍文件网格（那会先闪「文件」tab 再跳「消息」tab）。
     expect(vi.mocked(api.remoteBrowse)).not.toHaveBeenCalled();
@@ -501,5 +506,196 @@ describe('远程浏览竞态：A 加载中点 B，A 的结果不得覆盖 B', ()
     expect(state.remotePlace).toBe('p2');
     expect(state.remoteItems.map((x) => x.id)).toEqual(['B']);
     expect(state.busy).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 任务 #9：消息 / 虚拟引用「定位到源文件」
+// ---------------------------------------------------------------------------
+
+describe('fileTabForName — 没有后端 media_tab 时的分栏兜底', () => {
+  it('图片/视频归 media；音乐归 audio；gif/webp 归 gif；文档归 file', () => {
+    expect(fileTabForName('a.jpg')).toBe('media');
+    expect(fileTabForName('a.MP4')).toBe('media');
+    expect(fileTabForName('song.mp3')).toBe('audio');
+    expect(fileTabForName('loop.gif')).toBe('gif');
+    expect(fileTabForName('report.pdf')).toBe('file');
+    expect(fileTabForName('x.omy')).toBe('file');
+    expect(fileTabForName(null)).toBe('file');
+  });
+});
+
+describe('tgMsgOfId', () => {
+  it('tg:<chat>:<msg> 取消息号；其它形状给 null', () => {
+    expect(tgMsgOfId('tg:-100:38')).toBe(38);
+    expect(tgMsgOfId('tg:-100')).toBeNull();
+    expect(tgMsgOfId('/webdav/path')).toBeNull();
+    expect(tgMsgOfId(null)).toBeNull();
+  });
+});
+
+describe('locateFile — 在文件网格里定位一个文件', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'p1',
+      remoteDir: 'tg:-100',
+      remoteTab: 'media',
+      remoteViewMode: 'files',
+      remoteMessages: [],
+      remoteItems: [],
+      virtualPlaces: [],
+      remotePlaces: [{ id: 'p1', kind: 'telegram' }],
+      highlightFile: null,
+      placeError: '',
+      hasMoreFiles: true,
+      remoteCacheStat: {},
+    });
+    vi.clearAllMocks();
+    // mockReset 连实现一起清：clearAllMocks 只清调用记录，上一个用例残留的
+    // mockResolvedValueOnce 队列会被本用例误取，造成「明明没找到却高亮」。
+    vi.mocked(api.remoteBrowseTab).mockReset();
+    vi.mocked(api.remoteCacheFileStats).mockResolvedValue([]);
+    vi.mocked(api.remoteMetaGet).mockResolvedValue(null);
+    vi.mocked(api.remoteMetaPut).mockResolvedValue(undefined);
+    vi.mocked(api.remoteEffectiveCaps).mockResolvedValue(null);
+    vi.mocked(api.remoteDirProtected).mockResolvedValue(false);
+  });
+
+  it('目标已在当前分栏列表：不发请求，切文件视图并高亮', async () => {
+    state.remoteItems = [{ id: 'tg:-100:38', name: 'a.jpg', is_dir: false, media_tab: 'media' }];
+    await locateFile({ id: 'tg:-100:38', tab: 'media', name: 'a.jpg' });
+    expect(vi.mocked(api.remoteBrowseTab)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteBrowse)).not.toHaveBeenCalled();
+    expect(state.remoteViewMode).toBe('files');
+    expect(state.remoteTab).toBe('media');
+    expect(state.highlightFile).toBe('tg:-100:38');
+  });
+
+  it('目标在别的分栏：先切到目标 tab（触发一次该分栏浏览）再高亮', async () => {
+    // 当前媒体栏列表没有目标；切到 file 栏后返回包含目标的一页。
+    state.remoteItems = [{ id: 'tg:-100:1', name: 'x.jpg', is_dir: false }];
+    vi.mocked(api.remoteBrowseTab).mockResolvedValue([
+      { id: 'tg:-100:50', name: 'doc.pdf', is_dir: false, media_tab: 'file' },
+    ]);
+    await locateFile({ id: 'tg:-100:50', tab: 'file', name: 'doc.pdf' });
+    expect(vi.mocked(api.remoteBrowseTab)).toHaveBeenCalledTimes(1);
+    expect(state.remoteTab).toBe('file');
+    expect(state.highlightFile).toBe('tg:-100:50');
+  });
+
+  it('目标不在已加载范围：以消息号为游标拉一页合并进来，再高亮', async () => {
+    // 列表预置一条非目标内容（同 tab、列表非空 → 不触发首屏补刷），只剩锚点一次调用。
+    state.remoteItems = [{ id: 'tg:-100:200', name: 'new.jpg', is_dir: false }];
+    vi.mocked(api.remoteBrowseTab).mockResolvedValue([
+      { id: 'tg:-100:38', name: 'old.jpg', is_dir: false, media_tab: 'media' },
+    ]);
+    await locateFile({ id: 'tg:-100:38', tab: 'media', name: 'old.jpg' });
+    // before 游标 = 38+1 = 39，让目标落在这一页里；且只有锚点这一次调用。
+    expect(vi.mocked(api.remoteBrowseTab)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.remoteBrowseTab).mock.calls[0][3]).toBe(39);
+    const ids = state.remoteItems.map((x) => x.id);
+    expect(ids).toContain('tg:-100:200');
+    expect(ids).toContain('tg:-100:38');
+    expect(state.highlightFile).toBe('tg:-100:38');
+  });
+
+  it('拉了一页仍没有：不高亮，给未找到提示，且锚点页只拉一次（不循环续翻）', async () => {
+    // 预置非目标内容，列表非空，不触发首屏补刷。
+    state.remoteItems = [{ id: 'tg:-100:200', name: 'new.jpg', is_dir: false }];
+    vi.mocked(api.remoteBrowseTab).mockResolvedValue([
+      { id: 'tg:-100:99', name: 'other.jpg', is_dir: false },
+    ]);
+    await locateFile({ id: 'tg:-100:38', tab: 'media', name: 'x.jpg' });
+    expect(vi.mocked(api.remoteBrowseTab)).toHaveBeenCalledTimes(1);
+    expect(state.highlightFile).toBeNull();
+    expect(state.placeError).toContain('locate_file_not_found');
+  });
+});
+
+describe('虚拟引用 activateVirtualEntry — Telegram 双落点', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'v1',
+      remoteDir: '',
+      remoteTab: 'media',
+      remoteViewMode: 'files',
+      remoteMessages: [],
+      remoteItems: [],
+      virtualPlaces: [{ id: 'v1' }],
+      remotePlaces: [{ id: 'p1', kind: 'telegram' }],
+      highlightFile: null,
+      highlightMsg: null,
+      placeError: '',
+      remoteCacheStat: {},
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.remoteCacheFileStats).mockResolvedValue([]);
+    vi.mocked(api.remoteMetaGet).mockResolvedValue(null);
+    vi.mocked(api.remoteMetaPut).mockResolvedValue(undefined);
+    vi.mocked(api.remoteEffectiveCaps).mockResolvedValue(null);
+    vi.mocked(api.remoteDirProtected).mockResolvedValue(false);
+  });
+
+  const ref = (over = {}) => ({
+    is_dir: false,
+    source_state: 'available',
+    source_place: 'p1',
+    source_dir: 'tg:-100',
+    source_file: 'tg:-100:38',
+    name: 'a.jpg',
+    source_media_tab: 'media',
+    ...over,
+  });
+
+  it("mode='msg'：直接进消息时间线，不刷文件网格", async () => {
+    vi.mocked(api.remoteMessagesAround).mockResolvedValue({
+      rows: [{ message: 38 }], found: true, has_older: false, has_newer: false,
+    });
+    await activateVirtualEntry(ref(), 'msg');
+    expect(vi.mocked(api.remoteBrowseTab)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteBrowse)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAround)).toHaveBeenCalledTimes(1);
+    expect(state.remoteTab).toBe('messages');
+    expect(state.highlightMsg).toBe(38);
+  });
+
+  it("mode='file'：切源位置后在记住的分栏网格里定位文件，不进消息视图", async () => {
+    vi.mocked(api.remoteBrowseTab).mockResolvedValue([
+      { id: 'tg:-100:38', name: 'a.jpg', is_dir: false, media_tab: 'media' },
+    ]);
+    await activateVirtualEntry(ref(), 'file');
+    expect(state.remotePlace).toBe('p1');
+    expect(state.remoteDir).toBe('tg:-100');
+    expect(state.remoteTab).toBe('media');
+    expect(state.remoteViewMode).toBe('files');
+    expect(vi.mocked(api.remoteMessagesAround)).not.toHaveBeenCalled();
+    expect(state.highlightFile).toBe('tg:-100:38');
+  });
+
+  it('旧引用没有记住分栏：按文件名兜底（a.mp3 -> audio）', async () => {
+    vi.mocked(api.remoteBrowseTab).mockResolvedValue([
+      { id: 'tg:-100:38', name: 'a.mp3', is_dir: false, media_tab: 'audio' },
+    ]);
+    await activateVirtualEntry(ref({ source_media_tab: null, name: 'a.mp3' }), 'file');
+    expect(vi.mocked(api.remoteBrowseTab).mock.calls[0][2]).toBe('audio');
+  });
+
+  it('非 Telegram（WebDAV）引用：只有文件落点，进源目录（不要求 tg 消息号）', async () => {
+    // 共用 beforeEach 默认位置是 telegram；这里显式把它换成 webdav，
+    // reloadRemoteDir 才会走无分栏的 remoteBrowse（一次列全）。
+    state.remotePlaces = [{ id: 'p1', kind: 'webdav' }];
+    const wd = ref({ source_dir: '/docs', source_file: '/docs/a.pdf', source_media_tab: null, name: 'a.pdf' });
+    // WebDAV 根/目录列表一次列全，remoteBrowse 给回该文件。
+    vi.mocked(api.remoteBrowse).mockResolvedValue([
+      { id: '/docs/a.pdf', name: 'a.pdf', is_dir: false },
+    ]);
+    await activateVirtualEntry(wd, 'file');
+    expect(state.remotePlace).toBe('p1');
+    expect(state.remoteDir).toBe('/docs');
+    expect(state.remoteViewMode).toBe('files');
+    expect(vi.mocked(api.remoteBrowseTab)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.remoteMessagesAround)).not.toHaveBeenCalled();
+    expect(state.highlightFile).toBe('/docs/a.pdf');
   });
 });

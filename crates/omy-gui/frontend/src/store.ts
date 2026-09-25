@@ -23,7 +23,7 @@
  * 前端拿到的条目就都是锁定态。
  */
 
-import { reactive, computed, watch } from 'vue';
+import { reactive, computed, watch, nextTick } from 'vue';
 import * as api from './api';
 import * as i18n from './i18n';
 import type { MessageRow, MessageWindow, RemoteEntry } from './types';
@@ -132,6 +132,8 @@ export const state = reactive({
   remoteMessages: [],
   /** 引用跳转 / 定位源消息命中的那条消息号；高亮它、滚到它。null 表示无高亮。 */
   highlightMsg: null,
+  /** 「在文件中显示 / 定位到源文件」命中的文件条目 id；网格/列表高亮它、滚到它。 */
+  highlightFile: null,
   /** 正在为哪个 Telegram 位置弹加密对话框。{id,name} 或 null。 */
   tgEncryptFor: null,
   /** 加密对话框是否正在提交（跑 Argon2 派生 + 写盘时置忙）。 */
@@ -1881,6 +1883,127 @@ export async function loadMessagesFirstPage(): Promise<void> {
   }
 }
 
+/** 从 Telegram 文件/消息条目 id（`tg:<chat>:<msg>`）解析消息号；非法形状给 null。
+ *  与视图层 msgIdOf 同一判据，但状态层也要用（虚拟引用「定位到源消息」）。 */
+export function tgMsgOfId(id: string | null | undefined): number | null {
+  if (typeof id !== 'string') return null;
+  const parts = id.split(':');
+  if (parts.length !== 3 || parts[0] !== 'tg') return null;
+  const n = Number(parts[2]);
+  return Number.isInteger(n) ? n : null;
+}
+
+/** 没有可信的 media_tab 时（旧引用、外部传入只有文件名），按文件后缀粗分到
+ *  与服务端一致的文件分栏。判据刻意保守：只把很确定的类型归到 audio/gif，
+ *  图片/视频归 media，其余一律 file——分错一栏比落进 file 更糟（会看不到目标）。 */
+export function fileTabForName(name: string | null | undefined): string {
+  const ext = String(name || '').toLowerCase().split('.').pop() || '';
+  if (['mp3', 'flac', 'm4a', 'ogg', 'wav', 'aac'].includes(ext)) return 'audio';
+  // 普通动图多以 .gif 发送（Telegram 的 GIF 实际是静音 mp4，但文件名仍常是 .gif）
+  if (['gif', 'webp'].includes(ext)) return 'gif';
+  if (['jpg', 'jpeg', 'png', 'heic', 'heif', 'mp4', 'mov', 'mkv', 'avi', 'webm'].includes(ext)) {
+    return 'media';
+  }
+  return 'file';
+}
+
+/** 把一个文件定位到文件网格里并高亮。
+ *
+ * 与 locateMessage 对称的「文件版」：切到该文件所在的分栏（照片视频/文档/链接/
+ * 音乐/GIF），确保它在已加载列表里（不在就以其消息号为游标拉一页并合并），然后
+ * 置 highlightFile 由视图层滚动 + 脉冲高亮。
+ *
+ * target：
+ * - id   目标条目 id（Telegram 为 tg:<chat>:<msg>）；
+ * - tab  已知分栏优先（来自后端 media_tab / 虚拟引用快照），为 null 时按名字兜底；
+ * - name 文件名（兜底分栏与找不到时提示用）。
+ *
+ * 非 Telegram 目录（WebDAV 等）没有分栏、一次列全：只刷新当前目录，再尝试高亮；
+ * 列表里确实没有（比如不在当前目录）则给未找到提示，不假装成功。 */
+export async function locateFile(target: {
+  id: string;
+  tab?: string | null;
+  name?: string | null;
+  // 显式告知源是不是 Telegram：刚 openRemotePlace(skipReload) 完，state.remotePlaces
+  // 未必刷新过，靠 isTelegramDialog() 推断可能误判成非 Telegram。
+  isTelegram?: boolean;
+}): Promise<void> {
+  const { id } = target;
+  if (!state.remotePlace || !state.remoteDir || !id) return;
+  const place = state.remotePlace;
+  const dir = state.remoteDir;
+  const inDialog = target.isTelegram ?? isTelegramDialog();
+  // 目标分栏：后端/快照给的最准；缺了才按文件名猜。
+  const tab = target.tab || fileTabForName(target.name);
+
+  // 切文件视图。进来时可能还停在消息栏，或刚 skipReload（remoteItems 为空）：
+  //  - Telegram 对话：切到目标分栏并刷该栏（同栏也刷，因为 skipReload 没拉过）；
+  //  - 非 Telegram（WebDAV 等）：没有分栏，刷一次当前目录（一次列全）。
+  state.remoteViewMode = 'files';
+  if (inDialog) {
+    // 记下「是否换了栏」：换栏必须 reload（reloadRemoteDir 会清掉旧栏的条目再拉
+    // 新栏首屏，否则旧栏卡片会残留在网格里）。不能在赋值后再比 state.remoteTab——
+    // 那时永远相等，条件会退化成「只在列表空时刷」，从消息栏跨栏定位就会带着一屏
+    // 别的栏的卡片。
+    let tabChanged = false;
+    if (state.remoteTab !== tab) {
+      state.remoteTab = tab;
+      tabChanged = true;
+      api.uiLog('switch-tab', tab);
+    }
+    if (tabChanged || state.remoteItems.length === 0) {
+      await reloadRemoteDir();
+    }
+  } else {
+    // 非 Telegram 没有分栏概念；刚 skipReload 进来（列表空）时刷一次当前目录，
+    // WebDAV 一次列全。列表已有内容就不重拉。
+    if (state.remoteItems.length === 0) {
+      await reloadRemoteDir();
+    }
+  }
+  // 切位置/目录/分栏会让上面的 await 之后身份变化；回写前校验仍在目标。
+  const stillTarget = () => state.remotePlace === place && state.remoteDir === dir;
+
+  // 确保目标在 remoteItems 里。
+  let found = state.remoteItems.some((x) => x.id === id);
+  if (!found && inDialog) {
+    const n = tgMsgOfId(id);
+    // 以目标消息号为游标拉一页（before=n+1 让目标落在这一页里）。只尝试一次：
+    // 找不到多半是目标不属于这个分栏或已删，不做循环续翻（避免无限请求）。
+    if (n != null) {
+      const lim = alignToGrid(viewportFillCount());
+      try {
+        const rows = await api.remoteBrowseTab(place, dir, tab, n + 1, lim);
+        if (stillTarget() && state.remoteTab === tab) {
+          const seen = new Set(state.remoteItems.map((x) => x.id));
+          const fresh = (rows || []).filter((x) => !seen.has(x.id));
+          if (fresh.length) {
+            state.remoteItems = [...state.remoteItems, ...fresh];
+            remoteDirCache.set(remoteDirKey(place, dir, tab), state.remoteItems);
+            void refreshCacheStats(place, fresh);
+          }
+          found = state.remoteItems.some((x) => x.id === id);
+          // 这一页只是定位锚点，不改变「是否还有更多」的大方向判据。
+        }
+      } catch (e) {
+        state.placeError = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
+      }
+    }
+  }
+  // 非 Telegram：reloadRemoteDir 已一次列全，仍没有就真的不在当前目录。
+
+  if (!stillTarget()) return;
+  if (!found) {
+    state.placeError = i18n.t('msgs.locate_file_not_found');
+    state.highlightFile = null;
+    return;
+  }
+  // 先清再置，保证即便与上一次目标相同也能再次触发视图的高亮 watch。
+  state.highlightFile = null;
+  await nextTick();
+  state.highlightFile = id;
+}
+
 /** 定位到某条消息（引用跳转 / 媒体「定位源消息」）。
  *
  * 两种入口，两种加载粒度：
@@ -1947,6 +2070,7 @@ export async function locateMessage(around: number): Promise<void> {
       if (!win.found) {
         // 目标已删或超出可取范围：不假装定位成功（仍保留拉回的上下文）。
         state.highlightMsg = null;
+  state.highlightFile = null;
         state.placeError = i18n.t('msgs.locate_not_found');
         return;
       }
@@ -2220,7 +2344,12 @@ export async function createVirtualPlace(name) {
 export function openAddToVirtual(entries) {
   const items = (Array.isArray(entries) ? entries : [entries])
     .filter((e) => e && !e.is_dir)
-    .map((e) => ({ fileId: e.id, name: e.real_name || e.name, size: e.plaintext_size ?? e.size ?? null }));
+    .map((e) => ({
+      fileId: e.id,
+      name: e.real_name || e.name,
+      size: e.plaintext_size ?? e.size ?? null,
+      mediaTab: e.media_tab ?? null,
+    }));
   if (!items.length) return;
   state.addToVirtual = { placeId: state.remotePlace, dirId: state.remoteDir, items };
 }
@@ -2245,6 +2374,8 @@ export async function confirmAddToVirtual(virtualPlaceId, folder) {
         fileId: it.fileId,
         snapshotName: it.name,
         snapshotSize: it.size,
+        // 记住源文件所在分栏，供日后「定位到源文件」直接切到正确的网格
+        sourceMediaTab: it.mediaTab ?? null,
       });
       ok += 1;
     } catch (e) {
@@ -2321,6 +2452,7 @@ export function leaveRemotePlace() {
   state.loadingNewer = false;
   state.locatingMsg = null;
   state.highlightMsg = null;
+  state.highlightFile = null;
   state.remoteDirName = '';
 }
 
@@ -2349,6 +2481,7 @@ export async function reloadVirtualDir() {
   state.loadingNewer = false;
   state.locatingMsg = null;
   state.highlightMsg = null;
+  state.highlightFile = null;
   try {
     const rows = await api.virtualBrowse(place, folder);
     if (seq !== browseSeq || state.remotePlace !== place
@@ -2376,6 +2509,8 @@ export async function reloadVirtualDir() {
       source_place: e.source_place ?? null,
       source_dir: e.source_dir ?? null,
       source_file: e.source_file ?? null,
+      // 添加引用时记住的源 Telegram 分栏（可能缺：旧引用），定位源文件时优先用它
+      source_media_tab: e.source_media_tab ?? null,
     }));
     state.hasMoreFiles = false;
     // 缓存角标：引用的缓存落在**真实位置**名下（委托读取时缓存 key 是源
@@ -2397,12 +2532,16 @@ export async function reloadVirtualDir() {
   }
 }
 
-/** 打开/定位一个虚拟引用条目：跳到它指向的真实位置的那个对话，并定位到该文件。
+/** 打开/定位一个虚拟引用条目：跳到它指向的真实位置。
  *
- * 源不可用（Missing）时提示先把那个远程加回来；源加密未解锁（Locked）时提示先
- * 解锁。可用时：切到真实位置 → 进它的对话/目录 → 定位那条消息（复用第 1 组的
- * locateMessage）。委托真实位置读取，缓存天然共享。 */
-export async function activateVirtualEntry(entry) {
+ * mode：
+ * - 'msg'：进源对话的**消息时间线**并高亮那条消息；
+ * - 'file'：进源对话/目录的**文件网格**并把源文件滚出来高亮。
+ * 组件按右键菜单传入；缺省 'file'（等同旧「定位到真实位置」）。
+ *
+ * 源不可用（Missing）提示先把那个远程加回来；源加密未解锁（Locked）提示先解锁。
+ * 委托真实位置读取，缓存天然共享。 */
+export async function activateVirtualEntry(entry, mode: 'file' | 'msg' = 'file') {
   if (!entry || entry.is_dir) return;
   if (entry.source_state === 'missing') {
     setNotice(i18n.t('virtual.source_missing'));
@@ -2412,30 +2551,37 @@ export async function activateVirtualEntry(entry) {
     setNotice(i18n.t('virtual.source_locked'));
     return;
   }
-  // 可用：切到真实位置，进源目录，**直接进消息时间线**定位源文件。
   const place = entry.source_place;
   const dir = entry.source_dir;
   const fileId = entry.source_file;
-  if (!place || !dir) {
+  if (!place || !dir || !fileId) {
     setNotice(i18n.t('virtual.source_missing'));
     return;
   }
-  // 先切真实位置但**跳过根目录文件加载**：紧接着要直接进目标对话的消息时间线，
-  // 先列一遍对话既浪费请求，又会让界面在文件视图闪一下根列表再跳消息 tab。
+  // Telegram 源才有「消息 / 文件」两个落点；其它 provider（WebDAV 等）只有文件。
+  const isTg = typeof fileId === 'string' && fileId.startsWith('tg:');
+  // 先切真实位置但**跳过根目录加载**：紧接着直接进目标对话/目录，先列根列表既
+  // 浪费请求，又会让界面闪一下根目录。
   await openRemotePlace(place, { skipReload: true });
-  // 直接把目标对话置为当前目录并切到消息栏，再定位。
   state.remoteDir = dir;
-  state.remoteTab = 'messages';
-  state.remoteViewMode = 'messages';
   state.remoteDirName = '';
   api.uiLog('enter-dir');
-  // Telegram 文件 id 形如 tg:chat:msg，取消息号定位（locateMessage 会加载该消息
-  // 所在的时间线窗口并高亮；消息视图首屏由它负责，无需先刷文件网格）。
-  const parts = typeof fileId === 'string' ? fileId.split(':') : [];
-  if (parts.length === 3 && parts[0] === 'tg') {
-    const msg = Number(parts[2]);
-    if (Number.isInteger(msg)) await locateMessage(msg);
+  if (mode === 'msg' && isTg) {
+    state.remoteTab = 'messages';
+    state.remoteViewMode = 'messages';
+    const msg = tgMsgOfId(fileId);
+    if (msg != null) await locateMessage(msg);
+    return;
   }
+  // 文件落点：交给 locateFile 统一切分栏/锚定/高亮。Telegram 用记住的分栏
+  // （source_media_tab），缺了让它按文件名兜底；非 Telegram 传 'file' 且无消息号，
+  // locateFile 会退化成「进源目录刷新一次」（WebDAV 一次列全）。
+  await locateFile({
+    id: fileId,
+    name: entry.name,
+    tab: isTg ? (entry.source_media_tab ?? null) : 'file',
+    isTelegram: isTg,
+  });
 }
 
 /** 列出当前远程目录。
@@ -2483,6 +2629,7 @@ export async function reloadRemoteDir() {
   state.loadingNewer = false;
   state.locatingMsg = null;
   state.highlightMsg = null;
+  state.highlightFile = null;
   refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
   // 本次重载的暂存区从空开始：留着上一次的会把已被服务端改动过的
   // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）

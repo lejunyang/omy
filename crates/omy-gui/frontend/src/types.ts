@@ -29,6 +29,8 @@ export interface MessageRow {
   duration: number | null;
   /** 这条消息回复的那条消息号；不是回复则 null。 */
   reply_to: number | null;
+  /** 带文件时该文件所在分栏 media/file/link/audio/gif；纯文本为 null。 */
+  media_tab: string | null;
 }
 
 /** remote_messages_around 的返回：以某条为中心的一段消息（新→旧）+ 双向游标。 */
@@ -76,6 +78,9 @@ export interface RemoteEntry {
   source_place?: string | null;
   source_dir?: string | null;
   source_file?: string | null;
+  /** 源文件所在 Telegram 分栏（真实条目 media_tab；虚拟引用快照 source_media_tab）。 */
+  media_tab?: string | null;
+  source_media_tab?: string | null;
   [k: string]: unknown;
 }
 

@@ -125,6 +125,8 @@ Each conversation also has a **message view** that lists messages over time with
 
 When a message carries a "reply #N" reference, clicking it jumps to the referenced message: while loading, only a small spinner appears next to the reference — the whole list is not reloaded. If the target is outside the loaded range, omy fetches a window centered on it and highlights the message. After the jump the timeline **continues in both directions** — scroll down for older messages and up (toward the top) for newer ones; the messages from before the jump are kept.
 
+For the file block inside a message: a plain click **previews/opens** it; right-click and choose "Show in files" to switch to the matching file tab (Media / Files / Links / Audio / GIF, chosen from the file's type) and scroll that file card into the middle with a highlight. If the target is outside the loaded range, omy fetches one page anchored on it — it never triggers endless paging.
+
 Search comes in two forms, and the interface keeps them clearly apart:
 
 - **Filter locally**: narrows the entries already listed. The search term is not sent anywhere.
@@ -271,9 +273,17 @@ chats.
   **specific folder** under it (expand the folder tree).
 - **Organize**: you can create folders inside a virtual remote; you **cannot upload
   files** into it — it only stores references.
-- **Open**: double-clicking a reference jumps to the real location it points at and
-  locates that file; anything the real location already cached **opens instantly**
-  (a reference shares the same cache as the real file, nothing is downloaded twice).
+- **Open**: double-clicking a reference **previews/plays** the real file it points
+  at in place (reading is delegated to the source, without leaving the virtual
+  location); anything the real location already cached **opens instantly** (a
+  reference shares the same cache as the real file, nothing is downloaded twice).
+- **Locate the source**: right-click a reference —
+  - for a Telegram file there are two entries: "Go to source message" (jumps to
+    that chat's message timeline and highlights the message) and "Go to source
+    file" (switches to the tab that holds the file and scrolls its card into view
+    with a highlight; the file's type/tab is remembered when the reference is added);
+  - for a non-Telegram source such as WebDAV there is just "Go to real location",
+    equivalent to opening that file in its source folder.
 - **Source changes**: a reference records the account's stable identity (not the
   local number that can change). So if you remove a remote from the list and add it
   back later, the reference re-attaches and works again; while the source is

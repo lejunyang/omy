@@ -639,6 +639,8 @@
     "menu_preview": "预览",
     "menu_decrypt_local": "解密到本地…",
     "menu_locate_source": "定位源消息",
+    "menu_show_in_files": "在文件中显示",
+    "menu_locate_file": "定位到源文件",
     "decrypt_pick_title": "选择保存解密文件的文件夹",
     "decrypt_failed": "解密到本地失败",
     "decrypted_local": "已解密 {{name}}，保存到 {{dir}}",
@@ -861,6 +863,7 @@
     "loading_more": "正在加载…",
     "no_more": "没有更早的消息了",
     "locate_not_found": "没找到这条消息，可能已被删除",
+    "locate_file_not_found": "在该分栏里没有找到这个文件",
     "reply_to": "↩ 回复 #{{id}}"
   },
   "xfer": {

@@ -99,6 +99,7 @@ vi.mock('../store.js', async () => {
     onSearchQueryCleared: noop,
     setRemoteTab: noop,
     activateVirtualEntry: noop,
+    locateFile: noop,
     isVirtualPlace: () => false,
     addVirtualFolder: noop,
     openAddToVirtual: noop,

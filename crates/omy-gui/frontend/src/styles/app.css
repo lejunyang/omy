@@ -2376,6 +2376,13 @@ input {
 .msgrow.hl {
   animation: msg-hl 1.6s ease-out 1;
 }
+
+/* 「在文件中显示」命中的文件卡片 / 列表行：复用同一段脉冲动画。 */
+.card.hl,
+.lrow.hl {
+  animation: msg-hl 1.6s ease-out 1;
+  z-index: 1;
+}
 .msgreply {
   border: 1px solid var(--border);
   background: var(--bg);

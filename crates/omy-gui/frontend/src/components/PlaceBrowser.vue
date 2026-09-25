@@ -63,6 +63,7 @@ import {
   loadMoreFiles,
   locateMessage,
   activateVirtualEntry,
+  locateFile,
   isVirtualPlace,
   addVirtualFolder,
   openAddToVirtual,
@@ -591,13 +592,28 @@ const rmenuItems = computed(() => {
   if (!f) return [];
   const items = [];
   if (f.is_ref) {
-    // 引用条目：菜单只给「定位到真实位置」。源不可用/未解锁时仍给（点了给对应
-    // 提示），让用户知道这条引用指向哪、为什么打不开，而不是右键空无一物。
-    items.push({
-      key: 'locate-ref',
-      icon: '📍',
-      label: i18n.t('virtual.menu_locate'),
-    });
+    // 源不可用/未解锁时仍给菜单项（点了给对应提示），让用户知道这条引用指向哪、
+    // 为什么打不开，而不是右键空无一物。
+    if (isTelegramRef(f)) {
+      // Telegram 引用有两个落点：源消息时间线、源文件所在的分栏网格。
+      items.push({
+        key: 'locate-ref-msg',
+        icon: '💬',
+        label: i18n.t('rplace.menu_locate_source'),
+      });
+      items.push({
+        key: 'locate-ref-file',
+        icon: '📂',
+        label: i18n.t('rplace.menu_locate_file'),
+      });
+    } else {
+      // WebDAV 等非 Telegram 源没有消息概念，保持原来的单个「定位到真实位置」。
+      items.push({
+        key: 'locate-ref-file',
+        icon: '📍',
+        label: i18n.t('virtual.menu_locate'),
+      });
+    }
     return items;
   }
   items.push({
@@ -662,6 +678,15 @@ const rmenuItems = computed(() => {
 });
 
 async function onMenuPick(key) {
+  // 消息文件块菜单与文件条目菜单是两个对象，先处理它，否则会被下面的 !f 拦掉。
+  if (key === 'show-in-files') {
+    const m = msgMenu.value?.m;
+    msgMenu.value = null;
+    if (m?.file_id) {
+      await locateFile({ id: m.file_id, tab: m.media_tab ?? null, name: m.file_name });
+    }
+    return;
+  }
   const f = rmenu.value?.entry;
   rmenu.value = null;
   if (!f) return;
@@ -680,9 +705,24 @@ async function onMenuPick(key) {
     if (mid != null) await locateMessage(mid);
   } else if (key === 'add-to-virtual') {
     openAddToVirtual(f);
-  } else if (key === 'locate-ref') {
-    activateVirtualEntry(f);
+  } else if (key === 'locate-ref-msg') {
+    await activateVirtualEntry(f, 'msg');
+  } else if (key === 'locate-ref-file') {
+    await activateVirtualEntry(f, 'file');
   }
+}
+
+/** 一条虚拟引用是否指向 Telegram 源（源文件 id 形如 tg:<chat>:<msg>）。 */
+function isTelegramRef(f) {
+  return typeof f?.source_file === 'string' && f.source_file.startsWith('tg:');
+}
+
+/** 消息文件块的右键菜单（与条目菜单分开，避免把消息行当文件条目）。 */
+const msgMenu = ref(null);
+function onMsgFileMenu(m, ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  msgMenu.value = { m, x: ev.clientX, y: ev.clientY };
 }
 
 /** 从一个 Telegram 文件/媒体条目里解析出它所在消息的消息号。
@@ -723,6 +763,32 @@ watch(
     // 高亮保留一段时间做脉冲，再清掉（CSS 动画 ~1.6s）
     window.setTimeout(() => {
       if (state.highlightMsg === mid) state.highlightMsg = null;
+    }, 1800);
+  },
+);
+
+/** 「在文件中显示」命中：滚到目标文件卡片并脉冲高亮。
+ *
+ * 网格的 WindowList items 是 gridRows（一行一组），scrollToIndex 定位到**行**，
+ * 所以要先算出目标文件在第几行；列表视图 items 就是 visible，直接用条目下标。
+ * 同样用即时 scrollToIndex（不要再补平滑滚动，理由见消息高亮 watch）。 */
+watch(
+  () => state.highlightFile,
+  async (fid) => {
+    if (!fid) return;
+    await nextTick();
+    let idx = -1;
+    if (state.view === 'grid') {
+      idx = gridRows.value.findIndex((row) => row.cells.some((c) => c && c.id === fid));
+    } else {
+      idx = visible.value.findIndex((x) => x.id === fid);
+    }
+    if (idx >= 0 && fileWindow.value) {
+      fileWindow.value.scrollToIndex(idx, { align: 'center' });
+      await nextTick();
+    }
+    window.setTimeout(() => {
+      if (state.highlightFile === fid) state.highlightFile = null;
     }, 1800);
   },
 );
@@ -1196,6 +1262,7 @@ function rowTitle(f) {
                     class="msgfile"
                     :data-tg-file="it.m.file_id"
                     @click="openFromMessage(it.m)"
+                    @contextmenu="onMsgFileMenu(it.m, $event)"
                   >
                     <span v-if="!it.m.thumb" aria-hidden="true">📎</span>
                     <span v-else class="mfthumb" data-tg="msgthumb">
@@ -1288,7 +1355,7 @@ function rowTitle(f) {
           <div
             v-else
             class="card"
-            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -1354,7 +1421,7 @@ function rowTitle(f) {
           <div
             :key="f.id"
             class="lrow"
-            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
@@ -1427,6 +1494,14 @@ function rowTitle(f) {
       :y="rmenu.y"
       @pick="onMenuPick"
       @close="rmenu = null"
+    />
+    <ContextMenu
+      v-if="msgMenu"
+      :items="[{ key: 'show-in-files', icon: '📂', label: i18n.t('rplace.menu_show_in_files') }]"
+      :x="msgMenu.x"
+      :y="msgMenu.y"
+      @pick="onMenuPick"
+      @close="msgMenu = null"
     />
   </div>
   </AppShell>
