@@ -96,15 +96,29 @@ fn resolve_state(reg: &PlaceRegistry, r: &Reference) -> (SourceState, Option<Str
 }
 
 /// 列出所有虚拟位置（供侧栏），返回 (id, name)。
+///
+/// 每次列出都先用会话已有 KEK 对仍锁定的加密位置做一次**免密自动解锁**：
+/// 用户在本地/Telegram 用同密码解锁后，会话池里已有按本位置 salt 派生的 KEK，
+/// 这里就让它直接开，不必再弹一次密码框。这样侧栏锁徽标与内容状态也能在
+/// 解锁别处后经一次正常的列表刷新自动变开口锁。
 #[tauri::command]
-pub fn virtual_places(vreg: tauri::State<'_, Arc<VirtualRegistry>>) -> Vec<VirtualIdName> {
+pub fn virtual_places(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+) -> Vec<VirtualIdName> {
+    let keks = crate::place_keys::unlock_keks(&state);
     vreg.list_detailed()
         .into_iter()
-        .map(|(id, name, encrypted)| VirtualIdName {
-            unlocked: vreg.is_unlocked(&id),
-            id,
-            name,
-            encrypted,
+        .map(|(id, name, encrypted)| {
+            if encrypted && !vreg.is_unlocked(&id) {
+                vreg.try_auto_unlock_with_keks(&id, &keks);
+            }
+            VirtualIdName {
+                unlocked: vreg.is_unlocked(&id),
+                id,
+                name,
+                encrypted,
+            }
         })
         .collect()
 }

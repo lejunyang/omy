@@ -140,8 +140,20 @@ pub fn remote_place_add(
 
 /// 列出已注册的远程位置。
 #[tauri::command]
-pub fn remote_place_list(reg: tauri::State<'_, Arc<PlaceRegistry>>) -> Vec<PlaceInfo> {
-    reg.list()
+pub fn remote_place_list(
+    reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+) -> Vec<PlaceInfo> {
+    let mut places = reg.list();
+    // 已加密的 Telegram 位置：据当前会话 KEK 判断是开口锁（可免密进）还是闭合锁。
+    // 未加密的保持 None，前端按「无锁标」渲染。
+    for p in &mut places {
+        if p.kind == "telegram" && p.tg_encrypted == Some(true) {
+            p.tg_unlocked =
+                Some(crate::telegram_cmds::telegram_session_unlocked(&p.id, &state));
+        }
+    }
+    places
 }
 
 /// 本机凭据保护是否可用。

@@ -951,6 +951,16 @@ pub(crate) fn telegram_session_encrypted(place_id: &str) -> Option<bool> {
     tgsession::is_encrypted(place_id).ok()
 }
 
+/// 该 Telegram 位置在当前会话 KEK 下是否可直接解开（已解锁）。
+///
+/// 未加密 / 不存在 / 加密但无匹配 KEK 一律返回 `None` 或 false 语义由调用方配合
+/// [`telegram_session_encrypted`] 区分：这里只回答「现在能不能不开密码直接进」。
+#[must_use]
+pub(crate) fn telegram_session_unlocked(place_id: &str, state: &crate::commands::Shared) -> bool {
+    let keks = crate::place_keys::unlock_keks(state);
+    tgsession::place_unlocked_with_keks(place_id, &keks).unwrap_or(false)
+}
+
 /// **显式加密**一个 Telegram 位置：把它的 session 转成 per-place 槽格式，
 /// 用当前会话**真实已解锁的 omy 密码**（库密码 / 设备密钥 / 恢复码）保护。
 ///

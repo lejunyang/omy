@@ -840,6 +840,35 @@ pub fn place_vault(account: &str) -> Result<Option<PlaceVault>, SessionError> {
     }))
 }
 
+/// 当前这批会话 KEK 能否直接解开某位置（不真正加载 session、不连网）。
+///
+/// 供侧栏「已加密位置此刻是锁定还是已解锁」的徽标判断：用户在别处用同密码
+/// 解锁后，会话里已有匹配该位置槽的 KEK，这里返回 `true`，徽标应显示开口锁。
+///
+/// - 位置不存在 / 非加密格式（含旧的未加密 session）→ `Ok(false)`，调用方应先
+///   用 [`is_encrypted`] 区分「没加密」与「加密但锁着」；
+/// - 加密格式但没有任何 KEK 能开槽 → `Ok(false)`（锁着）；
+/// - 有任一把 KEK 能开 → `Ok(true)`。
+///
+/// # Errors
+///
+/// 读盘或解析失败时返回。
+pub fn place_unlocked_with_keks(account: &str, keks: &[Kek]) -> Result<bool, SessionError> {
+    let path = session_path_of(account)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+    let Ok(stored) = serde_json::from_str::<StoredSession>(&text) else {
+        return Ok(false);
+    };
+    if stored.fmt != STORED_FMT {
+        return Ok(false);
+    }
+    Ok(stored.slots.can_unlock(keks))
+}
+
 /// 显式加密一个位置：把它的 session 转成 per-place 槽格式。
 ///
 /// 与迁移是同一个动作，但语义是**用户主动选择**而非自动。已经是加密格式时

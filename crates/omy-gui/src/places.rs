@@ -73,6 +73,13 @@ pub struct PlaceInfo {
     /// 显示锁，逐个查会先无锁、再跳一下）。
     #[serde(skip_serializing_if = "Option::is_none", rename = "encrypted")]
     pub tg_encrypted: Option<bool>,
+    /// Telegram 加密位置在**当前会话**下是否已可免密进入（侧栏显示开口锁）。
+    ///
+    /// 仅 Telegram 且已加密时有意义；未加密 / 非 Telegram 为 `None`。注册表自身
+    /// 不持有会话密钥，无法判断，故 `list()` 先置 None，由命令层拿到当前
+    /// SessionKeys 后再填（见 `remote_place_list`）。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "unlocked")]
+    pub tg_unlocked: Option<bool>,
 }
 
 /// 远程位置注册表。
@@ -443,6 +450,8 @@ impl PlaceRegistry {
                 } else {
                     None
                 },
+                // 是否解锁依赖当前会话，注册表够不到 SessionKeys，留给命令层填。
+                tg_unlocked: None,
             })
             .collect()
     }

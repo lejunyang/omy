@@ -699,6 +699,59 @@ impl VirtualRegistry {
         Ok(())
     }
 
+    /// 用会话里**已有的 KEK** 尝试自动解锁一个锁定的加密位置，无需用户再输密码。
+    ///
+    /// 场景：用户在别处（本地文件 / Telegram 位置）刚用同一密码解锁，会话池里
+    /// 已经有按本位置 salt 派生的 KEK（全局 vault 表保证同密码会为每个 salt 派生）。
+    /// 此时虚拟位置信封本就该能被那把 KEK 解开，却仍显示锁定、要再输一次——这里
+    /// 就是补上这次「免密解锁」。
+    ///
+    /// 成功返回 `true` 并载入明文树；位置不存在、未加密、已解锁或没有能开信封的
+    /// KEK 时返回 `false`，不报错（没钥匙是常态，不是异常）。
+    pub fn try_auto_unlock_with_keks(
+        &self,
+        id: &str,
+        keks: &[omy_core::crypto::Kek],
+    ) -> bool {
+        if !self.is_encrypted(id) || self.is_unlocked(id) {
+            return self.is_unlocked(id);
+        }
+        // 读 KDF 与磁盘信封
+        let kdf = match self.unlock.lock() {
+            Ok(u) => match u.get(id) {
+                Some(st) => st.kdf.clone(),
+                None => return false,
+            },
+            Err(_) => return false,
+        };
+        let Some(path) = Self::store_path() else { return false };
+        let Ok(text) = std::fs::read_to_string(&path) else { return false };
+        let Ok(stored) = serde_json::from_str::<Vec<StoredPlace>>(&text) else { return false };
+        let Some(sp) = stored.into_iter().find(|p| p.id == id) else { return false };
+        let Some(blob) = sp.blob else { return false };
+        let Ok(env) = serde_json::from_str::<omy_secret::Envelope>(&blob) else { return false };
+
+        // 逐把会话 KEK 试（纯试解逻辑抽到 unseal_with_keks，便于单测）。
+        let Some((key, root)) = unseal_tree_with_keks(&env, keks) else { return false };
+
+        {
+            // 开了：载入明文树
+            if let Ok(mut ps) = self.places.lock() {
+                if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
+                    vp.root = root;
+                }
+            }
+            let vaults = match self.unlock.lock() {
+                Ok(u0) => u0.get(id).map(|st| st.vaults.clone()).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            if let Ok(mut u) = self.unlock.lock() {
+                u.insert(id.to_owned(), UnlockState { kdf, key: Some(key), vaults });
+            }
+        }
+        true
+    }
+
     /// 锁定：清空内存明文树与派生密钥（磁盘上仍是信封）。未加密位置忽略。
     pub fn lock(&self, id: &str) {
         if let Ok(mut ps) = self.places.lock() {
@@ -714,6 +767,27 @@ impl VirtualRegistry {
             }
         }
     }
+}
+
+/// 用一批 KEK 尝试解开虚拟位置信封并反序列化出文件夹树。
+///
+/// 虚拟位置信封的保护密钥就是某把 KEK 的 32 字节原始密钥（见 [`derive_key`]），
+/// 所以逐把取 `as_key()` 去 unseal 即可。返回第一把能同时通过信封认证与树反序列化
+/// 的 KEK 对应的（保护密钥, 树）；都不行返回 None。纯函数、不碰磁盘，供自动解锁
+/// 与单测共用。
+fn unseal_tree_with_keks(
+    env: &omy_secret::Envelope,
+    keks: &[omy_core::crypto::Kek],
+) -> Option<(omy_secret::ProtectKey, VFolder)> {
+    for kek in keks {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(kek.as_key().as_bytes());
+        let key = zeroize::Zeroizing::new(raw);
+        let Ok(plain) = omy_secret::unseal(&key, env) else { continue };
+        let Ok(root) = serde_json::from_slice::<VFolder>(&plain) else { continue };
+        return Some((key, root));
+    }
+    None
 }
 
 /// 用 Argon2 从密码 + salt 派生出 32 字节保护密钥（与真实位置加密同款）。
@@ -891,6 +965,43 @@ mod tests {
         reg.with_place(&id, |vp| assert!(vp.root.refs.is_empty()));
 
         // unlock 需要从落盘信封读 KDF（见集成路径），这里只锁定内存语义。
+    }
+
+    /// 自动解锁的纯试解核心：对的 KEK（同一密码+同一 salt）能解开信封并还原树，
+    /// 错的 KEK（不同 salt，即别处的同密码也不行）解不开。
+    ///
+    /// 这是「在别处用同密码解锁后，会话池里已有按本位置 salt 派生的 KEK，虚拟
+    /// 位置应免密自动解锁」的保证；反过来也锁死「跨 salt 的 KEK 不能冒充」。
+    #[test]
+    fn unseal_tree_with_keks_needs_matching_salt() {
+        use omy_core::crypto::{Argon2Params, Kek};
+
+        let pw = b"132";
+        let weak = Argon2Params::TEST_WEAK;
+        let own_salt = [5u8; 16];
+        let other_salt = [6u8; 16];
+
+        // 用 own_salt 造一棵加密树信封（复刻 derive_key 的密钥取法）
+        let kek = Kek::from_password(pw, &own_salt, weak).expect("kdf");
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(kek.as_key().as_bytes());
+        let protect = zeroize::Zeroizing::new(raw);
+        let mut tree = VFolder::root();
+        tree.name = "收藏".to_string();
+        let json = serde_json::to_vec(&tree).expect("ser");
+        let env = omy_secret::seal(&protect, &json).expect("seal");
+
+        // 别处同密码但不同 salt 的 KEK：必须解不开（KEK 与 salt 绑定）
+        let wrong = Kek::from_password(pw, &other_salt, weak).expect("kdf2");
+        assert!(
+            unseal_tree_with_keks(&env, std::slice::from_ref(&wrong)).is_none(),
+            "跨 salt 的 KEK 不能解开本位置信封"
+        );
+
+        // 对的 KEK：解开且树内容一致
+        let (_, got) = unseal_tree_with_keks(&env, std::slice::from_ref(&kek))
+            .expect("匹配 salt 的 KEK 应能自动解锁");
+        assert_eq!(got.name, "收藏");
     }
 
     /// 虚拟位置重命名。

@@ -1673,6 +1673,9 @@ export async function tryUnlock(password) {
     const r = await api.unlockDirectory(state.cwd, password);
     state.credentials = r.credentials;
     await reload();
+    // 同密码的远程/虚拟位置可能因此变成可免密进入，刷一次侧栏锁徽标。
+    // 不 await：不挡本地列表的即时反馈。
+    void reloadRemotePlaces();
     // 判据要同时算上加密文件与加密目录。
     //
     // 加密目录的 is_encrypted 故意是 false——那个字段的含义是「内容是
@@ -3931,6 +3934,7 @@ export async function confirmTgUnlock(password) {
     }
     // 解出登录态后进入该位置：走 openRemotePlace 让它连上并列内容
     state.tgUnlockFor = null;
+    await reloadRemotePlaces();
     await openRemotePlace(target.id);
     setNotice(i18n.t('rplace.unlocked'));
     return true;
