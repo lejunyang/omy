@@ -98,9 +98,14 @@ fn resolve_state(reg: &PlaceRegistry, r: &Reference) -> (SourceState, Option<Str
 /// 列出所有虚拟位置（供侧栏），返回 (id, name)。
 #[tauri::command]
 pub fn virtual_places(vreg: tauri::State<'_, Arc<VirtualRegistry>>) -> Vec<VirtualIdName> {
-    vreg.list()
+    vreg.list_detailed()
         .into_iter()
-        .map(|(id, name)| VirtualIdName { id, name })
+        .map(|(id, name, encrypted)| VirtualIdName {
+            unlocked: vreg.is_unlocked(&id),
+            id,
+            name,
+            encrypted,
+        })
         .collect()
 }
 
@@ -111,12 +116,91 @@ pub struct VirtualIdName {
     pub id: String,
     /// 显示名。
     pub name: String,
+    /// 是否已用独立密码加密（侧栏据此显示锁标记）。
+    pub encrypted: bool,
+    /// 当前会话是否已解锁（未加密恒 true）；false 时浏览要先走解锁。
+    pub unlocked: bool,
 }
 
 /// 新建一个虚拟位置，返回它的 id。
 #[tauri::command]
 pub fn virtual_create(vreg: tauri::State<'_, Arc<VirtualRegistry>>, name: String) -> String {
     vreg.create(name)
+}
+
+/// 重命名一个虚拟位置。
+///
+/// # Errors
+///
+/// 名字为空时返回。
+#[tauri::command]
+pub fn virtual_rename(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    name: String,
+) -> CmdResult<bool> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CmdError::code("virtual_bad_name"));
+    }
+    Ok(vreg.rename(&place_id, name.to_owned()))
+}
+
+/// 用独立密码加密一个虚拟位置（收藏数据）。密码为空拒绝。
+#[tauri::command]
+pub fn virtual_encrypt(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    password: String,
+) -> CmdResult<bool> {
+    vreg.encrypt(&place_id, password.as_bytes())
+        .map(|()| true)
+        .map_err(crypto_err)
+}
+
+/// 用密码解锁一个加密虚拟位置，解开后可浏览、编辑。
+#[tauri::command]
+pub fn virtual_unlock(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    password: String,
+) -> CmdResult<bool> {
+    vreg.unlock(&place_id, password.as_bytes())
+        .map(|()| true)
+        .map_err(crypto_err)
+}
+
+/// 锁定一个虚拟位置（清空本会话内存明文，磁盘仍是密文）。
+#[tauri::command]
+pub fn virtual_lock(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+) -> bool {
+    vreg.lock(&place_id);
+    true
+}
+
+/// 查询单个虚拟位置的加密/解锁态（打开前判断要不要弹解锁框）。
+#[tauri::command]
+pub fn virtual_lock_state(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+) -> serde_json::Value {
+    serde_json::json!({
+        "encrypted": vreg.is_encrypted(&place_id),
+        "unlocked": vreg.is_unlocked(&place_id),
+    })
+}
+
+/// 把虚拟位置加密错误映射成结构化错误码（前端据此区分「密码错」与其它失败）。
+fn crypto_err(e: crate::virtual_place::VirtualCryptoError) -> CmdError {
+    use crate::virtual_place::VirtualCryptoError as E;
+    match e {
+        E::WrongPassword => CmdError::code("virtual_wrong_password"),
+        E::NoSuchPlace => CmdError::code("virtual_no_such_place"),
+        E::Already => CmdError::code("virtual_already"),
+        E::Other(d) => CmdError::with("virtual_encrypt_failed", serde_json::Value::String(d)),
+    }
 }
 
 /// 在某个虚拟位置的某个文件夹下新建子文件夹，返回新文件夹 id。
@@ -237,6 +321,9 @@ pub fn virtual_browse(
     place_id: String,
     folder: String,
 ) -> CmdResult<Vec<VirtualEntry>> {
+    if vreg.is_encrypted(&place_id) && !vreg.is_unlocked(&place_id) {
+        return Err(CmdError::code("virtual_locked"));
+    }
     let out = vreg.with_place(&place_id, |vp| {
         let Some(node) = find_folder(&vp.root, &folder) else {
             return Vec::new();
@@ -284,6 +371,138 @@ pub fn virtual_browse(
         entries
     });
     out.ok_or_else(|| CmdError::code("virtual_no_such_place"))
+}
+
+/// 重命名虚拟位置里的一个文件夹。根（id 为空）不允许改名——根显示的是位置名。
+#[tauri::command]
+pub fn virtual_rename_folder(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    folder: String,
+    name: String,
+) -> CmdResult<bool> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CmdError::code("virtual_bad_name"));
+    }
+    if folder.is_empty() {
+        return Err(CmdError::code("virtual_no_target"));
+    }
+    let ok = vreg
+        .with_place_mut(&place_id, |vp| {
+            vp.root.find_mut(&folder).map(|f| f.name = name.to_owned()).is_some()
+        })
+        .unwrap_or(false);
+    Ok(ok)
+}
+
+/// 删除虚拟位置里的一个文件夹（连同整棵子树的引用）。**不能删根**。
+///
+/// 返回被删子树里直属引用的条数，供前端确认文案说明「将一并移除 N 条引用」
+/// （引用只是收藏指针，删除不触碰真实文件）。
+///
+/// # Errors
+///
+/// 位置/文件夹不存在或目标是根时返回。
+#[tauri::command]
+pub fn virtual_remove_folder(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    folder: String,
+) -> CmdResult<usize> {
+    if folder.is_empty() {
+        return Err(CmdError::code("virtual_no_target"));
+    }
+    vreg.with_place_mut(&place_id, |vp| {
+        let n = vp.root.subtree_ref_count(&folder).unwrap_or(0);
+        vp.root.take_subtree(&folder).map(|_| n)
+    })
+    .flatten()
+    .ok_or_else(|| CmdError::code("virtual_no_target"))
+}
+
+/// 删除一条引用（收藏指针）。不触碰真实文件。返回是否删到。
+#[tauri::command]
+pub fn virtual_remove_ref(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    ref_id: String,
+) -> CmdResult<bool> {
+    let ok = vreg
+        .with_place_mut(&place_id, |vp| vp.root.remove_ref(&ref_id))
+        .unwrap_or(false);
+    Ok(ok)
+}
+
+/// 移动（剪切）一条引用到同位置另一个文件夹，返回引用 id。
+///
+/// 只允许在**同一个虚拟位置内**移动；跨位置走「复制」（virtual_copy_refs）。
+#[tauri::command]
+pub fn virtual_move_ref(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    place_id: String,
+    ref_id: String,
+    dest_folder: String,
+) -> CmdResult<String> {
+    vreg.with_place_mut(&place_id, |vp| -> Option<String> {
+        vp.root.find(&dest_folder)?;
+        let r = vp.root.take_ref(&ref_id)?;
+        vp.root.find_mut(&dest_folder)?.refs.push(r);
+        Some(ref_id)
+    })
+    .flatten()
+    .ok_or_else(|| CmdError::code("virtual_no_target"))
+}
+
+/// 把若干引用**复制**到（可跨位置的）某个虚拟位置文件夹。
+///
+/// 复制是在新位置再建一份指向同一源的引用，快照与源稳定标识沿用原引用——不连
+/// 服务器、不碰真实文件。每条复制件生成**新 ref_id**：两个位置不能共享同一引用
+/// id，否则在一边删除/移动会让另一边的指向失效。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyRefsReq {
+    pub source_place_id: String,
+    pub dest_place_id: String,
+    pub dest_folder: String,
+    pub ref_ids: Vec<String>,
+}
+
+/// 在一棵 VFolder 里按 ref_id 只读找一条引用。
+fn find_ref<'a>(f: &'a crate::virtual_place::VFolder, id: &str) -> Option<&'a Reference> {
+    if let Some(r) = f.refs.iter().find(|r| r.ref_id == id) {
+        return Some(r);
+    }
+    f.folders.iter().find_map(|c| find_ref(c, id))
+}
+
+#[tauri::command]
+pub fn virtual_copy_refs(
+    vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    req: CopyRefsReq,
+) -> CmdResult<usize> {
+    // 先在源位置（只读）克隆要复制的引用，避免持着一把锁跨两个 with_place。
+    let clones: Vec<Reference> = vreg
+        .with_place(&req.source_place_id, |vp| {
+            req.ref_ids
+                .iter()
+                .filter_map(|id| find_ref(&vp.root, id).cloned())
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| CmdError::code("virtual_no_such_place"))?;
+    let added = clones.len();
+
+    vreg.with_place_mut(&req.dest_place_id, |vp| {
+        // 目标文件夹不存在（含非法 id）时一条都不写
+        let Some(dest) = vp.root.find_mut(&req.dest_folder) else {
+            return;
+        };
+        for mut r in clones {
+            r.ref_id = format!("vr{}", crate::virtual_place::random_id());
+            dest.refs.push(r);
+        }
+    });
+    Ok(added)
 }
 
 /// 一个虚拟位置的文件夹（扁平化，带层级深度），供树形选择对话框显示。

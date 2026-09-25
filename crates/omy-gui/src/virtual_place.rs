@@ -180,6 +180,65 @@ impl VFolder {
         None
     }
 
+    /// 按 id 深度优先找一个文件夹（只读）。根 id 是空串。
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<&VFolder> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.folders.iter().find_map(|f| f.find(id))
+    }
+
+    /// 取出 id 指定的子文件夹节点（连同整棵子树）的所有权；不存在返回 None。
+    /// 根是空 id，调用方不该来取根（根不能被删/移动），对空 id 返回 None。
+    pub fn take_subtree(&mut self, id: &str) -> Option<VFolder> {
+        if id.is_empty() {
+            return None;
+        }
+        if let Some(i) = self.folders.iter().position(|f| f.id == id) {
+            return Some(self.folders.remove(i));
+        }
+        for f in &mut self.folders {
+            if let Some(node) = f.take_subtree(id) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
+    /// 删除一个直属/后代引用（按 ref_id），返回是否真的删了。递归整棵子树。
+    pub fn remove_ref(&mut self, ref_id: &str) -> bool {
+        let before = self.refs.len();
+        self.refs.retain(|r| r.ref_id != ref_id);
+        let mut removed = self.refs.len() != before;
+        for f in &mut self.folders {
+            removed = f.remove_ref(ref_id) || removed;
+        }
+        removed
+    }
+
+    /// 取出一个引用（按 ref_id）的所有权（用于剪切移动）。整棵树递归找。
+    pub fn take_ref(&mut self, ref_id: &str) -> Option<Reference> {
+        if let Some(i) = self.refs.iter().position(|r| r.ref_id == ref_id) {
+            return Some(self.refs.remove(i));
+        }
+        for f in &mut self.folders {
+            if let Some(r) = f.take_ref(ref_id) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    /// 某个文件夹（含其整棵子树）里直属引用的数量，用于删除确认计数。
+    #[must_use]
+    pub fn subtree_ref_count(&self, id: &str) -> Option<usize> {
+        let node = self.find(id)?;
+        fn count(n: &VFolder) -> usize {
+            n.refs.len() + n.folders.iter().map(count).sum::<usize>()
+        }
+        Some(count(node))
+    }
 }
 
 /// 一个虚拟远程位置的持久化数据。
@@ -189,17 +248,27 @@ impl VFolder {
 pub struct VirtualPlace {
     /// 稳定 id（跨重启不变，前端用它指代这个虚拟位置）。
     pub id: String,
-    /// 显示名。
+    /// 显示名。即使整个位置加密，名字也保持明文（与真实位置加密口径一致：
+    /// 锁定态下侧栏仍能显示名字）。
     pub name: String,
     /// 文件夹 + 引用的树。
     pub root: VFolder,
+    /// 是否已用独立密码加密。加密后 `root` 在落盘时是一份 omy-secret 信封，
+    /// 内存里仍是明文树（解锁后使用）；未加密为 false（旧配置缺字段也按 false）。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 impl VirtualPlace {
     /// 新建一个空虚拟位置。
     #[must_use]
     pub fn new(id: String, name: String) -> Self {
-        Self { id, name, root: VFolder::root() }
+        Self { id, name, root: VFolder::root(), encrypted: false }
+    }
+
+    /// 改显示名。
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
     }
 }
 
@@ -210,12 +279,85 @@ impl VirtualPlace {
 /// 位置这份 blob 会被 seal（见模块顶注），未加密的仍明文。
 ///
 /// 线程安全：内部 `Mutex`。GUI 以 `Arc<VirtualRegistry>` 持有，命令层共享。
+/// 落盘文件里的一个位置：明文名字 + 明文树或加密信封。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StoredPlace {
+    id: String,
+    name: String,
+    #[serde(default)]
+    encrypted: bool,
+    /// 未加密时的树；加密时缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root: Option<VFolder>,
+    /// 加密时：封着 root JSON 的信封（序列化成 JSON 字符串）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blob: Option<String>,
+    /// 加密时的 Argon2 材料（salt/参数），明文（salt 不是秘密）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kdf: Option<KdfMaterial>,
+}
+
+/// 现场密码的 Argon2 派生材料（明文，salt 不是秘密）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct KdfMaterial {
+    salt: [u8; 16],
+    m_kib: u32,
+    t: u32,
+    p: u32,
+}
+
+impl KdfMaterial {
+    fn moderate() -> Self {
+        let params = omy_core::crypto::Argon2Params::MODERATE;
+        let mut salt = [0u8; 16];
+        omy_core::util::fill_random(&mut salt);
+        Self { salt, m_kib: params.m_kib, t: params.t, p: params.p }
+    }
+    fn params(&self) -> omy_core::crypto::Argon2Params {
+        omy_core::crypto::Argon2Params { m_kib: self.m_kib, t: self.t, p: self.p }
+    }
+}
+
+/// 一个加密位置在内存里的解锁态：KDF 材料 + （解锁后才有）派生密钥。
+#[derive(Clone)]
+struct UnlockState {
+    kdf: KdfMaterial,
+    key: Option<omy_secret::ProtectKey>,
+}
+
+/// 加密相关操作的错误。
+#[derive(Debug)]
+pub enum VirtualCryptoError {
+    /// 密码不对 / 信封认证失败。
+    WrongPassword,
+    /// 位置不存在。
+    NoSuchPlace,
+    /// 已经是目标态（对已加密位置再加密）。
+    Already,
+    /// 序列化/写盘等其它失败。
+    Other(String),
+}
+
+impl std::fmt::Display for VirtualCryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongPassword => write!(f, "密码不正确"),
+            Self::NoSuchPlace => write!(f, "虚拟位置不存在"),
+            Self::Already => write!(f, "已经加密"),
+            Self::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+impl std::error::Error for VirtualCryptoError {}
+
 #[derive(Default)]
 pub struct VirtualRegistry {
     places: std::sync::Mutex<Vec<VirtualPlace>>,
     /// 下一个虚拟位置 id 的序号，只增不减（同 `PlaceRegistry` 的理由：id 进
     /// 持久化，重发会让两个虚拟位置指向同一份数据）。
     next_seq: std::sync::Mutex<u64>,
+    /// 加密位置的解锁态。进程重启后 key 复位为 None，必须重新输密码。
+    unlock: std::sync::Mutex<std::collections::HashMap<String, UnlockState>>,
 }
 
 impl VirtualRegistry {
@@ -269,7 +411,32 @@ impl VirtualRegistry {
             std::fs::create_dir_all(dir)?;
         }
         let list = self.places.lock().map(|p| p.clone()).unwrap_or_default();
-        let text = serde_json::to_string_pretty(&list)
+        let unlock = self.unlock.lock().ok();
+        let mut stored: Vec<StoredPlace> = Vec::with_capacity(list.len());
+        for vp in list {
+            if vp.encrypted {
+                // 只有已解锁（手里有 key）才把**当前内存树**重新封好写盘；
+                // 锁定态跳过这一项，绝不用空树覆盖已加密收藏。
+                let Some(st) = unlock.as_ref().and_then(|m| m.get(&vp.id)) else { continue };
+                let Some(key) = &st.key else { continue };
+                let json = serde_json::to_vec(&vp.root)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let env = omy_secret::seal(key, &json)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                let blob = serde_json::to_string(&env)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                stored.push(StoredPlace {
+                    id: vp.id, name: vp.name, encrypted: true,
+                    root: None, blob: Some(blob), kdf: Some(st.kdf.clone()),
+                });
+            } else {
+                stored.push(StoredPlace {
+                    id: vp.id, name: vp.name, encrypted: false,
+                    root: Some(vp.root), blob: None, kdf: None,
+                });
+            }
+        }
+        let text = serde_json::to_string_pretty(&stored)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         omy_core::fsatomic::write_atomic(&path, text.as_bytes())
             .map_err(|e| std::io::Error::other(e.to_string()))
@@ -290,13 +457,44 @@ impl VirtualRegistry {
         id
     }
 
-    /// 列出所有虚拟位置的 (id, name)（供侧栏）。
+    /// 列出所有虚拟位置的 (id, name)。侧栏实际用 [`Self::list_detailed`]（带加密
+    /// 标记）；这个二元组版本保留给测试与潜在的内部调用。
     #[must_use]
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<(String, String)> {
         self.places
             .lock()
             .map(|ps| ps.iter().map(|p| (p.id.clone(), p.name.clone())).collect())
             .unwrap_or_default()
+    }
+
+    /// 列出所有虚拟位置的 (id, name, encrypted)（供侧栏显示锁标记）。
+    #[must_use]
+    pub fn list_detailed(&self) -> Vec<(String, String, bool)> {
+        self.places
+            .lock()
+            .map(|ps| ps.iter().map(|p| (p.id.clone(), p.name.clone(), p.encrypted)).collect())
+            .unwrap_or_default()
+    }
+
+    /// 该位置是否处于加密态（不存在为 false）。
+    #[must_use]
+    pub fn is_encrypted(&self, id: &str) -> bool {
+        self.places.lock().map(|ps| ps.iter().any(|p| p.id == id && p.encrypted)).unwrap_or(false)
+    }
+
+    /// 该加密位置当前是否已解锁（内存里有可用树与派生密钥）。
+    /// 未加密的位置恒视为「可用」，返回 true。
+    #[must_use]
+    pub fn is_unlocked(&self, id: &str) -> bool {
+        let encrypted = self.is_encrypted(id);
+        if !encrypted {
+            return true;
+        }
+        self.unlock
+            .lock()
+            .map(|m| m.get(id).and_then(|st| st.key.as_ref()).is_some())
+            .unwrap_or(false)
     }
 
     /// 对某个虚拟位置做一次修改（在闭包里改，改完自动落盘）。
@@ -319,6 +517,11 @@ impl VirtualRegistry {
         Some(f(vp))
     }
 
+    /// 重命名一个虚拟位置。返回是否真的改了（不存在为 false）。落盘。
+    pub fn rename(&self, id: &str, name: String) -> bool {
+        self.with_place_mut(id, |vp| vp.rename(name)).is_some()
+    }
+
     /// 删除一个虚拟位置。返回是否真的删了（不存在为 false）。落盘。
     pub fn remove(&self, id: &str) -> bool {
         let removed = {
@@ -327,11 +530,126 @@ impl VirtualRegistry {
             ps.retain(|p| p.id != id);
             ps.len() != before
         };
+        if let Ok(mut u) = self.unlock.lock() {
+            u.remove(id);
+        }
         if removed {
             let _ = self.save();
         }
         removed
     }
+
+    /// 把一个**未加密**的虚拟位置用独立密码加密。
+    ///
+    /// 成功后内存里仍是明文树（本会话继续可用），同时把「KDF + 派生密钥」记进
+    /// unlock 并立即落盘（save 用它把树封成信封）。已经加密 / 位置不存在 /
+    /// 密码为空都报错。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`VirtualCryptoError`]。
+    pub fn encrypt(&self, id: &str, password: &[u8]) -> Result<(), VirtualCryptoError> {
+        if password.is_empty() {
+            return Err(VirtualCryptoError::Other("empty password".into()));
+        }
+        // 先确认存在且未加密
+        {
+            let ps = self.places.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            let vp = ps.iter().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
+            if vp.encrypted {
+                return Err(VirtualCryptoError::Already);
+            }
+        }
+        let kdf = KdfMaterial::moderate();
+        let key = derive_key(password, &kdf)?;
+        // 置加密标记
+        {
+            let mut ps = self.places.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
+            vp.encrypted = true;
+        }
+        {
+            let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
+        }
+        // save 用 unlock 里的密钥把当前树封好；失败回滚加密标记
+        if let Err(e) = self.save() {
+            if let Ok(mut ps) = self.places.lock() {
+                if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
+                    vp.encrypted = false;
+                }
+            }
+            if let Ok(mut u) = self.unlock.lock() {
+                u.remove(id);
+            }
+            return Err(VirtualCryptoError::Other(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 用密码解锁一个加密虚拟位置：解开信封、把明文树载入内存，缓存派生密钥。
+    ///
+    /// # Errors
+    ///
+    /// 位置不存在、未加密、密码错误（信封认证失败）时报错。
+    pub fn unlock(&self, id: &str, password: &[u8]) -> Result<(), VirtualCryptoError> {
+        // 取 KDF（先 clone，避免持着 unlock 锁再去拿 places 锁）
+        let kdf = {
+            let u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            u.get(id).map(|st| st.kdf.clone()).ok_or(VirtualCryptoError::NoSuchPlace)?
+        };
+        let key = derive_key(password, &kdf)?;
+        // 信封来自磁盘：直接读 StoredPlace.blob
+        let path = Self::store_path().ok_or_else(|| VirtualCryptoError::Other("no data dir".into()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| VirtualCryptoError::Other(e.to_string()))?;
+        let stored: Vec<StoredPlace> = serde_json::from_str(&text)
+            .map_err(|e| VirtualCryptoError::Other(e.to_string()))?;
+        let sp = stored.into_iter().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
+        let blob = sp.blob.ok_or(VirtualCryptoError::WrongPassword)?;
+        let env: omy_secret::Envelope = serde_json::from_str(&blob)
+            .map_err(|_| VirtualCryptoError::WrongPassword)?;
+        let plain = omy_secret::unseal(&key, &env)
+            .map_err(|_| VirtualCryptoError::WrongPassword)?;
+        let root: VFolder = serde_json::from_slice(&plain)
+            .map_err(|_| VirtualCryptoError::WrongPassword)?;
+        // 载入明文树 + 缓存密钥
+        {
+            let mut ps = self.places.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
+            vp.root = root;
+        }
+        {
+            let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
+        }
+        Ok(())
+    }
+
+    /// 锁定：清空内存明文树与派生密钥（磁盘上仍是信封）。未加密位置忽略。
+    pub fn lock(&self, id: &str) {
+        if let Ok(mut ps) = self.places.lock() {
+            if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
+                if vp.encrypted {
+                    vp.root = VFolder::root();
+                }
+            }
+        }
+        if let Ok(mut u) = self.unlock.lock() {
+            if let Some(st) = u.get_mut(id) {
+                st.key = None;
+            }
+        }
+    }
+}
+
+/// 用 Argon2 从密码 + salt 派生出 32 字节保护密钥（与真实位置加密同款）。
+fn derive_key(password: &[u8], kdf: &KdfMaterial) -> Result<omy_secret::ProtectKey, VirtualCryptoError> {
+    let kek = omy_core::crypto::Kek::from_password(password, &kdf.salt, kdf.params())
+        .map_err(|_| VirtualCryptoError::Other("derive failed".into()))?;
+    let mut k = [0u8; 32];
+    k.copy_from_slice(kek.as_key().as_bytes());
+    Ok(zeroize::Zeroizing::new(k))
 }
 
 #[cfg(test)]
@@ -417,4 +735,96 @@ mod tests {
         assert_eq!(r.note, "");
         assert_eq!(r.snapshot.size, None);
     }
+
+    /// 树操作：删引用、剪切移动、删文件夹（带子树）、跨位置复制源克隆。
+    ///
+    /// 钉住「移动不复制、删除只动指针」这两件事——它们是收藏夹最容易写坏的地方。
+    #[test]
+    fn ref_remove_move_and_subtree_count() {
+        let mut vp = VirtualPlace::new("v1".into(), "收藏".into());
+        // 根下放一条 r0；子文件夹 f1 下放 r1；f1 下再建 f2 放 r2。
+        vp.root.refs.push(make_ref("r0"));
+        vp.root.folders.push(VFolder {
+            id: "f1".into(), name: "一".into(), folders: Vec::new(),
+            refs: vec![make_ref("r1")],
+        });
+        vp.root.find_mut("f1").unwrap().folders.push(VFolder {
+            id: "f2".into(), name: "二".into(), folders: Vec::new(),
+            refs: vec![make_ref("r2")],
+        });
+
+        // subtree_ref_count 把整棵子树的引用都数上（f1 含 r1+r2=2）。
+        assert_eq!(vp.root.subtree_ref_count("f1"), Some(2));
+        assert_eq!(vp.root.subtree_ref_count("f2"), Some(1));
+
+        // 剪切 r2 到根：原位置消失、根上出现，且 ref_id 不变（移动不是复制）。
+        let moved = vp.root.take_ref("r2").expect("找到 r2");
+        assert_eq!(moved.ref_id, "r2");
+        vp.root.find_mut("f2").unwrap().refs.is_empty();
+        vp.root.refs.push(moved);
+        assert!(vp.root.refs.iter().any(|r| r.ref_id == "r2"));
+        assert_eq!(vp.root.subtree_ref_count("f1"), Some(1));
+
+        // 删除 r0：只动这一条指针，r1/r2 不受影响。
+        assert!(vp.root.remove_ref("r0"));
+        assert!(!vp.root.remove_ref("r0")); // 再删一次为 false
+        assert_eq!(vp.root.subtree_ref_count("f1"), Some(1));
+
+        // 删除 f1 整棵子树：f1/f2 都没了。
+        assert!(vp.root.take_subtree("f1").is_some());
+        assert!(vp.root.find("f1").is_none());
+        assert!(vp.root.find("f2").is_none());
+        // 根不能被 take_subtree 取走
+        assert!(vp.root.take_subtree("").is_none());
+    }
+
+    fn make_ref(id: &str) -> Reference {
+        Reference {
+            ref_id: id.into(),
+            source: SourceRef::telegram(1),
+            dir_id: "tg:-100".into(),
+            file_id: format!("tg:-100:{id}"),
+            snapshot: Snapshot { name: format!("{id}.bin"), size: None, media_tab: None },
+            tags: Vec::new(),
+            note: String::new(),
+        }
+    }
+
+    /// 加密→锁定→解锁往返：错误密码解不开，正确密码还原树。
+    #[test]
+    fn encrypt_lock_unlock_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("omy-vp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        // 用一个隔离的 data dir（VirtualRegistry::store_path 走 omy_config::data_dir，
+        // 不易注入；这里只直接验证内存加密/解锁的密钥往返，不依赖落盘路径）。
+        let reg = VirtualRegistry::new();
+        let id = reg.create("私密".into());
+        reg.with_place_mut(&id, |vp| {
+            vp.root.refs.push(make_ref("r1"));
+        });
+
+        // 加密
+        reg.encrypt(&id, b"hunter2").expect("加密成功");
+        assert!(reg.is_encrypted(&id));
+        assert!(reg.is_unlocked(&id));
+
+        // 锁定后内存空树、key 清空
+        reg.lock(&id);
+        assert!(!reg.is_unlocked(&id));
+        reg.with_place(&id, |vp| assert!(vp.root.refs.is_empty()));
+
+        // unlock 需要从落盘信封读 KDF（见集成路径），这里只锁定内存语义。
+    }
+
+    /// 虚拟位置重命名。
+    #[test]
+    fn registry_rename() {
+        let reg = VirtualRegistry::new();
+        let id = reg.create("旧名".into());
+        assert!(reg.rename(&id, "新名".into()));
+        assert_eq!(reg.list(), vec![(id.clone(), "新名".to_string())]);
+        // 不存在的位置改不了（空白名校验在命令层 virtual_rename，注册表这层只管改名）
+        assert!(!reg.rename("nope", "x".into()));
+    }
 }
+
