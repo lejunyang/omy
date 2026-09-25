@@ -55,6 +55,7 @@ import {
   confirmTgUnlock,
   cancelTgUnlock,
   reloadRemotePlaces,
+  reloadRemoteDir,
   openPlaceBrowser,
   closePlaceBrowser,
   leaveOverlays,
@@ -308,6 +309,14 @@ async function onOpenPlace(f) {
         name: r.name || f.real_name || f.name,
         kind: r.kind || 'other',
         mime: r.mime || '',
+        placeId: openPlace,
+        remotePath: openId,
+        remoteSize: size,
+        externalAvailable: state.storage.mode !== 'not-applicable'
+          && state.remotePlaces.find((p) => p.id === openPlace)?.kind === 'webdav',
+        editable: state.storage.mode !== 'not-applicable'
+          && state.remotePlaces.find((p) => p.id === openPlace)?.kind === 'webdav'
+          && !!state.remotePlaces.find((p) => p.id === openPlace)?.caps?.write,
       };
       return;
     }
@@ -322,6 +331,27 @@ async function onOpenPlace(f) {
   }
 }
 
+/** 把当前 WebDAV 文件交给其它应用。只读与可编辑必须走两个明确入口。 */
+async function onPlaceExternal(editable: boolean) {
+  const file = placePreview.value;
+  if (!file?.placeId || !file.remotePath) return;
+  try {
+    const result = await api.externalEditOpen({
+      placeId: file.placeId,
+      path: file.remotePath,
+      name: file.name,
+      mime: file.mime || 'application/octet-stream',
+      editable,
+    });
+    setNotice(
+      result.pending_sync
+        ? i18n.t('rplace.external_pending')
+        : i18n.t(editable ? 'rplace.external_edit_opened' : 'rplace.external_read_opened'),
+    );
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.open_failed'));
+  }
+}
 /** 关闭云盘预览：先释放后端来源句柄，再清前端目标。 */
 async function onClosePlacePreview() {
   const token = placePreview.value?.id;
@@ -859,10 +889,26 @@ function onKey(e) {
  */
 async function onVisible() {
   if (document.visibilityState !== 'visible') return;
-  if (state.storage.mode === 'not-applicable') return;
-  const before = state.storage.granted;
-  await loadStorageAccess();
-  if (state.storage.granted !== before) await loadPlaces();
+  if (state.storage.mode !== 'not-applicable') {
+    const before = state.storage.granted;
+    await loadStorageAccess();
+    if (state.storage.granted !== before) await loadPlaces();
+  }
+  // 外部编辑器返回时立即补一次；后端仍保留 30 秒定时器兜底。
+  try {
+    const s = await api.externalEditSyncNow();
+    if (s.conflicts > 0) setNotice(i18n.t('rplace.external_conflict'));
+    else if (s.synced > 0) {
+      setNotice(i18n.t('rplace.external_synced', { count: s.synced }));
+      // 远端文件大小、mtime、缩略图与旧播放句柄都可能已变化。先关预览句柄，
+      // 再复用带竞态保护的目录刷新入口，避免列表继续展示同步前的数据。
+      if (placePreview.value) await onClosePlacePreview();
+      if (state.remotePlace) await reloadRemoteDir();
+    }
+    else if (s.pending > 0 || s.failed > 0) setNotice(i18n.t('rplace.external_pending'));
+  } catch {
+    // 非 Android 或尚无编辑会话时不打扰用户。
+  }
 }
 
 onMounted(async () => {
@@ -1087,6 +1133,8 @@ onBeforeUnmount(() => {
     :file="placePreview"
     place
     @close="onClosePlacePreview"
+    @external-readonly="onPlaceExternal(false)"
+    @external-edit="onPlaceExternal(true)"
   />
 
   <!-- 设置。语言改动要立刻生效，所以它自己 emit 一个 lang 事件，

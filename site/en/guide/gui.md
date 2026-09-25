@@ -34,7 +34,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Password management | Add key slots, change passwords, re-encrypt |
 | Context menu | Open, reveal in file manager, password management, move to trash |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
-| Remote locations | Connect a WebDAV cloud / NAS, browse and stream its `.omy` files, ciphertext block cache; see [Remote locations](remote-locations) |
+| Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
 | Theme | Light and dark (under Settings → General) |
 | Languages | Simplified Chinese and English, following the system locale (under Settings → General) |

@@ -61,7 +61,7 @@ const props = defineProps({
   place: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['close', 'external']);
+const emit = defineEmits(['close', 'external', 'external-readonly', 'external-edit']);
 
 const media = useTemplateRef('media');
 const text = ref('');
@@ -127,6 +127,12 @@ onBeforeUnmount(() => {
     <div class="overlay-bar">
       <span class="title">{{ file.name }}</span>
       <span class="spacer"></span>
+      <button v-if="place && file.externalAvailable" class="btn small" @click="$emit('external-readonly')">
+        {{ i18n.t('rplace.open_readonly') }}
+      </button>
+      <button v-if="place && file.externalAvailable && file.editable" class="btn small primary" @click="$emit('external-edit')">
+        {{ i18n.t('rplace.open_editable') }}
+      </button>
       <button class="iconbtn" :aria-label="i18n.t('actions.close')" @click="$emit('close')">
         ✕
       </button>

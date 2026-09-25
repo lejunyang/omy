@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <external-path name="my_images" path="." />
-  <cache-path name="my_cache_images" path="." />
+  <!-- 只允许外部编辑会话目录。不能暴露整个 cache 或外部存储，否则任一拿到
+       临时 grant 的第三方都可能构造 URI 读到与本次文件无关的内容。 -->
+  <files-path name="external_edit" path="external-edit/files/" />
 </paths>

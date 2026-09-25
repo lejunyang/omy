@@ -39,6 +39,25 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 - Besides the item count, the bottom status bar separately counts 🔓 unlocked and 🔒 still-locked (wrong or untried password) encrypted files in the current directory. The numbers update live as scanning progresses; entries still being identified are not counted yet;
 - Decryption happens locally. The server and the wire only ever see ciphertext, just like the [LAN sharing](lan-sharing) model: you must know the password yourself.
 
+## Android: opening WebDAV files in other apps
+
+On Android, the preview panel for a WebDAV file offers two explicit actions:
+
+- **Open read-only**: grants read access to a temporary `content://` URI. If the same stable URI was previously opened for editing, omy revokes the old write grant first.
+- **Open for editing**: shown only for writable WebDAV locations, and grants read/write access to the same URI. Whether a third-party app actually supports in-place saving still depends on that app.
+
+Each remote file always maps to the same private local path, so its URI remains stable across repeated opens and app restarts. The URI exposes only the working file used for external opening; it cannot be used to browse omy's state file, other caches, or general device storage.
+
+::: warning External opening keeps a plaintext working copy
+Inline preview uses `omystream://` and does not write plaintext to disk, but third-party apps cannot consume that internal protocol. External opening therefore stores a **plaintext working copy** of the single file in omy's private Android directory. Other apps need the temporary grant to access it, but an attacker running as the same local user, a rooted device, or anything able to read private app data may still obtain the copy. Uninstalling omy or clearing its app data removes it.
+:::
+
+An editable file is not uploaded on every `FileObserver` event. The observer only marks it as potentially changed; omy checks immediately when it returns to the foreground and batches synchronization every 30 seconds while the process remains alive. If Android kills omy, the edit session, remote revision baseline, and local content fingerprint remain persisted; the next launch checks them again and resumes pending work.
+
+Synchronization never overwrites blindly. omy records the server ETag when the file is opened, falling back to Last-Modified when no ETag is available; if neither exists, "Open for editing" is refused. Uploads are conditional. If another device changed the remote file, omy keeps the local edit and reports a conflict instead of silently replacing the remote version.
+
+For a `.omy` file, the third-party app receives a decrypted single-file working copy. Synchronization re-encrypts it while preserving the original file UUID, all password slots, device-key slots, recovery-code slots, and format parameters. Encrypted directory containers cannot be edited externally. To cover the window where an upload succeeds but Android kills the process before state is committed, the pending ciphertext is persisted as a transaction file and the exact same bytes are reused after restart.
+
 ## Read-only vs writable
 
 Capabilities come from the backend's real probe, not from a UI toggle:

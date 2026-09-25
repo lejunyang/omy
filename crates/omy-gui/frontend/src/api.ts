@@ -472,6 +472,18 @@ export const remotePlaceOpen = (placeId: string, path: string, size: number, nam
 /** 关闭一个远程播放来源（播放结束时调用）。 */
 export const remotePlaceClose = (token: any): Promise<any> => invoke('remote_place_close', { token });
 
+/** 把 WebDAV 文件交给 Android 外部应用；editable=false 时只授读取权限。 */
+export const externalEditOpen = (req: {
+  placeId: string;
+  path: string;
+  name: string;
+  mime: string;
+  editable: boolean;
+}): Promise<any> => invoke('external_edit_open', { req });
+
+/** 检查外部编辑会话并立即同步有变化的文件。 */
+export const externalEditSyncNow = (): Promise<any> => invoke('external_edit_sync_now');
+
 /** 查询远程密文缓存用量 {used, limit, root}。 */
 export const remoteCacheUsage = (): Promise<any> => invoke('remote_cache_usage');
 

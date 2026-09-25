@@ -19,10 +19,13 @@
 //!
 //! # 明文不落盘
 //!
-//! 这是本项目的核心安全目标。GUI 层的做法：
-//! 解密只发生在协议处理器里，结果随响应发走后立即丢弃，
-//! 既不写临时文件，也不在 `AppState` 里长期持有。
+//! 这是内嵌预览的核心安全目标。GUI 层的做法：解密只发生在协议处理器里，
+//! 结果随响应发走后立即丢弃，既不写临时文件，也不在 `AppState` 里长期持有；
 //! 配合响应头的 `no-store`，WebView 也不会把它写进磁盘缓存。
+//!
+//! Android WebDAV「外部打开」是用户明确选择的例外：第三方应用无法读取内部
+//! `omystream://`，因此单个文件会在应用私有目录保留稳定明文工作副本，并只通过
+//! FileProvider 临时授权。完整边界见 [`external_edit`]。
 
 // 与 omy-net 同样的约定：产品代码不允许 panic 路径（GUI 直接面对
 // 用户的任意文件，崩溃会丢失正在处理的数据），测试代码另行放宽——
@@ -37,15 +40,15 @@
 #![allow(linker_messages)]
 
 pub mod applog;
-pub mod transfers;
 mod browse;
 mod citem;
 mod commands;
+mod decrypt;
 mod device_cmds;
 mod device_key;
 mod devices;
-mod decrypt;
 mod encrypt;
+mod external_edit;
 mod fileops;
 mod keymgmt;
 mod lan;
@@ -62,8 +65,9 @@ mod settings;
 mod state;
 mod storage;
 mod telegram_cmds;
-mod video;
+pub mod transfers;
 mod vault_reg;
+mod video;
 mod virtual_cmds;
 mod virtual_place;
 
@@ -91,14 +95,22 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let for_setup_devices = Arc::clone(&device_session);
 
+    // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
+    // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
+    let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
+    let external_edits = Arc::new(external_edit::ExternalEdits::new());
+    #[cfg(target_os = "android")]
+    let for_setup_edits = Arc::clone(&external_edits);
+    #[cfg(target_os = "android")]
+    let for_setup_places = Arc::clone(&place_registry);
+    #[cfg(target_os = "android")]
+    let for_setup_state = Arc::clone(&shared);
+
     let pair_task: device_cmds::SharedPair = Arc::new(lan::PairTask::new());
     let share_task: device_cmds::SharedShare = Arc::new(lan::ShareTask::new());
     let remote_session: Arc<remote::RemoteSession> = Arc::new(remote::RemoteSession::new());
     let for_protocol_remote = Arc::clone(&remote_session);
 
-    // 远程存储位置（WebDAV 等）。与上面的 remote_session 不是一回事：
-    // 那个是局域网对端设备，这个是有真实目录层级的远程存储。
-    let place_registry: Arc<places::PlaceRegistry> = Arc::new(places::PlaceRegistry::new());
     // 虚拟远程位置注册表：本地「收藏夹式」位置，只存对真实远程文件的引用。
     // 首帧就载入，侧栏要立即显示它们（同真实位置的理由）。载入失败只记日志、
     // 不挡启动——收藏坏了不该让整个应用起不来。
@@ -177,7 +189,11 @@ pub fn run() {
     // 远程列表缩略图句柄表：文件头 token 刷新目录即清；清晰缩略图额外落盘
     // （<缓存根>/rthumbs），重启后直接读盘出清晰图、不重新拉。
     let thumb_disk = place_files::RemoteCache::resolve_root(
-        omy_config::Config::load().unwrap_or_default().remote.cache_dir.clone(),
+        omy_config::Config::load()
+            .unwrap_or_default()
+            .remote
+            .cache_dir
+            .clone(),
     )
     .and_then(|remote_root| remote_root.parent().map(|p| p.join("rthumbs")));
     let place_thumbs: Arc<place_files::PlaceThumbs> =
@@ -213,7 +229,9 @@ pub fn run() {
     // 不要为了让链式调用整齐而注册一个空插件占位：那会在插件列表里留下
     // 一个永远不做事的条目，之后排查插件相关问题时得先确认它是不是嫌疑人。
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(storage::init());
+    let builder = builder
+        .plugin(storage::init())
+        .plugin(external_edit::init());
 
     let app = match builder
         .manage(Arc::clone(&shared))
@@ -232,6 +250,7 @@ pub fn run() {
         .manage(Arc::clone(&pin_retry))
         .manage(Arc::clone(&telegram_login))
         .manage(Arc::clone(&telegram_phone_login))
+        .manage(Arc::clone(&external_edits))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
         .register_asynchronous_uri_scheme_protocol("omystream", move |_ctx, request, responder| {
@@ -268,6 +287,8 @@ pub fn run() {
             browse::parent_of,
             storage::storage_access,
             storage::request_storage_access,
+            external_edit::external_edit_open,
+            external_edit::external_edit_sync_now,
             plain::open_external,
             plain::reveal_in_folder,
             video::video_capabilities,
@@ -405,6 +426,13 @@ pub fn run() {
                 // 安卓的窗口由 tauri.android.conf.json 覆盖成 create: true，
                 // Tauri 在 setup 前就按它建好了 WebView，这里只补设备库路径。
                 android_setup(app, &for_setup_devices);
+                external_edit_setup(app, &for_setup_edits);
+                external_edit_timer(
+                    app.handle().clone(),
+                    Arc::clone(&for_setup_places),
+                    Arc::clone(&for_setup_state),
+                    Arc::clone(&for_setup_edits),
+                );
                 let _ = &debug_port;
             }
 
@@ -426,9 +454,8 @@ pub fn run() {
                 //
                 // --remote-allow-origins=* 是必需的：Chromium 会校验
                 // WebSocket 握手的 Origin，不在允许列表时返回 403。
-                let mut args = String::from(
-                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
-                );
+                let mut args =
+                    String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
                 if let Some(port) = &debug_port {
                     args.push_str(&format!(
                         " --remote-debugging-port={port} \
@@ -464,13 +491,60 @@ pub fn run() {
     // 必须在 ExitRequested 里做而不是靠前端 beforeunload——后者在崩溃、
     // 被系统回收时根本不触发，而那恰恰是最该不留缓存的场景。
     let exit_cache = Arc::clone(&remote_cache);
-    app.run(move |_app_handle, event| {
+    let run_edits = Arc::clone(&external_edits);
+    let run_places = Arc::clone(&place_registry);
+    let run_state = Arc::clone(&shared);
+    app.run(move |app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let cfg = omy_config::Config::load().unwrap_or_default();
             if cfg.remote.clear_cache_on_exit {
                 let freed = exit_cache.clear();
                 eprintln!("[omy] 已按设置在退出时清空远程缓存，释放 {freed} 字节");
             }
+        }
+        if let tauri::RunEvent::Resumed = event {
+            let edits = Arc::clone(&run_edits);
+            let places = Arc::clone(&run_places);
+            let state = Arc::clone(&run_state);
+            let app = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = external_edit::sync_all(&app, &places, &state, &edits).await;
+            });
+        }
+    });
+}
+
+#[cfg(target_os = "android")]
+fn external_edit_setup(app: &tauri::App, edits: &Arc<external_edit::ExternalEdits>) {
+    let root = match external_edit::native_root(app.handle()) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("[omy] 取不到外部编辑目录: {e}");
+            return;
+        }
+    };
+    if let Err(e) = edits.configure(root) {
+        eprintln!("[omy] 恢复外部编辑状态失败: {e}");
+        return;
+    }
+    // 进程重启会丢失 Java FileObserver 实例；状态恢复后立即为仍可编辑的稳定
+    // 工作文件重建监听。即使重建失败，启动/前台的指纹比较仍是兜底。
+    external_edit::restore_watchers(app.handle(), edits);
+}
+
+#[cfg(target_os = "android")]
+fn external_edit_timer(
+    app: tauri::AppHandle,
+    places: Arc<places::PlaceRegistry>,
+    state: commands::Shared,
+    edits: Arc<external_edit::ExternalEdits>,
+) {
+    tauri::async_runtime::spawn(async move {
+        // FileObserver 只标脏，30 秒窗口把同一次保存产生的多组事件合并成一次上传。
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            let _ = external_edit::sync_all(&app, &places, &state, &edits).await;
         }
     });
 }
