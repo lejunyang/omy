@@ -63,6 +63,9 @@ pub struct RemoteEntry {
     /// 条目（`probing=false`）就地替换。该态与「未能读取」「锁定」都不同，
     /// 必须单独成态，不能让用户对着还没出结果的条目猜密码。
     pub probing: bool,
+    /// 所在文件分栏（仅 Telegram，来自 omy_remote Entry.media_tab）。
+    /// 供前端「在文件中显示」切到正确分栏；非 Telegram 为 `None`。
+    pub media_tab: Option<String>,
 }
 
 /// 把远程错误映射为结构化错误码。
@@ -309,6 +312,7 @@ fn spawn_avatar_backfill(
                 None,
                 None,
                 false,
+                None,
             );
             entry.thumb_token = token;
             let _ = app.emit(
@@ -374,7 +378,7 @@ fn spawn_thumb_upgrade(
             // insert_image 可能返回 None（空字节/登记失败）：那种情况不发事件，
             // 占位图留着即可，不要清成类型图标
             let Some(token) = thumbs.insert_image(bytes) else { continue };
-            let mut entry = skeleton_entry(id, name, false, size, mtime, false);
+            let mut entry = skeleton_entry(id, name, false, size, mtime, false, None);
             entry.thumb_token = Some(token);
             let _ = app.emit(
                 REMOTE_ENTRY_EVENT,
@@ -429,7 +433,8 @@ fn scan_entries(
         .iter()
         .map(|it| {
             let mut e =
-                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime, false);
+                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime,
+                    false, it.media_tab.map(str::to_string));
             // 服务端随消息送来的内嵌缩略图：**列目录时就已经在手里**，
             // 不需要任何额外请求，也不必等后台识别。
             //
@@ -467,7 +472,8 @@ fn scan_entries(
         let base = entries
             .get(idx)
             .cloned()
-            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime, true));
+            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir,
+                it.size, it.mtime, true, it.media_tab.map(str::to_string)));
         let shared = Arc::clone(&shared);
         let thumbs = Arc::clone(&thumbs_arc);
         let app = app.clone();
@@ -637,7 +643,7 @@ pub async fn remote_probe_entry(
             .find(|seg| !seg.is_empty())
             .map_or_else(|| id.clone(), str::to_string)
     });
-    let base = skeleton_entry(id, name, false, Some(size), None, false);
+    let base = skeleton_entry(id, name, false, Some(size), None, false, None);
     // 重试仍然走缓存：识别失败时 fetch_full_header 在报错路径上**不写缓存**，
     // 所以「未能读取」的条目重试时必然是真的重新请求，不会命中一份坏结果
     let out = probe_remote_entry(
@@ -661,6 +667,8 @@ fn skeleton_entry(
     size: Option<u64>,
     mtime: Option<i64>,
     probing: bool,
+    // 所在分栏。由调用方从 omy_remote Entry 透传；对话骨架等非文件场景给 None。
+    media_tab: Option<String>,
 ) -> RemoteEntry {
     RemoteEntry {
         id,
@@ -675,6 +683,7 @@ fn skeleton_entry(
         probe_failed: false,
         thumb_token: None,
         probing,
+        media_tab,
     }
 }
 
@@ -2561,11 +2570,12 @@ mod tests {
             probe_failed: true,
             thumb_token: None,
             probing: false,
+            media_tab: None,
         };
         let j = serde_json::to_value(&e).expect("序列化");
         for k in [
             "id", "name", "is_dir", "size", "mtime", "is_encrypted", "unlocked", "real_name",
-            "plaintext_size", "probe_failed", "thumb_token", "probing",
+            "plaintext_size", "probe_failed", "thumb_token", "probing", "media_tab",
         ] {
             assert!(j.get(k).is_some(), "字段 {k} 不能改名或缺失");
         }

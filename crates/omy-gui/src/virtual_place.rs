@@ -115,6 +115,13 @@ pub struct Snapshot {
     /// 字节数；未知为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// 该文件所在的 Telegram 文件分栏（media/file/link/audio/gif）。
+    ///
+    /// 在「添加到虚拟远程」时由前端从源条目的 `media_tab` 一起存进来：之后
+    /// 「定位到源文件」直接切到这个分栏网格，不必再按扩展名重新猜（旧引用没有
+    /// 该字段时前端会回落到按文件名猜）。非 Telegram 引用为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_tab: Option<String>,
 }
 
 /// 一条引用：指向某个真实远程里的一个文件/媒体。
@@ -385,7 +392,7 @@ mod tests {
             source: SourceRef::telegram(1),
             dir_id: "tg:-100".into(),
             file_id: "tg:-100:5".into(),
-            snapshot: Snapshot { name: "a.mp4".into(), size: Some(10) },
+            snapshot: Snapshot { name: "a.mp4".into(), size: Some(10), media_tab: None },
             tags: Vec::new(),
             note: String::new(),
         };

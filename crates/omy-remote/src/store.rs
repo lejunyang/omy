@@ -55,6 +55,11 @@ pub struct Entry {
     /// `None` 表示这个条目没有内嵌缩略图（普通文档、纯文本等），
     /// 那是正常情况，界面回退类型图标。
     pub thumb: Option<Vec<u8>>,
+    /// 该条目所属的文件分栏短标识（仅 Telegram；其它 provider 为 `None`）。
+    /// 取值 media/file/link/audio/gif，与 telegram store 的 `MediaTab::key`
+    /// 一致。供「在文件中显示 / 定位到源文件」跳转时切到正确的分栏网格——
+    /// 文件网格是按分栏过滤的，切错栏会看不到目标。
+    pub media_tab: Option<&'static str>,
 }
 
 /// 远程存储契约。

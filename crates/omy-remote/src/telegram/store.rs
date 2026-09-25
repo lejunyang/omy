@@ -136,6 +136,18 @@ pub enum MediaTab {
 }
 
 impl MediaTab {
+    /// 分栏的短标识（与 GUI、Entry.media_tab 约定一致）。
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Media => "media",
+            Self::File => "file",
+            Self::Link => "link",
+            Self::Audio => "audio",
+            Self::Gif => "gif",
+        }
+    }
+
     /// 从前端传来的短标识解析。未知值回落到 `File`（最常用、也最安全）。
     #[must_use]
     pub fn from_key(k: &str) -> Self {
@@ -591,6 +603,37 @@ fn is_complete_image(b: &[u8]) -> bool {
     has(0xDB) && has(0xC4) && b.ends_with(&[0xFF, 0xD9])
 }
 
+/// 按消息媒体的**真实属性**判定它属于哪个文件分栏。
+///
+/// 判据与服务端 [MediaTab::filter] 的分类对齐，这样 `list_tab` 用某 filter
+/// 拉回的条目，其 media_tab 与它实际所在的栏一致；单条消息（定位）与搜索结果
+/// 这类「没有当前 filter 上下文」的路径也能得到正确的栏。
+///
+/// 不能只看 `Media` 变体：视频/音乐/GIF/普通文档都是 `Media::Document`，
+/// 必须深入 TL document 的 attributes 区分（`duration()` 对视频和音乐都返回
+/// Some，区分不了）。
+fn media_tab_of(m: &Media) -> MediaTab {
+    match m {
+        Media::Photo(_) => MediaTab::Media,
+        Media::Document(d) => {
+            let mut tab = MediaTab::File;
+            if let Some(tl::enums::Document::Document(doc)) = &d.raw.document {
+                for attr in &doc.attributes {
+                    match attr {
+                        tl::enums::DocumentAttribute::Video(_) => tab = MediaTab::Media,
+                        tl::enums::DocumentAttribute::Audio(_) => tab = MediaTab::Audio,
+                        tl::enums::DocumentAttribute::Animated => tab = MediaTab::Gif,
+                        _ => {}
+                    }
+                }
+            }
+            tab
+        }
+        // 贴纸等其它可下载媒体没有专门的栏，落文档栏（仍可下载打开）。
+        _ => MediaTab::File,
+    }
+}
+
 fn embedded_thumb(m: &Media) -> Option<Vec<u8>> {
     let sizes = match m {
         Media::Photo(p) => p.thumbs(),
@@ -655,6 +698,7 @@ fn collect_links(msgs: Vec<grammers_client::message::Message>, chat: i64) -> Vec
             etag: None,
             // 链接条目没有缩略图；界面回退到链接类型图标
             thumb: None,
+            media_tab: Some(MediaTab::Link.key()),
         });
     }
     out
@@ -761,6 +805,8 @@ pub struct MessageRow {
     /// 引用条，点它 locateMessage(reply_to)。只记消息号（对话内唯一），跳转时与
     /// 当前对话组合成定位目标——与文件 id 里那个消息号同源。
     pub reply_to: Option<i32>,
+    /// 带文件时该文件所在的分栏（同 Entry.media_tab）；纯文本为 `None`。
+    pub media_tab: Option<&'static str>,
 }
 
 /// [`TelegramStore::messages_around`] 的返回：以某条为中心的一段消息 + 两端游标。
@@ -1469,6 +1515,8 @@ impl TelegramStore {
                 etag: None,
                 // 内嵌缩略图就在这条消息里，取它不发任何请求
                 thumb: embedded_thumb(&media),
+                // 按真实属性标出所在分栏，供「在文件中显示」切栏定位
+                media_tab: Some(media_tab_of(&media).key()),
             });
         }
 
@@ -1567,9 +1615,9 @@ impl TelegramStore {
                 },
                 None => (None, None, None),
             };
-            let (thumb, duration) = match msg.media() {
-                Some(m) => (embedded_thumb(&m), media_duration(&m)),
-                None => (None, None),
+            let (thumb, duration, media_tab) = match msg.media() {
+                Some(m) => (embedded_thumb(&m), media_duration(&m), Some(media_tab_of(&m).key())),
+                None => (None, None, None),
             };
             out.push(MessageRow {
                 message: msg.id(),
@@ -1582,6 +1630,7 @@ impl TelegramStore {
                 thumb,
                 duration,
                 reply_to: msg.reply_to_message_id(),
+                media_tab,
             });
         }
         if let Ok(mut m) = self.media.lock() {
@@ -1834,6 +1883,7 @@ impl RemoteStore for TelegramStore {
                     // 硬塞最后一条消息的时间会让缓存层误以为能检测变化。
                     mtime: None,
                     etag: None,
+                    media_tab: None,
                     // 对话的「缩略图」就是它的头像。复用这条既有通道而不是
                     // 另加字段：GUI 那边 thumb -> thumb_token -> <img> 已经
                     // 打通，多一条并行路径只会多一处会不一致的地方。
@@ -2005,6 +2055,7 @@ impl RemoteStore for TelegramStore {
             etag: None,
             // 刚上传完的文件，服务端还没回缩略图；下次列目录时会有
             thumb: None,
+            media_tab: None,
         })
     }
 
@@ -2144,6 +2195,7 @@ mod tests {
             thumb: None,
             duration: None,
             reply_to: None,
+            media_tab: None,
         }
     }
 
@@ -2535,6 +2587,7 @@ mod tests {
             thumb: None,
             duration: None,
             reply_to: None,
+            media_tab: None,
         };
         let j = serde_json::to_value(&r).expect("序列化");
         for k in [
@@ -2568,6 +2621,7 @@ mod tests {
             thumb: None,
             duration: None,
             reply_to: None,
+            media_tab: None,
         };
         // 没有文件不代表这一行无效：它有文字、有时间、有消息号
         assert!(r.file_id.is_none());

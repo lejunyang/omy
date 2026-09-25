@@ -62,6 +62,10 @@ pub struct VirtualEntry {
     /// **不在这里现拉**，避免用户打开虚拟位置就对每条引用打一遍 Telegram 请求。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb_token: Option<String>,
+    /// 引用记住的源文件 Telegram 分栏（添加时存下），供「定位到源文件」切栏。
+    /// 仅 Telegram 引用有；旧引用/非 Telegram 为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_media_tab: Option<String>,
 }
 
 /// 判断一条引用当前的源状态，并（若可用）认领出本地 place_id。
@@ -174,6 +178,9 @@ pub struct AddRefReq {
     pub snapshot_name: String,
     /// 显示快照大小。
     pub snapshot_size: Option<u64>,
+    /// 源文件所在的 Telegram 分栏（前端从源条目 media_tab 透传）；可为空。
+    #[serde(default)]
+    pub source_media_tab: Option<String>,
 }
 
 #[tauri::command]
@@ -197,7 +204,11 @@ pub fn virtual_add_ref(
                     source,
                     dir_id: req.dir_id,
                     file_id: req.file_id,
-                    snapshot: Snapshot { name: req.snapshot_name, size: req.snapshot_size },
+                    snapshot: Snapshot {
+                        name: req.snapshot_name,
+                        size: req.snapshot_size,
+                        media_tab: req.source_media_tab,
+                    },
                     tags: Vec::new(),
                     note: String::new(),
                 });
@@ -243,6 +254,7 @@ pub fn virtual_browse(
                 source_dir: None,
                 source_file: None,
                 thumb_token: None,
+                source_media_tab: None,
             });
         }
         // 引用在后，带源状态
@@ -266,6 +278,7 @@ pub fn virtual_browse(
                 source_dir: Some(r.dir_id.clone()),
                 source_file: Some(r.file_id.clone()),
                 thumb_token,
+                source_media_tab: r.snapshot.media_tab.clone(),
             });
         }
         entries
