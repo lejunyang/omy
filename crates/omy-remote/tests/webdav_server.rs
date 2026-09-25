@@ -111,7 +111,9 @@ async fn spawn_server(root: PathBuf, auth: Option<(&str, &str)>) -> Server {
     let task = tokio::spawn(async move {
         loop {
             // 服务器被 abort 时 accept 返回错误，循环随之结束
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let handler = handler.clone();
             let records = Arc::clone(&records_for_task);
             let auth = auth.clone();
@@ -160,7 +162,12 @@ async fn spawn_server(root: PathBuf, auth: Option<(&str, &str)>) -> Server {
         }
     });
 
-    Server { port, root, records, task }
+    Server {
+        port,
+        root,
+        records,
+        task,
+    }
 }
 
 /// 构造 `dav_server::body::Body`。包一层免得在测试里反复写类型转换。
@@ -180,15 +187,26 @@ fn b64_encode(input: &str) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if c.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if c.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
 
 /// 每次测试独立的临时目录。
 fn unique_dir(tag: &str) -> PathBuf {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let dir = std::env::temp_dir().join(format!("omy_webdav_{tag}_{}_{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("建临时目录");
     dir
@@ -246,7 +264,9 @@ async fn list_seek_range_and_cache() {
     let root = unique_dir("seek");
 
     // 3.5 MiB 确定性、不可压缩的数据，确保横跨多个 1 MiB 远程缓存块
-    let plain: Vec<u8> = (0..(3 * 1024 * 1024 + 512 * 1024)).map(|i| (i % 251) as u8).collect();
+    let plain: Vec<u8> = (0..(3 * 1024 * 1024 + 512 * 1024))
+        .map(|i| (i % 251) as u8)
+        .collect();
     let (movie_bytes, kek) = make_omy(&plain, b"movie-pw", Some("movie.mp4"));
     std::fs::write(root.join("movie.omy"), &movie_bytes).expect("写 movie.omy");
 
@@ -271,7 +291,10 @@ async fn list_seek_range_and_cache() {
     assert!(names.contains(&"sub"), "根列出 sub: {names:?}");
     assert!(names.contains(&"影视"), "根列出中文目录: {names:?}");
     assert!(!names.iter().any(|n| n.is_empty()), "不能有空名/自身条目");
-    assert!(root_items.iter().all(|e| e.id != "/" && !e.id.is_empty()), "不能把根自身列出来");
+    assert!(
+        root_items.iter().all(|e| e.id != "/" && !e.id.is_empty()),
+        "不能把根自身列出来"
+    );
     // 目录排在文件前
     let first_file = root_items.iter().position(|e| !e.is_dir);
     let last_dir = root_items.iter().rposition(|e| e.is_dir);
@@ -282,18 +305,28 @@ async fn list_seek_range_and_cache() {
     // movie.omy 的总长度来自 PROPFIND 的 getcontentlength
     let movie = find_entry(&store, "", "movie.omy").await;
     assert!(!movie.is_dir);
-    assert_eq!(movie.size, Some(movie_bytes.len() as u64), "content-length 要准");
+    assert_eq!(
+        movie.size,
+        Some(movie_bytes.len() as u64),
+        "content-length 要准"
+    );
 
     // 中文名 + 空格文件：进中文目录、Range 读前 50 字节必须成功
     let cn = find_entry(&store, "", "影视").await;
     assert!(cn.is_dir);
     let cn_movie = find_entry(&store, &cn.id, "大片 2.mkv.omy").await;
-    let head_cn = store.read_range(&cn_movie.id, 0, 50).await.expect("读中文名文件头部");
+    let head_cn = store
+        .read_range(&cn_movie.id, 0, 50)
+        .await
+        .expect("读中文名文件头部");
     assert_eq!(head_cn.len(), 50, "Range 读长度要精确");
 
     // 2) 取头部（打开文件只需要头部门票，不下载载荷）
     const HEAD_FETCH: u64 = 4096;
-    let head = store.read_range(&movie.id, 0, HEAD_FETCH).await.expect("读头部");
+    let head = store
+        .read_range(&movie.id, 0, HEAD_FETCH)
+        .await
+        .expect("读头部");
     let parsed = omy_core::file::peek_header(&head).expect("解析头部");
     let payload_start = u64::from(parsed.header_len);
     assert!(
@@ -323,27 +356,35 @@ async fn list_seek_range_and_cache() {
     let total = movie_bytes.len() as u64;
     let head_for_blocking = head.clone();
     let records = Arc::clone(&server.records);
-    let outcome = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Vec<u8>, usize, usize), String> {
-        let src = RemoteSource::new(
-            store2, place, id, &head_for_blocking, total, Some(cache), rt,
-        )
-        .map_err(|e| format!("RemoteSource: {e}"))?;
-        let opened = open(&head_for_blocking, &[kek]).map_err(|e| format!("open: {e}"))?;
+    let outcome = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<u8>, Vec<u8>, usize, usize), String> {
+            let src = RemoteSource::new(
+                store2,
+                place,
+                id,
+                &head_for_blocking,
+                total,
+                Some(cache),
+                rt,
+            )
+            .map_err(|e| format!("RemoteSource: {e}"))?;
+            let opened = open(&head_for_blocking, &[kek]).map_err(|e| format!("open: {e}"))?;
 
-        // 直接跳到「片尾」：读明文最后 64 KiB
-        let got_tail =
-            read_source_range(&src, &opened, off_tail, TAIL).map_err(|e| format!("读尾部: {e}"))?;
+            // 直接跳到「片尾」：读明文最后 64 KiB
+            let got_tail = read_source_range(&src, &opened, off_tail, TAIL)
+                .map_err(|e| format!("读尾部: {e}"))?;
 
-        let n_after_first = records.lock().map_err(|e| e.to_string())?.len();
+            let n_after_first = records.lock().map_err(|e| e.to_string())?.len();
 
-        // 再读尾部更靠前一点、但仍落在最后一个 1 MiB 块内的 10 KiB——
-        // 这段应当**完全命中缓存**，不产生任何新的网络请求
-        let got_mid =
-            read_source_range(&src, &opened, off_mid, MID_LEN).map_err(|e| format!("读缓存段: {e}"))?;
+            // 再读尾部更靠前一点、但仍落在最后一个 1 MiB 块内的 10 KiB——
+            // 这段应当**完全命中缓存**，不产生任何新的网络请求
+            let got_mid = read_source_range(&src, &opened, off_mid, MID_LEN)
+                .map_err(|e| format!("读缓存段: {e}"))?;
 
-        let n_after_second = records.lock().map_err(|e| e.to_string())?.len();
-        Ok((got_tail, got_mid, n_after_first, n_after_second))
-    })
+            let n_after_second = records.lock().map_err(|e| e.to_string())?.len();
+            Ok((got_tail, got_mid, n_after_first, n_after_second))
+        },
+    )
     .await
     .expect("spawn_blocking 完成")
     .expect("远程读取成功");
@@ -352,9 +393,17 @@ async fn list_seek_range_and_cache() {
 
     // 3) 解密结果必须与原始明文逐字节一致
     let tail_us = TAIL as usize;
-    assert_eq!(got_tail, plain[plain.len() - tail_us..], "片尾解密逐字节一致");
+    assert_eq!(
+        got_tail,
+        plain[plain.len() - tail_us..],
+        "片尾解密逐字节一致"
+    );
     let off_mid_us = off_mid as usize;
-    assert_eq!(got_mid, plain[off_mid_us..off_mid_us + MID_LEN as usize], "缓存段解密一致");
+    assert_eq!(
+        got_mid,
+        plain[off_mid_us..off_mid_us + MID_LEN as usize],
+        "缓存段解密一致"
+    );
 
     // 4) seek 不放大：打开来源之后的所有载荷 GET，起点都不得早于「载荷起点 + 2 MiB」。
     //    即跳到片尾时，前两个 1 MiB 密文块（约等于片头两分钟）根本没被请求过。
@@ -461,7 +510,10 @@ async fn writable_roundtrip_and_readonly_refuses() {
 
     // MKCOL
     w.create_dir("", "movies").await.expect("建目录");
-    assert!(root.join("movies").is_dir(), "服务器磁盘上应出现 movies 目录");
+    assert!(
+        root.join("movies").is_dir(),
+        "服务器磁盘上应出现 movies 目录"
+    );
 
     // PUT
     let payload = b"ciphertext-blob".to_vec();
@@ -481,7 +533,10 @@ async fn writable_roundtrip_and_readonly_refuses() {
 
     // DELETE
     w.delete("/movies/b.omy").await.expect("删除");
-    assert!(!root.join("movies").join("b.omy").exists(), "删除后磁盘上应消失");
+    assert!(
+        !root.join("movies").join("b.omy").exists(),
+        "删除后磁盘上应消失"
+    );
 
     drop(w);
 
@@ -489,18 +544,71 @@ async fn writable_roundtrip_and_readonly_refuses() {
     let ro = Arc::new(store_for(&base, "", "", false));
     assert!(!ro.capabilities().any_write());
     let before = server.snapshot().len();
-    assert!(matches!(ro.create_dir("", "x").await, Err(RemoteError::Unsupported("create_dir"))));
-    assert!(matches!(ro.write("/", "x", b"y").await, Err(RemoteError::Unsupported("write"))));
-    assert!(matches!(ro.rename("/movies", "z").await, Err(RemoteError::Unsupported("rename"))));
-    assert!(matches!(ro.delete("/movies").await, Err(RemoteError::Unsupported("delete"))));
+    assert!(matches!(
+        ro.create_dir("", "x").await,
+        Err(RemoteError::Unsupported("create_dir"))
+    ));
+    assert!(matches!(
+        ro.write("/", "x", b"y").await,
+        Err(RemoteError::Unsupported("write"))
+    ));
+    assert!(matches!(
+        ro.rename("/movies", "z").await,
+        Err(RemoteError::Unsupported("rename"))
+    ));
+    assert!(matches!(
+        ro.delete("/movies").await,
+        Err(RemoteError::Unsupported("delete"))
+    ));
     let after = server.snapshot().len();
-    assert_eq!(before, after, "只读拒绝必须发生在发请求之前，服务器不应收到任何写动词");
+    assert_eq!(
+        before, after,
+        "只读拒绝必须发生在发请求之前，服务器不应收到任何写动词"
+    );
     // 只读拒绝不能真的改动磁盘
     assert!(!root.join("x").exists(), "被拒绝的建目录不能落盘");
 
     server.shutdown().await;
 }
 
+/// 外部编辑必须按打开时的远端版本条件覆盖；另一客户端先改过时，旧基线应返回
+/// Conflict，且不能把对方内容静默覆盖掉。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conditional_replace_detects_remote_conflict() {
+    let root = unique_dir("conditional_replace");
+    std::fs::write(root.join("note.txt"), b"base").expect("写初始文件");
+    let server = spawn_server(root.clone(), None).await;
+    let store = store_for(&server.base_url(), "", "", true);
+
+    let (initial, baseline) = store
+        .read_with_revision("/note.txt")
+        .await
+        .expect("同时读取初始内容与版本");
+    assert_eq!(initial, b"base", "下载内容必须来自该版本响应");
+    let baseline = baseline.expect("测试服务器应提供 ETag 或 Last-Modified");
+    // Last-Modified 可能只有秒级精度；跨过一秒才能确保只提供时间戳的服务端也变更版本。
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    store
+        .replace_if_revision("/note.txt", b"other device", Some(&baseline))
+        .await
+        .expect("另一设备持有当前版本时应允许覆盖");
+
+    let err = store
+        .replace_if_revision("/note.txt", b"stale local edit", Some(&baseline))
+        .await
+        .expect_err("旧版本条件写必须失败");
+    assert!(
+        matches!(err, RemoteError::Conflict),
+        "应分类为远端冲突: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read(root.join("note.txt")).expect("读冲突后的远端文件"),
+        b"other device",
+        "冲突时不能覆盖其他设备的版本"
+    );
+
+    server.shutdown().await;
+}
 /// Basic 认证：错误密码要被分类成 `Unauthorized`（界面据此弹重新登录，
 /// 而不是笼统报「操作失败」）；正确密码正常工作。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -520,7 +628,10 @@ async fn basic_auth_success_and_failure() {
 
     // 匿名（不带凭据）→ 同样 401
     let anon = store_for(&base, "", "", false);
-    assert!(matches!(anon.list("").await, Err(RemoteError::Unauthorized)));
+    assert!(matches!(
+        anon.list("").await,
+        Err(RemoteError::Unauthorized)
+    ));
 
     // 正确密码 → 正常列出
     let good = store_for(&base, "omy", "secret", false);
@@ -546,8 +657,15 @@ async fn range_get_returns_exact_window() {
     let store = store_for(&server.base_url(), "", "", false);
 
     let e = find_entry(&store, "", "blob.bin").await;
-    let got = store.read_range(&e.id, 1_000_000, 12345).await.expect("中段 Range");
-    assert_eq!(got.len(), 12345, "返回长度必须恰好是请求长度，不能是整个文件");
+    let got = store
+        .read_range(&e.id, 1_000_000, 12345)
+        .await
+        .expect("中段 Range");
+    assert_eq!(
+        got.len(),
+        12345,
+        "返回长度必须恰好是请求长度，不能是整个文件"
+    );
     assert!(got.iter().all(|&b| b == 0xCD), "内容正确");
 
     // 通过请求留痕确认 Range 起点/终点与目标路径都正确（服务端据此回 206）

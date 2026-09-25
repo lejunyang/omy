@@ -25,7 +25,10 @@
 
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_RANGE, RANGE};
+use reqwest::header::{
+    HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_RANGE, ETAG, IF_MATCH, IF_UNMODIFIED_SINCE,
+    LAST_MODIFIED, RANGE,
+};
 use reqwest::StatusCode;
 
 use crate::store::{Entry, RemoteStore};
@@ -57,7 +60,6 @@ const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
     .add(b'^')
     .add(b'|')
     .add(b'\\');
-
 
 /// 服务端厂商。用于吸收「标准之上」的现实差异。
 ///
@@ -117,7 +119,9 @@ impl std::fmt::Debug for WebDavStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // 不打印 cfg：里面有密码。日志里出现一次明文密码就等于泄露，
         // 而 Debug 很容易被顺手塞进错误信息
-        f.debug_struct("WebDavStore").field("base_url", &self.cfg.base_url).finish_non_exhaustive()
+        f.debug_struct("WebDavStore")
+            .field("base_url", &self.cfg.base_url)
+            .finish_non_exhaustive()
     }
 }
 
@@ -199,9 +203,7 @@ impl WebDavStore {
         }
         let encoded = rel
             .split('/')
-            .map(|seg| {
-                percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string()
-            })
+            .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string())
             .collect::<Vec<_>>()
             .join("/");
         format!("{base}/{encoded}")
@@ -218,6 +220,130 @@ impl WebDavStore {
         HeaderValue::from_str(&format!("Basic {encoded}")).ok()
     }
 
+    /// 取单个文件当前的冲突检测标识。
+    ///
+    /// 优先返回 ETag；服务端没给 ETag 时退回 Last-Modified。两者都没有时返回
+    /// `None`，上层只能明确告知无法做并发保护，不能假装安全覆盖。
+    pub async fn revision(&self, id: &str) -> Result<Option<String>> {
+        let mut req = self.http.head(self.url_for(id));
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), id));
+        }
+        if let Some(v) = resp.headers().get(ETAG).and_then(|v| v.to_str().ok()) {
+            return Ok(Some(format!("etag:{v}")));
+        }
+        Ok(resp
+            .headers()
+            .get(LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| format!("mtime:{v}")))
+    }
+
+    /// 下载完整文件，并从同一个 GET 响应取得冲突检测标识。
+    ///
+    /// 外部编辑不能先下载再另发 HEAD：两次请求之间远端可能变化，导致旧内容配上
+    /// 新版本基线。GET 响应体与它携带的 ETag/Last-Modified 属于同一版本。
+    pub async fn read_with_revision(&self, id: &str) -> Result<(Vec<u8>, Option<String>)> {
+        let mut req = self.http.get(self.url_for(id));
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), id));
+        }
+        let revision = if let Some(v) = resp.headers().get(ETAG).and_then(|v| v.to_str().ok()) {
+            Some(format!("etag:{v}"))
+        } else {
+            resp.headers()
+                .get(LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| format!("mtime:{v}"))
+        };
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        Ok((body.to_vec(), revision))
+    }
+    /// 比较远端完整内容是否与给定字节一致。
+    ///
+    /// 只在恢复「PUT 已成功但本地状态尚未来得及落盘」的窄窗口使用。正常同步不走
+    /// 这条整文件下载；版本号未变化时直接条件写。
+    pub async fn content_matches(&self, id: &str, expected: &[u8]) -> Result<bool> {
+        let mut req = self.http.get(self.url_for(id));
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), id));
+        }
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        Ok(body.as_ref() == expected)
+    }
+    /// 按原路径覆盖文件，并要求服务端版本仍等于打开时的基线。
+    ///
+    /// 这条接口只给外部编辑同步使用。普通上传允许同名覆盖，而编辑同步若不加条件
+    /// 请求，会在另一台设备已经改过文件时静默抹掉对方版本。
+    pub async fn replace_if_revision(
+        &self,
+        id: &str,
+        data: &[u8],
+        expected: Option<&str>,
+    ) -> Result<Option<String>> {
+        if !self.cfg.writable {
+            return Err(Error::Unsupported("write"));
+        }
+        let mut req = self.http.put(self.url_for(id)).body(data.to_vec());
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        if let Some(value) = expected {
+            if let Some(etag) = value.strip_prefix("etag:") {
+                req = req.header(IF_MATCH, etag);
+            } else if let Some(mtime) = value.strip_prefix("mtime:") {
+                req = req.header(IF_UNMODIFIED_SINCE, mtime);
+            }
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if resp.status() == StatusCode::PRECONDITION_FAILED {
+            return Err(Error::Conflict);
+        }
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), id));
+        }
+        if let Some(v) = resp.headers().get(ETAG).and_then(|v| v.to_str().ok()) {
+            return Ok(Some(format!("etag:{v}")));
+        }
+        if let Some(v) = resp
+            .headers()
+            .get(LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+        {
+            return Ok(Some(format!("mtime:{v}")));
+        }
+        self.revision(id).await
+    }
     /// 把 HTTP 状态映射为分类错误。
     ///
     /// 界面对不同原因的处理完全不同：401 要弹登录，429 要退避重试，
@@ -333,10 +459,13 @@ impl RemoteStore for WebDavStore {
         // 服务端可以合法地忽略 Range（RFC 7233：MAY ignore），此时返回
         // 200 和整个文件。不裁剪的话上层会把整文件当成一小段密文去解，
         // 表现为「文件明明没坏却一直认证失败」——极难归因。
-        let ignored_range = status != StatusCode::PARTIAL_CONTENT
-            && resp.headers().get(CONTENT_RANGE).is_none();
+        let ignored_range =
+            status != StatusCode::PARTIAL_CONTENT && resp.headers().get(CONTENT_RANGE).is_none();
 
-        let body = resp.bytes().await.map_err(|e| Error::Network(e.to_string()))?;
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
 
         if ignored_range {
             let start = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -353,7 +482,10 @@ impl RemoteStore for WebDavStore {
             return Err(Error::Unsupported("write"));
         }
         let path = join(dir_id, name);
-        self.dav.put(&path, data.to_vec()).await.map_err(map_dav_err)?;
+        self.dav
+            .put(&path, data.to_vec())
+            .await
+            .map_err(map_dav_err)?;
         Ok(Entry {
             id: path,
             name: name.to_owned(),
@@ -469,12 +601,18 @@ fn decode_href(href: &str) -> String {
 }
 
 fn percent_decode(s: &str) -> String {
-    percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 /// 取路径最后一段作为显示名。
 fn basename(p: &str) -> String {
-    p.trim_end_matches('/').rsplit('/').next().unwrap_or(p).to_owned()
+    p.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(p)
+        .to_owned()
 }
 
 /// 取父路径。
@@ -490,7 +628,11 @@ fn dirname(p: &str) -> String {
 fn join(dir: &str, name: &str) -> String {
     let d = dir.trim_end_matches('/');
     let n = name.trim_start_matches('/');
-    if d.is_empty() { format!("/{n}") } else { format!("{d}/{n}") }
+    if d.is_empty() {
+        format!("/{n}")
+    } else {
+        format!("{d}/{n}")
+    }
 }
 
 /// 最小 base64 编码。
@@ -507,8 +649,16 @@ fn base64_encode(input: &[u8]) -> String {
         let idx = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
         out.push(T[idx[0] as usize] as char);
         out.push(T[idx[1] as usize] as char);
-        out.push(if c.len() > 1 { T[idx[2] as usize] as char } else { '=' });
-        out.push(if c.len() > 2 { T[idx[3] as usize] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[idx[2] as usize] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[idx[3] as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -599,10 +749,21 @@ mod tests {
     #[test]
     fn read_only_refuses_writes_before_request() {
         let s = store(false);
-        let rt = tokio::runtime::Builder::new_current_thread().build().expect("建运行时");
-        assert!(matches!(rt.block_on(s.delete("/a")), Err(Error::Unsupported("delete"))));
-        assert!(matches!(rt.block_on(s.write("/", "a", b"x")), Err(Error::Unsupported("write"))));
-        assert!(matches!(rt.block_on(s.rename("/a", "b")), Err(Error::Unsupported("rename"))));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("建运行时");
+        assert!(matches!(
+            rt.block_on(s.delete("/a")),
+            Err(Error::Unsupported("delete"))
+        ));
+        assert!(matches!(
+            rt.block_on(s.write("/", "a", b"x")),
+            Err(Error::Unsupported("write"))
+        ));
+        assert!(matches!(
+            rt.block_on(s.rename("/a", "b")),
+            Err(Error::Unsupported("rename"))
+        ));
         assert!(matches!(
             rt.block_on(s.create_dir("/", "d")),
             Err(Error::Unsupported("create_dir"))
@@ -626,7 +787,12 @@ mod tests {
         assert!(u.contains(".mkv"), "扩展名点号必须保留");
         assert!(!u.contains("%2E"), "点号不能编码成 %2E");
         // 段数不变
-        assert_eq!(u.trim_start_matches("https://dav.example.com/dav/").split('/').count(), 2);
+        assert_eq!(
+            u.trim_start_matches("https://dav.example.com/dav/")
+                .split('/')
+                .count(),
+            2
+        );
     }
 
     /// unreserved 字符（`. - _ ~`）原样保留，只有空格这类才编码。
@@ -669,7 +835,10 @@ mod tests {
     fn debug_does_not_leak_password() {
         let s = store(true);
         let d = format!("{s:?}");
-        assert!(!d.contains('p') || !d.contains("password"), "不能出现密码字段");
+        assert!(
+            !d.contains('p') || !d.contains("password"),
+            "不能出现密码字段"
+        );
         assert!(!d.contains("Basic"));
         assert!(d.contains("dav.example.com"), "该有的定位信息要有");
     }

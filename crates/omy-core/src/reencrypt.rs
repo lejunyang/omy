@@ -28,10 +28,10 @@
 //! 唯一诚实的表述是：轮换让这份文件从此与旧密码无关，**但不能收回已经泄露
 //! 的副本**。UI 不能把它说成「彻底作废旧密码」。
 
-use crate::crypto::{Fek, Kek};
+use crate::crypto::{Fek, Kek, header_mac};
 use crate::error::{Error, Result};
 use crate::file::{EncryptOptions, EncryptedFile, RandomMaterial};
-use crate::header::{FixedHeader, flags};
+use crate::header::{FixedHeader, HEADER_MAC_LEN, SLOT_AREA_LEN, SLOT_AREA_OFFSET, flags};
 use crate::payload::ProgressFn;
 use crate::tlv::types;
 
@@ -46,6 +46,125 @@ pub struct RotateOutcome {
     pub slot_used: usize,
     /// 明文字节数，供调用方展示「重写了多少数据」。
     pub plaintext_size: u64,
+}
+
+/// 外部编辑后需要随新内容重建的媒体附加信息。
+///
+/// 三个字段使用 `Option` 表示“新文件没有该信息”，而不是“沿用旧值”。
+/// 外部编辑可能把视频改成文本；沿用旧缩略图或 moov 会让头部描述另一份内容。
+#[derive(Debug, Clone, Default)]
+pub struct ReplacementMetadata {
+    /// 新内容的缩略图。
+    pub thumbnail: Option<Vec<u8>>,
+    /// 新内容的媒体元信息。
+    pub media_meta: Option<Vec<u8>>,
+    /// 新内容的 MP4 moov 副本。
+    pub moov_cache: Option<Vec<u8>>,
+}
+
+/// 用新明文替换单文件载荷，同时逐字节保留原槽区。
+///
+/// 这是外部编辑回写用的格式操作。它与 [`rotate_fek`] 的目标相反：轮换要让旧
+/// FEK/旧密码失效，这里必须让原有密码、设备密钥、恢复码全部继续有效。因此保留
+/// `file_uuid`、FEK 和完整 slot area，只生成新的 `base_nonce` 并重建载荷、内容
+/// 哈希及媒体 TLV。新 nonce 是硬约束；同一 `(FEK, file_uuid)` 下复用旧 nonce
+/// 加密不同明文会破坏 AEAD 安全性。
+///
+/// 目录容器不能走这条路径：第三方编辑器拿到的是一个普通文件，无法表达容器索引
+/// 与多文件载荷的同步修改。
+///
+/// # Errors
+///
+/// 原文件打不开、是目录容器、槽区或头部截断，以及重新加密失败时返回错误。
+pub fn replace_plaintext_preserving_slots(
+    data: &[u8],
+    unlock: &[Kek],
+    plaintext: &[u8],
+    metadata: &ReplacementMetadata,
+    new_base_nonce: [u8; 7],
+) -> Result<EncryptedFile> {
+    let opened = crate::file::open(data, unlock)?;
+    if opened.is_container() {
+        return Err(Error::MalformedHeader {
+            reason: "container payload cannot be replaced as a single file",
+        });
+    }
+    let old = FixedHeader::parse(data)?;
+    let slot_end = SLOT_AREA_OFFSET.saturating_add(SLOT_AREA_LEN);
+    let old_slots = data
+        .get(SLOT_AREA_OFFSET..slot_end)
+        .ok_or(Error::Truncated {
+            context: "key slot area",
+            need: slot_end,
+            got: data.len(),
+        })?;
+
+    let mut opts = rebuild_options(&opened, &old, 1)?;
+    // FEK 没变，槽位目录也必须逐字节保留原类型；不能像轮换那样按 keep 重建。
+    opts.slot_directory = if opened.is_slot_managed() {
+        Some(opened.raw_slot_directory()?)
+    } else {
+        None
+    };
+    opts.thumbnail = metadata.thumbnail.clone();
+    opts.media_meta = metadata.media_meta.clone();
+    opts.moov_cache = metadata.moov_cache.clone();
+
+    // encrypt_with_fek 需要一个 KEK 来造临时槽区；该槽区马上会被原槽区覆盖。
+    // 使用实际命中的 KEK，避免传入一个不相关候选使中间产物不可自检。
+    let keeper = unlock
+        .get(opened.kek_index)
+        .ok_or(Error::NoMatchingSlot)?
+        .duplicate();
+    let rnd = RandomMaterial {
+        file_uuid: old.file_uuid,
+        base_nonce: new_base_nonce,
+        slot_padding: None,
+    };
+    let mut out = crate::file::encrypt_with_fek(
+        plaintext,
+        &[keeper],
+        &old.vault_salt,
+        &opts,
+        &rnd,
+        opened.fek(),
+    )?;
+
+    let new_header = FixedHeader::parse(&out.bytes)?;
+    let new_slot_end = SLOT_AREA_OFFSET.saturating_add(SLOT_AREA_LEN);
+    let output_len = out.bytes.len();
+    let dst = out
+        .bytes
+        .get_mut(SLOT_AREA_OFFSET..new_slot_end)
+        .ok_or(Error::Truncated {
+            context: "replacement key slot area",
+            need: new_slot_end,
+            got: output_len,
+        })?;
+    dst.copy_from_slice(old_slots);
+
+    // 槽区属于 header MAC 覆盖范围，换回原字节后必须重算。MAC 本身位于
+    // header_len 末尾，covered 恰好是它之前的全部固定头、槽区与 TLV。
+    let mac_pos = (new_header.header_len as usize).saturating_sub(HEADER_MAC_LEN);
+    let covered = out.bytes.get(..mac_pos).ok_or(Error::Truncated {
+        context: "replacement header",
+        need: mac_pos,
+        got: out.bytes.len(),
+    })?;
+    let mac_key = opened.fek().derive_header_mac_key(&old.file_uuid);
+    let mac = header_mac(&mac_key, covered);
+    let total_len = out.bytes.len();
+    let mac_dst = out
+        .bytes
+        .get_mut(mac_pos..new_header.header_len as usize)
+        .ok_or(Error::Truncated {
+            context: "replacement header mac",
+            need: new_header.header_len as usize,
+            got: total_len,
+        })?;
+    mac_dst.copy_from_slice(&mac);
+    out.header = new_header;
+    Ok(out)
 }
 
 /// 换掉 FEK 并重新加密整个载荷。
@@ -160,9 +279,21 @@ fn rebuild_options(
         None
     };
 
-    let thumbnail = if opened.has_thumbnail() { Some(opened.thumbnail()?) } else { None };
-    let media_meta = if opened.has_media_meta() { Some(opened.media_meta()?) } else { None };
-    let moov_cache = if opened.has_moov_cache() { Some(opened.moov_cache()?) } else { None };
+    let thumbnail = if opened.has_thumbnail() {
+        Some(opened.thumbnail()?)
+    } else {
+        None
+    };
+    let media_meta = if opened.has_media_meta() {
+        Some(opened.media_meta()?)
+    } else {
+        None
+    };
+    let moov_cache = if opened.has_moov_cache() {
+        Some(opened.moov_cache()?)
+    } else {
+        None
+    };
     let folder_index = if opened.is_container() {
         // 取解密后的原始字节而不是 parse 再 encode：后者会把索引重新
         // 序列化一遍，任何编码差异都会变成「轮换后容器打不开」
@@ -187,7 +318,10 @@ fn rebuild_options(
     let slot_directory = if opened.is_slot_managed() {
         let mut dir = crate::slotdir::SlotDirectory::new();
         for i in 0..kept.min(crate::header::SLOT_COUNT) {
-            dir.set(i, crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault))?;
+            dir.set(
+                i,
+                crate::slotdir::SlotEntry::of(crate::slotdir::SlotKind::Vault),
+            )?;
         }
         Some(dir.encode())
     } else {
@@ -220,8 +354,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
     use super::*;
-    use crate::crypto::Argon2Params;
     use crate::container::EntryMeta;
+    use crate::crypto::Argon2Params;
     use crate::file::{RandomMaterial, encrypt};
 
     fn kek(pw: &str, salt: &[u8; 16]) -> Kek {
@@ -240,7 +374,9 @@ mod tests {
             media_meta: Some(br#"{"w":1920}"#.to_vec()),
             ..EncryptOptions::default()
         };
-        encrypt(plain, &keks, salt, &opts, &RandomMaterial::generate()).unwrap().bytes
+        encrypt(plain, &keks, salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes
     }
 
     #[test]
@@ -251,11 +387,20 @@ mod tests {
         let plain = b"rotate me".repeat(500);
         let data = sample(&salt, &["pw-old"], &plain);
 
-        let out = rotate_fek(&data, &[kek("pw-old", &salt)], &[kek("pw-new", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw-old", &salt)],
+            &[kek("pw-new", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
 
         let re = crate::file::open(&out.bytes, &[kek("pw-new", &salt)]).unwrap();
-        assert_eq!(re.decrypt_all(&out.bytes).unwrap(), plain, "轮换后必须还原出原明文");
+        assert_eq!(
+            re.decrypt_all(&out.bytes).unwrap(),
+            plain,
+            "轮换后必须还原出原明文"
+        );
         assert_eq!(out.plaintext_size, plain.len() as u64);
     }
 
@@ -265,8 +410,13 @@ mod tests {
         let data = sample(&salt, &["pw-old"], b"payload bytes here");
 
         let before = FixedHeader::parse(&data).unwrap();
-        let out = rotate_fek(&data, &[kek("pw-old", &salt)], &[kek("pw-old", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw-old", &salt)],
+            &[kek("pw-old", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
         let after = FixedHeader::parse(&out.bytes).unwrap();
 
         assert_ne!(before.file_uuid, after.file_uuid, "必须换 file_uuid");
@@ -297,11 +447,18 @@ mod tests {
         let data = sample(&salt, &["pw-old"], b"payload bytes here");
 
         let old_opened = crate::file::open(&data, &[kek("pw-old", &salt)]).unwrap();
-        let out = rotate_fek(&data, &[kek("pw-old", &salt)], &[kek("pw-new", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw-old", &salt)],
+            &[kek("pw-new", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
         let new_opened = crate::file::open(&out.bytes, &[kek("pw-new", &salt)]).unwrap();
 
-        let forged = old_opened.fek().derive_payload_key(&new_opened.header.file_uuid);
+        let forged = old_opened
+            .fek()
+            .derive_payload_key(&new_opened.header.file_uuid);
         assert_ne!(
             forged.as_bytes(),
             new_opened.payload_key().as_bytes(),
@@ -313,8 +470,13 @@ mod tests {
     fn old_password_cannot_open_rotated_file() {
         let salt = [0x33u8; 16];
         let data = sample(&salt, &["pw-old"], b"secret");
-        let out = rotate_fek(&data, &[kek("pw-old", &salt)], &[kek("pw-new", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw-old", &salt)],
+            &[kek("pw-new", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
         assert!(crate::file::open(&out.bytes, &[kek("pw-old", &salt)]).is_err());
     }
 
@@ -324,15 +486,26 @@ mod tests {
         // 明文照样正确，只是缩略图不见了——最容易漏、也最难发现
         let salt = [0x34u8; 16];
         let data = sample(&salt, &["pw"], b"x");
-        let out = rotate_fek(&data, &[kek("pw", &salt)], &[kek("pw", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw", &salt)],
+            &[kek("pw", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
 
         let re = crate::file::open(&out.bytes, &[kek("pw", &salt)]).unwrap();
         assert_eq!(re.filename().unwrap(), "报告.txt");
         assert_eq!(re.plain_extension().as_deref(), Some("txt"));
-        assert_eq!(re.thumbnail().unwrap(), (0..64u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+        assert_eq!(
+            re.thumbnail().unwrap(),
+            (0..64u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>()
+        );
         assert_eq!(re.media_meta().unwrap(), br#"{"w":1920}"#.to_vec());
-        assert!(re.header.has_flag(flags::HAS_THUMBNAIL), "flag 也要跟着保留");
+        assert!(
+            re.header.has_flag(flags::HAS_THUMBNAIL),
+            "flag 也要跟着保留"
+        );
     }
 
     #[test]
@@ -340,13 +513,21 @@ mod tests {
         let salt = [0x35u8; 16];
         let data = sample(&salt, &["pw"], b"y");
         let before = FixedHeader::parse(&data).unwrap();
-        let out = rotate_fek(&data, &[kek("pw", &salt)], &[kek("pw", &salt)],
-            &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw", &salt)],
+            &[kek("pw", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
         let after = FixedHeader::parse(&out.bytes).unwrap();
 
         assert_eq!(before.chunk_size, after.chunk_size);
         assert_eq!(before.cipher_id, after.cipher_id);
-        assert_eq!(before.vault_salt, after.vault_salt, "同一个 vault，salt 不能变");
+        assert_eq!(
+            before.vault_salt, after.vault_salt,
+            "同一个 vault，salt 不能变"
+        );
         // Argon2 参数错了文件当场打不开，且症状极具迷惑性（见 encrypt.rs 的记录）
         assert_eq!(before.argon2_m_kib, after.argon2_m_kib);
         assert_eq!(before.argon2_t, after.argon2_t);
@@ -359,12 +540,20 @@ mod tests {
         // 轮换和改密码是一次操作：先轮换再改密码等于把载荷写两遍
         let salt = [0x36u8; 16];
         let data = sample(&salt, &["pw-a"], b"z");
-        let out = rotate_fek(&data, &[kek("pw-a", &salt)],
-            &[kek("pw-b", &salt), kek("pw-c", &salt)], &RandomMaterial::generate()).unwrap();
+        let out = rotate_fek(
+            &data,
+            &[kek("pw-a", &salt)],
+            &[kek("pw-b", &salt), kek("pw-c", &salt)],
+            &RandomMaterial::generate(),
+        )
+        .unwrap();
 
         assert_eq!(out.slot_used, 2);
         for p in ["pw-b", "pw-c"] {
-            assert!(crate::file::open(&out.bytes, &[kek(p, &salt)]).is_ok(), "{p} 应能打开");
+            assert!(
+                crate::file::open(&out.bytes, &[kek(p, &salt)]).is_ok(),
+                "{p} 应能打开"
+            );
         }
         assert!(crate::file::open(&out.bytes, &[kek("pw-a", &salt)]).is_err());
     }
@@ -381,8 +570,13 @@ mod tests {
         let salt = [0x38u8; 16];
         let data = sample(&salt, &["pw"], b"v");
         assert!(
-            rotate_fek(&data, &[kek("nope", &salt)], &[kek("pw", &salt)],
-                &RandomMaterial::generate()).is_err()
+            rotate_fek(
+                &data,
+                &[kek("nope", &salt)],
+                &[kek("pw", &salt)],
+                &RandomMaterial::generate()
+            )
+            .is_err()
         );
     }
 
@@ -394,8 +588,13 @@ mod tests {
         let mut data = sample(&salt, &["pw"], b"u");
         data[64] ^= 0xFF; // plaintext_size 所在偏移
         assert!(
-            rotate_fek(&data, &[kek("pw", &salt)], &[kek("pw", &salt)],
-                &RandomMaterial::generate()).is_err()
+            rotate_fek(
+                &data,
+                &[kek("pw", &salt)],
+                &[kek("pw", &salt)],
+                &RandomMaterial::generate()
+            )
+            .is_err()
         );
     }
 
@@ -410,8 +609,14 @@ mod tests {
             argon2: Argon2Params::TEST_WEAK,
             ..EncryptOptions::default()
         };
-        let data = encrypt(&plain, &keks, &salt, &opts, &RandomMaterial::generate()).unwrap().bytes;
-        assert!(FixedHeader::parse(&data).unwrap().has_flag(flags::COMPRESSED));
+        let data = encrypt(&plain, &keks, &salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes;
+        assert!(
+            FixedHeader::parse(&data)
+                .unwrap()
+                .has_flag(flags::COMPRESSED)
+        );
 
         let out = rotate_fek(&data, &keks, &keks, &RandomMaterial::generate()).unwrap();
         let after = FixedHeader::parse(&out.bytes).unwrap();
@@ -429,7 +634,8 @@ mod tests {
         let keks = [kek("pw", &salt)];
         let idx_bytes = {
             let mut b = crate::container::ContainerBuilder::new("folder");
-            b.add_file(vec![String::from("a.txt")], 3, None, EntryMeta::default()).unwrap();
+            b.add_file(vec![String::from("a.txt")], 3, None, EntryMeta::default())
+                .unwrap();
             b.finish().unwrap().encode()
         };
         let opts = EncryptOptions {
@@ -437,12 +643,18 @@ mod tests {
             argon2: Argon2Params::TEST_WEAK,
             ..EncryptOptions::default()
         };
-        let data = encrypt(b"abc", &keks, &salt, &opts, &RandomMaterial::generate()).unwrap().bytes;
+        let data = encrypt(b"abc", &keks, &salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes;
 
         let out = rotate_fek(&data, &keks, &keks, &RandomMaterial::generate()).unwrap();
         let re = crate::file::open(&out.bytes, &keks).unwrap();
         assert!(re.is_container(), "CONTAINER flag 必须保留");
-        assert_eq!(re.raw_folder_index().unwrap(), idx_bytes, "索引字节必须逐字节一致");
+        assert_eq!(
+            re.raw_folder_index().unwrap(),
+            idx_bytes,
+            "索引字节必须逐字节一致"
+        );
     }
 
     #[test]
@@ -456,11 +668,100 @@ mod tests {
             argon2: Argon2Params::TEST_WEAK,
             ..EncryptOptions::default()
         };
-        let data = encrypt(b"t", &keks, &salt, &opts, &RandomMaterial::generate()).unwrap().bytes;
+        let data = encrypt(b"t", &keks, &salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes;
 
         let out = rotate_fek(&data, &keks, &keks, &RandomMaterial::generate()).unwrap();
         let re = crate::file::open(&out.bytes, &keks).unwrap();
-        assert!(re.stored_content_hash().is_err(), "原文件没有哈希，轮换后也不该有");
+        assert!(
+            re.stored_content_hash().is_err(),
+            "原文件没有哈希，轮换后也不该有"
+        );
+    }
+
+    #[test]
+    fn replacement_preserves_all_slots_and_uses_new_plaintext() {
+        // 不这样会怎样：外部编辑一次就可能让另一个密码或恢复码失效，用户直到
+        // 真需要兜底时才发现；或者复用旧 nonce，让两版不同明文使用同一 AEAD nonce。
+        let salt = core::array::from_fn(|i| (i as u8).wrapping_mul(11) ^ 0x4D);
+        let keys = [kek("pw-a", &salt), kek("pw-b", &salt)];
+        let opts = EncryptOptions {
+            filename: Some(String::from("报告.txt")),
+            argon2: Argon2Params::TEST_WEAK,
+            ..EncryptOptions::default()
+        };
+        let original = encrypt(b"before", &keys, &salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes;
+        let before = FixedHeader::parse(&original).unwrap();
+        let slots_before = original
+            .get(SLOT_AREA_OFFSET..SLOT_AREA_OFFSET + SLOT_AREA_LEN)
+            .unwrap()
+            .to_vec();
+        let nonce = core::array::from_fn(|i| (i as u8).wrapping_mul(17) ^ 0xA3);
+
+        let replaced = replace_plaintext_preserving_slots(
+            &original,
+            &keys,
+            b"after external edit",
+            &ReplacementMetadata::default(),
+            nonce,
+        )
+        .unwrap();
+        let after = FixedHeader::parse(&replaced.bytes).unwrap();
+
+        assert_eq!(
+            before.file_uuid, after.file_uuid,
+            "槽位派生依赖 file_uuid，不能变"
+        );
+        assert_eq!(after.base_nonce, nonce, "必须采用新 nonce");
+        assert_ne!(before.base_nonce, after.base_nonce, "不得复用旧 nonce");
+        assert_eq!(
+            replaced
+                .bytes
+                .get(SLOT_AREA_OFFSET..SLOT_AREA_OFFSET + SLOT_AREA_LEN)
+                .unwrap(),
+            slots_before,
+            "所有已知和未知槽都必须逐字节保留",
+        );
+        for key in &keys {
+            let opened = crate::file::open(&replaced.bytes, &[key.duplicate()]).unwrap();
+            assert_eq!(
+                opened.decrypt_all(&replaced.bytes).unwrap(),
+                b"after external edit",
+                "每把旧钥匙都要能打开修改后的新内容",
+            );
+            assert_eq!(opened.filename().unwrap(), "报告.txt");
+        }
+    }
+
+    #[test]
+    fn replacement_rejects_container() {
+        let salt = core::array::from_fn(|i| (i as u8).wrapping_mul(5) ^ 0x71);
+        let keys = [kek("pw", &salt)];
+        let mut b = crate::container::ContainerBuilder::new("folder");
+        b.add_file(vec![String::from("a.txt")], 3, None, EntryMeta::default())
+            .unwrap();
+        let opts = EncryptOptions {
+            folder_index: Some(b.finish().unwrap().encode()),
+            argon2: Argon2Params::TEST_WEAK,
+            ..EncryptOptions::default()
+        };
+        let original = encrypt(b"abc", &keys, &salt, &opts, &RandomMaterial::generate())
+            .unwrap()
+            .bytes;
+        assert!(
+            replace_plaintext_preserving_slots(
+                &original,
+                &keys,
+                b"flat file",
+                &ReplacementMetadata::default(),
+                [9; 7],
+            )
+            .is_err(),
+            "容器不能被第三方单文件编辑静默拍平",
+        );
     }
 
     #[test]

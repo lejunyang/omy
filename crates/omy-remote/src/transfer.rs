@@ -133,7 +133,7 @@ impl From<&crate::Error> for FailCause {
         match e {
             crate::Error::Network(_) => Self::Network,
             crate::Error::Unauthorized | crate::Error::Forbidden => Self::Unauthorized,
-            crate::Error::Unsupported(_) => Self::Unsupported,
+            crate::Error::Unsupported(_) | crate::Error::Conflict => Self::Unsupported,
             // 限流**不是失败**，不该走到这里：它要变成 Waiting，由
             // TransferManager::rate_limited 处理。映射成可重试的 Other 是
             // 兜底，真正的修法是调用方别把它当错误报上来
@@ -683,12 +683,7 @@ impl TransferManager {
     /// 给调用方去重用：用户在列表里连点两下「永久缓存」，不去重就会起两条任务
     /// 抢同一个文件，进度条互相覆盖、流量翻倍。
     #[must_use]
-    pub fn find_active(
-        &self,
-        kind: TransferKind,
-        place: &str,
-        entry_id: &str,
-    ) -> Option<TaskId> {
+    pub fn find_active(&self, kind: TransferKind, place: &str, entry_id: &str) -> Option<TaskId> {
         self.tasks
             .iter()
             .find(|t| {
@@ -746,7 +741,11 @@ mod tests {
 
         assert_eq!(m.get(a).expect("a").state, TaskState::Running);
         assert_eq!(m.get(b).expect("b").state, TaskState::Running);
-        assert_eq!(m.get(c).expect("c").state, TaskState::Queued, "第三条必须排队");
+        assert_eq!(
+            m.get(c).expect("c").state,
+            TaskState::Queued,
+            "第三条必须排队"
+        );
         assert_eq!(m.summary().running, 2, "并发不能超过上限");
 
         // 排队中的任务没有百分比可显示的问题：它的进度确实是 0 字节，
@@ -759,7 +758,11 @@ mod tests {
 
         // 一条完成后，排队的那条要顶上
         m.complete(a).expect("完成 a");
-        assert_eq!(m.get(c).expect("c").state, TaskState::Running, "完成后应补跑排队任务");
+        assert_eq!(
+            m.get(c).expect("c").state,
+            TaskState::Running,
+            "完成后应补跑排队任务"
+        );
     }
 
     /// 上限为 0 要按 1 处理。
@@ -771,7 +774,11 @@ mod tests {
         let mut m = mgr(0);
         assert_eq!(m.max_running(), 1);
         let a = add(&mut m, TransferKind::Download, "a", 10);
-        assert_eq!(m.get(a).expect("a").state, TaskState::Running, "至少要跑得起来一条");
+        assert_eq!(
+            m.get(a).expect("a").state,
+            TaskState::Running,
+            "至少要跑得起来一条"
+        );
     }
 
     /// 限流必须是「等待中」，不能是失败，而且不给重试按钮。
@@ -786,7 +793,10 @@ mod tests {
         m.rate_limited(a, 37).expect("限流");
 
         let t = m.get(a).expect("a");
-        assert_eq!(t.state, TaskState::Waiting(WaitReason::RateLimited { secs: 37 }));
+        assert_eq!(
+            t.state,
+            TaskState::Waiting(WaitReason::RateLimited { secs: 37 })
+        );
         assert!(!matches!(t.state, TaskState::Failed(_)), "限流不是失败");
         assert!(!t.can_retry(), "等待中不该给重试按钮");
         assert_eq!(t.done_bytes, 400, "限流与数据完整性无关，进度不该作废");
@@ -839,7 +849,11 @@ mod tests {
             "限流期间不该放新任务进来一起挨打"
         );
         assert_eq!(m.get(c).expect("c").state, TaskState::Queued);
-        assert_eq!(m.summary().running, 0, "上限为 1 且那一条正在等待，不该有任务在跑");
+        assert_eq!(
+            m.summary().running,
+            0,
+            "上限为 1 且那一条正在等待，不该有任务在跑"
+        );
         assert_eq!(m.summary().waiting, 1);
     }
 
@@ -862,7 +876,11 @@ mod tests {
         m.resume(a).expect("继续");
         let t = m.get(a).expect("a");
         assert_eq!(t.done_bytes, 700, "继续必须接着原进度");
-        assert_eq!(t.state, TaskState::Queued, "额度被占满时只能排队，不能突破上限");
+        assert_eq!(
+            t.state,
+            TaskState::Queued,
+            "额度被占满时只能排队，不能突破上限"
+        );
         assert_eq!(m.summary().running, 1);
     }
 
@@ -905,7 +923,11 @@ mod tests {
     #[test]
     fn unretryable_failures_reject_retry() {
         let mut m = mgr(4);
-        for cause in [FailCause::DiskFull, FailCause::Unauthorized, FailCause::Unsupported] {
+        for cause in [
+            FailCause::DiskFull,
+            FailCause::Unauthorized,
+            FailCause::Unsupported,
+        ] {
             let id = add(&mut m, TransferKind::Download, "x", 100);
             m.fail(id, cause).expect("失败");
             assert!(!cause.retryable(), "{cause:?} 不该被判为可重试");
@@ -947,11 +969,20 @@ mod tests {
     fn pin_badge_only_after_completion() {
         let mut m = mgr(4);
         let pin = add(&mut m, TransferKind::Pin, "doc", 100);
-        assert!(!m.get(pin).expect("任务").pin_badge_visible(), "下载中不能显示角标");
+        assert!(
+            !m.get(pin).expect("任务").pin_badge_visible(),
+            "下载中不能显示角标"
+        );
         m.report_progress(pin, 99);
-        assert!(!m.get(pin).expect("任务").pin_badge_visible(), "99% 也还不能显示");
+        assert!(
+            !m.get(pin).expect("任务").pin_badge_visible(),
+            "99% 也还不能显示"
+        );
         m.complete(pin).expect("完成");
-        assert!(m.get(pin).expect("任务").pin_badge_visible(), "完成后才显示");
+        assert!(
+            m.get(pin).expect("任务").pin_badge_visible(),
+            "完成后才显示"
+        );
 
         // 普通下载完成也不该长出 📌
         let dl = add(&mut m, TransferKind::Download, "d", 100);
@@ -971,13 +1002,23 @@ mod tests {
         assert_eq!(m.pause(done), Err(TransferError::InvalidTransition));
         assert_eq!(m.retry(done), Err(TransferError::InvalidTransition));
         assert_eq!(m.cancel(done), Err(TransferError::InvalidTransition));
-        assert_eq!(m.fail(done, FailCause::Network), Err(TransferError::InvalidTransition));
+        assert_eq!(
+            m.fail(done, FailCause::Network),
+            Err(TransferError::InvalidTransition)
+        );
         assert!(!m.report_progress(done, 50), "已完成不该再收进度");
-        assert_eq!(m.get(done).expect("a").state, TaskState::Done, "状态不能被改掉");
+        assert_eq!(
+            m.get(done).expect("a").state,
+            TaskState::Done,
+            "状态不能被改掉"
+        );
 
         let cancelled = add(&mut m, TransferKind::Download, "b", 100);
         m.cancel(cancelled).expect("取消");
-        assert!(!m.report_progress(cancelled, 50), "已取消的任务不能靠进度回调复活");
+        assert!(
+            !m.report_progress(cancelled, 50),
+            "已取消的任务不能靠进度回调复活"
+        );
         assert_eq!(m.get(cancelled).expect("b").state, TaskState::Cancelled);
     }
 
@@ -1057,14 +1098,22 @@ mod tests {
 
         assert_eq!(m.pause_all(), 2, "只有 r 与 q 能被暂停，返回值必须是实际数");
         assert_eq!(m.get(run).expect("r").state, TaskState::Paused);
-        assert_eq!(m.get(queued).expect("q").state, TaskState::Paused, "排队的也该暂停");
+        assert_eq!(
+            m.get(queued).expect("q").state,
+            TaskState::Paused,
+            "排队的也该暂停"
+        );
         assert_eq!(
             m.get(bad).expect("f").state,
             TaskState::Failed(FailCause::Network),
             "失败的任务不能被改成已暂停，否则重试按钮就没了"
         );
         assert_eq!(m.get(fin).expect("d").state, TaskState::Done);
-        assert_eq!(m.pause_all(), 0, "已经全停了，再点一次应报 0 而不是重复计数");
+        assert_eq!(
+            m.pause_all(),
+            0,
+            "已经全停了，再点一次应报 0 而不是重复计数"
+        );
     }
 
     /// `pause` 本身必须拒绝失败态，不能只靠 `pause_all` 预筛。
@@ -1126,7 +1175,11 @@ mod tests {
         assert_eq!(m.remove(run), Err(TransferError::InvalidTransition));
 
         m.rate_limited(run, 5).expect("限流");
-        assert_eq!(m.remove(run), Err(TransferError::InvalidTransition), "等待中也不行");
+        assert_eq!(
+            m.remove(run),
+            Err(TransferError::InvalidTransition),
+            "等待中也不行"
+        );
 
         // 失败的可以移除（界面上失败行那个 ✕「移除」）
         let bad = add(&mut m, TransferKind::Download, "b", 100);
@@ -1163,10 +1216,19 @@ mod tests {
     /// 永远不会成功的请求，而真正要做的是弹重新登录。
     #[test]
     fn error_mapping_keeps_retryability_honest() {
-        assert_eq!(FailCause::from(&crate::Error::Network(String::from("x"))), FailCause::Network);
-        assert_eq!(FailCause::from(&crate::Error::Unauthorized), FailCause::Unauthorized);
+        assert_eq!(
+            FailCause::from(&crate::Error::Network(String::from("x"))),
+            FailCause::Network
+        );
+        assert_eq!(
+            FailCause::from(&crate::Error::Unauthorized),
+            FailCause::Unauthorized
+        );
         assert!(!FailCause::from(&crate::Error::Unauthorized).retryable());
-        assert_eq!(FailCause::from(&crate::Error::Forbidden), FailCause::Unauthorized);
+        assert_eq!(
+            FailCause::from(&crate::Error::Forbidden),
+            FailCause::Unauthorized
+        );
         assert_eq!(
             FailCause::from(&crate::Error::Unsupported("x")),
             FailCause::Unsupported

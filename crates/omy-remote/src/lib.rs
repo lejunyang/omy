@@ -47,6 +47,9 @@ pub enum Error {
     /// 目标不存在。
     #[error("找不到: {0}")]
     NotFound(String),
+    /// 服务端内容已在本地编辑期间变化，拒绝覆盖。
+    #[error("远端文件已被其他位置修改")]
+    Conflict,
     /// 被服务端限流。
     #[error("请求过于频繁，请稍后再试")]
     RateLimited,
