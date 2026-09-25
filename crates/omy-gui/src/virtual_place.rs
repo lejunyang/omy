@@ -279,21 +279,6 @@ impl VirtualPlace {
 /// 位置这份 blob 会被 seal（见模块顶注），未加密的仍明文。
 ///
 /// 线程安全：内部 `Mutex`。GUI 以 `Arc<VirtualRegistry>` 持有，命令层共享。
-/// 一个 vault 的派生材料（salt + Argon2 参数），从 .omy / 远程加密文件头读出。
-/// 只存这些公开材料、不存密钥：解锁虚拟位置时用**原始密码**为每个 vault 重新
-/// 派生 KEK 装回会话池。KEK 与 vault_salt 绑定，跨 salt 不通用，所以同密码要
-/// 跨位置/跨文件自动解锁，必须逐个 salt 各派生一把（与 `unlock` 多 vault 同款）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct VaultMaterial {
-    pub salt: [u8; 16],
-    pub m_kib: u32,
-    pub t: u32,
-    pub p: u32,
-}
-
-impl VaultMaterial {
-}
-
 /// 落盘文件里的一个位置：明文名字 + 明文树或加密信封。
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct StoredPlace {
@@ -313,7 +298,7 @@ struct StoredPlace {
     /// 加密时登记的、与该位置**同一密码**的其它 vault 材料（本地/远程）。
     /// 解锁后据此为每个 vault 重派生 KEK 装回会话池。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    vaults: Vec<VaultMaterial>,
+    vaults: Vec<crate::vault_reg::VaultMaterial>,
 }
 
 /// 现场密码的 Argon2 派生材料（明文，salt 不是秘密）。
@@ -344,7 +329,7 @@ struct UnlockState {
     kdf: KdfMaterial,
     key: Option<omy_secret::ProtectKey>,
     /// 加密时登记的 vault 材料；解锁后命令层据此为每个 vault 重派生同密码 KEK。
-    vaults: Vec<VaultMaterial>,
+    vaults: Vec<crate::vault_reg::VaultMaterial>,
 }
 
 /// 加密相关操作的错误。
@@ -613,10 +598,10 @@ impl VirtualRegistry {
         id: &str,
         password: &[u8],
         // 同密码的其它 vault 材料（本地/远程），随加密位置一起保存，解锁时回装。
-        vaults: Vec<VaultMaterial>,
+        vaults: Vec<crate::vault_reg::VaultMaterial>,
         // 密钥派生成功后回调：让命令层把位置自己的 KEK + 各 vault 的 KEK 装进
         // omy 会话密钥池，与本地/远程文件密码打通（互相自动解锁、计入已解锁数）。
-        on_key: impl FnOnce(&[u8], &KdfMaterial, &[VaultMaterial]),
+        on_key: impl FnOnce(&[u8], &KdfMaterial, &[crate::vault_reg::VaultMaterial]),
     ) -> Result<(), VirtualCryptoError> {
         if password.is_empty() {
             return Err(VirtualCryptoError::Other("empty password".into()));
@@ -663,11 +648,12 @@ impl VirtualRegistry {
     /// # Errors
     ///
     /// 位置不存在、未加密、密码错误（信封认证失败）时报错。
-    pub fn unlock(
+    pub fn unlock_with_extra(
         &self,
         id: &str,
         password: &[u8],
-        on_key: impl FnOnce(&[u8], &KdfMaterial, &[VaultMaterial]),
+        extra: &[crate::vault_reg::VaultMaterial],
+        on_key: impl FnOnce(&[u8], &KdfMaterial, &[crate::vault_reg::VaultMaterial]),
     ) -> Result<(), VirtualCryptoError> {
         // 取 KDF（先 clone，避免持着 unlock 锁再去拿 places 锁）
         let kdf = {
@@ -695,11 +681,16 @@ impl VirtualRegistry {
             let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
             vp.root = root;
         }
-        // 取出登记的 vault 材料，回调里为每个 vault 用同一密码重派生 KEK。
-        let vaults = {
+        // 合并位置登记的 vault 与全局已见 vault 表，按 salt 去重。
+        // 全局表解决「加密后才在别处见到的同密码 vault」——老位置记录里没有它，
+        // 只靠记录会漏解（用户实测 E:/tele 文件没自动解锁就是这个原因）。
+        let mut vaults = {
             let u0 = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
             u0.get(id).map(|st| st.vaults.clone()).unwrap_or_default()
         };
+        vaults.extend(extra.iter().cloned());
+        vaults.sort_by_key(|a| a.salt_hex());
+        vaults.dedup_by(|a, b| a.salt_hex() == b.salt_hex());
         on_key(password, &kdf, &vaults);
         {
             let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;

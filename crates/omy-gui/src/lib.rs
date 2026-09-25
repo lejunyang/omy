@@ -63,6 +63,7 @@ mod state;
 mod storage;
 mod telegram_cmds;
 mod video;
+mod vault_reg;
 mod virtual_cmds;
 mod virtual_place;
 
@@ -105,6 +106,11 @@ pub fn run() {
         Arc::new(virtual_place::VirtualRegistry::new());
     if let Err(e) = virtual_registry.load() {
         applog::warn("virtual", &format!("载入虚拟远程位置失败：{e}"));
+    }
+    // 全局已见 vault 登记表：用于「同密码跨 vault 自动解锁」。
+    let vaults: Arc<vault_reg::VaultRegistry> = Arc::new(vault_reg::VaultRegistry::new());
+    if let Err(e) = vaults.load() {
+        applog::warn("virtual", &format!("载入 vault 登记表失败：{e}"));
     }
     // 恢复上次保存的远程位置。
     //
@@ -196,6 +202,7 @@ pub fn run() {
         .manage(Arc::clone(&remote_session))
         .manage(Arc::clone(&place_registry))
         .manage(Arc::clone(&virtual_registry))
+        .manage(Arc::clone(&vaults))
         .manage(Arc::clone(&remote_cache))
         .manage(Arc::clone(&place_files))
         .manage(Arc::clone(&place_thumbs))

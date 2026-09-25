@@ -162,6 +162,10 @@ pub struct EncryptReq {
 #[serde(rename_all = "camelCase")]
 pub struct VaultHex {
     salt: String,
+    // 前端 vaultParamsOf/remotePlaceVaults 拿回的是后端 VaultParams 的原样
+    // JSON，其字段是 snake_case `m_kib`（Tauri 返回值不经命令参数的 camelCase
+    // 转换）。这里直接透传，所以同时接受 mKib 与 m_kib 两种写法。
+    #[serde(alias = "m_kib")]
     m_kib: u32,
     t: u32,
     p: u32,
@@ -170,16 +174,20 @@ pub struct VaultHex {
 #[tauri::command]
 pub fn virtual_encrypt(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
     req: EncryptReq,
 ) -> CmdResult<bool> {
     if req.password.is_empty() {
         return Err(CmdError::code("virtual_bad_name"));
     }
-    let vaults = parse_vaults(&req.vaults)?;
+    // 合并：前端显式传入的（当前目录/远程实时探测）+ 全局已见 vault 表，
+    // 按 salt 去重。这样无论文件在哪一层、什么时候见过，都能被同密码解锁。
+    let mut vaults = parse_vaults(&req.vaults)?;
+    vaults.extend(vault_reg.list());
+    dedup_vaults(&mut vaults);
     vreg.encrypt(&req.place_id, req.password.as_bytes(), vaults, |password, kdf, vaults| {
-        install_password_keks(&state, password,
-            kdf, vaults);
+        install_password_keks(&state, password, kdf, vaults);
     })
     .map(|()| true)
     .map_err(crypto_err)
@@ -189,14 +197,16 @@ pub fn virtual_encrypt(
 #[tauri::command]
 pub fn virtual_unlock(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
     password: String,
 ) -> CmdResult<bool> {
-    vreg.unlock(&place_id, password.as_bytes(), |password, kdf, vaults| {
-        install_password_keks(&state, password,
-            kdf, vaults);
-    })
+    // 解锁时以全局表为准（加密后新见过的 vault 也能纳入），与位置记录合并去重。
+    vreg.unlock_with_extra(&place_id, password.as_bytes(), &vault_reg.list(),
+        |password, kdf, vaults| {
+            install_password_keks(&state, password, kdf, vaults);
+        })
     .map(|()| true)
     .map_err(crypto_err)
 }
@@ -223,13 +233,19 @@ pub fn virtual_lock_state(
     })
 }
 
+/// 按 salt 十六进制去重并排序（稳定顺序，便于落盘/测试）。
+fn dedup_vaults(vs: &mut Vec<crate::vault_reg::VaultMaterial>) {
+    vs.sort_by_key(|a| a.salt_hex());
+    vs.dedup_by(|a, b| a.salt_hex() == b.salt_hex());
+}
+
 /// 解析十六进制 salt 的 vault 材料（与 commands::parse_salt 同口径）。
-fn parse_vaults(vs: &[VaultHex]) -> CmdResult<Vec<crate::virtual_place::VaultMaterial>> {
+fn parse_vaults(vs: &[VaultHex]) -> CmdResult<Vec<crate::vault_reg::VaultMaterial>> {
     let mut out = Vec::with_capacity(vs.len());
     for v in vs {
         let salt = crate::commands::parse_salt(&v.salt)
             .ok_or_else(|| CmdError::code("bad_salt"))?;
-        out.push(crate::virtual_place::VaultMaterial {
+        out.push(crate::vault_reg::VaultMaterial {
             salt, m_kib: v.m_kib, t: v.t, p: v.p,
         });
     }
@@ -247,7 +263,7 @@ fn install_password_keks(
     state: &tauri::State<'_, crate::commands::Shared>,
     password: &[u8],
     self_kdf: &crate::virtual_place::KdfMaterial,
-    vaults: &[crate::virtual_place::VaultMaterial],
+    vaults: &[crate::vault_reg::VaultMaterial],
 ) {
     state.with_session(|sess| {
         // 1) 位置自己那把（负责解开收藏信封）

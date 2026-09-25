@@ -43,6 +43,11 @@ vi.mock('./api.js', () => ({
   virtualUnlock: vi.fn(),
   virtualLock: vi.fn(),
   virtualPlaces: vi.fn(),
+  remotePlaceList: vi.fn(),
+  // 加密虚拟位置时收集同密码 vault 的探测命令（mock，绝不出网）
+  vaultParamsOf: vi.fn(),
+  remotePlaceVaults: vi.fn(),
+  credentialCount: vi.fn(),
   // 失败路径 store 会用 errCode 取错误码；测试里错误都是普通 Error，给 undefined
   // 让它走兜底文案即可（与真实取不到 code 时的行为一致）。
   errCode: () => undefined,
@@ -71,6 +76,8 @@ import {
   setVirtualClipboard,
   canPasteVirtual,
   pasteVirtualHere,
+  promptVirtualEncrypt,
+  confirmVirtualEncrypt,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -830,5 +837,65 @@ describe('虚拟位置剪贴板', () => {
     expect(n).toBe(1);
     expect(vi.mocked(api.virtualRemoveRef)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.virtualRemoveRef)).toHaveBeenCalledWith('v1', 'vr1');
+  });
+});
+
+
+// 加密虚拟位置时收集同密码 vault 材料：确认本地当前目录 + 每个远程位置的
+// vault 都被传进 virtualEncrypt（解锁虚拟位置后才能跨 vault 自动解锁）。
+describe('confirmVirtualEncrypt 收集 vault', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cwd = 'E:/';
+    state.virtualPlaces = [{ id: 'v1', name: 'test' }];
+    state.remotePlaces = [{ id: 'p1' }, { id: 'p2' }];
+    vi.mocked(api.virtualEncrypt).mockResolvedValue(true);
+    vi.mocked(api.remotePlaceList).mockResolvedValue([]);
+    vi.mocked(api.virtualPlaces).mockResolvedValue([]);
+    vi.mocked(api.credentialCount).mockResolvedValue(1);
+  });
+
+  it('合并本地目录和所有远程位置的 vault 后传给 virtualEncrypt', async () => {
+    const local = { salt: 'aa'.repeat(16), m_kib: 1, t: 1, p: 1 };
+    const r1 = { salt: 'bb'.repeat(16), m_kib: 2, t: 2, p: 2 };
+    const r2 = { salt: 'cc'.repeat(16), m_kib: 3, t: 3, p: 3 };
+    vi.mocked(api.vaultParamsOf).mockResolvedValue([local]);
+    vi.mocked(api.remotePlaceVaults)
+      .mockResolvedValueOnce([r1])
+      .mockResolvedValueOnce([r2]);
+
+    promptVirtualEncrypt('v1');
+    const ok = await confirmVirtualEncrypt({ password: '132' });
+    expect(ok).toBe(true);
+
+    // 为每个远程位置都探测过根目录 vault（漏掉某个位置，那个位置的同密码
+    // 文件解锁虚拟位置后就不会自动解锁）
+    expect(api.remotePlaceVaults).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.remotePlaceVaults)).toHaveBeenNthCalledWith(1, 'p1', '');
+    expect(vi.mocked(api.remotePlaceVaults)).toHaveBeenNthCalledWith(2, 'p2', '');
+
+    const req = vi.mocked(api.virtualEncrypt).mock.calls[0][0];
+    expect(req).toMatchObject({ placeId: 'v1', password: '132' });
+    const salts = req.vaults.map((v) => v.salt).sort();
+    expect(salts).toEqual(['aa'.repeat(16), 'bb'.repeat(16), 'cc'.repeat(16)]);
+  });
+
+  it('本地/远程 vault 探测失败不阻断加密，仍带上已取到的部分', async () => {
+    vi.mocked(api.vaultParamsOf).mockRejectedValue(new Error('no file'));
+    vi.mocked(api.remotePlaceVaults)
+      .mockResolvedValueOnce([{ salt: 'bb'.repeat(16), m_kib: 2, t: 2, p: 2 }])
+      .mockRejectedValueOnce(new Error('net'));
+
+    promptVirtualEncrypt('v1');
+    const ok = await confirmVirtualEncrypt({ password: '132' });
+    expect(ok).toBe(true);
+    const req = vi.mocked(api.virtualEncrypt).mock.calls[0][0];
+    expect(req.vaults.map((v) => v.salt)).toEqual(['bb'.repeat(16)]);
+  });
+
+  it('无密码或无目标时不发起加密', async () => {
+    state.vEncryptFor = null;
+    expect(await confirmVirtualEncrypt({ password: '132' })).toBe(false);
+    expect(api.virtualEncrypt).not.toHaveBeenCalled();
   });
 });

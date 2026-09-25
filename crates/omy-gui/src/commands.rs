@@ -487,6 +487,7 @@ pub fn hex_of(b: &[u8]) -> String {
 #[tauri::command]
 pub async fn scan_directory(
     state: State<'_, Shared>,
+    vault_reg: State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     dir: String,
     recursive: bool,
 ) -> CmdResult<Vec<FileEntry>> {
@@ -497,6 +498,7 @@ pub async fn scan_directory(
 
     let handle: Shared = Arc::clone(&state);
     let root2 = root.clone();
+    let vault_registry: Arc<crate::vault_reg::VaultRegistry> = Arc::clone(&vault_reg);
 
     let entries = tauri::async_runtime::spawn_blocking(move || {
         let opts = ScanOptions {
@@ -506,6 +508,16 @@ pub async fn scan_directory(
         let result = handle.with_session(|s| scan_dir(&root2, s, &opts))?;
         let result = result.ok()?;
 
+        // 登记本目录见过的全部 vault 材料（锁定文件的头也是明文的），
+        // 供「同密码跨 vault 自动解锁」。这是全局表最主要的来源。
+        vault_registry.register_all(
+            &result.hits.iter().map(|h| crate::vault_reg::VaultMaterial {
+                salt: h.header.vault_salt,
+                m_kib: h.header.argon2_m_kib,
+                t: h.header.argon2_t,
+                p: h.header.argon2_p,
+            }).collect::<Vec<_>>(),
+        );
         let mut out = Vec::with_capacity(result.hits.len());
         for (i, hit) in result.hits.iter().enumerate() {
             // id 用序号 + 路径短哈希：既稳定又不泄露路径。

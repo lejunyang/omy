@@ -291,7 +291,11 @@ chats.
   plaintext stays in memory — re-entering asks for the password. A virtual place
   password shares the **same session key pool** as ordinary .omy files: with the
   same password, unlocking one unlocks the other automatically, and it counts
-  toward the "N passwords unlocked" indicator.
+  toward the "N passwords unlocked" indicator. omy remembers every encrypted
+  vault it encounters while browsing or scanning (only the public salt and Argon2
+  parameters from the file header — never the password), so once a vault has
+  appeared anywhere, unlocking anything with the same password unlocks it too,
+  even if you are not currently viewing that folder.
 - **Open**: double-clicking a reference **previews/plays** the real file it points
   at in place (reading is delegated to the source, without leaving the virtual
   location); anything the real location already cached **opens instantly** (a

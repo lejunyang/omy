@@ -918,6 +918,7 @@ pub struct UploadOutcome {
 pub async fn remote_place_vaults(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
+    vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<crate::commands::VaultParams>> {
@@ -961,6 +962,14 @@ pub async fn remote_place_vaults(
             });
         }
     }
+    // 远程位置见过的 vault 也登记进全局表：同密码解锁虚拟位置/本地文件时
+    // 才能为这些 salt 重派生 KEK。salt 来自明文文件头，不涉及密钥。
+    let materials: Vec<crate::vault_reg::VaultMaterial> = out.iter().filter_map(|v| {
+        crate::commands::parse_salt(&v.salt).map(|salt| crate::vault_reg::VaultMaterial {
+            salt, m_kib: v.m_kib, t: v.t, p: v.p,
+        })
+    }).collect();
+    vault_reg.register_all(&materials);
     Ok(out)
 }
 

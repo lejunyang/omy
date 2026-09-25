@@ -1,0 +1,179 @@
+//! 全局「已见过的 vault」登记表。
+//!
+//! # 为什么需要它
+//!
+//! KEK = `Argon2id(密码, vault_salt)`，**与 vault_salt 绑定**：同一个密码在
+//! 不同 salt 下派生出的 KEK 完全不同，不能跨 vault 互解（实测 `NoMatchingSlot`）。
+//! 所以「同一密码解锁虚拟位置后，让散落各处的本地/远程 .omy 也自动解锁」不能
+//! 只靠某一把 KEK，必须在输密码时为**每个相关 vault 的 salt** 各派生一把。
+//!
+//! 这张表登记应用**见过的全部 vault 派生材料**（salt + Argon2 参数），来源：
+//! - 本地扫描 / 浏览目录时读到的每个 .omy 文件头；
+//! - 远程位置列出的加密文件头（`remote_place_vaults`）；
+//! - `vault_params_of` 探测目录；
+//! - 既有加密虚拟位置落盘里记录的 vault 材料（升级/迁移用）。
+//!
+//! 只存 salt 与 KDF 参数——它们**不是秘密**（.omy 文件头里本就明文带着），
+//! 不存任何密码或密钥。真正的 KEK 仍只在会话里、用用户当次输入的密码现派生。
+//!
+//! 同一 salt 去重：一张表里 vault 数量通常很小（用户不会有几百个独立密码库），
+//! 输一次密码为每个 vault 跑一次 Argon2 的代价可接受，与 `unlock` 多 vault
+//! 既有设计一致。
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// 一个 vault 的派生材料（与 [`crate::virtual_place::VaultMaterial`] 同形状，
+/// 这里独立定义，避免本模块反向依赖虚拟位置模块）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct VaultMaterial {
+    pub salt: [u8; 16],
+    pub m_kib: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+impl VaultMaterial {
+    /// salt 的十六进制，作去重/持久化键。复用 `commands::hex_of`，避免同一
+    /// 编码逻辑出现两份实现。
+    #[must_use]
+    pub fn salt_hex(&self) -> String {
+        crate::commands::hex_of(&self.salt)
+    }
+}
+
+/// 全局 vault 登记表。键为 salt 十六进制（值里也含 salt，键只用于去重）。
+pub struct VaultRegistry {
+    inner: Mutex<BTreeMap<String, VaultMaterial>>,
+    /// true 时不落盘（单测用，避免污染真实数据目录）。
+    in_memory: bool,
+}
+
+impl Default for VaultRegistry {
+    fn default() -> Self {
+        Self { inner: Mutex::new(BTreeMap::new()), in_memory: false }
+    }
+}
+
+impl VaultRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 仅驻内存、永不读写磁盘的登记表（单测用）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[must_use]
+    pub fn new_in_memory() -> Self {
+        Self { inner: Mutex::new(BTreeMap::new()), in_memory: true }
+    }
+
+    /// 落盘路径：数据目录下 `vaults.json`。取不到数据目录或内存模式返回 None。
+    fn store_path(&self) -> Option<PathBuf> {
+        if self.in_memory {
+            return None;
+        }
+        omy_config::data_dir().map(|d| d.join("vaults.json"))
+    }
+
+    /// 从磁盘载入。文件不存在/损坏都不当致命错误（这是缓存性质的登记表，
+    /// 扫描时会重新填）；损坏时记 warn 但返回 Ok，避免拖垮启动。
+    pub fn load(&self) -> std::io::Result<()> {
+        let Some(path) = self.store_path() else { return Ok(()) };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        // 兼容两种历史形态：[VaultMaterial] 或 {salt: {...}}；这里统一按数组读。
+        let list: Vec<VaultMaterial> = serde_json::from_str(&text).unwrap_or_default();
+        if let Ok(mut m) = self.inner.lock() {
+            for v in list {
+                m.insert(v.salt_hex(), v);
+            }
+        }
+        Ok(())
+    }
+
+    /// 登记一批 vault 材料（按 salt 去重）。有新增才落盘。
+    pub fn register_all(&self, vaults: &[VaultMaterial]) {
+        let changed = {
+            let Ok(mut m) = self.inner.lock() else { return };
+            let before = m.len();
+            for v in vaults {
+                m.entry(v.salt_hex()).or_insert_with(|| v.clone());
+            }
+            m.len() != before
+        };
+        if changed {
+            let _ = self.save();
+        }
+    }
+
+    /// 当前全部 vault 材料（顺序稳定，按 salt 排序）。
+    #[must_use]
+    pub fn list(&self) -> Vec<VaultMaterial> {
+        self.inner.lock().map(|m| m.values().cloned().collect()).unwrap_or_default()
+    }
+
+    fn save(&self) -> std::io::Result<()> {
+        let Some(path) = self.store_path() else { return Ok(()) };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let list = self.list();
+        let text = serde_json::to_string_pretty(&list)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        omy_core::fsatomic::write_atomic(&path, text.as_bytes())
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(salt: u8, m: u32) -> VaultMaterial {
+        VaultMaterial { salt: [salt; 16], m_kib: m, t: 1, p: 1 }
+    }
+
+    #[test]
+    fn salt_hex_is_lowercase_32_chars() {
+        let m = v(0xAB, 1);
+        let h = m.salt_hex();
+        assert_eq!(h.len(), 32);
+        assert_eq!(h, "ab".repeat(16));
+    }
+
+    #[test]
+    fn register_all_dedups_by_salt() {
+        let reg = VaultRegistry::new_in_memory();
+        reg.register_all(&[v(1, 100), v(1, 200), v(2, 100)]);
+        let all = reg.list();
+        // 同 salt 只保留第一份——去重失败会变成 3 条，重复 Argon2 派生浪费几百毫秒
+        assert_eq!(all.len(), 2);
+        // 先登记的参数保留：后到的同 salt 不应覆盖
+        assert_eq!(all.iter().find(|x| x.salt == [1u8; 16]).unwrap().m_kib, 100);
+    }
+
+    #[test]
+    fn register_again_is_idempotent_and_sorted() {
+        let reg = VaultRegistry::new_in_memory();
+        reg.register_all(&[v(3, 1), v(1, 1)]);
+        reg.register_all(&[v(2, 1), v(1, 1)]);
+        let salts: Vec<[u8; 16]> = reg.list().iter().map(|x| x.salt).collect();
+        // BTreeMap 按 salt_hex 排序，顺序稳定（落盘/遍历结果可预测）
+        assert_eq!(salts, vec![[1u8; 16], [2u8; 16], [3u8; 16]]);
+    }
+
+    #[test]
+    fn in_memory_registry_writes_nothing() {
+        let reg = VaultRegistry::new_in_memory();
+        reg.register_all(&[v(9, 1)]);
+        // 不应 panic、不应找到任何落盘路径
+        assert!(reg.store_path().is_none());
+        assert_eq!(reg.list().len(), 1);
+    }
+}
