@@ -96,11 +96,49 @@ function onSelect(entry, ev) {
 /** 列表行的点击。移动端单击即打开，与网格卡片保持一致——
  *  两种视图的打开方式若不同，用户切一次视图就得重新学一遍。 */
 function onRowClick(entry, ev) {
+  // 长按刚进入多选，浏览器补来的 click 要吃掉，否则又立刻打开文件。
+  if (rowLongFired) {
+    rowLongFired = false;
+    return;
+  }
   if (isMobile.value && !selectionActive.value) {
     emit('open', entry);
     return;
   }
   toggleSelect(entry.path, isMobile.value || ev.ctrlKey || ev.metaKey || ev.shiftKey);
+}
+
+/** 列表行移动端长按：进入多选（加选第一项）。网格卡片由 EntryCard 内部处理，
+ *  列表行是这里自己渲染的，必须补同款长按，否则手机上列表视图无法多选。 */
+const ROW_LONGPRESS_MS = 500;
+const ROW_MOVE_TOLERANCE = 10;
+let rowTimer: ReturnType<typeof setTimeout> | null = null;
+let rowSX = 0;
+let rowSY = 0;
+let rowLongFired = false;
+
+function onRowPointerDown(e, ev) {
+  if (!isMobile.value || ev.pointerType === 'mouse') return;
+  rowSX = ev.clientX;
+  rowSY = ev.clientY;
+  rowLongFired = false;
+  if (rowTimer) clearTimeout(rowTimer);
+  rowTimer = setTimeout(() => {
+    rowLongFired = true;
+    // 长按进入多选：未选则加选；已选则保持，交给随后的右键/菜单。
+    if (!state.selected.includes(e.path)) toggleSelect(e.path, true);
+  }, ROW_LONGPRESS_MS);
+}
+function onRowPointerMove(ev) {
+  if (!rowTimer) return;
+  if (Math.abs(ev.clientX - rowSX) > ROW_MOVE_TOLERANCE
+      || Math.abs(ev.clientY - rowSY) > ROW_MOVE_TOLERANCE) {
+    clearTimeout(rowTimer);
+    rowTimer = null;
+  }
+}
+function onRowPointerUp() {
+  if (rowTimer) { clearTimeout(rowTimer); rowTimer = null; }
 }
 
 /** 列表行右键。与卡片同一套语义：先选中，再弹菜单。
@@ -270,6 +308,10 @@ function onRowMenu(e, ev) {
             @dblclick="$emit('open', e)"
             @click="onRowClick(e, $event)"
             @contextmenu.prevent="onRowMenu(e, $event)"
+            @pointerdown="onRowPointerDown(e, $event)"
+            @pointermove="onRowPointerMove($event)"
+            @pointerup="onRowPointerUp"
+            @pointercancel="onRowPointerUp"
             @keydown.enter.prevent="$emit('open', e)"
           >
             <span class="ic">{{

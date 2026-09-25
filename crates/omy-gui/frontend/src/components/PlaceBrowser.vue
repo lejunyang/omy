@@ -75,6 +75,12 @@ import {
   setVirtualClipboard,
   canPasteVirtual,
   pasteVirtualHere,
+  remoteSelectionActive,
+  toggleRemoteSelected,
+  clearRemoteSelection,
+  selectedRemoteEntries,
+  removeSelectedVirtualRefs,
+  clipSelectedVirtual,
 } from '../store';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -293,10 +299,30 @@ const fileWindow = ref(null);
 /** 监听滚动容器宽度变化，重算网格列数（窗口拉宽/变窄时每行卡片数跟着变）。 */
 let gridRO = null;
 function onVirtualKeys(ev: KeyboardEvent) {
-  if (!isVirtualPlace()) return;
+  if (!state.remotePlace) return;
   const t = ev.target as HTMLElement | null;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
   const mod = ev.ctrlKey || ev.metaKey;
+  const sel = selectedRemoteEntries();
+  const inVirtual = isVirtualPlace();
+  // 多选态优先：批量删除 / 剪切 / 复制（虚拟引用）。
+  if (sel.length) {
+    const refs = sel.filter((f) => f.is_ref && !f.is_dir);
+    if (ev.key === 'Delete' && inVirtual && refs.length) {
+      ev.preventDefault();
+      if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length))) {
+        removeSelectedVirtualRefs();
+      }
+      return;
+    }
+    if (mod && ev.key.toLowerCase() === 'x' && inVirtual && refs.length) {
+      ev.preventDefault(); clipSelectedVirtual('cut'); return;
+    }
+    if (mod && ev.key.toLowerCase() === 'c' && inVirtual && refs.length) {
+      ev.preventDefault(); clipSelectedVirtual('copy'); return;
+    }
+  }
+  if (!inVirtual) return;
   const target = activeEntry.value;
   if (ev.key === 'Delete' && target) {
     if (target.is_ref) {
@@ -440,10 +466,12 @@ async function rename(p) {
 }
 
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
-function onEntryClick(f) {
+function onEntryClick(f, ev?) {
   activeEntry.value = f;
+  // 多选优先：Ctrl/⌘/Shift 点，或已在多选态下的普通点，都只改选择、不打开。
+  if (handleSelectionClick(f, ev)) return;
   if (!isMobile.value) return;
-  // 长按刚弹了菜单，浏览器补来的 click 要吃掉，否则会同时触发打开
+  // 长按刚触发了「进入多选」或弹菜单，浏览器补来的 click 要吃掉。
   if (longFired) {
     longFired = false;
     return;
@@ -504,6 +532,29 @@ function isRetrying(f) {
 const rmenu = ref(null);
 /** 最近点过/右键过的条目，作为键盘 Ctrl+X/C、Delete 的目标。 */
 const activeEntry = ref(null);
+
+/** 某条目是否在多选集合里。 */
+function isSelected(f) {
+  return !!f && state.remoteSelected.includes(f.id);
+}
+
+/** 点按条目：桌面 Ctrl/⌘（+Shift 也算）进入多选；移动端单击在多选态下切换勾选。
+ *  返回 true 表示「这次点击只改选择，不要继续打开/进入」。 */
+function handleSelectionClick(f, ev) {
+  const mod = ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (mod) {
+    toggleRemoteSelected(f.id, ev.shiftKey);
+    activeEntry.value = f;
+    return true;
+  }
+  if (remoteSelectionActive()) {
+    // 已在多选态：普通点击 = 勾选/取消，而不是打开（桌面也能用鼠标逐个点）
+    toggleRemoteSelected(f.id, false);
+    activeEntry.value = f;
+    return true;
+  }
+  return false;
+}
 
 /** 只有「能对它做点什么」的正常条目才给菜单：骨架、未能读取、重试中
  *  都直接走整卡点击（重试），不进菜单。 */
@@ -602,7 +653,15 @@ function onPointerDown(f, ev) {
   clearPress();
   pressTimer = setTimeout(() => {
     longFired = true;
-    openMenuAt(f, pressX, pressY);
+    // 触屏长按进入**多选模式**（第一条直接勾上），与本地文件视图的长按口径一致。
+    // 桌面鼠标不会走到这（pointerType=mouse 已在上面放行右键，长按计时也保留，
+    // 但鼠标长按仍弹右键菜单——用 pointerType 区分）。
+    if (ev.pointerType !== 'mouse') {
+      if (!remoteSelectionActive()) toggleRemoteSelected(f.id, true);
+      else toggleRemoteSelected(f.id, false);
+    } else {
+      openMenuAt(f, pressX, pressY);
+    }
   }, LONGPRESS_MS);
 }
 
@@ -782,6 +841,15 @@ async function onMenuPick(key) {
     await renameVirtualFolderPrompt(f.id);
   } else if (key === 'vdelete-folder') {
     await confirmRemoveFolder(f);
+  }
+}
+
+/** 多选批量删除（工具条按钮）。 */
+async function onBatchDelete() {
+  const refs = selectedRemoteEntries().filter((f) => f.is_ref && !f.is_dir);
+  if (!refs.length) return;
+  if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length, { n: refs.length }))) {
+    await removeSelectedVirtualRefs();
   }
 }
 
@@ -1124,6 +1192,14 @@ function rowTitle(f) {
       </nav>
 
       <div class="vtoggle">
+        <!-- 多选操作条：虚拟位置里勾选了条目后出现，批量剪切/复制/删除。 -->
+        <template v-if="isVirtualPlace() && remoteSelectionActive()">
+          <span class="selcount" data-pb-selcount>{{ i18n.tn('virtual.n_selected', state.remoteSelected.length, { n: state.remoteSelected.length }) }}</span>
+          <button class="btn small" @click="clipSelectedVirtual('cut')">✂️ {{ i18n.t('virtual.selection_cut') }}</button>
+          <button class="btn small" @click="clipSelectedVirtual('copy')">📋 {{ i18n.t('virtual.selection_copy') }}</button>
+          <button class="btn small danger" @click="onBatchDelete">🗑️ {{ i18n.t('virtual.selection_delete') }}</button>
+          <button class="btn small" @click="clearRemoteSelection">{{ i18n.t('view.clear_selection') }}</button>
+        </template>
         <!-- 虚拟位置没有上传，但要能新建文件夹与粘贴剪贴板。 -->
         <template v-if="isVirtualPlace()">
           <button class="btn small" data-pb="vnew-folder" @click="newVirtualFolderPrompt">
@@ -1484,11 +1560,11 @@ function rowTitle(f) {
           <div
             v-else
             class="card"
-            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile, sel: isSelected(f) }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
-            @click="onEntryClick(f)"
+            @click="onEntryClick(f, $event)"
             @keydown.enter.prevent="onEntryDbl(f)"
             @contextmenu.prevent="onEntryContext(f, $event)"
             @pointerdown="onPointerDown(f, $event)"
@@ -1550,11 +1626,11 @@ function rowTitle(f) {
           <div
             :key="f.id"
             class="lrow"
-            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile }"
+            :class="{ locked: f.is_encrypted && !f.unlocked, 'is-unlocked': f.is_encrypted && f.unlocked, off: !activatable(f), probing: !f.is_dir && f.probing, hl: f.id === state.highlightFile, sel: isSelected(f) }"
             :title="rowTitle(f)"
             tabindex="0"
             @dblclick="onEntryDbl(f)"
-            @click="onEntryClick(f)"
+            @click="onEntryClick(f, $event)"
             @keydown.enter.prevent="onEntryDbl(f)"
             @contextmenu.prevent="onEntryContext(f, $event)"
             @pointerdown="onPointerDown(f, $event)"

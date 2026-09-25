@@ -893,6 +893,10 @@
     "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
   },
   "virtual": {
+    "cut_partial": "Pasted, but some source references could not be removed; please check manually.",
+    "selection_cut": "Cut",
+    "selection_copy": "Copy",
+    "selection_delete": "Delete",
     "deleted": "Virtual remote deleted",
     "wrong_password": "Incorrect password",
     "encrypt_note": "Encrypts the collection data (which files you point to is itself private). The name stays visible; contents need unlocking.",
@@ -922,6 +926,10 @@
     "pick_title": "Add {{n}} item(s) to a virtual remote",
     "pick_hint": "Pick a virtual remote and a target folder. Expand a virtual remote to choose a subfolder.",
     "pick_empty": "No virtual remote yet — create one first.",
-    "pick_confirm": "Add here"
+    "pick_confirm": "Add here",
+    "n_selected_one": "1 selected",
+    "n_selected_other": "{{count}} selected",
+    "delete_refs_confirm_one": "Delete the selected reference? Only the bookmark is removed; the real file is unaffected.",
+    "delete_refs_confirm_other": "Delete the {{count}} selected references? Only bookmarks are removed; real files are unaffected."
   }
 }

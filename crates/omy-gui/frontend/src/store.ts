@@ -134,6 +134,9 @@ export const state = reactive({
   highlightMsg: null,
   /** 「在文件中显示 / 定位到源文件」命中的文件条目 id；网格/列表高亮它、滚到它。 */
   highlightFile: null,
+  /** 远程浏览（含虚拟位置）的多选集合：条目 id 列表。空数组表示没在多选。
+   *  桌面 Ctrl/⌘+点、移动端长按进入；仅当前目录/分栏有效，切目录/分栏/位置即清空。 */
+  remoteSelected: [],
   /** 正在为哪个**虚拟位置**弹加密对话框。{id,name} 或 null。 */
   vEncryptFor: null,
   vEncryptBusy: false,
@@ -2006,10 +2009,12 @@ export async function locateFile(target: {
   if (!found) {
     state.placeError = i18n.t('msgs.locate_file_not_found');
     state.highlightFile = null;
+  state.remoteSelected = [];
     return;
   }
   // 先清再置，保证即便与上一次目标相同也能再次触发视图的高亮 watch。
   state.highlightFile = null;
+  state.remoteSelected = [];
   await nextTick();
   state.highlightFile = id;
 }
@@ -2081,6 +2086,7 @@ export async function locateMessage(around: number): Promise<void> {
         // 目标已删或超出可取范围：不假装定位成功（仍保留拉回的上下文）。
         state.highlightMsg = null;
   state.highlightFile = null;
+  state.remoteSelected = [];
         state.placeError = i18n.t('msgs.locate_not_found');
         return;
       }
@@ -2364,6 +2370,7 @@ export async function confirmVirtualEncrypt({ password }) {
   try {
     await api.virtualEncrypt(target.id, password);
     await reloadRemotePlaces();
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
     setNotice(i18n.t('rplace.encrypted'));
     state.vEncryptFor = null;
     return true;
@@ -2394,6 +2401,7 @@ export async function confirmVirtualUnlock(password) {
     await api.virtualUnlock(target.id, password);
     state.vUnlockFor = null;
     await reloadRemotePlaces();
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
     // 若解锁的正是当前位置，重新载入它的内容
     if (state.remotePlace === target.id) await reloadRemoteDir();
     return true;
@@ -2462,6 +2470,48 @@ export async function removeVirtualRefs(items) {
   return n;
 }
 
+/* ---------------- 远程浏览多选（桌面 Ctrl/⌘ + 点，移动端长按） ---------------- */
+
+/** 当前是否处于多选态。 */
+export function remoteSelectionActive() {
+  return state.remoteSelected.length > 0;
+}
+
+/** 切换某条目的选中态。addTo=true 时只加不取消（长按进入的第一条）。 */
+export function toggleRemoteSelected(id: string, addTo = false) {
+  const i = state.remoteSelected.indexOf(id);
+  if (i >= 0) {
+    if (!addTo) state.remoteSelected.splice(i, 1);
+  } else {
+    state.remoteSelected.push(id);
+  }
+}
+
+export function clearRemoteSelection() {
+  state.remoteSelected = [];
+}
+
+/** 取当前选中的完整条目（按当前 remoteItems，顺序稳定）。 */
+export function selectedRemoteEntries() {
+  return state.remoteItems.filter((f) => state.remoteSelected.includes(f.id));
+}
+
+/** 多选批量删除虚拟引用。返回删除条数。真实文件不允许走这里（组件已拦）。 */
+export async function removeSelectedVirtualRefs() {
+  const refs = selectedRemoteEntries().filter((f) => f.is_ref && !f.is_dir);
+  if (!refs.length) return 0;
+  const n = await removeVirtualRefs(refs);
+  state.remoteSelected = [];
+  return n;
+}
+
+/** 多选批量剪切/复制虚拟引用。真实文件不进虚拟剪贴板（组件只在虚拟位置开放）。 */
+export function clipSelectedVirtual(mode: 'cut' | 'copy') {
+  const refs = selectedRemoteEntries().filter((f) => f.is_ref && !f.is_dir);
+  if (!refs.length) return;
+  setVirtualClipboard(mode, refs);
+}
+
 /** 把条目放进虚拟剪贴板（剪切/复制）。只接受虚拟引用；其它来源忽略。 */
 export function setVirtualClipboard(mode, items) {
   if (!isVirtualPlace()) return;
@@ -2477,16 +2527,18 @@ export function canPasteVirtual() {
 
 /** 把剪贴板内容粘贴进当前虚拟位置的**当前文件夹**。
  *  - 同位置剪切：逐条 move（保留 ref_id），完成后清空剪贴板；
- *  - 跨位置或复制：调 copy_refs 复制（生成新 ref_id），剪贴板保留（可多处粘贴）。
+ *  - 跨位置剪切：copy_refs 到目标后把源位置里的原引用逐条删除（剪切必须从源消失）；
+ *  - 复制：调 copy_refs 复制（生成新 ref_id），剪贴板保留（可多处粘贴）。
  *  返回新增条数。 */
 export async function pasteVirtualHere() {
   const cb = state.virtualClipboard;
   if (!cb || !isVirtualPlace()) return 0;
   const destPlace = state.remotePlace;
   const destFolder = state.remoteDir || '';
+  const isCut = cb.mode === 'cut';
   let added = 0;
   try {
-    if (cb.mode === 'cut' && cb.placeId === destPlace) {
+    if (isCut && cb.placeId === destPlace) {
       for (const f of cb.items) {
         // 同位置移动；目标就是当前目录时跳过（条目已在此）
         if (f.__folder === destFolder) continue;
@@ -2501,8 +2553,17 @@ export async function pasteVirtualHere() {
         destFolder,
         refIds: cb.items.map((f) => f.id),
       });
-      // 复制保留剪贴板，可继续粘贴到别处；剪切跨位置：复制完清掉（不能再移动）。
-      if (cb.mode === 'cut') state.virtualClipboard = null;
+      if (isCut) {
+        // 跨位置剪切：复制成功后必须删除源位置里的原引用，否则只是「复制」、
+        // 源位置还留着（用户报的 bug）。逐条删；删失败不回滚已复制件，避免丢数据。
+        let removed = 0;
+        for (const f of cb.items) {
+          if (await api.virtualRemoveRef(cb.placeId, f.id).catch(() => false)) removed += 1;
+        }
+        if (removed !== cb.items.length) state.placeError = i18n.t('virtual.cut_partial');
+        state.virtualClipboard = null; // 剪切是一次性的
+      }
+      // 复制（非 cut）保留剪贴板，可继续粘贴到别处。
     }
   } catch (e) {
     state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
@@ -2651,6 +2712,7 @@ export function leaveRemotePlace() {
   state.locatingMsg = null;
   state.highlightMsg = null;
   state.highlightFile = null;
+  state.remoteSelected = [];
   state.remoteDirName = '';
 }
 
@@ -2680,6 +2742,7 @@ export async function reloadVirtualDir() {
   state.locatingMsg = null;
   state.highlightMsg = null;
   state.highlightFile = null;
+  state.remoteSelected = [];
   try {
     const rows = await api.virtualBrowse(place, folder);
     if (seq !== browseSeq || state.remotePlace !== place
@@ -2834,6 +2897,7 @@ export async function reloadRemoteDir() {
   state.locatingMsg = null;
   state.highlightMsg = null;
   state.highlightFile = null;
+  state.remoteSelected = [];
   refreshRemoteDirCaps(state.remotePlace, state.remoteDir);
   // 本次重载的暂存区从空开始：留着上一次的会把已被服务端改动过的
   // 旧识别结果贴到新骨架上（比如文件被替换后 id 相同但内容已变）

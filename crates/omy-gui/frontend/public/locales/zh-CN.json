@@ -893,6 +893,10 @@
     "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
   },
   "virtual": {
+    "cut_partial": "已粘贴，但有部分源引用未能删除，请手动检查。",
+    "selection_cut": "剪切",
+    "selection_copy": "复制",
+    "selection_delete": "删除",
     "deleted": "已删除虚拟远程",
     "wrong_password": "密码不正确",
     "encrypt_note": "加密收藏数据（指向了哪些文件本身也是隐私）。名字仍可见，内容需解锁。",
@@ -922,6 +926,10 @@
     "pick_title": "把 {{n}} 项添加到虚拟远程",
     "pick_hint": "选一个虚拟远程和目标文件夹。展开虚拟远程可选到具体子文件夹。",
     "pick_empty": "还没有虚拟远程，先新建一个。",
-    "pick_confirm": "添加到这里"
+    "pick_confirm": "添加到这里",
+    "n_selected_one": "已选 1 项",
+    "n_selected_other": "已选 {{count}} 项",
+    "delete_refs_confirm_one": "删除选中的 1 条引用？只移除收藏指针，不影响真实文件。",
+    "delete_refs_confirm_other": "删除选中的 {{count}} 条引用？只移除收藏指针，不影响真实文件。"
   }
 }

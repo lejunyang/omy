@@ -401,6 +401,10 @@ input {
   border-color: var(--accent);
 }
 
+/* 多选操作条：选中计数与批量按钮 */
+.selcount { font-size: 12px; color: var(--accent-solid); margin-inline-end: 4px; white-space: nowrap; }
+.btn.small.danger { color: #fff; background: var(--danger, #dc2626); border-color: var(--danger, #dc2626); }
+
 .card .thumb {
   height: 104px;
   border-radius: var(--r-s);

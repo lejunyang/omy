@@ -279,11 +279,19 @@ chats.
   moves within one place, while copy and cross-place paste create new references.
   Deleting removes only the bookmark, **never** the real file. You **cannot upload
   files** into a virtual place — it only stores references.
+- **Multi-select**: on desktop hold Ctrl (⌘ on macOS) and click items, or just
+  click while a selection is active; on touch, **long-press** an item to enter
+  selection mode (the local file list supports long-press multi-select too). A
+  bulk "Cut / Copy / Delete" bar appears at the top; Ctrl+X / Ctrl+C / Delete
+  work as well.
 - **Manage from the sidebar**: **right-click** a virtual place in the sidebar to
   rename, delete, or **encrypt / unlock / lock** it. What gets encrypted is the
   collection itself (which files you point to); the name stays visible. It is
   sealed on disk with a standalone password + Argon2, and after locking no
-  plaintext stays in memory — re-entering asks for the password.
+  plaintext stays in memory — re-entering asks for the password. A virtual place
+  password shares the **same session key pool** as ordinary .omy files: with the
+  same password, unlocking one unlocks the other automatically, and it counts
+  toward the "N passwords unlocked" indicator.
 - **Open**: double-clicking a reference **previews/plays** the real file it points
   at in place (reading is delegated to the source, without leaving the virtual
   location); anything the real location already cached **opens instantly** (a

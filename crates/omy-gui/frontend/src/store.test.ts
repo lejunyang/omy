@@ -60,6 +60,10 @@ import {
   openRemotePlace,
   reloadRemoteDir,
   remoteFileCacheKeyFor,
+  toggleRemoteSelected,
+  remoteSelectionActive,
+  clearRemoteSelection,
+  selectedRemoteEntries,
   locateFile,
   fileTabForName,
   tgMsgOfId,
@@ -770,9 +774,8 @@ describe('虚拟位置剪贴板', () => {
     expect(state.virtualClipboard).toBeNull();
   });
 
-  it('跨位置粘贴：走 copy_refs（生成新引用），复制模式保留剪贴板可继续贴', async () => {
+  it('跨位置复制：走 copy_refs（生成新引用），剪贴板保留可继续贴', async () => {
     setVirtualClipboard('copy', [refItem('vr1'), refItem('vr2')]);
-    // 切到另一个虚拟位置
     state.remotePlace = 'v2';
     vi.mocked(api.virtualCopyRefs).mockResolvedValue(2);
     vi.mocked(api.virtualBrowse).mockResolvedValue([]);
@@ -783,8 +786,41 @@ describe('虚拟位置剪贴板', () => {
     expect(req.sourcePlaceId).toBe('v1');
     expect(req.destPlaceId).toBe('v2');
     expect(req.refIds).toEqual(['vr1', 'vr2']);
-    // 复制保留剪贴板
+    // 复制不删源、剪贴板保留
+    expect(vi.mocked(api.virtualRemoveRef)).not.toHaveBeenCalled();
     expect(state.virtualClipboard?.mode).toBe('copy');
+  });
+
+  it('跨位置剪切：copy_refs 之后必须删除源引用，源位置不再保留', async () => {
+    setVirtualClipboard('cut', [refItem('vr1')]);
+    state.remotePlace = 'v2';
+    vi.mocked(api.virtualCopyRefs).mockResolvedValue(1);
+    vi.mocked(api.virtualRemoveRef).mockResolvedValue(true);
+    vi.mocked(api.virtualBrowse).mockResolvedValue([]);
+
+    const n = await pasteVirtualHere();
+    expect(n).toBe(1);
+    expect(vi.mocked(api.virtualCopyRefs)).toHaveBeenCalledTimes(1);
+    // 关键回归：剪切要从源位置删除原引用（旧实现漏了这步，表现得像复制）。
+    expect(vi.mocked(api.virtualRemoveRef)).toHaveBeenCalledWith('v1', 'vr1');
+    expect(state.virtualClipboard).toBeNull();
+  });
+
+  it('多选：Ctrl 点选集合只收虚拟引用，批量操作取当前 remoteItems', () => {
+    state.remoteItems = [
+      refItem('vr1'), refItem('vr2'),
+      { id: 'f1', is_dir: true, is_ref: false },
+      { id: 'tg:1:2', is_dir: false, is_ref: false },
+    ];
+    toggleRemoteSelected('vr1', true);
+    toggleRemoteSelected('vr2', true);
+    expect(remoteSelectionActive()).toBe(true);
+    expect(selectedRemoteEntries().map((f) => f.id)).toEqual(['vr1', 'vr2']);
+    // 再点已选的取消
+    toggleRemoteSelected('vr2', false);
+    expect(selectedRemoteEntries().map((f) => f.id)).toEqual(['vr1']);
+    clearRemoteSelection();
+    expect(remoteSelectionActive()).toBe(false);
   });
 
   it('删除引用：只删 is_ref 的条目，删除后重载；不触碰后端移动接口', async () => {
