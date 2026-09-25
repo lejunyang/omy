@@ -269,10 +269,21 @@ chats.
 
 - **Create**: in the sidebar "Remotes" area click "New virtual remote" and give it a name.
 - **Add content**: right-click a file in a real remote (or select several) →
-  "Add to virtual remote…", then in the dialog pick a virtual remote and a
-  **specific folder** under it (expand the folder tree).
-- **Organize**: you can create folders inside a virtual remote; you **cannot upload
-  files** into it — it only stores references.
+  "Add to virtual remote…". In the dialog, clicking a virtual remote's name adds
+  to its **root** (files can live at the root — no folder needed first); click the
+  arrow on the right to expand it and pick a specific subfolder.
+- **Organize**: inside a virtual place the toolbar has "New folder / Paste";
+  right-click a reference or folder to create, rename, delete, and **cut / copy /
+  paste** (Ctrl+X / Ctrl+C / Ctrl+V and Delete work too). Cut/copy can only be
+  pasted **between virtual places** — real remotes don't accept references; cut
+  moves within one place, while copy and cross-place paste create new references.
+  Deleting removes only the bookmark, **never** the real file. You **cannot upload
+  files** into a virtual place — it only stores references.
+- **Manage from the sidebar**: **right-click** a virtual place in the sidebar to
+  rename, delete, or **encrypt / unlock / lock** it. What gets encrypted is the
+  collection itself (which files you point to); the name stays visible. It is
+  sealed on disk with a standalone password + Argon2, and after locking no
+  plaintext stays in memory — re-entering asks for the password.
 - **Open**: double-clicking a reference **previews/plays** the real file it points
   at in place (reading is delegated to the source, without leaving the virtual
   location); anything the real location already cached **opens instantly** (a

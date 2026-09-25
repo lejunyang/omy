@@ -105,6 +105,14 @@ vi.mock('../store.js', async () => {
     openAddToVirtual: noop,
     // 网格几何回写：测试不关心，给空实现（组件 onMounted 会调）
     setGridLayout: noop,
+    // 任务 #10 虚拟位置整理操作：组件引用了它们，mock 成空实现/常量。
+    newVirtualFolderPrompt: noop,
+    renameVirtualFolderPrompt: noop,
+    removeVirtualFolder: noop,
+    removeVirtualRefs: noop,
+    setVirtualClipboard: noop,
+    canPasteVirtual: () => false,
+    pasteVirtualHere: noop,
   };
 });
 

@@ -603,6 +603,7 @@
     "about_build": "Build"
   },
   "rplace": {
+    "lock": "Lock",
     "title": "Remote locations",
     "add": "Connect a remote location",
     "name": "Name",
@@ -892,6 +893,24 @@
     "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
   },
   "virtual": {
+    "deleted": "Virtual remote deleted",
+    "wrong_password": "Incorrect password",
+    "encrypt_note": "Encrypts the collection data (which files you point to is itself private). The name stays visible; contents need unlocking.",
+    "delete_note": "Removes only these references; files in the real locations are untouched.",
+    "delete_confirm": "Delete virtual remote \"{{name}}\"? All its references are removed; real files are unaffected.",
+    "new_folder": "New folder",
+    "folder_name_prompt": "Name for the new folder",
+    "folder_rename_prompt": "Rename folder",
+    "menu_cut": "Cut",
+    "menu_copy": "Copy",
+    "menu_paste": "Paste",
+    "menu_delete_ref": "Delete reference",
+    "menu_delete_folder": "Delete folder",
+    "delete_ref_confirm": "Delete reference \"{{name}}\"? Only this bookmark is removed; the real file is unaffected.",
+    "delete_folder_confirm": "Delete folder \"{{name}}\" and all references under it? Real files are unaffected.",
+    "pasted": "Pasted {{n}} item(s)",
+    "toggle_folders": "Expand/collapse folders",
+    "no_subfolders": "(no subfolders yet)",
     "add": "New virtual remote",
     "default_name": "My collection",
     "name_prompt": "Name this virtual remote",

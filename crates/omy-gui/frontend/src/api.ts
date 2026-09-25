@@ -794,3 +794,39 @@ export const virtualFolders = (placeId: any): Promise<any> => invoke('virtual_fo
 
 /** 删除一个虚拟位置。返回是否删了。 */
 export const virtualDelete = (placeId: any): Promise<any> => invoke('virtual_delete', { placeId });
+
+/** 重命名一个虚拟位置。 */
+export const virtualRename = (placeId: any, name: any): Promise<any> => invoke('virtual_rename', { placeId, name });
+
+/** 重命名虚拟位置内的文件夹（folder 为文件夹 id，不能是根空串）。 */
+export const virtualRenameFolder = (placeId: any, folder: any, name: any): Promise<any> =>
+  invoke('virtual_rename_folder', { placeId, folder, name });
+
+/** 删除虚拟位置内的文件夹（连同子树引用），返回移除的引用条数。 */
+export const virtualRemoveFolder = (placeId: any, folder: any): Promise<any> =>
+  invoke('virtual_remove_folder', { placeId, folder });
+
+/** 删除一条引用。 */
+export const virtualRemoveRef = (placeId: any, refId: any): Promise<any> =>
+  invoke('virtual_remove_ref', { placeId, refId });
+
+/** 在同一虚拟位置内移动（剪切）一条引用到另一文件夹。 */
+export const virtualMoveRef = (placeId: any, refId: any, destFolder: any): Promise<any> =>
+  invoke('virtual_move_ref', { placeId, refId, destFolder });
+
+/** 把若干引用复制到（可跨位置的）目标文件夹。 */
+export const virtualCopyRefs = (req: any): Promise<any> => invoke('virtual_copy_refs', { req });
+
+/** 用密码加密一个虚拟位置。 */
+export const virtualEncrypt = (placeId: any, password: any): Promise<any> =>
+  invoke('virtual_encrypt', { placeId, password });
+
+/** 用密码解锁一个加密虚拟位置。 */
+export const virtualUnlock = (placeId: any, password: any): Promise<any> =>
+  invoke('virtual_unlock', { placeId, password });
+
+/** 锁定一个虚拟位置（清空本会话明文）。 */
+export const virtualLock = (placeId: any): Promise<any> => invoke('virtual_lock', { placeId });
+
+/** 查询单个虚拟位置的加密/解锁态。 */
+export const virtualLockState = (placeId: any): Promise<any> => invoke('virtual_lock_state', { placeId });

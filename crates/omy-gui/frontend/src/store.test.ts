@@ -30,6 +30,19 @@ vi.mock('./api.js', () => ({
   remoteMetaPut: vi.fn(),
   remoteEffectiveCaps: vi.fn(),
   remoteDirProtected: vi.fn(),
+  // 任务 #10 虚拟位置管理命令
+  virtualRemoveRef: vi.fn(),
+  virtualMoveRef: vi.fn(),
+  virtualCopyRefs: vi.fn(),
+  virtualRemoveFolder: vi.fn(),
+  virtualRenameFolder: vi.fn(),
+  virtualAddFolder: vi.fn(),
+  virtualRename: vi.fn(),
+  virtualDelete: vi.fn(),
+  virtualEncrypt: vi.fn(),
+  virtualUnlock: vi.fn(),
+  virtualLock: vi.fn(),
+  virtualPlaces: vi.fn(),
   // 失败路径 store 会用 errCode 取错误码；测试里错误都是普通 Error，给 undefined
   // 让它走兜底文案即可（与真实取不到 code 时的行为一致）。
   errCode: () => undefined,
@@ -50,6 +63,10 @@ import {
   locateFile,
   fileTabForName,
   tgMsgOfId,
+  removeVirtualRefs,
+  setVirtualClipboard,
+  canPasteVirtual,
+  pasteVirtualHere,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -697,5 +714,85 @@ describe('虚拟引用 activateVirtualEntry — Telegram 双落点', () => {
     expect(vi.mocked(api.remoteBrowseTab)).not.toHaveBeenCalled();
     expect(vi.mocked(api.remoteMessagesAround)).not.toHaveBeenCalled();
     expect(state.highlightFile).toBe('/docs/a.pdf');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 任务 #10：虚拟位置剪贴板（剪切/复制/粘贴）与删除
+// ---------------------------------------------------------------------------
+
+describe('虚拟位置剪贴板', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'v1',
+      remoteDir: '',
+      virtualPlaces: [{ id: 'v1' }, { id: 'v2' }],
+      remoteItems: [],
+      virtualClipboard: null,
+      placeError: '',
+      remoteCacheStat: {},
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.remoteCacheFileStats).mockResolvedValue([]);
+  });
+
+  const refItem = (id: string, over: Record<string, unknown> = {}) => ({
+    id, is_dir: false, is_ref: true, name: id + '.jpg',
+    source_state: 'available', source_place: 'p1',
+    source_dir: 'tg:-100', source_file: 'tg:-100:' + id,
+    __folder: '', ...over,
+  });
+
+  it('复制：写入剪贴板，且 canPasteVirtual 只在虚拟位置为真', async () => {
+    setVirtualClipboard('copy', [refItem('vr1')]);
+    expect(state.virtualClipboard?.mode).toBe('copy');
+    expect(canPasteVirtual()).toBe(true);
+  });
+
+  it('只接受虚拟引用：真实位置条目 / 文件夹不放不进剪贴板', () => {
+    setVirtualClipboard('cut', [{ id: 'tg:x:1', is_dir: false, is_ref: false }]);
+    expect(state.virtualClipboard).toBeNull();
+    setVirtualClipboard('cut', [{ id: 'f1', is_dir: true, is_ref: false }]);
+    expect(state.virtualClipboard).toBeNull();
+  });
+
+  it('同位置剪切粘贴：逐条 move，且剪切是一次性（贴完清空剪贴板）', async () => {
+    state.remoteItems = [refItem('vr1', { __folder: 'sub' })];
+    setVirtualClipboard('cut', [refItem('vr1', { __folder: 'sub' })]);
+    vi.mocked(api.virtualMoveRef).mockResolvedValue('vr1');
+    vi.mocked(api.virtualBrowse).mockResolvedValue([]);
+
+    // 目标是当前根目录（''），源在 sub，move 被调用
+    const n = await pasteVirtualHere();
+    expect(n).toBe(1);
+    expect(vi.mocked(api.virtualMoveRef)).toHaveBeenCalledWith('v1', 'vr1', '');
+    expect(state.virtualClipboard).toBeNull();
+  });
+
+  it('跨位置粘贴：走 copy_refs（生成新引用），复制模式保留剪贴板可继续贴', async () => {
+    setVirtualClipboard('copy', [refItem('vr1'), refItem('vr2')]);
+    // 切到另一个虚拟位置
+    state.remotePlace = 'v2';
+    vi.mocked(api.virtualCopyRefs).mockResolvedValue(2);
+    vi.mocked(api.virtualBrowse).mockResolvedValue([]);
+
+    const n = await pasteVirtualHere();
+    expect(n).toBe(2);
+    const req = vi.mocked(api.virtualCopyRefs).mock.calls[0][0];
+    expect(req.sourcePlaceId).toBe('v1');
+    expect(req.destPlaceId).toBe('v2');
+    expect(req.refIds).toEqual(['vr1', 'vr2']);
+    // 复制保留剪贴板
+    expect(state.virtualClipboard?.mode).toBe('copy');
+  });
+
+  it('删除引用：只删 is_ref 的条目，删除后重载；不触碰后端移动接口', async () => {
+    vi.mocked(api.virtualRemoveRef).mockResolvedValue(true);
+    vi.mocked(api.virtualBrowse).mockResolvedValue([]);
+    const n = await removeVirtualRefs([refItem('vr1'), { id: 'f1', is_dir: true }]);
+    expect(n).toBe(1);
+    expect(vi.mocked(api.virtualRemoveRef)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.virtualRemoveRef)).toHaveBeenCalledWith('v1', 'vr1');
   });
 });

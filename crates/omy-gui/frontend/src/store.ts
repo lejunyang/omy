@@ -134,6 +134,16 @@ export const state = reactive({
   highlightMsg: null,
   /** 「在文件中显示 / 定位到源文件」命中的文件条目 id；网格/列表高亮它、滚到它。 */
   highlightFile: null,
+  /** 正在为哪个**虚拟位置**弹加密对话框。{id,name} 或 null。 */
+  vEncryptFor: null,
+  vEncryptBusy: false,
+  /** 正在为哪个锁定的虚拟位置弹解锁框。{id,name} 或 null。 */
+  vUnlockFor: null,
+  vUnlockBusy: false,
+  vUnlockError: '',
+  /** 虚拟位置条目的剪贴板：{ mode:'cut'|'copy', placeId, items:[RemoteEntry] }。
+   *  只在虚拟位置之间粘贴——真实远程不接受引用条目。 */
+  virtualClipboard: null,
   /** 正在为哪个 Telegram 位置弹加密对话框。{id,name} 或 null。 */
   tgEncryptFor: null,
   /** 加密对话框是否正在提交（跑 Argon2 派生 + 写盘时置忙）。 */
@@ -2316,6 +2326,194 @@ export async function reloadRemotePlaces() {
   state.virtualPlaces = await api.virtualPlaces().catch(() => []);
 }
 
+/** 重命名虚拟位置（侧栏「编辑」）。空名忽略。 */
+export async function renameVirtualPlace(id, name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return;
+  try {
+    await api.virtualRename(id, trimmed);
+    await reloadRemotePlaces();
+    setNotice(i18n.t('rplace.renamed'));
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), 'errors.remote_failed');
+  }
+}
+
+/** 删除虚拟位置（侧栏）。调用方负责先 confirm。正在浏览它就退出。 */
+export async function deleteVirtualPlace(id) {
+  await api.virtualDelete(id);
+  if (state.remotePlace === id) leaveRemotePlace();
+  state.virtualClipboard = null;
+  await reloadRemotePlaces();
+  setNotice(i18n.t('virtual.deleted'));
+}
+
+/** 侧栏「加密虚拟位置」：弹与 Telegram 同款的加密对话框。 */
+export function promptVirtualEncrypt(id) {
+  const p = state.virtualPlaces.find((x) => x.id === id);
+  state.vEncryptFor = { id, name: p?.name || '' };
+}
+export function cancelVirtualEncrypt() {
+  state.vEncryptFor = null;
+  state.vEncryptBusy = false;
+}
+export async function confirmVirtualEncrypt({ password }) {
+  const target = state.vEncryptFor;
+  if (!target || !password) return false;
+  state.vEncryptBusy = true;
+  try {
+    await api.virtualEncrypt(target.id, password);
+    await reloadRemotePlaces();
+    setNotice(i18n.t('rplace.encrypted'));
+    state.vEncryptFor = null;
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), 'errors.tg_encrypt_failed');
+    return false;
+  } finally {
+    state.vEncryptBusy = false;
+  }
+}
+
+/** 进入一个加密但未解锁的虚拟位置前弹解锁框。 */
+export function promptVirtualUnlock(id) {
+  const p = state.virtualPlaces.find((x) => x.id === id);
+  state.vUnlockFor = { id, name: p?.name || '' };
+  state.vUnlockError = '';
+}
+export function cancelVirtualUnlock() {
+  state.vUnlockFor = null;
+  state.vUnlockBusy = false;
+  state.vUnlockError = '';
+}
+export async function confirmVirtualUnlock(password) {
+  const target = state.vUnlockFor;
+  if (!target) return false;
+  state.vUnlockBusy = true;
+  try {
+    await api.virtualUnlock(target.id, password);
+    state.vUnlockFor = null;
+    await reloadRemotePlaces();
+    // 若解锁的正是当前位置，重新载入它的内容
+    if (state.remotePlace === target.id) await reloadRemoteDir();
+    return true;
+  } catch (e) {
+    if (api.errCode(e) === 'virtual_wrong_password') {
+      state.vUnlockError = i18n.t('virtual.wrong_password');
+    } else {
+      state.vUnlockError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    }
+    return false;
+  } finally {
+    state.vUnlockBusy = false;
+  }
+}
+
+/** 锁定当前/指定虚拟位置：退出浏览并清本会话明文。 */
+export async function lockVirtualPlace(id) {
+  await api.virtualLock(id);
+  if (state.remotePlace === id) leaveRemotePlace();
+  await reloadRemotePlaces();
+}
+
+/* ---------------- 虚拟位置内的文件/文件夹操作（剪贴板） ---------------- */
+
+/** 在当前虚拟位置新建文件夹（右键空白/工具入口），刷新当前目录。 */
+export async function newVirtualFolderPrompt() {
+  if (!isVirtualPlace()) return;
+  const name = window.prompt(i18n.t('virtual.folder_name_prompt'));
+  if (name === null) return;
+  await addVirtualFolder(name.trim());
+}
+
+/** 重命名虚拟位置里的一个文件夹（右键）。 */
+export async function renameVirtualFolderPrompt(folderId) {
+  if (!isVirtualPlace() || !folderId) return;
+  const cur = state.remoteItems.find((x) => x.id === folderId)?.name || '';
+  const name = window.prompt(i18n.t('virtual.folder_rename_prompt'), cur);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  await api.virtualRenameFolder(state.remotePlace, folderId, trimmed);
+  await reloadRemoteDir();
+}
+
+/** 删除虚拟位置里的一个文件夹（右键，先由调用方 confirm）。返回删除的引用条数。 */
+export async function removeVirtualFolder(folderId) {
+  if (!isVirtualPlace() || !folderId) return 0;
+  const n = await api.virtualRemoveFolder(state.remotePlace, folderId);
+  await reloadRemoteDir();
+  return n || 0;
+}
+
+/** 删除一条/多条引用（右键或键盘 Delete）。返回删除条数。 */
+export async function removeVirtualRefs(items) {
+  const list = Array.isArray(items) ? items : [items];
+  let n = 0;
+  for (const f of list) {
+    if (!f?.is_ref) continue;
+    try {
+      if (await api.virtualRemoveRef(state.remotePlace, f.id)) n += 1;
+    } catch (e) {
+      state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+    }
+  }
+  if (n) await reloadRemoteDir();
+  return n;
+}
+
+/** 把条目放进虚拟剪贴板（剪切/复制）。只接受虚拟引用；其它来源忽略。 */
+export function setVirtualClipboard(mode, items) {
+  if (!isVirtualPlace()) return;
+  const refs = (Array.isArray(items) ? items : [items]).filter((f) => f?.is_ref && !f.is_dir);
+  if (!refs.length) return;
+  state.virtualClipboard = { mode, placeId: state.remotePlace, items: refs };
+}
+
+/** 当前能否在当前虚拟位置粘贴（剪贴板有内容且目标也是虚拟位置）。 */
+export function canPasteVirtual() {
+  return !!state.virtualClipboard && isVirtualPlace();
+}
+
+/** 把剪贴板内容粘贴进当前虚拟位置的**当前文件夹**。
+ *  - 同位置剪切：逐条 move（保留 ref_id），完成后清空剪贴板；
+ *  - 跨位置或复制：调 copy_refs 复制（生成新 ref_id），剪贴板保留（可多处粘贴）。
+ *  返回新增条数。 */
+export async function pasteVirtualHere() {
+  const cb = state.virtualClipboard;
+  if (!cb || !isVirtualPlace()) return 0;
+  const destPlace = state.remotePlace;
+  const destFolder = state.remoteDir || '';
+  let added = 0;
+  try {
+    if (cb.mode === 'cut' && cb.placeId === destPlace) {
+      for (const f of cb.items) {
+        // 同位置移动；目标就是当前目录时跳过（条目已在此）
+        if (f.__folder === destFolder) continue;
+        await api.virtualMoveRef(destPlace, f.id, destFolder);
+        added += 1;
+      }
+      state.virtualClipboard = null; // 剪切是一次性的
+    } else {
+      added = await api.virtualCopyRefs({
+        sourcePlaceId: cb.placeId,
+        destPlaceId: destPlace,
+        destFolder,
+        refIds: cb.items.map((f) => f.id),
+      });
+      // 复制保留剪贴板，可继续粘贴到别处；剪切跨位置：复制完清掉（不能再移动）。
+      if (cb.mode === 'cut') state.virtualClipboard = null;
+    }
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
+  }
+  if (added) {
+    await reloadRemoteDir();
+    setNotice(i18n.t('virtual.pasted', { n: added }));
+  }
+  return added;
+}
+
 /** 当前 remotePlace 是不是一个虚拟位置（id 以 v 开头且在 virtualPlaces 里）。
  *  虚拟位置复用 remotePlace/remoteDir/remoteItems 那套状态与 PlaceBrowser 视图，
  *  只在加载路径上分叉（走 virtualBrowse 而不是网络 list）。 */
@@ -2511,6 +2709,8 @@ export async function reloadVirtualDir() {
       source_file: e.source_file ?? null,
       // 添加引用时记住的源 Telegram 分栏（可能缺：旧引用），定位源文件时优先用它
       source_media_tab: e.source_media_tab ?? null,
+      // 记录该条目当前所在文件夹 id，剪切粘贴到同目录时跳过它自身
+      __folder: folder,
     }));
     state.hasMoreFiles = false;
     // 缓存角标：引用的缓存落在**真实位置**名下（委托读取时缓存 key 是源
@@ -2518,13 +2718,17 @@ export async function reloadVirtualDir() {
     // 虚拟位置自己的 id 去查——那必然查不到、角标永远不亮。
     void refreshVirtualCacheStats(rows);
   } catch (e) {
-    if (seq === browseSeq) {
+    if (seq !== browseSeq) {
+      // 旧请求，什么都不改
+    } else if (api.errCode(e) === 'virtual_locked') {
+      // 加密且未解锁：不显示空列表（那会被误以为收藏没了），弹解锁框。
+      state.remoteItems = [];
+      promptVirtualUnlock(place);
+    } else {
       state.remoteItems = [];
       state.placeError = i18n.te(api.errCode(e), 'errors.remote_failed');
     }
   } finally {
-    // 只有仍是最新一次浏览时才清 busy：旧请求晚回来不能把新位置的加载圈关掉，
-    // 否则用户会看到 B 位置的大加载圈莫名消失、内容却还没到。
     if (seq === browseSeq) {
       state.busy = false;
       state.busyKey = '';

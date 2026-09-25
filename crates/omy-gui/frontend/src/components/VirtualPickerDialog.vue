@@ -22,6 +22,8 @@ const busy = ref(false);
 async function load() {
   const list = state.virtualPlaces || [];
   places.value = list.map((v) => ({ id: v.id, name: v.name, expanded: false, folders: null }));
+  // 默认选第一个位置的根：文件本来就能直接加到根，不必强制展开再选。
+  if (list.length && !target.value) target.value = { placeId: list[0].id, folder: '' };
 }
 onMounted(load);
 
@@ -31,8 +33,9 @@ async function toggle(p) {
   if (p.expanded && p.folders === null) {
     try {
       const fs = await api.virtualFolders(p.id);
-      // 根节点 name 为空，用位置名兜底
-      p.folders = fs.map((f) => ({ ...f, name: f.id === '' ? p.name : f.name }));
+      // virtual_folders 会把根（id 为空）也返回；根由位置行代表，这里剔除，
+      // 只留真正手动新建的子文件夹。
+      p.folders = fs.filter((f) => f.id !== '').map((f) => ({ ...f }));
     } catch {
       p.folders = [];
     }
@@ -80,12 +83,29 @@ const count = () => (state.addToVirtual?.items?.length || 0);
 
       <div v-else class="vp-tree" data-vp="tree">
         <template v-for="p in places" :key="p.id">
-          <!-- 虚拟位置一行：点它展开/收起文件夹树 -->
-          <button type="button" class="vp-node vp-place" @click="toggle(p)">
-            <span aria-hidden="true">{{ p.expanded ? '▼' : '▶' }} 🗂️</span>
-            <span class="stext">{{ p.name }}</span>
-          </button>
-          <!-- 展开后：它的文件夹（含根），点一个选为目标 -->
+          <!-- 位置行：点整行=把文件加到这个位置的**根**；右侧箭头单独展开子文件夹。
+               根不再伪装成一个同名子文件夹（旧实现展开后会多出一个叫位置名的项）。 -->
+          <div class="vp-place-row">
+            <button
+              type="button"
+              class="vp-node vp-place"
+              :class="{ picked: isPicked(p.id, '') }"
+              :data-vp-root="p.id"
+              @click="pick(p.id, '')"
+            >
+              <span aria-hidden="true">🗂️</span>
+              <span class="stext">{{ p.name }}</span>
+              <span v-if="isPicked(p.id, '')" class="vp-check">✓</span>
+            </button>
+            <button
+              type="button"
+              class="vp-caret"
+              :aria-expanded="p.expanded"
+              :title="i18n.t('virtual.toggle_folders')"
+              @click.stop="toggle(p)"
+            >{{ p.expanded ? '▼' : '▶' }}</button>
+          </div>
+          <!-- 展开后：只列真正的子文件夹，点一个选为目标 -->
           <template v-if="p.expanded && p.folders">
             <button
               v-for="f in p.folders"
@@ -101,6 +121,9 @@ const count = () => (state.addToVirtual?.items?.length || 0);
               <span class="stext">{{ f.name }}</span>
               <span v-if="isPicked(p.id, f.id)" class="vp-check">✓</span>
             </button>
+            <div v-if="!p.folders.length" class="vp-nofolders">
+              {{ i18n.t('virtual.no_subfolders') }}
+            </div>
           </template>
         </template>
       </div>
@@ -139,7 +162,25 @@ const count = () => (state.addToVirtual?.items?.length || 0);
   color: var(--fg);
 }
 .vp-node:hover { background: var(--bg2); }
-.vp-place { font-weight: 600; }
+.vp-place { font-weight: 600; flex: 1; min-width: 0; }
+.vp-place-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
+.vp-caret {
+  flex: 0 0 auto;
+  width: 34px;
+  background: none;
+  border: 0;
+  border-inline-start: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--fg2);
+}
+.vp-caret:hover { background: var(--bg2); }
+.vp-place-row .vp-place { border-bottom: 0; }
+.vp-nofolders {
+  padding: 8px 16px 8px 32px;
+  color: var(--fg2);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
 .vp-folder.picked {
   background: var(--accent-solid);
   color: #fff;

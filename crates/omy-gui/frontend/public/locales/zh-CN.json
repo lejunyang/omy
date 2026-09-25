@@ -603,6 +603,7 @@
     "about_build": "构建版本"
   },
   "rplace": {
+    "lock": "锁定",
     "title": "远程位置",
     "add": "连接远程位置",
     "name": "名称",
@@ -892,6 +893,24 @@
     "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
   },
   "virtual": {
+    "deleted": "已删除虚拟远程",
+    "wrong_password": "密码不正确",
+    "encrypt_note": "加密收藏数据（指向了哪些文件本身也是隐私）。名字仍可见，内容需解锁。",
+    "delete_note": "只删除这份收藏引用，不会删除真实位置里的文件。",
+    "delete_confirm": "删除虚拟远程「{{name}}」？其中的收藏引用会全部移除，真实文件不受影响。",
+    "new_folder": "新建文件夹",
+    "folder_name_prompt": "新文件夹的名字",
+    "folder_rename_prompt": "给文件夹改个名字",
+    "menu_cut": "剪切",
+    "menu_copy": "复制",
+    "menu_paste": "粘贴",
+    "menu_delete_ref": "删除引用",
+    "menu_delete_folder": "删除文件夹",
+    "delete_ref_confirm": "删除引用「{{name}}」？只会移除这条收藏指针，不影响真实文件。",
+    "delete_folder_confirm": "删除文件夹「{{name}}」及其下全部引用？真实文件不受影响。",
+    "pasted": "已粘贴 {{n}} 项",
+    "toggle_folders": "展开/收起文件夹",
+    "no_subfolders": "（还没有子文件夹）",
     "add": "新建虚拟远程",
     "default_name": "我的收藏",
     "name_prompt": "给这个虚拟远程起个名字",

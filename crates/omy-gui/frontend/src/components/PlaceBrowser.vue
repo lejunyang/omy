@@ -68,6 +68,13 @@ import {
   addVirtualFolder,
   openAddToVirtual,
   setGridLayout,
+  newVirtualFolderPrompt,
+  renameVirtualFolderPrompt,
+  removeVirtualFolder,
+  removeVirtualRefs,
+  setVirtualClipboard,
+  canPasteVirtual,
+  pasteVirtualHere,
 } from '../store';
 
 // 声明要写全：未声明的事件在生产构建里会静默落到 attrs 上，
@@ -285,7 +292,37 @@ const fileWindow = ref(null);
 
 /** 监听滚动容器宽度变化，重算网格列数（窗口拉宽/变窄时每行卡片数跟着变）。 */
 let gridRO = null;
+function onVirtualKeys(ev: KeyboardEvent) {
+  if (!isVirtualPlace()) return;
+  const t = ev.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const mod = ev.ctrlKey || ev.metaKey;
+  const target = activeEntry.value;
+  if (ev.key === 'Delete' && target) {
+    if (target.is_ref) {
+      ev.preventDefault();
+      if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(target) }))) {
+        removeVirtualRefs(target);
+      }
+    } else if (target.is_dir) {
+      ev.preventDefault();
+      confirmRemoveFolder(target);
+    }
+  } else if (mod && ev.key.toLowerCase() === 'x' && target?.is_ref) {
+    ev.preventDefault();
+    setVirtualClipboard('cut', [target]);
+  } else if (mod && ev.key.toLowerCase() === 'c' && target?.is_ref) {
+    ev.preventDefault();
+    setVirtualClipboard('copy', [target]);
+  } else if (mod && ev.key.toLowerCase() === 'v' && canPasteVirtual()) {
+    ev.preventDefault();
+    pasteVirtualHere();
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', onVirtualKeys);
+  onBeforeUnmount(() => window.removeEventListener('keydown', onVirtualKeys));
   // 只在真有滚动容器时回写网格几何；recomputeGridColumns 内部也会再判空。
   // 组件在位置列表层就已挂载，那时还没有 .content，直接调会读到空——不致命，
   // 但 ResizeObserver 观察 null 会抛错，故整个包在有元素的前提下。
@@ -404,6 +441,7 @@ async function rename(p) {
 
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
 function onEntryClick(f) {
+  activeEntry.value = f;
   if (!isMobile.value) return;
   // 长按刚弹了菜单，浏览器补来的 click 要吃掉，否则会同时触发打开
   if (longFired) {
@@ -464,6 +502,8 @@ function isRetrying(f) {
 
 /** 当前打开的条目菜单：`{ entry, x, y }`，null 表示关闭。 */
 const rmenu = ref(null);
+/** 最近点过/右键过的条目，作为键盘 Ctrl+X/C、Delete 的目标。 */
+const activeEntry = ref(null);
 
 /** 只有「能对它做点什么」的正常条目才给菜单：骨架、未能读取、重试中
  *  都直接走整卡点击（重试），不进菜单。 */
@@ -473,6 +513,7 @@ function menuable(f) {
 
 function openMenuAt(f, x, y) {
   if (!menuable(f)) return;
+  activeEntry.value = f;
   rmenu.value = { entry: f, x, y };
   // 打开菜单时按需查该文件的密文缓存覆盖情况，查到有缓存块才让
   // 「从缓存中移除」出现；不 await，菜单先弹，结果回来后响应式补项。
@@ -614,6 +655,24 @@ const rmenuItems = computed(() => {
         label: i18n.t('virtual.menu_locate'),
       });
     }
+    // 虚拟引用的整理操作（删收藏指针不触网，源不可用也允许）。
+    items.push({ key: 'sep' });
+    items.push({ key: 'vcut', icon: '✂️', label: i18n.t('virtual.menu_cut') });
+    items.push({ key: 'vcopy', icon: '📋', label: i18n.t('virtual.menu_copy') });
+    items.push({ key: 'vpaste', icon: '📥', label: i18n.t('virtual.menu_paste'),
+                 disabled: !canPasteVirtual() });
+    items.push({ key: 'vdelete-ref', icon: '🗑️', label: i18n.t('virtual.menu_delete_ref'),
+                 danger: true });
+    return items;
+  }
+  // 虚拟位置里的**文件夹**：打开 / 重命名 / 粘贴进来 / 删除。
+  if (f.is_dir && isVirtualPlace()) {
+    items.push({ key: 'open', icon: '📁', label: i18n.t('rplace.menu_open') });
+    items.push({ key: 'vrename-folder', icon: '✏️', label: i18n.t('rplace.rename') });
+    items.push({ key: 'vpaste', icon: '📥', label: i18n.t('virtual.menu_paste'),
+                 disabled: !canPasteVirtual() });
+    items.push({ key: 'vdelete-folder', icon: '🗑️', label: i18n.t('virtual.menu_delete_folder'),
+                 danger: true });
     return items;
   }
   items.push({
@@ -709,7 +768,35 @@ async function onMenuPick(key) {
     await activateVirtualEntry(f, 'msg');
   } else if (key === 'locate-ref-file') {
     await activateVirtualEntry(f, 'file');
+  } else if (key === 'vcut') {
+    setVirtualClipboard('cut', [f]);
+  } else if (key === 'vcopy') {
+    setVirtualClipboard('copy', [f]);
+  } else if (key === 'vpaste') {
+    await pasteInto(f);
+  } else if (key === 'vdelete-ref') {
+    if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(f) }))) {
+      await removeVirtualRefs(f);
+    }
+  } else if (key === 'vrename-folder') {
+    await renameVirtualFolderPrompt(f.id);
+  } else if (key === 'vdelete-folder') {
+    await confirmRemoveFolder(f);
   }
+}
+
+/** 删除虚拟文件夹前确认；删除后后端返回一并移除的引用条数。 */
+async function confirmRemoveFolder(f) {
+  if (!window.confirm(i18n.t('virtual.delete_folder_confirm', { name: displayName(f) }))) return;
+  await removeVirtualFolder(f.id);
+}
+
+/** 右键某文件夹「粘贴进来」：先进入该文件夹，再粘到当前目录。 */
+async function pasteInto(folder?) {
+  if (folder?.is_dir) {
+    await enterRemoteDir(folder.id, displayName(folder));
+  }
+  await pasteVirtualHere();
 }
 
 /** 一条虚拟引用是否指向 Telegram 源（源文件 id 形如 tg:<chat>:<msg>）。 */
@@ -1009,6 +1096,20 @@ function rowTitle(f) {
       </nav>
 
       <div class="vtoggle">
+        <!-- 虚拟位置没有上传，但要能新建文件夹与粘贴剪贴板。 -->
+        <template v-if="isVirtualPlace()">
+          <button class="btn small" data-pb="vnew-folder" @click="newVirtualFolderPrompt">
+            📁 {{ i18n.t('virtual.new_folder') }}
+          </button>
+          <button
+            class="btn small"
+            data-pb="vpaste"
+            :disabled="!canPasteVirtual()"
+            @click="pasteVirtualHere"
+          >
+            📥 {{ i18n.t('virtual.menu_paste') }}
+          </button>
+        </template>
         <!-- 上传按钮按**能力位图**出现，不给 Telegram 写特判。
              同一个位置里根目录（对话列表）与只读频道都不可写，
              所以判据必须是当前目录的 effective caps 而非位置级 caps。

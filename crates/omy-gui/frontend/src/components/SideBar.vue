@@ -20,6 +20,11 @@ import {
   activeLocation,
   createVirtualPlace,
   promptTgUnlock,
+  renameVirtualPlace,
+  deleteVirtualPlace,
+  promptVirtualEncrypt,
+  promptVirtualUnlock,
+  lockVirtualPlace,
 } from '../store';
 import ContextMenu from './ContextMenu.vue';
 
@@ -73,6 +78,8 @@ function go(path) {
 
 /** 右键菜单：`{ place, x, y }`，没有就是不显示。 */
 const rmenu = ref(null);
+/** 虚拟位置右键菜单：{ place, x, y }。与真实位置菜单分开。 */
+const vrmenu = ref(null);
 
 /** 未结束的任务数，用于角标。
  *
@@ -134,6 +141,57 @@ const rmenuItems = computed(() => {
   }
   return items;
 });
+
+/** 虚拟位置的右键菜单：打开 / 编辑（重命名）/ 加密（或解锁、锁定）/ 删除。 */
+const vrmenuItems = computed(() => {
+  const v = vrmenu.value?.place;
+  if (!v) return [];
+  const items: any[] = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
+  items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: '✏️' });
+  if (v.encrypted) {
+    // 已加密：当前会话已解锁则给「锁定」，否则给「解锁」。
+    if (v.unlocked) {
+      items.push({ key: 'vlock', label: i18n.t('rplace.lock'), icon: '🔒' });
+    } else {
+      items.push({ key: 'vunlock', label: i18n.t('rplace.unlock'), icon: '🔓' });
+    }
+  } else {
+    items.push({ key: 'vencrypt', label: i18n.t('rplace.encrypt'), icon: '🔐',
+                 note: i18n.t('virtual.encrypt_note') });
+  }
+  items.push({ key: 'sep' });
+  items.push({ key: 'vdelete', label: i18n.t('rplace.remove'), icon: '🗑️', danger: true,
+               note: i18n.t('virtual.delete_note') });
+  return items;
+});
+
+function onVirtualContext(v, ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  vrmenu.value = { place: v, x: ev.clientX, y: ev.clientY };
+}
+
+async function onVirtualMenuPick(key) {
+  const v = vrmenu.value?.place;
+  vrmenu.value = null;
+  if (!v) return;
+  if (key === 'open') {
+    await goRemote(v);
+  } else if (key === 'rename') {
+    const next = window.prompt(i18n.t('rplace.rename_prompt', { name: v.name }), v.name);
+    if (next === null) return;
+    await renameVirtualPlace(v.id, next);
+  } else if (key === 'vencrypt') {
+    promptVirtualEncrypt(v.id);
+  } else if (key === 'vunlock') {
+    promptVirtualUnlock(v.id);
+  } else if (key === 'vlock') {
+    await lockVirtualPlace(v.id);
+  } else if (key === 'vdelete') {
+    if (!window.confirm(i18n.t('virtual.delete_confirm', { name: v.name }))) return;
+    await deleteVirtualPlace(v.id);
+  }
+}
 
 function onPlaceContext(p, ev) {
   rmenu.value = { place: p, x: ev.clientX, y: ev.clientY, encrypted: false };
@@ -325,9 +383,12 @@ function iconOf(place) {
       :data-vp="v.id"
       :title="v.name"
       @click="goRemote(v)"
+      @contextmenu="onVirtualContext(v, $event)"
     >
       <span aria-hidden="true">🗂️</span>
       <span class="stext">{{ v.name }}</span>
+      <!-- 加密标记：已解锁是开口锁、未解锁是闭合锁，与真实位置口径一致 -->
+      <span v-if="v.encrypted" class="vlock-badge" aria-hidden="true">{{ v.unlocked ? '🔓' : '🔒' }}</span>
     </button>
     <button class="sitem" data-vp="new" @click="onNewVirtual">
       <span aria-hidden="true">➕</span>
@@ -384,12 +445,25 @@ function iconOf(place) {
     @pick="onPlaceMenuPick"
     @close="rmenu = null"
   />
+  <ContextMenu
+    v-if="vrmenu"
+    :items="vrmenuItems"
+    :x="vrmenu.x"
+    :y="vrmenu.y"
+    @pick="onVirtualMenuPick"
+    @close="vrmenu = null"
+  />
 </aside>
 </template>
 
 <style scoped>
 /* 授权入口要比普通位置显眼：未授权时侧栏几乎是空的，
    用户得能一眼看到下一步该点哪里。 */
+.vlock-badge {
+  margin-inline-start: auto;
+  font-size: 11px;
+  opacity: 0.85;
+}
 .sitem.grant {
   color: var(--accent, #2563eb);
   font-weight: 600;

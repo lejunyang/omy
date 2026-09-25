@@ -47,6 +47,10 @@ import {
   afterPlaceAdded,
   encryptTelegramPlace,
   confirmTgEncrypt,
+  cancelVirtualEncrypt,
+  confirmVirtualEncrypt,
+  cancelVirtualUnlock,
+  confirmVirtualUnlock,
   cancelTgEncrypt,
   confirmTgUnlock,
   cancelTgUnlock,
@@ -1127,4 +1131,23 @@ onBeforeUnmount(() => {
   />
 
   <VirtualPickerDialog v-if="state.addToVirtual" />
+
+  <!-- 虚拟位置加密：复用 Telegram 的加密对话框组件（同款密码 + KDF 档）。 -->
+  <TgEncryptDialog
+    v-if="state.vEncryptFor"
+    :name="state.vEncryptFor.name"
+    :busy="state.vEncryptBusy"
+    @cancel="cancelVirtualEncrypt"
+    @submit="confirmVirtualEncrypt"
+  />
+
+  <!-- 虚拟位置解锁：复用 Telegram 解锁对话框，错误文案来自 vUnlockError。 -->
+  <TgUnlockDialog
+    v-if="state.vUnlockFor"
+    :name="state.vUnlockFor.name"
+    :busy="state.vUnlockBusy"
+    :error="state.vUnlockError"
+    @cancel="cancelVirtualUnlock"
+    @submit="confirmVirtualUnlock"
+  />
 </template>
