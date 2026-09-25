@@ -147,15 +147,39 @@ pub fn virtual_rename(
 }
 
 /// 用独立密码加密一个虚拟位置（收藏数据）。密码为空拒绝。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptReq {
+    place_id: String,
+    password: String,
+    /// 同密码的 vault 材料（本地/远程），salt 为十六进制字符串。
+    #[serde(default)]
+    vaults: Vec<VaultHex>,
+}
+
+/// 与 commands::VaultParams 同形状（salt 十六进制）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultHex {
+    salt: String,
+    m_kib: u32,
+    t: u32,
+    p: u32,
+}
+
 #[tauri::command]
 pub fn virtual_encrypt(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
-    place_id: String,
-    password: String,
+    req: EncryptReq,
 ) -> CmdResult<bool> {
-    vreg.encrypt(&place_id, password.as_bytes(), |salt, key| {
-        install_place_password_kek(&state, salt, key);
+    if req.password.is_empty() {
+        return Err(CmdError::code("virtual_bad_name"));
+    }
+    let vaults = parse_vaults(&req.vaults)?;
+    vreg.encrypt(&req.place_id, req.password.as_bytes(), vaults, |password, kdf, vaults| {
+        install_password_keks(&state, password,
+            kdf, vaults);
     })
     .map(|()| true)
     .map_err(crypto_err)
@@ -169,8 +193,9 @@ pub fn virtual_unlock(
     place_id: String,
     password: String,
 ) -> CmdResult<bool> {
-    vreg.unlock(&place_id, password.as_bytes(), |salt, key| {
-        install_place_password_kek(&state, salt, key);
+    vreg.unlock(&place_id, password.as_bytes(), |password, kdf, vaults| {
+        install_password_keks(&state, password,
+            kdf, vaults);
     })
     .map(|()| true)
     .map_err(crypto_err)
@@ -198,28 +223,51 @@ pub fn virtual_lock_state(
     })
 }
 
-/** 把虚拟位置密码派生出的 32 字节密钥装进 GUI 会话密钥池。
+/// 解析十六进制 salt 的 vault 材料（与 commands::parse_salt 同口径）。
+fn parse_vaults(vs: &[VaultHex]) -> CmdResult<Vec<crate::virtual_place::VaultMaterial>> {
+    let mut out = Vec::with_capacity(vs.len());
+    for v in vs {
+        let salt = crate::commands::parse_salt(&v.salt)
+            .ok_or_else(|| CmdError::code("bad_salt"))?;
+        out.push(crate::virtual_place::VaultMaterial {
+            salt, m_kib: v.m_kib, t: v.t, p: v.p,
+        });
+    }
+    Ok(out)
+}
+
+/** 把同一密码在「位置自身 salt + 各已知 vault salt」下派生出的 KEK 全部装进会话池。
  *
- * 与 `telegram_place_unlock` 装「远程位置密码」KEK 完全同款：label 用同一个、
- * kind=Vault、salt 用该位置 KDF 的 salt。这样：
- * - 虚拟位置密码和本地 .omy 文件密码若是同一个，扫描文件时会自动解锁，反之亦然；
- * - 计入右上角「N 个密码已解锁」（credential_count）；
- * - 锁定会话时与其它 KEK 一起清零。
- *
- * SessionKeys 去重按 (salt,kind,label) 指纹，同一密码不会重复计数。 */
-fn install_place_password_kek(
+ * 关键点（实测确认）：KEK = Argon2id(密码, vault_salt)，**与 vault_salt 绑定**，
+ * 跨 salt 不通用（NoMatchingSlot）。所以只装位置随机 salt 的一把 KEK 解不开本地
+ * .omy；必须用**原始密码**为每个登记过的 vault salt 各派生一把。装好后同密码的
+ * 本地/远程文件自动解锁，并计入 credential_count。SessionKeys 按 (salt,kind,label)
+ * 指纹去重，不会重复计数；派生失败的单个 vault 跳过，不影响其它。 */
+fn install_password_keks(
     state: &tauri::State<'_, crate::commands::Shared>,
-    salt: &[u8; 16],
-    key: &omy_secret::ProtectKey,
+    password: &[u8],
+    self_kdf: &crate::virtual_place::KdfMaterial,
+    vaults: &[crate::virtual_place::VaultMaterial],
 ) {
-    let kek = omy_core::crypto::Kek::from_key(omy_core::crypto::SecretKey::from_bytes(**key));
     state.with_session(|sess| {
-        sess.add_kek(
-            "远程位置密码",
-            omy_core::session::CredentialKind::Vault,
-            salt,
-            kek,
-        );
+        // 1) 位置自己那把（负责解开收藏信封）
+        if let Ok(kek) = omy_core::crypto::Kek::from_password(password, &self_kdf.salt,
+                omy_core::crypto::Argon2Params {
+                    m_kib: self_kdf.m_kib, t: self_kdf.t, p: self_kdf.p,
+                }) {
+            sess.add_kek("远程位置密码", omy_core::session::CredentialKind::Vault,
+                         &self_kdf.salt, kek);
+        }
+        // 2) 同一密码在每个本地/远程 vault salt 下重派生
+        for v in vaults {
+            let params = omy_core::crypto::Argon2Params {
+                m_kib: v.m_kib, t: v.t, p: v.p,
+            };
+            if let Ok(kek) = omy_core::crypto::Kek::from_password(password, &v.salt, params) {
+                sess.add_kek("远程位置密码", omy_core::session::CredentialKind::Vault,
+                             &v.salt, kek);
+            }
+        }
     });
 }
 

@@ -279,6 +279,21 @@ impl VirtualPlace {
 /// 位置这份 blob 会被 seal（见模块顶注），未加密的仍明文。
 ///
 /// 线程安全：内部 `Mutex`。GUI 以 `Arc<VirtualRegistry>` 持有，命令层共享。
+/// 一个 vault 的派生材料（salt + Argon2 参数），从 .omy / 远程加密文件头读出。
+/// 只存这些公开材料、不存密钥：解锁虚拟位置时用**原始密码**为每个 vault 重新
+/// 派生 KEK 装回会话池。KEK 与 vault_salt 绑定，跨 salt 不通用，所以同密码要
+/// 跨位置/跨文件自动解锁，必须逐个 salt 各派生一把（与 `unlock` 多 vault 同款）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct VaultMaterial {
+    pub salt: [u8; 16],
+    pub m_kib: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+impl VaultMaterial {
+}
+
 /// 落盘文件里的一个位置：明文名字 + 明文树或加密信封。
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct StoredPlace {
@@ -295,15 +310,19 @@ struct StoredPlace {
     /// 加密时的 Argon2 材料（salt/参数），明文（salt 不是秘密）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kdf: Option<KdfMaterial>,
+    /// 加密时登记的、与该位置**同一密码**的其它 vault 材料（本地/远程）。
+    /// 解锁后据此为每个 vault 重派生 KEK 装回会话池。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    vaults: Vec<VaultMaterial>,
 }
 
 /// 现场密码的 Argon2 派生材料（明文，salt 不是秘密）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct KdfMaterial {
-    salt: [u8; 16],
-    m_kib: u32,
-    t: u32,
-    p: u32,
+pub struct KdfMaterial {
+    pub salt: [u8; 16],
+    pub m_kib: u32,
+    pub t: u32,
+    pub p: u32,
 }
 
 impl KdfMaterial {
@@ -312,9 +331,6 @@ impl KdfMaterial {
         let mut salt = [0u8; 16];
         omy_core::util::fill_random(&mut salt);
         Self { salt, m_kib: params.m_kib, t: params.t, p: params.p }
-    }
-    fn params(&self) -> omy_core::crypto::Argon2Params {
-        omy_core::crypto::Argon2Params { m_kib: self.m_kib, t: self.t, p: self.p }
     }
 }
 
@@ -327,6 +343,8 @@ impl KdfMaterial {
 struct UnlockState {
     kdf: KdfMaterial,
     key: Option<omy_secret::ProtectKey>,
+    /// 加密时登记的 vault 材料；解锁后命令层据此为每个 vault 重派生同密码 KEK。
+    vaults: Vec<VaultMaterial>,
 }
 
 /// 加密相关操作的错误。
@@ -389,17 +407,52 @@ impl VirtualRegistry {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
-        let list: Vec<VirtualPlace> = serde_json::from_str(&text)
+        // 落盘是 StoredPlace（可能明文 root，也可能是加密信封 blob+kdf，没有 root）。
+        // 旧实现这里仍按 VirtualPlace 反序列化，加密位置缺 `root` 直接整份解析失败、
+        // 侧栏变空——日志里就是 missing field `root`。
+        let stored: Vec<StoredPlace> = serde_json::from_str(&text)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         // 恢复 next_seq：扫已有 id 的数字后缀取最大值 +1，避免重发已用 id
-        let max = list
+        let max = stored
             .iter()
             .filter_map(|p| p.id.strip_prefix('v').and_then(|n| n.parse::<u64>().ok()))
             .max()
             .unwrap_or(0);
+        // 加密位置载入为空树（锁定态），KDF 放进解锁表（key=None）；信封不预读，
+        // unlock 时再从磁盘取。未加密位置直接恢复明文树。
+        let mut pending: std::collections::HashMap<String, UnlockState>
+            = std::collections::HashMap::new();
+        let list: Vec<VirtualPlace> = stored
+            .into_iter()
+            .map(|sp| {
+                if sp.encrypted {
+                    if let Some(kdf) = sp.kdf {
+                        pending.insert(sp.id.clone(), UnlockState {
+                            kdf, key: None, vaults: sp.vaults,
+                        });
+                    }
+                    VirtualPlace {
+                        id: sp.id,
+                        name: sp.name,
+                        root: VFolder::root(),
+                        encrypted: true,
+                    }
+                } else {
+                    VirtualPlace {
+                        id: sp.id,
+                        name: sp.name,
+                        root: sp.root.unwrap_or_else(VFolder::root),
+                        encrypted: false,
+                    }
+                }
+            })
+            .collect();
         if let (Ok(mut ps), Ok(mut seq)) = (self.places.lock(), self.next_seq.lock()) {
             *ps = list;
             *seq = max;
+        }
+        if let Ok(mut u) = self.unlock.lock() {
+            *u = pending;
         }
         Ok(())
     }
@@ -431,12 +484,15 @@ impl VirtualRegistry {
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 stored.push(StoredPlace {
                     id: vp.id, name: vp.name, encrypted: true,
-                    root: None, blob: Some(blob), kdf: Some(st.kdf.clone()),
+                    root: None,
+                    blob: Some(blob),
+                    kdf: Some(st.kdf.clone()),
+                    vaults: st.vaults.clone(),
                 });
             } else {
                 stored.push(StoredPlace {
                     id: vp.id, name: vp.name, encrypted: false,
-                    root: Some(vp.root), blob: None, kdf: None,
+                    root: Some(vp.root), blob: None, kdf: None, vaults: Vec::new(),
                 });
             }
         }
@@ -556,9 +612,11 @@ impl VirtualRegistry {
         &self,
         id: &str,
         password: &[u8],
-        // 密钥派生成功后回调：让命令层把这把位置密码 KEK 装进 omy 会话密钥池，
-        // 与本地文件密码打通（互相自动解锁、计入已解锁密码数）。
-        on_key: impl FnOnce(&[u8; 16], &omy_secret::ProtectKey),
+        // 同密码的其它 vault 材料（本地/远程），随加密位置一起保存，解锁时回装。
+        vaults: Vec<VaultMaterial>,
+        // 密钥派生成功后回调：让命令层把位置自己的 KEK + 各 vault 的 KEK 装进
+        // omy 会话密钥池，与本地/远程文件密码打通（互相自动解锁、计入已解锁数）。
+        on_key: impl FnOnce(&[u8], &KdfMaterial, &[VaultMaterial]),
     ) -> Result<(), VirtualCryptoError> {
         if password.is_empty() {
             return Err(VirtualCryptoError::Other("empty password".into()));
@@ -579,12 +637,11 @@ impl VirtualRegistry {
             let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
             vp.encrypted = true;
         }
-        // 装进会话密码池（失败不阻断加密本身：密钥已在 unlock 表里，本功能可用；
-        // 只是没和本地文件打通，记为尽力而为）。
-        on_key(&kdf.salt, &key);
+        // 装进会话密码池（尽力而为：失败不阻断加密，密钥仍在 unlock 表里可用）。
+        on_key(password, &kdf, &vaults);
         {
             let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
-            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
+            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key), vaults });
         }
         // save 用 unlock 里的密钥把当前树封好；失败回滚加密标记
         if let Err(e) = self.save() {
@@ -610,7 +667,7 @@ impl VirtualRegistry {
         &self,
         id: &str,
         password: &[u8],
-        on_key: impl FnOnce(&[u8; 16], &omy_secret::ProtectKey),
+        on_key: impl FnOnce(&[u8], &KdfMaterial, &[VaultMaterial]),
     ) -> Result<(), VirtualCryptoError> {
         // 取 KDF（先 clone，避免持着 unlock 锁再去拿 places 锁）
         let kdf = {
@@ -638,10 +695,15 @@ impl VirtualRegistry {
             let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
             vp.root = root;
         }
-        on_key(&kdf.salt, &key);
+        // 取出登记的 vault 材料，回调里为每个 vault 用同一密码重派生 KEK。
+        let vaults = {
+            let u0 = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
+            u0.get(id).map(|st| st.vaults.clone()).unwrap_or_default()
+        };
+        on_key(password, &kdf, &vaults);
         {
             let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
-            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
+            u.insert(id.to_owned(), UnlockState { kdf, key: Some(key), vaults });
         }
         Ok(())
     }
@@ -665,7 +727,11 @@ impl VirtualRegistry {
 
 /// 用 Argon2 从密码 + salt 派生出 32 字节保护密钥（与真实位置加密同款）。
 fn derive_key(password: &[u8], kdf: &KdfMaterial) -> Result<omy_secret::ProtectKey, VirtualCryptoError> {
-    let kek = omy_core::crypto::Kek::from_password(password, &kdf.salt, kdf.params())
+    let kek = omy_core::crypto::Kek::from_password(
+        password,
+        &kdf.salt,
+        omy_core::crypto::Argon2Params { m_kib: kdf.m_kib, t: kdf.t, p: kdf.p },
+    )
         .map_err(|_| VirtualCryptoError::Other("derive failed".into()))?;
     let mut k = [0u8; 32];
     k.copy_from_slice(kek.as_key().as_bytes());
@@ -824,7 +890,7 @@ mod tests {
         });
 
         // 加密
-        reg.encrypt(&id, b"hunter2", |_, _| {}).expect("加密成功");
+        reg.encrypt(&id, b"hunter2", Vec::new(), |_, _, _| {}).expect("加密成功");
         assert!(reg.is_encrypted(&id));
         assert!(reg.is_unlocked(&id));
 

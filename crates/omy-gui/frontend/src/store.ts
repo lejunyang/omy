@@ -2368,7 +2368,26 @@ export async function confirmVirtualEncrypt({ password }) {
   if (!target || !password) return false;
   state.vEncryptBusy = true;
   try {
-    await api.virtualEncrypt(target.id, password);
+    // 收集「同密码」的 vault 材料：当前浏览的本地目录 + 所有远程位置。
+    // KEK 与 vault_salt 绑定，加密时把这些 salt/参数一并登记，解锁虚拟位置时
+    // 才能用同一密码为每个 vault 重派生 KEK，实现互相自动解锁。
+    // 远程 vault 拉取是网络操作，失败就跳过那批（本地的仍登记），不阻断加密。
+    const vaults: any[] = [];
+    try {
+      if (state.cwd) {
+        const local = await api.vaultParamsOf(state.cwd).catch(() => []);
+        vaults.push(...(Array.isArray(local) ? local : []));
+      }
+      for (const place of state.remotePlaces || []) {
+        try {
+          // 远程位置根目录下列出的是对话；用每个位置根的加密文件头取 vault 参数。
+          const rv = await api.remotePlaceVaults(place.id, '').catch(() => []);
+          if (Array.isArray(rv)) vaults.push(...rv);
+        } catch { /* 单个位置取不到不阻塞 */ }
+      }
+    } catch { /* 收集 vault 是增强项，失败仍允许加密（只是不自动解锁其它） */ }
+
+    await api.virtualEncrypt({ placeId: target.id, password, vaults });
     await reloadRemotePlaces();
     state.credentials = await api.credentialCount().catch(() => state.credentials);
     setNotice(i18n.t('rplace.encrypted'));

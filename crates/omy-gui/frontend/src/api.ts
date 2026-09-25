@@ -817,9 +817,10 @@ export const virtualMoveRef = (placeId: any, refId: any, destFolder: any): Promi
 /** 把若干引用复制到（可跨位置的）目标文件夹。 */
 export const virtualCopyRefs = (req: any): Promise<any> => invoke('virtual_copy_refs', { req });
 
-/** 用密码加密一个虚拟位置。 */
-export const virtualEncrypt = (placeId: any, password: any): Promise<any> =>
-  invoke('virtual_encrypt', { placeId, password });
+/** 用密码加密一个虚拟位置。vaults 是同密码的本地/远程 vault 材料
+ *  （{salt,mKib,t,p}），解锁虚拟位置时据此重派生 KEK 自动解锁那些文件。 */
+export const virtualEncrypt = (req: { placeId: string; password: string; vaults: any[] }): Promise<any> =>
+  invoke('virtual_encrypt', { req });
 
 /** 用密码解锁一个加密虚拟位置。 */
 export const virtualUnlock = (placeId: any, password: any): Promise<any> =>
