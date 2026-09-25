@@ -902,6 +902,7 @@ pub fn stream_base_url() -> String {
 #[tauri::command]
 pub async fn unlock_directory(
     state: State<'_, Shared>,
+    vault_reg: State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     dir: String,
     password: String,
 ) -> CmdResult<UnlockResult> {
@@ -913,6 +914,22 @@ pub async fn unlock_directory(
     if vaults.is_empty() {
         return Err(CmdError::code("no_vault_found"));
     }
+    // 本目录的 vault 顺手登记进全局表（与 scan_directory 同一口径），
+    // 确保即便这次之后再去解锁别处，这个 salt 也在表里。
+    {
+        let materials: Vec<crate::vault_reg::VaultMaterial> = vaults
+            .iter()
+            .filter_map(|v| {
+                parse_salt(&v.salt).map(|salt| crate::vault_reg::VaultMaterial {
+                    salt,
+                    m_kib: v.m_kib,
+                    t: v.t,
+                    p: v.p,
+                })
+            })
+            .collect();
+        vault_reg.register_all(&materials);
+    }
 
     // label 只是显示名，不再承担「这是哪个密码」的判断。
     //
@@ -922,7 +939,43 @@ pub async fn unlock_directory(
     // （见 core 的 `add_password`），两个方向都对了，这里给个固定名字
     // 纯粹是因为 GUI 没有界面让用户命名。
     let label = String::from("main");
-    unlock(state, label, password, vaults).await
+    // 先 clone 出验证阶段要移动进 blocking 的句柄，再把 State 交给 unlock：
+    // Tauri 的 State<T> 不是 Copy，unlock 按值取走它，之后就不能再借用了。
+    let handle: Shared = Arc::clone(&state);
+    let registry: Arc<crate::vault_reg::VaultRegistry> = Arc::clone(&vault_reg);
+    let result = unlock(state, label.clone(),
+        password.clone(), vaults).await?;
+
+    // 验证密码**真能解开本目录某个文件**之后，才把同一密码派发到全局所有
+    // 已见 vault（含 Telegram 加密位置、其它本地/远程库）。Argon2 对任意
+    // 密码都能「派生成功」，不验证就撒会把错密码装进每个 salt——虽解不开、
+    // 但污染凭据并白跑 KDF。这里用刚装入会话的 KEK 重扫一次目录取证。
+    let dir_path = PathBuf::from(&dir);
+    let pw = password.clone();
+    let verified = tauri::async_runtime::spawn_blocking(move || {
+        handle.with_session(|sess| {
+            let opts = ScanOptions { recursive: true, ..ScanOptions::default() };
+            match scan_dir(&dir_path, sess, &opts) {
+                Ok(r) => {
+                    let good = r.hits.iter().any(|h| h.unlock.is_unlocked());
+                    if good {
+                        registry.install_everywhere(sess, pw.as_bytes(), &label);
+                    }
+                    good
+                }
+                Err(_) => false,
+            }
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false);
+
+    // 没验证通过（目录里文件读不到等）不因此判错——unlock 已成功，前端重扫
+    // 会反映真实解锁情况；只是这次不把密码扩散到其它 vault。
+    let _ = verified;
+    Ok(result)
 }
 
 /// 单个加密文件的探测结果。

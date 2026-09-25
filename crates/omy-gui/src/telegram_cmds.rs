@@ -941,6 +941,16 @@ pub fn telegram_place_encrypted(place_id: String) -> CmdResult<bool> {
         .map_err(|e| CmdError::with("tg_session_unreadable", detail(&e.to_string())))
 }
 
+/// 供位置列表同步查询「该 Telegram 位置是否加密」，不连网。
+///
+/// 读不到 / 出错一律按 `None`（不在列表上打锁），不让单个坏 session 文件
+/// 影响整个侧栏渲染。命令层的 `telegram_place_encrypted` 需要区分错误码，
+/// 那条仍保留，二者不要混用——这里是给批量列表用的「尽力而为」口径。
+#[must_use]
+pub(crate) fn telegram_session_encrypted(place_id: &str) -> Option<bool> {
+    tgsession::is_encrypted(place_id).ok()
+}
+
 /// **显式加密**一个 Telegram 位置：把它的 session 转成 per-place 槽格式，
 /// 用当前会话**真实已解锁的 omy 密码**（库密码 / 设备密钥 / 恢复码）保护。
 ///
@@ -966,6 +976,7 @@ pub fn telegram_place_encrypted(place_id: String) -> CmdResult<bool> {
 #[tauri::command]
 pub fn telegram_place_encrypt(
     state: tauri::State<'_, crate::commands::Shared>,
+    vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     place_id: String,
     password: String,
     kdf_profile: Option<String>,
@@ -979,7 +990,15 @@ pub fn telegram_place_encrypt(
     let session_keks = crate::place_keys::session_keks(&state);
     let app = AppId::builtin();
     tgsession::encrypt_place_with_password(&app, &place_id, password.as_bytes(), params, &session_keks)
-        .map_err(|e| CmdError::with("tg_encrypt_failed", detail(&e.to_string())))
+        .map_err(|e| CmdError::with("tg_encrypt_failed", detail(&e.to_string())))?;
+    // 加密刚落盘，pw_kdf 已可读出：登记进全局 vault 表，让这个位置密码与
+    // 其它同密码的库互通。
+    if let Ok(Some(v)) = tgsession::place_vault(&place_id) {
+        vault_reg.register_all(&[crate::vault_reg::VaultMaterial {
+            salt: v.salt, m_kib: v.m_kib, t: v.t, p: v.p,
+        }]);
+    }
+    Ok(true)
 }
 
 /// 把 KDF 档位串换成 Argon2 参数（与 EncryptDialog 的三档一致）。缺省 moderate。
@@ -1027,6 +1046,7 @@ pub fn telegram_place_decrypt(
 #[tauri::command]
 pub fn telegram_place_unlock(
     state: tauri::State<'_, crate::commands::Shared>,
+    vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     place_id: String,
     password: String,
 ) -> CmdResult<bool> {
@@ -1041,21 +1061,31 @@ pub fn telegram_place_unlock(
         Ok(None) => return Err(CmdError::code("tg_unlock_not_encrypted")),
         Err(_) => return Err(CmdError::code("tg_unlock_wrong")),
     }
-    // 关键：把这个位置密码派生出的 KEK 装进会话。只验证不留钥匙的话，紧接着
-    // 进入位置时 ensure_connected 的 unlock_keks 里没有能开它槽的钥匙，会再次
-    // Locked——表现为「输对密码后又弹一次解锁框、进不去」。装进去之后后续连接
-    // 就能用它解开槽。会话密码建的槽（pw_kdf 为 None）走不到这里、也不需要，
-    // 因为它的 KEK 本就在 session_keks 里。
-    if let Ok(Some((kek, salt))) = tgsession::place_password_kek(&place_id, password.as_bytes()) {
-        state.with_session(|sess| {
+    // 把本位置密码派生的 KEK 装进会话（保证紧接着的连接能用它开槽，不会再弹框），
+    // 并把该位置 vault 登记进全局表，再用已证实正确的密码为表里**所有** vault
+    // 重派生 KEK——于是同密码的本地 .omy、其它远程/虚拟位置一并自动解锁。
+    // 这里密码已通过 place_secret 开槽验证，不是仅凭 Argon2 派生成功。
+    state.with_session(|sess| {
+        if let Ok(Some((kek, salt))) = tgsession::place_password_kek(&place_id, password.as_bytes())
+        {
             sess.add_kek(
                 "远程位置密码",
                 omy_core::session::CredentialKind::Vault,
                 &salt,
                 kek,
-            )
-        });
-    }
+            );
+        }
+        if let Ok(Some(v)) = tgsession::place_vault(&place_id) {
+            let material = crate::vault_reg::VaultMaterial {
+                salt: v.salt,
+                m_kib: v.m_kib,
+                t: v.t,
+                p: v.p,
+            };
+            vault_reg.register_all(&[material]);
+            vault_reg.install_everywhere(sess, password.as_bytes(), "远程位置密码");
+        }
+    });
     Ok(true)
 }
 

@@ -799,6 +799,47 @@ pub fn is_encrypted(account: &str) -> Result<bool, SessionError> {
     }
 }
 
+/// 一个加密位置密码槽的 vault 派生材料（salt + Argon2 参数）。
+///
+/// 与普通 .omy 文件头里的 vault 材料等价：**不是秘密**（只用来配合用户当次
+/// 输入的密码重派生 KEK），GUI 据此把 Telegram 位置也登记进全局 vault 表，
+/// 实现「同密码解锁本地文件后自动解锁 Telegram 位置」及其反向。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceVault {
+    pub salt: [u8; 16],
+    pub m_kib: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+/// 读取一个加密位置密码槽的 vault 材料。
+///
+/// 返回 `Ok(None)`：位置不存在、不是加密格式、或没有密码槽（旧的纯 KEK 槽）。
+///
+/// # Errors
+///
+/// 读盘或解析失败时返回。
+pub fn place_vault(account: &str) -> Result<Option<PlaceVault>, SessionError> {
+    let path = session_path_of(account)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(SessionError::Io(e.to_string())),
+    };
+    let Ok(stored) = serde_json::from_str::<StoredSession>(&text) else {
+        return Ok(None);
+    };
+    if stored.fmt != STORED_FMT {
+        return Ok(None);
+    }
+    Ok(stored.slots.pw_kdf.map(|k| PlaceVault {
+        salt: k.salt,
+        m_kib: k.m_kib,
+        t: k.t,
+        p: k.p,
+    }))
+}
+
 /// 显式加密一个位置：把它的 session 转成 per-place 槽格式。
 ///
 /// 与迁移是同一个动作，但语义是**用户主动选择**而非自动。已经是加密格式时

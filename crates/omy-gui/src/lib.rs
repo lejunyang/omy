@@ -147,6 +147,22 @@ pub fn run() {
             }
         }
     }
+    // 启动时把每个**已加密 Telegram 位置**的 vault 材料登记进全局表。
+    //
+    // 否则冷启动后若用户先在本地用同密码解锁文件，会话里有了对的 KEK，却因为
+    // 全局表还没见过这个 Telegram 位置的 salt（只有进过位置才登记），无法把密码
+    // 派发到它——表现为「本地解锁后 Telegram 位置仍要手输」。启动登记后这条链
+    // 反向也通。只读本就公开的 salt/KDF，不碰 session 密文、不连网。
+    for tid in place_registry.telegram_ids() {
+        if let Ok(Some(v)) = omy_remote::telegram::session::place_vault(&tid) {
+            vaults.register_all(&[vault_reg::VaultMaterial {
+                salt: v.salt,
+                m_kib: v.m_kib,
+                t: v.t,
+                p: v.p,
+            }]);
+        }
+    }
     // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
     // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
     let remote_cache: Arc<place_files::RemoteCache> =

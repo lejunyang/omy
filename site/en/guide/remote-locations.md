@@ -92,7 +92,7 @@ The sign-in (which contains account credentials) is encrypted and stored on this
 - **Right-click it in the sidebar → "Encrypt this location"**: a password dialog opens and you **set a password right there** (typed twice to confirm, with an optional KDF strength) — the same interaction as encrypting an ordinary omy file; the same menu also offers "Remove encryption" to revert to the default.
 - **After an account is added successfully**, omy asks once whether to encrypt — you can encrypt or skip (default is not encrypted).
 
-The key is the password you set. If it happens to match an omy password you've already unlocked, that password can open this location too without retyping.
+The key is the password you set. It shares the **same session key pool** as ordinary .omy files and other encrypted locations: omy remembers every encrypted vault it has seen (only the public salt and Argon2 parameters from the file header, never the password), so with the same password, unlocking a local file first or any one location first automatically unlocks all other same-password vaults and Telegram locations without retyping; the "N passwords unlocked" indicator counts distinct passwords.
 
 **Once encrypted**, the location shows as encrypted (with a lock badge). On a cold start, before you type the password, it shows as **locked** — you can see its name but can't enter, with a prompt to unlock first; after you enter the correct password you're in and it connects automatically. The name stays visible while locked. **Locations that are not encrypted are unaffected** and open directly.
 

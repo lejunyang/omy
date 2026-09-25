@@ -65,6 +65,14 @@ pub struct PlaceInfo {
     pub kind: String,
     /// 能力位图。前端据此决定哪些操作出现。
     pub caps: Capabilities,
+    /// Telegram 位置是否已用 omy 密码加密（侧栏据此显示锁标识）。
+    ///
+    /// 只对 Telegram 位置有意义、其余为 `None`（序列化为缺省字段）。读的是
+    /// 本地 session 文件头，不连网；读不到按「未加密」处理，不挡列表。放在
+    /// 列表里一次性给出，免得前端对每个位置各发一次异步查询（侧栏首帧就要
+    /// 显示锁，逐个查会先无锁、再跳一下）。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "encrypted")]
+    pub tg_encrypted: Option<bool>,
 }
 
 /// 远程位置注册表。
@@ -430,6 +438,11 @@ impl PlaceRegistry {
                 name: p.name.clone(),
                 kind: p.kind.clone(),
                 caps: p.store.capabilities(),
+                tg_encrypted: if p.kind == "telegram" {
+                    crate::telegram_cmds::telegram_session_encrypted(&p.id)
+                } else {
+                    None
+                },
             })
             .collect()
     }

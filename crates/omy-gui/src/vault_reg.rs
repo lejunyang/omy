@@ -117,6 +117,31 @@ impl VaultRegistry {
         self.inner.lock().map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
 
+    /// 用一个**已证实正确**的密码，为表里**所有** vault 各派生一把 KEK 装入会话。
+    ///
+    /// 调用方必须先用别的途径确认密码正确（真解开了某个文件 / 某个位置），
+    /// 否则会把一个错误密码撒到每个 salt 上——错密码虽解不开任何东西、也会被
+    /// 指纹去重，但白跑 N 次 Argon2 且污染凭据列表。
+    ///
+    /// 每个 salt 都现派生（KEK 与 salt 绑定，跨 salt 不通用）；`add_kek` 按
+    /// (salt, 指纹) 去重，同一密码重复调用不会产生多条。派生失败的单个 vault
+    /// 跳过，不影响其它。
+    pub fn install_everywhere(
+        &self,
+        session: &mut omy_core::session::SessionKeys,
+        password: &[u8],
+        label: &str,
+    ) {
+        use omy_core::crypto::Kek;
+        use omy_core::session::CredentialKind;
+        for v in self.list() {
+            let params = omy_core::crypto::Argon2Params { m_kib: v.m_kib, t: v.t, p: v.p };
+            if let Ok(kek) = Kek::from_password(password, &v.salt, params) {
+                session.add_kek(label, CredentialKind::Vault, &v.salt, kek);
+            }
+        }
+    }
+
     fn save(&self) -> std::io::Result<()> {
         let Some(path) = self.store_path() else { return Ok(()) };
         if let Some(dir) = path.parent() {
@@ -175,5 +200,84 @@ mod tests {
         // 不应 panic、不应找到任何落盘路径
         assert!(reg.store_path().is_none());
         assert_eq!(reg.list().len(), 1);
+    }
+
+    // 核心回归：一个已证实正确的密码，经全局表为每个 salt 重派生后，能解开
+    // 用**不同 salt** 加密的文件。这正是「解锁本地文件后 Telegram/虚拟位置自动
+    // 解锁」及其反向的保证。只装单把 saltA 的 KEK 会解不开 saltB（NoMatchingSlot），
+    // 所以这里必须真实地分别加密两个 vault 并各解一次。
+    #[test]
+    fn install_everywhere_unlocks_cross_salt_files() {
+        use omy_core::crypto::{Argon2Params, Kek};
+        use omy_core::file;
+        use omy_core::session::SessionKeys;
+
+        let pw = b"132";
+        let weak = Argon2Params::TEST_WEAK;
+        let salt_a = [7u8; 16];
+        let salt_b = [9u8; 16]; // 与 A 不同：模拟「本地文件 vs Telegram 位置」两个库
+
+        let kek_a = Kek::from_password(pw, &salt_a, weak).expect("kdf A");
+        let enc_a = file::encrypt(
+            b"local file",
+            &[kek_a.duplicate()],
+            &salt_a,
+            &file::EncryptOptions::default(),
+            &file::RandomMaterial::generate(),
+        )
+        .expect("encrypt A");
+        let kek_b = Kek::from_password(pw, &salt_b, weak).expect("kdf B");
+        let enc_b = file::encrypt(
+            b"telegram place secret",
+            &[kek_b.duplicate()],
+            &salt_b,
+            &file::EncryptOptions::default(),
+            &file::RandomMaterial::generate(),
+        )
+        .expect("encrypt B");
+
+        // 用户只在 A（本地）解锁：会话原本只有 saltA 的 KEK
+        let reg = VaultRegistry::new_in_memory();
+        reg.register_all(&[
+            VaultMaterial { salt: salt_a, m_kib: weak.m_kib, t: weak.t, p: weak.p },
+            VaultMaterial { salt: salt_b, m_kib: weak.m_kib, t: weak.t, p: weak.p },
+        ]);
+        let mut sess = SessionKeys::new();
+        sess.add_password("main", &salt_a, "132", weak).expect("add pw A");
+
+        // 撒布前：saltB 解不开（没有它的 KEK）
+        assert!(file::open(&enc_b.bytes, &sess.all_keks()).is_err());
+
+        // 撒布后：两个 vault 都能解开
+        reg.install_everywhere(&mut sess, pw, "main");
+        assert!(file::open(&enc_a.bytes, &sess.all_keks()).is_ok(), "saltA 仍可解");
+        assert!(file::open(&enc_b.bytes, &sess.all_keks()).is_ok(), "saltB 必须随同密码自动解开");
+    }
+
+    // 错误密码撒布后解不开任何东西（指纹去重也不会让它冒充真密码）：
+    // 调用方应先验证密码，但即便误用，install_everywhere 也不会制造假解锁。
+    #[test]
+    fn install_everywhere_with_wrong_password_does_not_unlock() {
+        use omy_core::crypto::{Argon2Params, Kek};
+        use omy_core::file;
+        use omy_core::session::SessionKeys;
+
+        let weak = Argon2Params::TEST_WEAK;
+        let salt = [3u8; 16];
+        let real = Kek::from_password(b"correct", &salt, weak).expect("kdf");
+        let enc = file::encrypt(
+            b"secret",
+            &[real.duplicate()],
+            &salt,
+            &file::EncryptOptions::default(),
+            &file::RandomMaterial::generate(),
+        )
+        .expect("encrypt");
+
+        let reg = VaultRegistry::new_in_memory();
+        reg.register_all(&[VaultMaterial { salt, m_kib: weak.m_kib, t: weak.t, p: weak.p }]);
+        let mut sess = SessionKeys::new();
+        reg.install_everywhere(&mut sess, b"wrong", "main");
+        assert!(file::open(&enc.bytes, &sess.all_keks()).is_err());
     }
 }

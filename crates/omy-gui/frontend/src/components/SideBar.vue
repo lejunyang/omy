@@ -368,6 +368,10 @@ function iconOf(place) {
            就说明这个位置处处不可写，标「只读」是准的；上界有写则不下结论、
            不显示徽标，具体哪个目录能写进去之后由 `currentCaps` 说。 -->
       <span v-if="!p.caps.write" class="ro">{{ i18n.t('rplace.readonly_badge') }}</span>
+      <!-- Telegram 位置的加密标识：encrypted 由后端列表一次性带出（读本地
+           session 文件头，不连网）。它表示「该位置受 omy 密码保护」，进入
+           时若会话已有同密码 KEK 会自动解锁、否则弹密码框。 -->
+      <span v-if="p.encrypted" class="vlock-badge" aria-hidden="true">🔒</span>
     </button>
     <button class="sitem" data-rp="add" @click="$emit('add-place')">
       <span aria-hidden="true">➕</span>
