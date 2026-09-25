@@ -318,7 +318,11 @@ impl KdfMaterial {
     }
 }
 
-/// 一个加密位置在内存里的解锁态：KDF 材料 + （解锁后才有）派生密钥。
+/// 一个加密位置在内存里的解锁态：KDF 材料 + （解锁后才有）派生的 32 字节密钥。
+///
+/// 密钥同时是一把「位置密码 KEK」：加密/解锁成功后由命令层用 (kdf.salt, key)
+/// 装进 GUI 的 `SessionKeys`，于是它和普通 omy 文件密码进同一个池——同密码的本地
+/// 文件扫描时自动解锁，反之亦然，右上角「N 个密码已解锁」也会计数。
 #[derive(Clone)]
 struct UnlockState {
     kdf: KdfMaterial,
@@ -548,7 +552,14 @@ impl VirtualRegistry {
     /// # Errors
     ///
     /// 见 [`VirtualCryptoError`]。
-    pub fn encrypt(&self, id: &str, password: &[u8]) -> Result<(), VirtualCryptoError> {
+    pub fn encrypt(
+        &self,
+        id: &str,
+        password: &[u8],
+        // 密钥派生成功后回调：让命令层把这把位置密码 KEK 装进 omy 会话密钥池，
+        // 与本地文件密码打通（互相自动解锁、计入已解锁密码数）。
+        on_key: impl FnOnce(&[u8; 16], &omy_secret::ProtectKey),
+    ) -> Result<(), VirtualCryptoError> {
         if password.is_empty() {
             return Err(VirtualCryptoError::Other("empty password".into()));
         }
@@ -568,6 +579,9 @@ impl VirtualRegistry {
             let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
             vp.encrypted = true;
         }
+        // 装进会话密码池（失败不阻断加密本身：密钥已在 unlock 表里，本功能可用；
+        // 只是没和本地文件打通，记为尽力而为）。
+        on_key(&kdf.salt, &key);
         {
             let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
             u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
@@ -592,7 +606,12 @@ impl VirtualRegistry {
     /// # Errors
     ///
     /// 位置不存在、未加密、密码错误（信封认证失败）时报错。
-    pub fn unlock(&self, id: &str, password: &[u8]) -> Result<(), VirtualCryptoError> {
+    pub fn unlock(
+        &self,
+        id: &str,
+        password: &[u8],
+        on_key: impl FnOnce(&[u8; 16], &omy_secret::ProtectKey),
+    ) -> Result<(), VirtualCryptoError> {
         // 取 KDF（先 clone，避免持着 unlock 锁再去拿 places 锁）
         let kdf = {
             let u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
@@ -619,6 +638,7 @@ impl VirtualRegistry {
             let vp = ps.iter_mut().find(|p| p.id == id).ok_or(VirtualCryptoError::NoSuchPlace)?;
             vp.root = root;
         }
+        on_key(&kdf.salt, &key);
         {
             let mut u = self.unlock.lock().map_err(|_| VirtualCryptoError::Other("lock".into()))?;
             u.insert(id.to_owned(), UnlockState { kdf, key: Some(key) });
@@ -804,7 +824,7 @@ mod tests {
         });
 
         // 加密
-        reg.encrypt(&id, b"hunter2").expect("加密成功");
+        reg.encrypt(&id, b"hunter2", |_, _| {}).expect("加密成功");
         assert!(reg.is_encrypted(&id));
         assert!(reg.is_unlocked(&id));
 

@@ -150,24 +150,30 @@ pub fn virtual_rename(
 #[tauri::command]
 pub fn virtual_encrypt(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
     password: String,
 ) -> CmdResult<bool> {
-    vreg.encrypt(&place_id, password.as_bytes())
-        .map(|()| true)
-        .map_err(crypto_err)
+    vreg.encrypt(&place_id, password.as_bytes(), |salt, key| {
+        install_place_password_kek(&state, salt, key);
+    })
+    .map(|()| true)
+    .map_err(crypto_err)
 }
 
 /// 用密码解锁一个加密虚拟位置，解开后可浏览、编辑。
 #[tauri::command]
 pub fn virtual_unlock(
     vreg: tauri::State<'_, Arc<VirtualRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
     place_id: String,
     password: String,
 ) -> CmdResult<bool> {
-    vreg.unlock(&place_id, password.as_bytes())
-        .map(|()| true)
-        .map_err(crypto_err)
+    vreg.unlock(&place_id, password.as_bytes(), |salt, key| {
+        install_place_password_kek(&state, salt, key);
+    })
+    .map(|()| true)
+    .map_err(crypto_err)
 }
 
 /// 锁定一个虚拟位置（清空本会话内存明文，磁盘仍是密文）。
@@ -190,6 +196,31 @@ pub fn virtual_lock_state(
         "encrypted": vreg.is_encrypted(&place_id),
         "unlocked": vreg.is_unlocked(&place_id),
     })
+}
+
+/** 把虚拟位置密码派生出的 32 字节密钥装进 GUI 会话密钥池。
+ *
+ * 与 `telegram_place_unlock` 装「远程位置密码」KEK 完全同款：label 用同一个、
+ * kind=Vault、salt 用该位置 KDF 的 salt。这样：
+ * - 虚拟位置密码和本地 .omy 文件密码若是同一个，扫描文件时会自动解锁，反之亦然；
+ * - 计入右上角「N 个密码已解锁」（credential_count）；
+ * - 锁定会话时与其它 KEK 一起清零。
+ *
+ * SessionKeys 去重按 (salt,kind,label) 指纹，同一密码不会重复计数。 */
+fn install_place_password_kek(
+    state: &tauri::State<'_, crate::commands::Shared>,
+    salt: &[u8; 16],
+    key: &omy_secret::ProtectKey,
+) {
+    let kek = omy_core::crypto::Kek::from_key(omy_core::crypto::SecretKey::from_bytes(**key));
+    state.with_session(|sess| {
+        sess.add_kek(
+            "远程位置密码",
+            omy_core::session::CredentialKind::Vault,
+            salt,
+            kek,
+        );
+    });
 }
 
 /// 把虚拟位置加密错误映射成结构化错误码（前端据此区分「密码错」与其它失败）。
