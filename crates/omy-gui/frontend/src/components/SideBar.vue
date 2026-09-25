@@ -112,12 +112,14 @@ const rmenuItems = computed(() => {
   const items: any[] = [{ key: 'open', label: i18n.t('rplace.menu_open'), icon: '📂' }];
   if (tg) {
     items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: '✏️' });
-    // 加密是可选功能：已加密显示「取消加密」，未加密显示「加密此位置」。
-    // rmenu.encrypted 在打开菜单时异步查得（见 onPlaceContext）。
-    if (rmenu.value?.encrypted) {
-      // 已加密：给「解锁」（输密码进入）和「取消加密」两个入口。锁定态下用户最
-      // 需要的是解锁进入——没有它加密位置一锁就进不去了。
-      items.push({ key: 'unlock', label: i18n.t('rplace.unlock'), icon: '🔓' });
+    // 加密/解锁状态直接用位置对象上的 encrypted/unlocked——与侧栏锁徽标同一个
+    // 数据源（后端列表一次性带出），不再在打开菜单时另发一次异步查询，否则菜单
+    // 会短暂/持续停留在与徽标不一致的旧状态（已解锁却仍只给「加密/解锁」）。
+    if (p.encrypted) {
+      // 仍锁定才需要「解锁」入口；已经能免密进入时不再给它。
+      if (!p.unlocked) {
+        items.push({ key: 'unlock', label: i18n.t('rplace.unlock'), icon: '🔓' });
+      }
       items.push({ key: 'decrypt', label: i18n.t('rplace.decrypt'), icon: '🔑' });
     } else {
       items.push({ key: 'encrypt', label: i18n.t('rplace.encrypt'), icon: '🔒', note: i18n.t('rplace.encrypt_note') });
@@ -194,13 +196,9 @@ async function onVirtualMenuPick(key) {
 }
 
 function onPlaceContext(p, ev) {
-  rmenu.value = { place: p, x: ev.clientX, y: ev.clientY, encrypted: false };
-  // 只有 Telegram 位置才有加密概念；异步查一次盘上格式，回来若菜单还开着就更新
-  if (p.kind === 'telegram') {
-    api.telegramPlaceEncrypted(p.id).then((enc) => {
-      if (rmenu.value?.place?.id === p.id) rmenu.value.encrypted = enc;
-    }).catch(() => {});
-  }
+  // 加密/解锁态直接随位置对象走（p.encrypted / p.unlocked），菜单与侧栏徽标
+  // 同源；打开菜单不需要再发查询，避免两套状态不一致。
+  rmenu.value = { place: p, x: ev.clientX, y: ev.clientY };
 }
 
 async function onPlaceMenuPick(key) {

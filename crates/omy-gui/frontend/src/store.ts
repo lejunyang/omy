@@ -3935,6 +3935,9 @@ export async function confirmTgUnlock(password) {
     // 解出登录态后进入该位置：走 openRemotePlace 让它连上并列内容
     state.tgUnlockFor = null;
     await reloadRemotePlaces();
+    // 解锁 Telegram 会把同密码的 KEK 装进会话池（并可能为其它 vault 重派生），
+    // 必须刷新右上角「N 个密码已解锁」，否则停留在解锁前的「未输入密码」。
+    state.credentials = await api.credentialCount().catch(() => state.credentials);
     await openRemotePlace(target.id);
     setNotice(i18n.t('rplace.unlocked'));
     return true;

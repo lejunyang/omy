@@ -522,6 +522,29 @@ impl VirtualRegistry {
             .unwrap_or_default()
     }
 
+    /// 当前所有加密位置的 KDF vault 材料（salt+Argon2 参数）。
+    ///
+    /// 启动 load() 之后调用，把每个加密虚拟位置自身的 salt 登记进全局 vault 表——
+    /// 否则这个 salt 只在「用户显式解锁该虚拟位置」时才出现，先在别处用同密码解锁
+    /// 时全局表里没有它，就无法为它派生 KEK、做不到免密自动解锁（实测：先解本地
+    /// 文件，Telegram 自动开了、虚拟位置仍锁着）。salt/参数是公开材料，不涉密钥。
+    #[must_use]
+    pub fn encrypted_vault_materials(&self) -> Vec<crate::vault_reg::VaultMaterial> {
+        self.unlock
+            .lock()
+            .map(|u| {
+                u.values()
+                    .map(|st| crate::vault_reg::VaultMaterial {
+                        salt: st.kdf.salt,
+                        m_kib: st.kdf.m_kib,
+                        t: st.kdf.t,
+                        p: st.kdf.p,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// 该位置是否处于加密态（不存在为 false）。
     #[must_use]
     pub fn is_encrypted(&self, id: &str) -> bool {

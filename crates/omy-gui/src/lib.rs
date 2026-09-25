@@ -112,6 +112,11 @@ pub fn run() {
     if let Err(e) = vaults.load() {
         applog::warn("virtual", &format!("载入 vault 登记表失败：{e}"));
     }
+    // 把每个已加密虚拟位置自身的 KDF salt 也登记进全局表。必须在启动就做：
+    // 否则该 salt 只在显式解锁该位置时才进表，用户先在别处（本地文件/Telegram）
+    // 用同密码解锁时，全局表没有这个 salt，无法为它派生 KEK，虚拟位置就不会免密
+    // 自动解锁（实测「先解本地，Telegram 开了、虚拟位置仍锁」）。
+    vaults.register_all(&virtual_registry.encrypted_vault_materials());
     // 恢复上次保存的远程位置。
     //
     // 放在这里而不是等前端来问：侧栏在首帧就要显示这些位置，晚一步
