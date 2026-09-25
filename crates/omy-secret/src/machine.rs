@@ -148,8 +148,8 @@ mod imp {
     ///
     /// 不放外部存储：那里其他应用能读，等于没保护。
     fn key_path(service: &str, id: &str) -> Result<std::path::PathBuf> {
-        let base = omy_config::paths::data_dir()
-            .map_err(|e| Error::Other(e.to_string()))?
+        let base = omy_config::data_dir()
+            .ok_or_else(|| Error::Other(String::from("找不到数据目录")))?
             .join("keys");
         std::fs::create_dir_all(&base).map_err(|e| Error::Other(e.to_string()))?;
         // id 可能含斜杠等字符，做一次无损转义再当文件名

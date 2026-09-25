@@ -40,7 +40,9 @@
 //! 换机器、重装系统、清除 TPM、重置 Hello——任一发生，这把密钥就永久
 //! 解不开了。所以**永远不能是唯一凭据**，必须始终保留至少一个密码槽。
 
-use crate::{Error, ProtectKey, Protector, Result, KEY_LEN};
+use crate::{Error, ProtectKey, Protector, Result};
+#[cfg(target_os = "windows")]
+use crate::KEY_LEN;
 
 /// TPM + Windows Hello 保管的密钥。
 ///

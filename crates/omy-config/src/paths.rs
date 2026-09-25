@@ -25,7 +25,9 @@
 //! Android/iOS 上应用目录不可写，也没有「可执行文件旁边」这个概念，
 //! 一律用系统给的 app data 目录。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::path::Path;
 
 /// 配置文件名。
 const CONFIG_NAME: &str = "config.toml";
@@ -33,6 +35,7 @@ const CONFIG_NAME: &str = "config.toml";
 ///
 /// 不直接把 config.toml 丢在 exe 同级：应用还会写缓存、设备库等，
 /// 散在安装目录里会和程序文件混成一团，用户想备份也不知道该拷哪些。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const PORTABLE_DIR: &str = "omy-data";
 
 /// 当前是否处于便携模式（配置放在可执行文件旁边）。
