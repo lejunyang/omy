@@ -806,6 +806,34 @@ function isTelegramRef(f) {
 
 /** 消息文件块的右键菜单（与条目菜单分开，避免把消息行当文件条目）。 */
 const msgMenu = ref(null);
+
+/** 内容区空白处的右键菜单（虚拟位置里新建文件夹 / 在当前文件夹粘贴）。 */
+const blankMenu = ref(null);
+const blankMenuItems = computed(() => {
+  const items = [
+    { key: 'vnew-folder', icon: '📁', label: i18n.t('virtual.new_folder') },
+    { key: 'vpaste-here', icon: '📥', label: i18n.t('virtual.menu_paste'),
+      disabled: !canPasteVirtual() },
+  ];
+  return items;
+});
+function onBlankContext(ev) {
+  // 只在虚拟位置内启用：真实远程的空白区没有「新建文件夹」概念。
+  if (!isVirtualPlace()) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  blankMenu.value = { x: ev.clientX, y: ev.clientY };
+}
+async function onBlankMenuPick(key) {
+  blankMenu.value = null;
+  if (key === 'vnew-folder') {
+    await newVirtualFolderPrompt();
+  } else if (key === 'vpaste-here') {
+    // 粘贴到当前目录（不传文件夹，pasteVirtualHere 用 state.remoteDir）。
+    await pasteVirtualHere();
+  }
+}
+
 function onMsgFileMenu(m, ev) {
   ev.preventDefault();
   ev.stopPropagation();
@@ -1126,7 +1154,7 @@ function rowTitle(f) {
       </div>
     </div>
 
-    <div class="content" ref="contentEl">
+    <div class="content" ref="contentEl" @contextmenu="onBlankContext">
       <!-- 一、位置列表 -->
       <div v-if="!state.remotePlace" class="list">
         <div v-if="!state.remotePlaces.length" class="empty">
@@ -1603,6 +1631,14 @@ function rowTitle(f) {
       :y="msgMenu.y"
       @pick="onMenuPick"
       @close="msgMenu = null"
+    />
+    <ContextMenu
+      v-if="blankMenu"
+      :items="blankMenuItems"
+      :x="blankMenu.x"
+      :y="blankMenu.y"
+      @pick="onBlankMenuPick"
+      @close="blankMenu = null"
     />
   </div>
   </AppShell>
