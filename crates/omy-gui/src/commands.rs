@@ -289,6 +289,12 @@ pub(crate) fn parse_salt(hex: &str) -> Option<[u8; 16]> {
 /// 仍在内存中，攻击者拿到进程内存后可以冒充这台设备去连别人。
 ///
 /// 两者同生共死，就不会出现「以为锁了其实没锁」的状态差。
+// 这个命令要把应用里所有「能通向明文」的来源一起锁：本地会话、设备身份、局域网
+// 远端、云盘文件/缩略图/容器句柄、Telegram 连接、虚拟位置。它们分别由独立的
+// Tauri State 持有（各自 Arc<Registry>），命令签名只能逐个注入——数量超过
+// clippy 默认 7 个参数是这种「一扇门锁全仓库」命令的固有形态，没有可自然归并
+// 的一组；故对这一条显式放宽，而不是把无关状态硬塞进同一个结构体。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn lock(
     state: State<'_, Shared>,
@@ -297,9 +303,16 @@ pub async fn lock(
     place_files: State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
     place_thumbs: State<'_, std::sync::Arc<crate::place_files::PlaceThumbs>>,
     place_containers: State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
+    places: State<'_, std::sync::Arc<crate::places::PlaceRegistry>>,
+    vreg: State<'_, std::sync::Arc<crate::virtual_place::VirtualRegistry>>,
 ) -> CmdResult<()> {
     state.lock();
     devices.close();
+    // Telegram 云位置的实时连接与虚拟位置的明文树也必须一起锁，否则「锁定」
+    // 只关了本地文件：远程仍连着、虚拟收藏仍可直接浏览，是假锁定。
+    // 顺序无所谓——它们各自清自己的内存状态，不依赖会话密钥清空的先后。
+    places.disconnect_all_telegram();
+    vreg.lock_all();
     // 远端连接也必须断开，而且必须断在**后端**。
     //
     // 一开始只在前端的 doLock() 里调了 disconnect，实测发现锁定后

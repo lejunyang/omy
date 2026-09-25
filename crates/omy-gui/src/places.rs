@@ -410,6 +410,35 @@ impl PlaceRegistry {
         true
     }
 
+    /// 断开所有 Telegram 位置的实时连接（应用级「锁定」用）。
+    ///
+    /// 每个 Telegram 位置的 store 换成**未连接占位**（`TelegramStore::new`）；
+    /// 旧 store 被 Arc 替换后 drop，其 `Drop` 会 abort 后台更新 runner，从而真正
+    /// 断开。登录态文件仍在磁盘（加密 session），下次进入需重新解锁/连接。
+    ///
+    /// 不清 WebDAV：那类位置没有长连接，也没有内存里的解密明文句柄（云盘句柄由
+    /// `PlaceFiles::clear` 在锁定命令里另清）。
+    pub fn disconnect_all_telegram(&self) {
+        let Ok(mut m) = self.places.lock() else { return };
+        let ids: Vec<String> = m
+            .values()
+            .filter(|p| p.kind == "telegram")
+            .map(|p| p.id.clone())
+            .collect();
+        for id in ids {
+            let Some(old) = m.get(&id) else { continue };
+            let replaced = Arc::new(Place {
+                id: old.id.clone(),
+                name: old.name.clone(),
+                kind: old.kind.clone(),
+                proxy: old.proxy.clone(),
+                user_id: old.user_id,
+                store: Arc::new(PlaceStore::from(TelegramStore::new())),
+            });
+            m.insert(id, replaced);
+        }
+    }
+
     /// 移除一个位置。
     pub fn remove(&self, id: &str) {
         if let Ok(mut m) = self.places.lock() {

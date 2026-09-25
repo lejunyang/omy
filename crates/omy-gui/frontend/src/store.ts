@@ -1765,6 +1765,11 @@ export async function lock() {
   state.peer = null;
   state.remoteEntries = [];
   state.remoteMode = false;
+  // 云盘/Telegram/虚拟位置同样已被后端锁定：退出云盘浏览（清掉解密出来的
+  // 文件/消息列表与当前位置），并重载侧栏位置，让锁徽标统一回到闭合锁。
+  // 不做这步的话，本地锁了但右侧还停在已解密的远程内容、侧栏仍显示开口锁。
+  if (state.remotePlace) leaveRemotePlace();
+  await reloadRemotePlaces();
   // 重新载入让加密文件回到锁定显示。
   // 不能只改本地字段——那样万一漏改一处就是信息泄露
   await reload();

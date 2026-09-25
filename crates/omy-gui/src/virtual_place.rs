@@ -775,6 +775,22 @@ impl VirtualRegistry {
         true
     }
 
+    /// 一键锁定**所有**加密虚拟位置（应用级「锁定」用）。
+    ///
+    /// 与逐个 [`lock`](Self::lock) 语义一致，只是一次遍历：清空全部明文树与
+    /// 派生密钥。这样应用锁定后，虚拟位置不再残留可直接浏览的内容——否则只锁
+    /// 本地文件、虚拟位置仍开着，会让「锁定」成为假象。
+    pub fn lock_all(&self) {
+        let ids: Vec<String> = self
+            .places
+            .lock()
+            .map(|ps| ps.iter().filter(|p| p.encrypted).map(|p| p.id.clone()).collect())
+            .unwrap_or_default();
+        for id in ids {
+            self.lock(&id);
+        }
+    }
+
     /// 锁定：清空内存明文树与派生密钥（磁盘上仍是信封）。未加密位置忽略。
     pub fn lock(&self, id: &str) {
         if let Ok(mut ps) = self.places.lock() {
@@ -988,6 +1004,39 @@ mod tests {
         reg.with_place(&id, |vp| assert!(vp.root.refs.is_empty()));
 
         // unlock 需要从落盘信封读 KDF（见集成路径），这里只锁定内存语义。
+    }
+
+    /// lock_all 一键锁掉**所有**加密位置：应用级锁定不能只关其中一个。
+    ///
+    /// 不这样会怎样：早先工具栏「锁定」只锁本地文件，已解锁的加密虚拟位置仍开着、
+    /// 明文树还在内存，形成假锁定。这里建两个加密位置，lock_all 后两者都必须回到
+    /// 未解锁且树为空。
+    #[test]
+    fn lock_all_locks_every_encrypted_place() {
+        let reg = VirtualRegistry::new();
+        let a = reg.create("甲".into());
+        let b = reg.create("乙".into());
+        reg.with_place_mut(&a, |vp| vp.root.refs.push(make_ref("ra")));
+        reg.with_place_mut(&b, |vp| vp.root.refs.push(make_ref("rb")));
+        reg.encrypt(&a, b"pw1", Vec::new(), |_, _, _| {}).expect("加密甲");
+        reg.encrypt(&b, b"pw2", Vec::new(), |_, _, _| {}).expect("加密乙");
+        // 明文位置不应受影响
+        let plain = reg.create("明文".into());
+
+        assert!(reg.is_unlocked(&a));
+        assert!(reg.is_unlocked(&b));
+
+        reg.lock_all();
+
+        assert!(!reg.is_unlocked(&a), "加密甲必须被锁");
+        assert!(!reg.is_unlocked(&b), "加密乙必须被锁");
+        reg.with_place(&a, |vp| assert!(vp.root.refs.is_empty()));
+        reg.with_place(&b, |vp| assert!(vp.root.refs.is_empty()));
+        // 仍处于加密态（不是被删除/解密）
+        assert!(reg.is_encrypted(&a));
+        assert!(reg.is_encrypted(&b));
+        // 未加密位置恒为可用
+        assert!(reg.is_unlocked(&plain));
     }
 
     /// 自动解锁的纯试解核心：对的 KEK（同一密码+同一 salt）能解开信封并还原树，
