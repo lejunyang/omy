@@ -35,9 +35,30 @@ android-system-images = "android-35;google_apis;x86_64"
 # 生成，改动请用 osdk 命令而非手工编辑（`with` 参与安装 identity，
 # 手改会指向另一个 prefix）。
 "conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config" }
+node = "22.23.3"
+pnpm = "9.15.1"
+android-platforms = "=android-36"
 
 [settings.shims.tools."conda:m2-base"]
 expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee", "tar", "bsdtar", "gzip", "gunzip", "sha256sum", "curl", "nproc", "stat"]
 
 [settings.shims.tools."conda:gcc_win-64"]
 expose = ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++", "x86_64-w64-mingw32-ar", "x86_64-w64-mingw32-as", "x86_64-w64-mingw32-nm", "x86_64-w64-mingw32-ranlib", "x86_64-w64-mingw32-strip", "x86_64-w64-mingw32-objdump", "x86_64-w64-mingw32-windres", "x86_64-w64-mingw32-ld", "x86_64-w64-mingw32-dlltool"]
+
+[tasks.android-avd-prepare]
+run = 'pwsh -File spikes\android-external-edit-e2e\prepare-avd.ps1'
+description = "检查 Android 工具链与 system image，缺失时创建 omy-test-35 AVD"
+
+[tasks.android-emulator-start]
+run = 'pwsh -File spikes\android-external-edit-e2e\start-emulator.ps1'
+description = "启动或复用 omy-test-35，并等待模拟器完成启动"
+depends = ["android-avd-prepare"]
+
+[tasks.android-build]
+run = 'pwsh -File spikes\android-external-edit-e2e\build-android.ps1'
+description = "执行前端检查与生产构建，再构建 Android debug APK"
+
+[tasks.android-external-edit-e2e]
+run = 'pwsh -File spikes\android-external-edit-e2e\run-e2e.ps1 -SkipBuild'
+description = "在真实模拟器验证 WebDAV 只读/编辑、稳定 URI、同步与进程恢复"
+depends = ["android-emulator-start", "android-build"]
