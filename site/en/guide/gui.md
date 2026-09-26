@@ -18,7 +18,7 @@ Unlocked entries show the **decrypted original filename and thumbnail**, with a 
 
 Opening an unlocked media file previews it in place:
 
-- **Video**: scrub the timeline freely, adjust volume and playback speed, or jump 10 seconds backward/forward. On mobile, swipe to seek and hold for 2× playback. Nothing is decrypted to disk first
+- **Video**: scrub the timeline with a preview of the target frame, adjust volume and playback speed, or jump 10 seconds backward/forward. On mobile, swipe to seek with a frame preview and hold for 2× playback. Timeline thumbnails are generated in memory on demand; nothing is decrypted to disk first
 - **Images, audio, text**: displayed inline
 
 Everything travels over the custom `omystream://` protocol, so plaintext is never written to disk. The security precondition for this path was established by measurement: the response headers must include `Cache-Control: no-store` and friends, or the WebView may cache decrypted data on disk.
@@ -43,7 +43,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 
 The interface runs under a strict CSP: `default-src 'none'` and `script-src 'self'`, with no `eval` and no inline scripts.
 
-Two consequences follow. Vue templates must be **precompiled** (the runtime compiler uses `new Function` internally, which the CSP blocks), and assets cannot be inlined as data URIs.
+Two consequences follow. Vue templates must be **precompiled** (the runtime compiler uses `new Function` internally, which the CSP blocks), and scripts or styles cannot execute from data URIs. `img-src` separately allows data URIs for in-memory images such as timeline frame previews.
 
 Tauri's `protocol-asset` is also **not enabled** — that protocol exposes filesystem paths directly, which contradicts keeping plaintext off disk. All content goes through the controlled `omystream://` instead.
 

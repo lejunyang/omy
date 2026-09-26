@@ -567,6 +567,39 @@ const main = async () => {
     check(play.rewind && play.forward, '控制栏有前后 10 秒按钮');
     check(play.playbackRates.includes(1.25) && play.playbackRates.includes(2),
           '倍速菜单包含 1.25x 与 2x', play.playbackRates.join(', '));
+    const timelinePreview = await cdp.eval(`(async () => {
+      const host = document.querySelector('[data-player="xgplayer"]');
+      for (let i = 0; i < 300 && host?.dataset.timelineThumbnail !== 'ready'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      const progress = document.querySelector('.xgplayer-progress');
+      const thumbnail = document.querySelector('xg-thumbnail.progress-thumbnail');
+      if (!host || host.dataset.timelineThumbnail !== 'ready' || !progress || !thumbnail) {
+        return { ready: false, hostState: host?.dataset.timelineThumbnail || '', hasThumbnail: !!thumbnail };
+      }
+      const rect = progress.getBoundingClientRect();
+      const moveTo = async fraction => {
+        const x = rect.left + rect.width * fraction;
+        progress.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: x, clientY: rect.top + 5 }));
+        progress.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: rect.top + 5 }));
+        await new Promise(r => setTimeout(r, 50));
+        return {
+          image: thumbnail.style.backgroundImage,
+          position: thumbnail.style.backgroundPosition,
+          size: thumbnail.style.backgroundSize,
+        };
+      };
+      const first = await moveTo(0.2);
+      const second = await moveTo(0.8);
+      progress.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+      return { ready: true, first, second };
+    })()`);
+    check(timelinePreview.ready && timelinePreview.first?.image?.startsWith('url("data:image/jpeg'),
+          '拖动预览使用内存生成的画面精灵图',
+          timelinePreview.ready ? timelinePreview.first.image.slice(0, 30) : JSON.stringify(timelinePreview));
+    check(timelinePreview.ready && timelinePreview.first.position !== timelinePreview.second.position,
+          '进度条不同位置显示不同预览画面',
+          timelinePreview.ready ? `${timelinePreview.first.position} → ${timelinePreview.second.position}` : '缩略图未就绪');
     const skipButtons = await cdp.eval(`(async () => {
       const v = document.getElementById('pv');
       const waitSeek = () => new Promise(resolve => {

@@ -14,6 +14,7 @@
 import { onBeforeUnmount, onMounted, watch, useTemplateRef } from 'vue';
 import type Player from 'xgplayer';
 import { isMobile } from '../viewport';
+import { generateTimelineThumbnail, type TimelineThumbnail } from '../timeline-thumbnail';
 import * as i18n from '../i18n';
 
 const props = defineProps({
@@ -30,6 +31,7 @@ const emit = defineEmits<{
 const host = useTemplateRef('host');
 let player: Player | null = null;
 let mountGeneration = 0;
+let thumbnailAbort: AbortController | null = null;
 
 function mediaElement(): HTMLMediaElement | null {
   return player?.media instanceof HTMLMediaElement ? player.media : null;
@@ -41,6 +43,9 @@ function mediaErrorCode(): number {
 
 function destroyPlayer() {
   mountGeneration += 1;
+  thumbnailAbort?.abort();
+  thumbnailAbort = null;
+  host.value?.removeAttribute('data-timeline-thumbnail');
   const current = player;
   player = null;
   if (!current) return;
@@ -56,6 +61,33 @@ function destroyPlayer() {
   current.destroy();
 }
 
+function installTimelineThumbnail(current: Player, thumbnail: TimelineThumbnail) {
+  const thumbnailPlugin = current.getPlugin('thumbnail');
+  thumbnailPlugin?.setConfig(thumbnail);
+  // 两端插件在初始化时只会注册已有的缩略图，运行时生成完成后要显式补注册。
+  current.getPlugin('progresspreview')?.registerThumbnail(thumbnail);
+  current.getPlugin('mobile')?.registerThumbnail();
+  host.value?.setAttribute('data-timeline-thumbnail', 'ready');
+}
+
+async function prepareTimelineThumbnail(current: Player, generation: number) {
+  const abort = new AbortController();
+  thumbnailAbort?.abort();
+  thumbnailAbort = abort;
+  try {
+    const thumbnail = await generateTimelineThumbnail(props.src, abort.signal);
+    if (!thumbnail || abort.signal.aborted || generation !== mountGeneration || player !== current) return;
+    installTimelineThumbnail(current, thumbnail);
+  } catch (error) {
+    // 不支持随机 seek 的媒体或临时网络失败只关闭画面预览，播放本身不应失败。
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      console.debug('[omy] timeline thumbnail unavailable', error);
+    }
+  } finally {
+    if (thumbnailAbort === abort) thumbnailAbort = null;
+  }
+}
+
 async function mountPlayer() {
   if (!host.value || !props.src) return;
   destroyPlayer();
@@ -67,7 +99,7 @@ async function mountPlayer() {
     import('xgplayer/dist/index.min.css'),
   ]);
   if (generation !== mountGeneration || !host.value) return;
-  player = new PlayerCtor({
+  const current = new PlayerCtor({
     ...createOmyVideoPlayerOptions({
       el: host.value,
       url: props.src,
@@ -78,10 +110,12 @@ async function mountPlayer() {
     }),
     autoplay: props.autoplay,
   });
-  player.on(Events.ERROR, () => emit('error', mediaErrorCode()));
-  player.on(Events.PLAY, () => emit('play'));
-  player.on(Events.PAUSE, () => emit('pause'));
-  player.on(Events.ENDED, () => emit('pause'));
+  player = current;
+  current.on(Events.ERROR, () => emit('error', mediaErrorCode()));
+  current.on(Events.PLAY, () => emit('play'));
+  current.on(Events.PAUSE, () => emit('pause'));
+  current.on(Events.ENDED, () => emit('pause'));
+  void prepareTimelineThumbnail(current, generation);
 }
 
 onMounted(mountPlayer);
