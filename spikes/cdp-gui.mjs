@@ -269,17 +269,17 @@ const main = async () => {
     }
   });
 
-  // ---------- 阶段 1：启动与解锁界面 ----------
+  // ---------- 阶段 1：启动界面 ----------
   console.log('=== 阶段 1：启动状态 ===');
   const boot = await cdp.eval(`(() => ({
-    hasUnlockBox: !!document.querySelector('.unlock-box'),
-    hasTopbar: !!document.querySelector('.topbar'),
+    hasMainScreen: !!document.querySelector('.titlebar'),
+    hasUnlockDialog: !!document.getElementById('unlock-form'),
     lang: document.documentElement.lang,
     theme: document.documentElement.dataset.theme || 'dark',
     text: document.body.innerText.slice(0, 200),
   }))()`);
-  check(boot.hasUnlockBox, '启动后显示解锁界面');
-  check(!boot.hasTopbar, '未解锁时不渲染主界面（不泄露任何文件信息）');
+  check(boot.hasMainScreen, '启动后显示文件管理器');
+  check(!boot.hasUnlockDialog, '未打开锁定文件时不显示密码框');
   check(!!boot.lang, '语言已确定', boot.lang);
 
   // 确认原生选择器命令**真的注册了**。
@@ -330,32 +330,40 @@ const main = async () => {
     pickOk.got ? '' : JSON.stringify(pickOk).slice(0, 90));
 
   const picked = await cdp.eval(`(async () => {
-    document.getElementById('btn-browse').click();
-    // 等后端读完文件头
-    for (let i = 0; i < 40; i++) {
+    document.querySelector('[data-side="pick-folder"]')?.click();
+    // 等后端读完目录与文件头，锁定卡片出现即表示目录已就绪。
+    for (let i = 0; i < 80; i++) {
       await new Promise(r => setTimeout(r, 100));
-      const btn = document.getElementById('btn-unlock');
-      if (btn && !btn.disabled) return { ok: true, tries: i };
+      const locked = document.querySelector('.card[data-locked="1"]');
+      if (locked) return { ok: true, tries: i };
       const err = document.querySelector('.errbox');
       if (err) return { ok: false, error: err.textContent.trim() };
     }
     return { ok: false, error: '超时' };
   })()`);
-  check(picked.ok, '选目录后读到解锁参数', picked.ok ? '' : picked.error);
+  check(picked.ok, '选目录后扫描到锁定文件', picked.ok ? '' : picked.error);
 
   if (!picked.ok) {
-    console.log('\n无法继续，解锁参数未就绪');
+    console.log('\n无法继续，测试目录未就绪');
     cdp.close();
     process.exit(1);
   }
 
   const unlocked = await cdp.eval(`(async () => {
-    document.getElementById('u-pass').value = ${JSON.stringify(PASSWORD)};
-    document.getElementById('unlock-form')
-      .dispatchEvent(new Event('submit', { cancelable: true }));
+    document.querySelector('.card[data-locked="1"]')
+      ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    for (let i = 0; i < 30 && !document.getElementById('unlock-form'); i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const input = document.getElementById('u-pass');
+    const form = document.getElementById('unlock-form');
+    if (!input || !form) return { ok: false, error: '密码框未出现' };
+    input.value = ${JSON.stringify(PASSWORD)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 150; i++) {
       await new Promise(r => setTimeout(r, 100));
-      if (document.querySelector('.topbar')) {
+      if (!document.getElementById('unlock-form') && document.querySelector('.card[data-locked="0"]')) {
         return { ok: true, ms: i * 100 };
       }
       const err = document.querySelector('.errbox');
@@ -363,7 +371,7 @@ const main = async () => {
     }
     return { ok: false, error: '超时' };
   })()`);
-  check(unlocked.ok, '密码正确时能解锁并进入主界面',
+  check(unlocked.ok, '密码正确时能按需解锁当前目录',
         unlocked.ok ? `${unlocked.ms}ms` : unlocked.error);
 
   if (!unlocked.ok) {
@@ -383,9 +391,9 @@ const main = async () => {
       locked: cards.filter(c => c.dataset.locked === '1').length,
       unlocked: cards.filter(c => c.dataset.locked === '0').length,
       names: cards.filter(c => c.dataset.locked === '0')
-                  .map(c => c.querySelector('.name')?.textContent.trim()),
+                  .map(c => c.querySelector('.cname')?.textContent.trim()),
       metas: cards.filter(c => c.dataset.locked === '0')
-                  .map(c => c.querySelector('.meta')?.textContent.trim()),
+                  .map(c => c.querySelector('.cmeta')?.textContent.trim()),
       thumbs: [...document.querySelectorAll('.card img')].length,
       bodyText: document.body.innerText,
     };
@@ -442,8 +450,8 @@ const main = async () => {
 
   const vidId = await cdp.eval(`(() => {
     const c = [...document.querySelectorAll('.card[data-locked="0"]')]
-      .find(c => c.querySelector('.name')?.textContent.includes('demo-video'));
-    return c ? c.dataset.id : null;
+      .find(c => c.querySelector('.cname')?.textContent.includes('demo-video'));
+    return c ? c.dataset.entryId : null;
   })()`);
   check(!!vidId, '取到视频文件的 id');
 
@@ -515,7 +523,7 @@ const main = async () => {
   console.log('\n=== 阶段 6：视频播放与 seek ===');
   const play = await cdp.eval(`(async () => {
     const card = [...document.querySelectorAll('.card[data-locked="0"]')]
-      .find(c => c.querySelector('.name')?.textContent.includes('demo-video'));
+      .find(c => c.querySelector('.cname')?.textContent.includes('demo-video'));
     card.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await new Promise(r => setTimeout(r, 300));
     const v = document.getElementById('pv');
@@ -524,11 +532,25 @@ const main = async () => {
       let done = false;
       const fin = o => { if (!done) { done = true; resolve(o); } };
       if (v.readyState >= 1) {
-        fin({ ok: true, duration: v.duration, w: v.videoWidth, h: v.videoHeight });
+        fin({ ok: true, duration: v.duration, w: v.videoWidth, h: v.videoHeight,
+          crossorigin: v.getAttribute('crossorigin'),
+          player: !!document.querySelector('[data-player="xgplayer"].xgplayer'),
+          rewind: !!document.querySelector('.omy-skip-rewind'),
+          forward: !!document.querySelector('.omy-skip-forward'),
+          playbackRates: [...document.querySelectorAll('.xgplayer-playbackrate li')]
+            .map(el => Number(el.getAttribute('rate')) || Number(el.textContent.replace('x', '')))
+            .filter(Number.isFinite) });
         return;
       }
       v.addEventListener('loadedmetadata', () => fin({ ok: true,
-        duration: v.duration, w: v.videoWidth, h: v.videoHeight }), { once: true });
+        duration: v.duration, w: v.videoWidth, h: v.videoHeight,
+        crossorigin: v.getAttribute('crossorigin'),
+        player: !!document.querySelector('[data-player="xgplayer"].xgplayer'),
+        rewind: !!document.querySelector('.omy-skip-rewind'),
+        forward: !!document.querySelector('.omy-skip-forward'),
+        playbackRates: [...document.querySelectorAll('.xgplayer-playbackrate li')]
+          .map(el => Number(el.getAttribute('rate')) || Number(el.textContent.replace('x', '')))
+          .filter(Number.isFinite) }), { once: true });
       v.addEventListener('error', () => fin({ ok: false,
         code: v.error?.code, message: v.error?.message || '' }), { once: true });
       setTimeout(() => fin({ ok: false, message: '超时',
@@ -540,6 +562,30 @@ const main = async () => {
     check(true, '双击卡片后视频加载出元数据',
           `${play.duration?.toFixed(2)}s ${play.w}x${play.h}`);
     check(Math.abs(play.duration - 60) < 1.5, '时长约 60s', `${play.duration?.toFixed(2)}s`);
+    check(play.player, '视频由 xgplayer 渲染');
+    check(play.crossorigin === 'anonymous', '底层 video 保留 crossorigin=anonymous', play.crossorigin || '缺失');
+    check(play.rewind && play.forward, '控制栏有前后 10 秒按钮');
+    check(play.playbackRates.includes(1.25) && play.playbackRates.includes(2),
+          '倍速菜单包含 1.25x 与 2x', play.playbackRates.join(', '));
+    const skipButtons = await cdp.eval(`(async () => {
+      const v = document.getElementById('pv');
+      const waitSeek = () => new Promise(resolve => {
+        const done = () => resolve(v.currentTime);
+        v.addEventListener('seeked', done, { once: true });
+        setTimeout(done, 1500);
+      });
+      v.currentTime = 20;
+      await waitSeek();
+      document.querySelector('.omy-skip-rewind')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await waitSeek();
+      const rewound = v.currentTime;
+      document.querySelector('.omy-skip-forward')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await waitSeek();
+      return { rewound, forwarded: v.currentTime };
+    })()`);
+    check(Math.abs(skipButtons.rewound - 10) < 1.5 && Math.abs(skipButtons.forwarded - 20) < 1.5,
+          '前后 10 秒按钮实际改变播放位置',
+          `${skipButtons.rewound.toFixed(2)}s → ${skipButtons.forwarded.toFixed(2)}s`);
   } else {
     check(false, '视频加载元数据',
           `code=${play.code ?? '-'} ${play.message} rs=${play.readyState ?? '-'}`);
@@ -636,15 +682,21 @@ const main = async () => {
     }
   }
 
-  // 关掉预览
+  // 关掉预览并验证播放器释放了媒体节点；否则 WebView 仍可能持有解密缓冲。
   await cdp.eval(`(() => { document.getElementById('pv-close')?.click(); return 1; })()`, false);
   await sleep(300);
+  const released = await cdp.eval(`(() => ({
+    player: document.querySelectorAll('[data-player="xgplayer"]').length,
+    videos: document.querySelectorAll('video').length,
+  }))()`);
+  check(released.player === 0 && released.videos === 0,
+        '关闭预览后播放器与 video 节点已释放', JSON.stringify(released));
 
   // ---------- 阶段 7：图片与文本预览 ----------
   console.log('\n=== 阶段 7：图片与文本预览 ===');
   const img = await cdp.eval(`(async () => {
     const card = [...document.querySelectorAll('.card[data-locked="0"]')]
-      .find(c => c.querySelector('.name')?.textContent.includes('demo-image'));
+      .find(c => c.querySelector('.cname')?.textContent.includes('demo-image'));
     if (!card) return { ok: false, error: '找不到图片卡片' };
     card.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await new Promise(r => setTimeout(r, 300));
@@ -672,7 +724,7 @@ const main = async () => {
 
   const txt = await cdp.eval(`(async () => {
     const card = [...document.querySelectorAll('.card[data-locked="0"]')]
-      .find(c => c.querySelector('.name')?.textContent.includes('demo-notes'));
+      .find(c => c.querySelector('.cname')?.textContent.includes('demo-notes'));
     if (!card) return { ok: false, error: '找不到文本卡片' };
     card.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     for (let i = 0; i < 60; i++) {
@@ -703,16 +755,24 @@ const main = async () => {
   const langTest = await cdp.eval(`(async () => {
     const before = document.documentElement.lang;
     const beforeText = document.body.innerText;
-    document.getElementById('btn-lang').click();
+    document.querySelector('[data-tb="settings"]')?.click();
+    for (let i = 0; i < 40 && !document.querySelector('[data-sf="language"]'); i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const select = document.querySelector('[data-sf="language"]');
+    if (!select) return { error: '语言设置未出现', before };
+    select.value = before === 'en' ? 'zh-CN' : 'en';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 800));
     const after = document.documentElement.lang;
     const afterText = document.body.innerText;
+    document.querySelector('[data-si="close"]')?.click();
     return { before, after, changed: beforeText !== afterText,
              afterHasEnglish: /file|password|Search/i.test(afterText),
              afterHasChinese: /文件|密码/.test(afterText) };
   })()`);
-  check(langTest.before !== langTest.after, '语言标签切换',
-        `${langTest.before} → ${langTest.after}`);
+  check(!langTest.error && langTest.before !== langTest.after, '语言标签切换',
+        langTest.error || `${langTest.before} → ${langTest.after}`);
   check(langTest.changed, '界面文案确实随之改变');
   const toEn = langTest.after === 'en';
   check(
@@ -720,9 +780,21 @@ const main = async () => {
     `切换后显示${toEn ? '英文' : '中文'}文案`,
   );
 
-  // 切回去
-  await cdp.eval(`(() => { document.getElementById('btn-lang').click(); return 1; })()`, false);
-  await sleep(600);
+  // 通过同一设置入口切回去，避免测试改掉用户配置。
+  await cdp.eval(`(async () => {
+    document.querySelector('[data-tb="settings"]')?.click();
+    for (let i = 0; i < 40 && !document.querySelector('[data-sf="language"]'); i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const select = document.querySelector('[data-sf="language"]');
+    if (select) {
+      select.value = ${JSON.stringify(langTest.before)};
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      document.querySelector('[data-si="close"]')?.click();
+    }
+  })()`);
+  await sleep(300);
 
   // ---------- 阶段 9：锁定 ----------
   console.log('\n=== 阶段 9：锁定 ===');
@@ -730,14 +802,16 @@ const main = async () => {
     document.getElementById('btn-lock').click();
     await new Promise(r => setTimeout(r, 900));
     return {
-      backToUnlock: !!document.querySelector('.unlock-box'),
-      noTopbar: !document.querySelector('.topbar'),
-      cards: document.querySelectorAll('.card').length,
+      hasMainScreen: !!document.querySelector('.titlebar'),
+      unlockedCards: document.querySelectorAll('.card[data-locked="0"]').length,
+      lockedCards: document.querySelectorAll('.card[data-locked="1"]').length,
       text: document.body.innerText,
     };
   })()`);
-  check(locked.backToUnlock, '锁定后回到解锁界面');
-  check(locked.cards === 0, '锁定后没有任何文件卡片残留', `实得 ${locked.cards}`);
+  check(locked.hasMainScreen, '锁定后保留文件管理器');
+  check(locked.unlockedCards === 0 && locked.lockedCards === 5,
+        '锁定后全部加密文件回到锁定态',
+        `解锁 ${locked.unlockedCards} / 锁定 ${locked.lockedCards}`);
   check(
     !locked.text.includes('demo-video') && !locked.text.includes('demo-notes'),
     '锁定后界面上不残留任何真实文件名',

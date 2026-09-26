@@ -21,6 +21,7 @@
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import { playing } from '../autolock';
+import OmyVideoPlayer from './OmyVideoPlayer.vue';
 import * as i18n from '../i18n';
 import {
   fileUrl,
@@ -86,7 +87,19 @@ async function loadText() {
   }
 }
 
-/** 把媒体错误码翻译成人话。 */
+function onVideoError(code: number) {
+  mediaError.value = i18n.te(`media_error_${code}`, i18n.te('preview_failed'));
+}
+
+function onVideoPlay() {
+  playing.value = true;
+}
+
+function onVideoPause() {
+  playing.value = false;
+}
+
+/** 把原生音频错误码翻译成人话。视频错误由 OmyVideoPlayer 透传。 */
 function onMediaError() {
   const code = (media.value as HTMLMediaElement | null)?.error?.code ?? 0;
   mediaError.value = i18n.te(`media_error_${code}`, i18n.te('preview_failed'));
@@ -102,16 +115,13 @@ onMounted(() => {
     text.value = i18n.t('playback.loading');
     loadText();
   }
-  // 播放期间不算闲置：用户看两小时的片子全程不碰鼠标，
-  // 不标记的话自动锁定会把正在看的画面锁掉
-  if (kind.value === 'video' || kind.value === 'audio') playing.value = true;
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
-  // 先停掉媒体再移除节点
+  // 音频仍使用原生控件；视频的释放由 OmyVideoPlayer 自己负责。
   const el = media.value as HTMLMediaElement | null;
-  if (el && (kind.value === 'video' || kind.value === 'audio')) {
+  if (el && kind.value === 'audio') {
     el.pause();
     el.removeAttribute('src');
     el.load();
@@ -133,32 +143,33 @@ onBeforeUnmount(() => {
       <button v-if="place && file.externalAvailable && file.editable" class="btn small primary" @click="$emit('external-edit')">
         {{ i18n.t('rplace.open_editable') }}
       </button>
-      <button class="iconbtn" :aria-label="i18n.t('actions.close')" @click="$emit('close')">
+      <button id="pv-close" class="iconbtn" :aria-label="i18n.t('actions.close')" @click="$emit('close')">
         ✕
       </button>
     </div>
     <div class="overlay-body">
       <div v-if="mediaError" class="overlay-msg">{{ mediaError }}</div>
 
-      <video
+      <OmyVideoPlayer
         v-else-if="kind === 'video'"
-        ref="media"
         :src="src"
-        controls
         autoplay
-        crossorigin="anonymous"
-        playsinline
-        preload="metadata"
-        @error="onMediaError"
-      ></video>
+        @error="onVideoError"
+        @play="onVideoPlay"
+        @pause="onVideoPause"
+      />
 
       <audio
         v-else-if="kind === 'audio'"
+        id="pv"
         ref="media"
         :src="src"
         controls
         autoplay
         crossorigin="anonymous"
+        @play="onVideoPlay"
+        @pause="onVideoPause"
+        @ended="onVideoPause"
         @error="onMediaError"
       ></audio>
 
@@ -166,6 +177,7 @@ onBeforeUnmount(() => {
            绝不用 v-html 插入 SVG——那等于执行未知代码 -->
       <img
         v-else-if="kind === 'image'"
+        id="pv"
         ref="media"
         :src="src"
         :alt="file.name"
@@ -173,7 +185,7 @@ onBeforeUnmount(() => {
       />
 
       <!-- {{ }} 是 textContent 语义，文件内容不会被当成 HTML 解析 -->
-      <pre v-else-if="kind === 'text'">{{ text }}</pre>
+      <pre v-else-if="kind === 'text'" id="pv">{{ text }}</pre>
 
       <!-- 应用内看不了的类型：给一条出路，而不是一句「不支持」就完事。
            PDF、压缩包、Office 文档都会走到这里（文档 §8 的既定设计） -->

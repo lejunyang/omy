@@ -243,7 +243,9 @@
     "tier_p2_desc": "Container swap only, no re-encoding",
     "tier_p3_desc": "Needs re-encoding, slower",
     "cannot_preview": "This format cannot be previewed in the app",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "rewind_10": "Rewind 10 seconds",
+    "forward_10": "Forward 10 seconds"
   },
   "view": {
     "grid": "Grid view",

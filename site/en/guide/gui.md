@@ -18,7 +18,7 @@ Unlocked entries show the **decrypted original filename and thumbnail**, with a 
 
 Opening an unlocked media file previews it in place:
 
-- **Video**: scrub the timeline freely, with nothing decrypted to disk first
+- **Video**: scrub the timeline freely, adjust volume and playback speed, or jump 10 seconds backward/forward. On mobile, swipe to seek and hold for 2× playback. Nothing is decrypted to disk first
 - **Images, audio, text**: displayed inline
 
 Everything travels over the custom `omystream://` protocol, so plaintext is never written to disk. The security precondition for this path was established by measurement: the response headers must include `Cache-Control: no-store` and friends, or the WebView may cache decrypted data on disk.
@@ -30,7 +30,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Encrypt | Pick files or folders; set chunk size, KDF profile, thumbnails, original handling |
 | Decrypt / restore | Restore one or many to a chosen location |
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
-| Preview and playback | Video seeking; images, audio and text inline |
+| Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
 | Password management | Add key slots, change passwords, re-encrypt |
 | Context menu | Open, reveal in file manager, password management, move to trash |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |

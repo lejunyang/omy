@@ -44,7 +44,7 @@ function submit() {
 
 <template>
   <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
-    <form class="dlg narrow" @submit.prevent="submit">
+    <form id="unlock-form" class="dlg narrow" @submit.prevent="submit">
       <h3>🔒 {{ i18n.t('unlock.title') }}</h3>
       <!-- 已有密码时换一句话：不说清楚的话，没人会想到可以再输一个 -->
       <div class="hint">

@@ -243,7 +243,9 @@
     "tier_p2_desc": "只换容器，不重编码",
     "tier_p3_desc": "需要重新编码，较慢",
     "cannot_preview": "此格式无法在应用内预览",
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "rewind_10": "后退 10 秒",
+    "forward_10": "前进 10 秒"
   },
   "view": {
     "grid": "网格视图",

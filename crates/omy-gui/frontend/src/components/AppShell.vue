@@ -130,6 +130,7 @@ function setView(v) {
     </template>
     <button
       v-if="state.credentials > 0"
+      id="btn-lock"
       class="iconbtn"
       :title="i18n.t('status.lock_now')"
       :aria-label="i18n.t('status.lock_now')"
