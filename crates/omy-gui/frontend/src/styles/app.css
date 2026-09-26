@@ -1697,6 +1697,13 @@ input {
     flex-basis: calc(48px + env(safe-area-inset-top, 0px));
   }
 
+  .overlay-bar {
+    /* 预览层覆盖整屏，也会进入状态栏手势区；不下移时顶部按钮看得见却点不到。 */
+    padding-block-start: max(env(safe-area-inset-top, 0px), 24px);
+    height: calc(48px + max(env(safe-area-inset-top, 0px), 24px));
+    flex-basis: calc(48px + max(env(safe-area-inset-top, 0px), 24px));
+  }
+
   .titlebar.mob .search {
     min-width: 0;
     flex: 1;

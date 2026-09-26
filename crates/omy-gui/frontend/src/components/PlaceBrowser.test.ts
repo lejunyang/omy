@@ -193,6 +193,12 @@ function mountView() {
 beforeEach(() => {
   seedMessages();
   Object.assign(state, {
+    remotePlace: 'p1',
+    remotePlaces: [{ id: 'p1', kind: 'telegram', name: 'TG' }],
+    remoteDir: 'tg:-100',
+    remoteTab: 'messages',
+    remoteViewMode: 'messages',
+    remoteItems: [],
     loadingMessages: false,
     loadingNewer: false,
     locatingMsg: null,
@@ -204,6 +210,20 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('PlaceBrowser 远程位置空态', () => {
+  it('连接按钮通过 add 事件交给父组件打开表单', async () => {
+    state.remotePlace = '';
+    state.remotePlaces = [];
+    state.remoteItems = [];
+    state.remoteTab = 'file';
+    const w = mountView();
+    await flushPromises();
+    const add = w.find('.empty .btn.primary');
+    expect(add.exists()).toBe(true);
+    await add.trigger('click');
+    expect(w.emitted('add')).toHaveLength(1);
+  });
+});
 describe('PlaceBrowser 消息时间线', () => {
   it('渲染出全部消息行与日期组标题', async () => {
     const w = mountView();

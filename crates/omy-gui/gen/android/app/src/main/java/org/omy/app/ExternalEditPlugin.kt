@@ -1,6 +1,7 @@
 package org.omy.app
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
 import android.os.FileObserver
@@ -82,17 +83,14 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
     val action = if (args.writable) Intent.ACTION_EDIT else Intent.ACTION_VIEW
     val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
       (if (args.writable) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+    // Content-Type 可能带 charset/boundary 参数；Android Intent 过滤器只匹配基础 MIME。
+    val mime = args.mime.substringBefore(';').trim().ifBlank { "application/octet-stream" }
     val intent = Intent(action).apply {
-      setDataAndType(uri, args.mime.ifBlank { "application/octet-stream" })
+      setDataAndType(uri, mime)
       addFlags(flags)
       // 一些 Office 应用只从 ClipData 继承 URI grant，不加时会显示文件却保存失败。
       clipData = ClipData.newRawUri(file.name, uri)
     }
-    if (intent.resolveActivity(activity.packageManager) == null) {
-      invoke.reject("没有能打开此格式的应用", "no_handler")
-      return
-    }
-
     if (!args.writable) {
       // 同一稳定 URI 之前可能以可编辑方式打开过；用户这次选只读时主动撤销旧写授权。
       activity.revokeUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -100,9 +98,16 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
       watch(file)
     }
 
-    activity.startActivity(Intent.createChooser(intent, null).apply {
-      addFlags(flags)
-    })
+    try {
+      // Android 11+ 包可见性会让 resolveActivity() 对未声明查询的第三方应用
+      // 返回 null；系统 chooser 仍能解析。直接启动并只捕获真实的无处理器错误。
+      activity.startActivity(Intent.createChooser(intent, null).apply {
+        addFlags(flags)
+      })
+    } catch (_: ActivityNotFoundException) {
+      invoke.reject("没有能打开此格式的应用", "no_handler")
+      return
+    }
     val ret = JSObject()
     ret.put("uri", uri.toString())
     invoke.resolve(ret)

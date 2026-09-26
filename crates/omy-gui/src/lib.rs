@@ -121,65 +121,19 @@ pub fn run() {
     }
     // 全局已见 vault 登记表：用于「同密码跨 vault 自动解锁」。
     let vaults: Arc<vault_reg::VaultRegistry> = Arc::new(vault_reg::VaultRegistry::new());
+    #[cfg(not(target_os = "android"))]
     if let Err(e) = vaults.load() {
         applog::warn("virtual", &format!("载入 vault 登记表失败：{e}"));
     }
+    #[cfg(target_os = "android")]
+    let for_setup_vaults = Arc::clone(&vaults);
     // 把每个已加密虚拟位置自身的 KDF salt 也登记进全局表。必须在启动就做：
     // 否则该 salt 只在显式解锁该位置时才进表，用户先在别处（本地文件/Telegram）
     // 用同密码解锁时，全局表没有这个 salt，无法为它派生 KEK，虚拟位置就不会免密
     // 自动解锁（实测「先解本地，Telegram 开了、虚拟位置仍锁」）。
     vaults.register_all(&virtual_registry.encrypted_vault_materials());
-    // 恢复上次保存的远程位置。
-    //
-    // 放在这里而不是等前端来问：侧栏在首帧就要显示这些位置，晚一步
-    // 会先渲染成空、再突然冒出来。
-    //
-    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
-    if let Ok(cfg) = omy_config::Config::load() {
-        let (n, need_login) = place_registry.restore(&cfg.remote);
-        if n > 0 {
-            eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");
-        }
-        // 旧版本的单文件 Telegram 登录态迁成「第一个 Telegram 位置」的。
-        //
-        // 必须在 restore 之后：要先知道第一个 Telegram 位置的 id 是什么，
-        // 而 session 文件正是按那个 id 命名的。
-        //
-        // 不迁的话，升级上来的用户按新规则去找必然落空——现象是「更新完
-        // 就要重新扫码」，他会以为自己被登出了，甚至怀疑账号出了问题。
-        // 迁移只在旧文件确实存在时才动，且不覆盖已有的（见 migrate_legacy_to）。
-        if omy_remote::telegram::session::has_legacy_session() {
-            match place_registry.telegram_ids().first() {
-                Some(first) => match omy_remote::telegram::session::migrate_legacy_to(first) {
-                    Ok(true) => eprintln!("[omy] 已把旧版 Telegram 登录态迁移到第一个账号"),
-                    Ok(false) => {}
-                    Err(e) => eprintln!("[omy] 迁移旧版 Telegram 登录态失败：{e}"),
-                },
-                // 有旧登录态却没有任何 Telegram 位置：配置与数据目录不同步
-                // （比如用户手工删过配置）。留着文件不动，也不报错——
-                // 用户重新添加账号时会走正常的登录流程
-                None => {
-                    eprintln!("[omy] 检测到旧版 Telegram 登录态，但没有对应的位置，暂不迁移");
-                }
-            }
-        }
-    }
-    // 启动时把每个**已加密 Telegram 位置**的 vault 材料登记进全局表。
-    //
-    // 否则冷启动后若用户先在本地用同密码解锁文件，会话里有了对的 KEK，却因为
-    // 全局表还没见过这个 Telegram 位置的 salt（只有进过位置才登记），无法把密码
-    // 派发到它——表现为「本地解锁后 Telegram 位置仍要手输」。启动登记后这条链
-    // 反向也通。只读本就公开的 salt/KDF，不碰 session 密文、不连网。
-    for tid in place_registry.telegram_ids() {
-        if let Ok(Some(v)) = omy_remote::telegram::session::place_vault(&tid) {
-            vaults.register_all(&[vault_reg::VaultMaterial {
-                salt: v.salt,
-                m_kib: v.m_kib,
-                t: v.t,
-                p: v.p,
-            }]);
-        }
-    }
+    #[cfg(not(target_os = "android"))]
+    restore_saved_places(&place_registry, &vaults);
     // 远程播放：全局密文块缓存（只存密文、按上限 LRU）与打开文件句柄表。
     // 句柄表在协议线程与命令间共享，让多次 Range 请求复用同一来源。
     let remote_cache: Arc<place_files::RemoteCache> =
@@ -425,7 +379,12 @@ pub fn run() {
             {
                 // 安卓的窗口由 tauri.android.conf.json 覆盖成 create: true，
                 // Tauri 在 setup 前就按它建好了 WebView，这里只补设备库路径。
-                android_setup(app, &for_setup_devices);
+                if android_setup(app, &for_setup_devices) {
+                    if let Err(e) = for_setup_vaults.load() {
+                        applog::warn("virtual", &format!("载入 vault 登记表失败：{e}"));
+                    }
+                    restore_saved_places(&for_setup_places, &for_setup_vaults);
+                }
                 external_edit_setup(app, &for_setup_edits);
                 external_edit_timer(
                     app.handle().clone(),
@@ -514,6 +473,44 @@ pub fn run() {
     });
 }
 
+fn restore_saved_places(
+    place_registry: &Arc<places::PlaceRegistry>,
+    vaults: &Arc<vault_reg::VaultRegistry>,
+) {
+    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
+    let Ok(cfg) = omy_config::Config::load() else {
+        return;
+    };
+    let (n, need_login) = place_registry.restore(&cfg.remote);
+    if n > 0 {
+        eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");
+    }
+
+    // 旧版本的单文件 Telegram 登录态迁成第一个 Telegram 位置的。
+    if omy_remote::telegram::session::has_legacy_session() {
+        match place_registry.telegram_ids().first() {
+            Some(first) => match omy_remote::telegram::session::migrate_legacy_to(first) {
+                Ok(true) => eprintln!("[omy] 已把旧版 Telegram 登录态迁移到第一个账号"),
+                Ok(false) => {}
+                Err(e) => eprintln!("[omy] 迁移旧版 Telegram 登录态失败：{e}"),
+            },
+            None => eprintln!("[omy] 检测到旧版 Telegram 登录态，但没有对应的位置，暂不迁移"),
+        }
+    }
+
+    // 冷启动就登记 Telegram vault 材料，让同密码跨位置自动解锁仍然生效。
+    for tid in place_registry.telegram_ids() {
+        if let Ok(Some(v)) = omy_remote::telegram::session::place_vault(&tid) {
+            vaults.register_all(&[vault_reg::VaultMaterial {
+                salt: v.salt,
+                m_kib: v.m_kib,
+                t: v.t,
+                p: v.p,
+            }]);
+        }
+    }
+}
+
 #[cfg(target_os = "android")]
 fn external_edit_setup(app: &tauri::App, edits: &Arc<external_edit::ExternalEdits>) {
     let root = match external_edit::native_root(app.handle()) {
@@ -559,18 +556,29 @@ fn external_edit_timer(
 /// 路径从 Tauri 的 `PathResolver` 取而不是硬编码 `/data/data/<包名>`：
 /// 包名写在 tauri.conf.json 里，在代码里再写一遍就是两处真相。
 #[cfg(target_os = "android")]
-fn android_setup(app: &tauri::App, devices: &device_cmds::SharedDevices) {
+fn android_setup(app: &tauri::App, devices: &device_cmds::SharedDevices) -> bool {
     use tauri::Manager as _;
 
-    let Ok(dir) = app.path().app_config_dir() else {
-        eprintln!("[omy] 取不到应用配置目录，设备库将不可用");
-        return;
+    let (Ok(config), Ok(cache), Ok(data)) = (
+        app.path().app_config_dir(),
+        app.path().app_cache_dir(),
+        app.path().app_data_dir(),
+    ) else {
+        eprintln!("[omy] 取不到应用私有目录，配置、凭据与设备库将不可用");
+        return false;
     };
 
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("[omy] 建配置目录失败: {e}");
-        return;
+    for dir in [&config, &cache, &data] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[omy] 建应用私有目录失败: {e}");
+            return false;
+        }
+    }
+    if let Err(e) = omy_config::set_android_dirs(config.clone(), cache, data) {
+        eprintln!("[omy] 注入应用私有目录失败: {e}");
+        return false;
     }
 
-    devices.set_default_path(dir.join("devices.omy"));
+    devices.set_default_path(config.join("devices.omy"));
+    true
 }

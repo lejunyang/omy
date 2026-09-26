@@ -988,6 +988,7 @@ onBeforeUnmount(() => {
     @lang="switchLanguage"
     @telegram="showTelegramLogin = true"
     @settings="showSettings = true"
+    @add="showAddPlace = true"
     @lock="doLock"
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
   />

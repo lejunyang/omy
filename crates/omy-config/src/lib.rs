@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 mod paths;
+#[cfg(target_os = "android")]
+pub use paths::set_android_dirs;
 pub use paths::{cache_dir, config_path, data_dir, is_portable, log_dir};
 
 /// 配置读写错误。

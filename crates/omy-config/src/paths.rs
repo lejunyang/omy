@@ -25,12 +25,58 @@
 //! Android/iOS 上应用目录不可写，也没有「可执行文件旁边」这个概念，
 //! 一律用系统给的 app data 目录。
 
-use std::path::PathBuf;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::Path;
+use std::path::PathBuf;
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
+
+/// Android 由宿主框架解析出的应用私有目录。
+///
+/// `dirs` 在 Android 进程里拿不到 `$HOME`，会把配置、缓存和密钥目录都解析成
+/// `None`。这些路径只能在 Tauri `setup` 阶段取得，因此通过一次性覆盖注入。
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone)]
+struct AndroidDirs {
+    config: PathBuf,
+    cache: PathBuf,
+    data: PathBuf,
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_DIRS: OnceLock<AndroidDirs> = OnceLock::new();
 
 /// 配置文件名。
 const CONFIG_NAME: &str = "config.toml";
+
+/// 注入 Android 应用私有目录。
+///
+/// 必须在任何配置、缓存或凭据访问之前调用；重复调用只有目录完全相同时成功。
+#[cfg(target_os = "android")]
+pub fn set_android_dirs(
+    config: PathBuf,
+    cache: PathBuf,
+    data: PathBuf,
+) -> Result<(), &'static str> {
+    let dirs = AndroidDirs {
+        config,
+        cache,
+        data,
+    };
+    match ANDROID_DIRS.set(dirs.clone()) {
+        Ok(()) => Ok(()),
+        Err(_)
+            if ANDROID_DIRS.get().is_some_and(|current| {
+                current.config == dirs.config
+                    && current.cache == dirs.cache
+                    && current.data == dirs.data
+            }) =>
+        {
+            Ok(())
+        }
+        Err(_) => Err("Android 应用私有目录已经初始化为其他路径"),
+    }
+}
 /// 便携模式下，数据统一放在 exe 旁的这个子目录里。
 ///
 /// 不直接把 config.toml 丢在 exe 同级：应用还会写缓存、设备库等，
@@ -50,6 +96,10 @@ pub fn is_portable() -> bool {
 /// 返回 `None` 表示两者都不可用（极少见，通常是嵌入式或权限极受限环境）。
 #[must_use]
 pub fn config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    if let Some(dirs) = ANDROID_DIRS.get() {
+        return Some(dirs.config.join("omy").join(CONFIG_NAME));
+    }
     if let Some(root) = portable_root() {
         return Some(root.join(CONFIG_NAME));
     }
@@ -62,6 +112,10 @@ pub fn config_path() -> Option<PathBuf> {
 /// 移动端走 `dirs::cache_dir()`，那里返回的是 app 私有目录。
 #[must_use]
 pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    if let Some(dirs) = ANDROID_DIRS.get() {
+        return Some(dirs.cache.join("omy"));
+    }
     if let Some(root) = portable_root() {
         return Some(root.join("cache"));
     }
@@ -71,6 +125,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// 应用数据目录（设备库、令牌等）。
 #[must_use]
 pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    if let Some(dirs) = ANDROID_DIRS.get() {
+        return Some(dirs.data.join("omy"));
+    }
     if let Some(root) = portable_root() {
         return Some(root.join("data"));
     }
@@ -114,6 +172,7 @@ fn portable_root() -> Option<PathBuf> {
         return None;
     }
     if is_writable(&root) { Some(root) } else { None }
+
 }
 
 /// 实测目录可写性。
