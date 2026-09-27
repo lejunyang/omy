@@ -17,15 +17,11 @@ import * as i18n from '../i18n';
 import { thumbUrl, state } from '../store';
 import { useThumbLoad } from '../thumbload';
 import { isMobile } from '../viewport';
+import { fileClickAction } from '../file-interaction';
 
 const props = defineProps({
   entry: { type: Object, required: true },
   selected: { type: Boolean, default: false },
-  /** 当前列表里是否已有选中项。
-   *
-   * 不能用 selected 代替：别的卡片被选中时，本卡片的 selected 仍是
-   * false，而此时点本卡片应当是「加选」而不是「打开」。 */
-  selectionActive: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['open', 'select', 'menu']);
@@ -93,18 +89,13 @@ function onPointerUp() {
 }
 
 function onClick(ev) {
-  if (suppressClick.value) {
-    suppressClick.value = false;
-    return;
-  }
-  // 移动端：已经有选中项时，点击继续做多选而不是打开——
-  // 否则用户长按选了第一个，想点第二个加选，结果直接打开了文件
-  if (isMobile.value) {
-    if (props.selected || props.selectionActive) emit('select', { ctrlKey: true });
-    else emit('open', props.entry);
-    return;
-  }
-  emit('select', ev);
+  const action = fileClickAction(isMobile.value, suppressClick.value);
+  suppressClick.value = false;
+  if (action === 'ignore') return;
+  // 移动端单击永远是打开；进入或扩展选择只能再次长按。
+  // 不能让已有选择态改变单击语义，否则打开一个文件后很容易误选下一项。
+  if (action === 'open') emit('open', props.entry);
+  else emit('select', ev);
 }
 
 /** 桌面右键。

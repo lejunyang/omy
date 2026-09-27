@@ -58,7 +58,7 @@ The breakpoint is 768px: below it a single column with bottom navigation, above 
 Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. File menus use a centered modal on mobile, and Telegram login omits the desktop-only tdata reuse entry.
 
 ::: tip Touch interaction genuinely differs
-Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
+Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). On mobile, a single tap always opens a file or folder; only a long press enters or extends file selection, and an existing selection never changes what a tap means. So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
 :::
 
 Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is not offered.

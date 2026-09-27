@@ -439,7 +439,6 @@ async function onOpen(entry) {
  * 管理器的行为，用户对它有稳定预期。
  */
 async function openPlain(entry) {
-  state.selected = [entry.path];
   if (!entry.token) return;
 
   // preview 由后端算好（`mime.rs`），前端不再按后缀猜。
@@ -472,7 +471,6 @@ function openContainerItem(entry) {
     state.error = i18n.te('container_failed');
     return;
   }
-  state.selected = [entry.path];
   citemPreview.value = {
     id: entry.token,
     name: entry.name,

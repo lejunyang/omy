@@ -9,6 +9,7 @@
 import { computed, ref, watch } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
+import { fileClickAction } from '../file-interaction';
 import {
   state,
   visibleEntries,
@@ -37,8 +38,6 @@ import EntryCard from './EntryCard.vue';
  * 复制成两个组件的话，列表渲染、搜索、进度、统计会分叉，修一边漏一边。
  */
 
-/** 移动端「选择模式」：已有选中项时，单击是加选而不是打开。 */
-const selectionActive = computed(() => state.selected.length > 0);
 
 /** 进度百分比，取整。
  *
@@ -96,16 +95,15 @@ function onSelect(entry, ev) {
 /** 列表行的点击。移动端单击即打开，与网格卡片保持一致——
  *  两种视图的打开方式若不同，用户切一次视图就得重新学一遍。 */
 function onRowClick(entry, ev) {
-  // 长按刚进入多选，浏览器补来的 click 要吃掉，否则又立刻打开文件。
-  if (rowLongFired) {
-    rowLongFired = false;
-    return;
-  }
-  if (isMobile.value && !selectionActive.value) {
+  const action = fileClickAction(isMobile.value, rowLongFired);
+  rowLongFired = false;
+  // 列表与网格必须保持同一语义：移动端单击打开，长按才选择。
+  if (action === 'ignore') return;
+  if (action === 'open') {
     emit('open', entry);
     return;
   }
-  toggleSelect(entry.path, isMobile.value || ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
 }
 
 /** 列表行移动端长按：进入多选（加选第一项）。网格卡片由 EntryCard 内部处理，
@@ -291,7 +289,6 @@ function onRowMenu(e, ev) {
             :key="e.path"
             :entry="e"
             :selected="state.selected.includes(e.path)"
-            :selection-active="selectionActive"
             @open="$emit('open', e)"
             @select="onSelect(e, $event)"
             @menu="$emit('menu', $event)"
