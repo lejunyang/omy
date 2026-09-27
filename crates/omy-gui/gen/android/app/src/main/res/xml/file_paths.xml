@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <!-- 只允许外部编辑会话目录。不能暴露整个 cache 或外部存储，否则任一拿到
-       临时 grant 的第三方都可能构造 URI 读到与本次文件无关的内容。 -->
+  <!-- WebDAV 外部编辑只暴露应用私有会话目录。 -->
   <files-path name="external_edit" path="external-edit/files/" />
+  <!-- 普通本地文件来自共享存储。路径已先由 Rust 的 PlainRegistry token
+       白名单解析，FileProvider 只负责为该单个文件生成 content URI；
+       原生选择器随后只向用户选中的应用授予临时只读权限。 -->
+  <root-path name="local_storage" path="storage/" />
 </paths>

@@ -1,4 +1,9 @@
 <resources>
-    <string name="app_name">"omy"</string>
-    <string name="main_activity_title">"omy"</string>
+    <string name="app_name">omy</string>
+    <string name="main_activity_title">omy</string>
+    <string name="file_chooser_title">Choose an app</string>
+    <string name="file_chooser_open">Open</string>
+    <string name="file_chooser_cancel">Cancel</string>
+    <string name="file_chooser_remember">Always use this app for .%1$s files</string>
+    <string name="file_chooser_remember_no_ext">Always use this app for files without an extension</string>
 </resources>

@@ -425,12 +425,13 @@ export function containerItemUrl(token) {
   return `${state.streamBase}/citem/${encodeURIComponent(token)}`;
 }
 
-/** 用系统默认程序打开。 */
-export async function openWithSystem(entry) {
+/** 用系统程序打开。显式“用其他应用打开”时强制重新选择应用。 */
+export async function openWithSystem(entry, chooseApplication = false) {
   if (!entry?.token) return false;
   try {
-    await api.openExternal(entry.token);
-    return true;
+    const result = await api.openExternal(entry.token, chooseApplication);
+    // 用户取消原生选择器不是失败，不显示错误提示。
+    return result?.cancelled !== true;
   } catch (e) {
     state.error = i18n.te(api.errCode(e), i18n.te('open_failed'));
     return false;
@@ -666,6 +667,16 @@ export const ctxItems = computed(() => {
     disabled: many,
     hint: many ? t('ctx.single_only') : '',
   });
+  // 普通磁盘文件可显式重新选择应用；加密文件和目录没有可交给系统的明文文件。
+  if (!e.is_dir && !e.is_encrypted) {
+    items.push({
+      key: 'open-with',
+      icon: '↗',
+      label: t('file.open_external'),
+      disabled: many || !e.token,
+      hint: many ? t('ctx.single_only') : '',
+    });
+  }
 
   items.push({ key: 'sep' });
 

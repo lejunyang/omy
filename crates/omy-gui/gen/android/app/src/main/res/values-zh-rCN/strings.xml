@@ -1,0 +1,7 @@
+<resources>
+    <string name="file_chooser_title">选择打开方式</string>
+    <string name="file_chooser_open">打开</string>
+    <string name="file_chooser_cancel">取消</string>
+    <string name="file_chooser_remember">默认用此应用打开 .%1$s 文件</string>
+    <string name="file_chooser_remember_no_ext">默认用此应用打开无扩展名文件</string>
+</resources>

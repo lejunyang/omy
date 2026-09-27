@@ -32,6 +32,7 @@
 //! 没被列出来的文件。
 
 use crate::commands::{CmdError, CmdResult, Shared};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -126,16 +127,114 @@ fn token_for(path: &Path) -> String {
 /// - `unknown_file`：token 没登记
 /// - `open_failed`：系统调用失败（没有关联程序、文件已删除等）
 #[tauri::command]
-pub async fn open_external(state: tauri::State<'_, Shared>, token: String) -> CmdResult<()> {
+pub async fn open_external(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Shared>,
+    token: String,
+    choose_application: Option<bool>,
+) -> CmdResult<OpenExternalResult> {
     let Some(path) = state.plain.resolve(&token) else {
         return Err(CmdError::code("unknown_file"));
     };
     // 再确认一次文件还在：登记之后用户可能已经把它删了，
     // 此时报「打不开」比让系统弹一个陌生的错误框友好
-    if !path.exists() {
+    if !path.is_file() {
         return Err(CmdError::code("unknown_file"));
     }
-    launch(&path).map_err(|_| CmdError::code("open_failed"))
+    open_path(&app, &path, choose_application.unwrap_or(false))
+}
+
+/// 外部打开结果。取消原生选择器不是错误，前端据此保持安静即可。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenExternalResult {
+    /// 是否已启动外部应用。
+    pub opened: bool,
+    /// 用户是否取消选择。
+    pub cancelled: bool,
+    /// 本次是否使用或保存了扩展名默认应用。
+    pub remembered: bool,
+}
+
+/// 设置页展示的一条 Android 文件格式关联。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAssociation {
+    /// 小写扩展名；无扩展名文件为空串。
+    pub extension: String,
+    /// 系统应用显示名。
+    pub app_name: String,
+    /// 包名仅用于辅助识别，不作为可执行输入。
+    pub package_name: String,
+}
+
+/// 设置页读取格式关联的返回值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileAssociations {
+    /// 当前平台是否支持应用内格式关联。
+    pub supported: bool,
+    /// 已保存且仍有效的关联。
+    pub items: Vec<FileAssociation>,
+}
+
+/// 读取 Android 应用内保存的文件格式关联。桌面端沿用系统设置，不重复维护。
+#[tauri::command]
+pub async fn list_file_associations(app: tauri::AppHandle) -> CmdResult<FileAssociations> {
+    #[cfg(target_os = "android")]
+    {
+        crate::external_edit::list_file_associations(&app)
+            .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(FileAssociations {
+            supported: false,
+            items: Vec::new(),
+        })
+    }
+}
+
+/// 删除一条 Android 扩展名关联；下次打开该格式时重新选择应用。
+#[tauri::command]
+pub async fn clear_file_association(app: tauri::AppHandle, extension: String) -> CmdResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        crate::external_edit::clear_file_association(&app, &extension)
+            .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, extension);
+        Err(CmdError::code("unsupported"))
+    }
+}
+
+fn open_path(
+    app: &tauri::AppHandle,
+    path: &Path,
+    choose_application: bool,
+) -> CmdResult<OpenExternalResult> {
+    #[cfg(target_os = "android")]
+    {
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default();
+        let (_, mime) = crate::mime::by_extension(name);
+        let extension = crate::mime::extension_of(name);
+        crate::external_edit::open_local(app, path, &mime, &extension, choose_application)
+            .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        launch(path, choose_application).map_err(|_| CmdError::code("open_failed"))?;
+        Ok(OpenExternalResult {
+            opened: true,
+            cancelled: false,
+            remembered: false,
+        })
+    }
 }
 
 /// 在系统文件管理器中定位一个文件。
@@ -160,44 +259,39 @@ pub async fn reveal_in_folder(state: tauri::State<'_, Shared>, token: String) ->
 
 /// 平台相关的「用默认程序打开」。
 #[cfg(windows)]
-fn launch(path: &Path) -> std::io::Result<()> {
+fn launch(path: &Path, choose_application: bool) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
-    // 用 explorer 而不是 `cmd /c start`：后者要处理引号转义，
-    // 路径里有 & 或 ^ 时会被 cmd 解释成语法。explorer 直接收
-    // 一个参数，不经过 shell 解析。
-    //
-    // CREATE_NO_WINDOW 防止闪一个黑框
+    // 默认打开仍交给 Explorer；显式“用其他应用打开”走 Windows 原生
+    // OpenAs 对话框。两条路径都直接传参数，不经过 cmd 的字符串解析。
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("explorer.exe")
+    let mut command = if choose_application {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("shell32.dll,OpenAs_RunDLL").arg(path);
+        command
+    } else {
+        let mut command = std::process::Command::new("explorer.exe");
+        command.arg(path);
+        command
+    };
+    command.creation_flags(CREATE_NO_WINDOW).spawn().map(|_| ())
+}
+
+/// 平台相关的「用默认程序打开」。
+#[cfg(target_os = "macos")]
+fn launch(path: &Path, _choose_application: bool) -> std::io::Result<()> {
+    std::process::Command::new("open")
         .arg(path)
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map(|_| ())
 }
 
 /// 平台相关的「用默认程序打开」。
-#[cfg(target_os = "macos")]
-fn launch(path: &Path) -> std::io::Result<()> {
-    std::process::Command::new("open").arg(path).spawn().map(|_| ())
-}
-
-/// 平台相关的「用默认程序打开」。
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
-fn launch(path: &Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
-}
-
-/// Android 上没有 xdg-open，交给系统应用要走 Intent。
-///
-/// 必须单独分一支：Android 也满足 `all(unix, not(macos))`，不排除
-/// 的话会去 spawn 一个不存在的命令，得到一个含糊的 io error，
-/// 而真正的原因是分支选错了。
-#[cfg(target_os = "android")]
-fn launch(_path: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Android 需要通过 Intent 打开外部应用，尚未实现",
-    ))
+fn launch(path: &Path, _choose_application: bool) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
 }
 
 /// 平台相关的「在文件管理器中显示」。

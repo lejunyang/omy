@@ -718,6 +718,20 @@ mod mobile {
     struct WatchArgs<'a> {
         path: &'a str,
     }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OpenLocalArgs<'a> {
+        path: &'a str,
+        mime: &'a str,
+        extension: &'a str,
+        choose_application: bool,
+    }
+
+    #[derive(Serialize)]
+    struct AssociationArgs<'a> {
+        extension: &'a str,
+    }
     #[derive(serde::Deserialize)]
     struct RootResult {
         path: String,
@@ -748,6 +762,42 @@ mod mobile {
                         mime,
                         writable,
                     },
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+
+        fn open_local(
+            &self,
+            path: &str,
+            mime: &str,
+            extension: &str,
+            choose_application: bool,
+        ) -> Result<crate::plain::OpenExternalResult, String> {
+            self.0
+                .run_mobile_plugin::<crate::plain::OpenExternalResult>(
+                    "openLocalFile",
+                    OpenLocalArgs {
+                        path,
+                        mime,
+                        extension,
+                        choose_application,
+                    },
+                )
+                .map_err(|e| e.to_string())
+        }
+
+        fn list_associations(&self) -> Result<crate::plain::FileAssociations, String> {
+            self.0
+                .run_mobile_plugin::<crate::plain::FileAssociations>("listFileAssociations", ())
+                .map_err(|e| e.to_string())
+        }
+
+        fn clear_association(&self, extension: &str) -> Result<(), String> {
+            self.0
+                .run_mobile_plugin::<serde_json::Value>(
+                    "clearFileAssociation",
+                    AssociationArgs { extension },
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -788,11 +838,64 @@ mod mobile {
             .ok_or_else(|| String::from("外部编辑插件未注册"))?
             .open(&path.to_string_lossy(), mime, writable)
     }
+
+    pub fn open_local(
+        app: &tauri::AppHandle,
+        path: &std::path::Path,
+        mime: &str,
+        extension: &str,
+        choose_application: bool,
+    ) -> Result<crate::plain::OpenExternalResult, String> {
+        use tauri::Manager as _;
+        app.try_state::<Plugin<tauri::Wry>>()
+            .ok_or_else(|| String::from("外部编辑插件未注册"))?
+            .open_local(&path.to_string_lossy(), mime, extension, choose_application)
+
+    }
+
+    pub fn list_associations(
+        app: &tauri::AppHandle,
+    ) -> Result<crate::plain::FileAssociations, String> {
+        use tauri::Manager as _;
+        app.try_state::<Plugin<tauri::Wry>>()
+            .ok_or_else(|| String::from("外部编辑插件未注册"))?
+            .list_associations()
+    }
+
+    pub fn clear_association(app: &tauri::AppHandle, extension: &str) -> Result<(), String> {
+        use tauri::Manager as _;
+        app.try_state::<Plugin<tauri::Wry>>()
+            .ok_or_else(|| String::from("外部编辑插件未注册"))?
+            .clear_association(extension)
+    }
 }
 
 #[cfg(target_os = "android")]
 pub fn native_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     mobile::root(app)
+}
+
+#[cfg(target_os = "android")]
+pub fn open_local(
+    app: &tauri::AppHandle,
+    path: &Path,
+    mime: &str,
+    extension: &str,
+    choose_application: bool,
+) -> Result<crate::plain::OpenExternalResult, String> {
+    mobile::open_local(app, path, mime, extension, choose_application)
+}
+
+#[cfg(target_os = "android")]
+pub fn list_file_associations(
+    app: &tauri::AppHandle,
+) -> Result<crate::plain::FileAssociations, String> {
+    mobile::list_associations(app)
+}
+
+#[cfg(target_os = "android")]
+pub fn clear_file_association(app: &tauri::AppHandle, extension: &str) -> Result<(), String> {
+    mobile::clear_association(app, extension)
 }
 
 #[cfg(target_os = "android")]

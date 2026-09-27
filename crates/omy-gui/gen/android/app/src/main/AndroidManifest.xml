@@ -31,6 +31,16 @@
         android:maxSdkVersion="29" />
 
     <!-- AndroidTV support -->
+    <!-- Android 11+ 默认隐藏其它应用。原生“用其他应用打开”需要按 MIME 查询
+         ACTION_VIEW 处理器；只声明这一类 Intent，不申请查看所有已安装应用。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="content" android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application

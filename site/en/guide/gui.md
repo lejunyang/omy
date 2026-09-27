@@ -32,7 +32,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
 | Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
 | Password management | Add key slots, change passwords, re-encrypt |
-| Context menu | Open, reveal in file manager, password management, move to trash |
+| Context menu | Open, open with another app, reveal in file manager, password management and move to trash; PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
 | Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
@@ -47,7 +47,7 @@ Two consequences follow. Vue templates must be **precompiled** (the runtime comp
 
 Tauri's `protocol-asset` is also **not enabled** — that protocol exposes filesystem paths directly, which contradicts keeping plaintext off disk. All content goes through the controlled `omystream://` instead.
 
-The native directory picker is invoked only on the Rust side and wrapped in a controlled command, so the frontend has no ability to select arbitrary paths (the capabilities file grants no dialog permission).
+The native directory picker is invoked only on the Rust side and wrapped in a controlled command, so the frontend has no ability to select arbitrary paths (the capabilities file grants no dialog permission). “Open with another app” likewise accepts only backend-registered file tokens: Android creates a `content://` URI for that file and grants temporary read access only to the app the user selected.
 
 ## Mobile
 
@@ -55,7 +55,7 @@ The Android build shares the same components and only swaps the shell — it is 
 
 The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time. On mobile the bottom navigation has four tabs — **Files / Remote / Devices / Settings** — with language and theme moved into **Settings → General**. The shared top bar on the Files and Remote locations pages stays below the system status bar; when Android WebView exposes no safe-area inset, it falls back to 24 px.
 
-Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. File menus use a centered modal on mobile, and Telegram login omits the desktop-only tdata reuse entry.
+Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. File menus use a centered modal on mobile. “Open with another app” shows a native app list and can remember a default app by file extension; saved associations can be cleared under **Settings → Playback & preview**, and are discarded automatically if the app is removed or stops handling that format. Telegram login omits the desktop-only tdata reuse entry.
 
 ::: tip Touch interaction genuinely differs
 Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). On mobile, a single tap always opens a file or folder; only a long press enters or extends file selection, and an existing selection never changes what a tap means. So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
@@ -85,7 +85,7 @@ On desktop settings is a dialog (gear in the top bar); on mobile it is a list wi
 | Remote locations | Recognition scope, request concurrency, and the **Ciphertext cache** second-level page (limit, usage, clear now, clear on exit) |
 | Security & passwords | Auto-lock (idle duration, whether backgrounding counts as idle, playback exemption), number of passwords loaded in the current session, lock now, recovery-code hint |
 | Encryption defaults | KDF profile, chunk size, pre-encryption compression, filename encryption, original-file handling; these become the initial values in the encrypt dialog |
-| Playback & preview | Whether to show thumbnails in the list (thumbnails live in the file header, so showing them needs no body read) |
+| Playback & preview | Whether to show thumbnails in the list; Android also lists and clears default apps saved by file extension |
 | Devices & sharing | This device's name, whether LAN sharing auto-starts, entry to manage paired devices |
 | About | App version, OMYFILE format version, layered open-source licenses, config path and portable mode |
 

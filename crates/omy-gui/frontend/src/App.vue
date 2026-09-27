@@ -660,6 +660,9 @@ async function onCtxPick(key) {
     case 'open':
       await onOpen(entry);
       break;
+    case 'open-with':
+      await openWithSystem(entry, true);
+      break;
     case 'encrypt':
       showEncrypt.value = true;
       break;
@@ -819,7 +822,7 @@ async function onDevicePanelClose() {
 async function onPlainExternal() {
   const cur = state.entries.find((e) => e.token === plainPreview.value?.id);
   plainPreview.value = null;
-  if (cur) await openWithSystem(cur);
+  if (cur) await openWithSystem(cur, true);
 }
 
 /**

@@ -244,6 +244,8 @@ pub fn run() {
             external_edit::external_edit_open,
             external_edit::external_edit_sync_now,
             plain::open_external,
+            plain::list_file_associations,
+            plain::clear_file_association,
             plain::reveal_in_folder,
             video::video_capabilities,
             video::video_info,

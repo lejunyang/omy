@@ -22,7 +22,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
-import { registerMobileBack } from '../mobile-platform';
+import { isAndroid, registerMobileBack } from '../mobile-platform';
 import { theme, setTheme } from '../theme';
 import * as api from '../api';
 import { state, setNotice, reloadRemotePlaces } from '../store';
@@ -59,6 +59,38 @@ const aboutInfo = ref<any>({});
 /** 已连接的远程位置数量，设置主页「已连接的位置」摘要用。
  *  单独拉一次，不依赖此刻是否正开着云盘浏览器（那里才会 reload 列表）。 */
 const remotePlaceCount = ref(0);
+
+/** Android 原生层保存的文件格式默认应用。桌面端不维护第二套关联表。 */
+const fileAssociations = ref<any[]>([]);
+const associationLoading = ref(false);
+const associationRemoving = ref('');
+
+async function loadFileAssociations() {
+  if (!isAndroid) return;
+  associationLoading.value = true;
+  try {
+    const result = await api.listFileAssociations();
+    fileAssociations.value = result?.supported && Array.isArray(result.items) ? result.items : [];
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.file_associations_load_failed');
+  } finally {
+    associationLoading.value = false;
+  }
+}
+
+async function removeFileAssociation(item: any) {
+  if (associationRemoving.value) return;
+  associationRemoving.value = item.extension || '_no_extension';
+  try {
+    await api.clearFileAssociation(item.extension || '');
+    fileAssociations.value = fileAssociations.value.filter((x) => x.extension !== item.extension);
+    setNotice(i18n.t('settings.file_association_removed'));
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), 'settings.file_association_remove_failed');
+  } finally {
+    associationRemoving.value = '';
+  }
+}
 
 /** 跳到完整的设备与共享面板：配对/撤销需要先解锁设备库，
  *  不在设置弹窗里复制那套流程与计数（库没解锁时计数会失真成 0）。
@@ -121,6 +153,8 @@ onMounted(async () => {
   }
   // 用量与配置独立加载：配置失败不该连累用量显示
   loadCacheUsage();
+  // Android 格式关联由原生层维护；桌面端不显示这一组。
+  loadFileAssociations();
   // 读不出来按 0 处理：按钮会因此禁用，不会误导用户去锁一个空会话
   try {
     loadedCount.value = Number(await api.credentialCount()) || 0;
@@ -964,6 +998,30 @@ async function openLogDir() {
                 <div class="desc">{{ i18n.t('settings.thumbnails_hint') }}</div>
               </div>
             </div>
+            <div v-if="isAndroid" class="row">
+              <label class="lb">{{ i18n.t('settings.file_associations') }}</label>
+              <div class="fld">
+                <div class="desc">{{ i18n.t('settings.file_associations_desc') }}</div>
+                <div v-if="associationLoading" class="desc">{{ i18n.t('settings.file_associations_loading') }}</div>
+                <div v-else-if="!fileAssociations.length" class="desc" data-sf="file-associations-empty">
+                  {{ i18n.t('settings.file_associations_empty') }}
+                </div>
+                <div v-for="item in fileAssociations" v-else :key="item.extension || '_no_extension'" class="assocrow" data-sf="file-association-row">
+                  <div class="associnfo">
+                    <strong>{{ item.extension ? `.${item.extension}` : i18n.t('settings.file_association_no_ext') }}</strong>
+                    <span>{{ item.appName }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn small"
+                    :disabled="associationRemoving === (item.extension || '_no_extension')"
+                    @click="removeFileAssociation(item)"
+                  >
+                    {{ i18n.t('settings.file_association_clear') }}
+                  </button>
+                </div>
+              </div>
+            </div>
           </template>
 
           <!-- 设备与共享 -->
@@ -1080,6 +1138,25 @@ async function openLogDir() {
 .pinnedval {
   font-size: 13px;
   padding-block: 2px;
+}
+.assocrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.associnfo {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.associnfo span {
+  color: var(--fg2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .mask {
