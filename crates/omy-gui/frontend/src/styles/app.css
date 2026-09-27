@@ -1139,13 +1139,26 @@ input {
 
 /* xgplayer 自定义的前后 10 秒按钮。用文本而不是图片图标，缩放、深浅主题和
    高 DPI 下都不会糊；title/aria-label 由插件按当前语言设置。 */
-.omy-video-player .omy-skip {
-  width: 44px;
-  min-width: 44px;
+.omy-video-player xg-icon.omy-skip {
+  width: 36px;
+  min-width: 36px;
+  height: 40px;
+  margin-inline: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+  line-height: 1;
   font-weight: 600;
+  flex: 0 0 36px;
+}
+
+.omy-video-player xg-icon.omy-skip > span {
+  display: block;
+  line-height: 1;
+  transform: none;
 }
 
 .omy-video-player .omy-skip:focus-visible {

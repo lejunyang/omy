@@ -108,6 +108,9 @@ export function createOmyVideoPlayerOptions(args: OmyVideoPlayerOptionArgs): IPl
     // 被两套状态机处理。转屏时组件会销毁并按新模式重建。
     ignores: [args.mobile ? 'pc' : 'mobile'],
     playbackRate: [...PLAYBACK_RATES],
+    // 播放=0、后退=1、前进=2、时间=3。默认时间也是 2，会与 +10
+    // 同索引导致排序不稳定，出现截图中 −10 与 +10 被时间码隔开的错位。
+    time: { index: 3 },
     keyShortcut: true,
     pip: true,
     cssFullscreen: true,

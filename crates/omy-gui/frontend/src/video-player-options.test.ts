@@ -73,5 +73,7 @@ describe('xgplayer 配置', () => {
     expect(actual.plugins).toEqual([OmyRewindButton, OmyForwardButton]);
     expect(actual.omyrewind).toEqual({ label: '后退 10 秒' });
     expect(actual.omyforward).toEqual({ label: '前进 10 秒' });
+    // xgplayer 的 time 默认也占 index=2；不改会把 +10 与时间码随机交错。
+    expect(actual.time).toEqual({ index: 3 });
   });
 });

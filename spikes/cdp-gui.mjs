@@ -537,6 +537,8 @@ const main = async () => {
           player: !!document.querySelector('[data-player="xgplayer"].xgplayer'),
           rewind: !!document.querySelector('.omy-skip-rewind'),
           forward: !!document.querySelector('.omy-skip-forward'),
+          leftControls: [...(document.querySelector('.xg-left-grid')?.children || [])]
+            .map(el => ({ cls: el.className || '', width: el.getBoundingClientRect().width })),
           playbackRates: [...document.querySelectorAll('.xgplayer-playbackrate li')]
             .map(el => Number(el.getAttribute('rate')) || Number(el.textContent.replace('x', '')))
             .filter(Number.isFinite) });
@@ -548,6 +550,8 @@ const main = async () => {
         player: !!document.querySelector('[data-player="xgplayer"].xgplayer'),
         rewind: !!document.querySelector('.omy-skip-rewind'),
         forward: !!document.querySelector('.omy-skip-forward'),
+        leftControls: [...(document.querySelector('.xg-left-grid')?.children || [])]
+          .map(el => ({ cls: el.className || '', width: el.getBoundingClientRect().width })),
         playbackRates: [...document.querySelectorAll('.xgplayer-playbackrate li')]
           .map(el => Number(el.getAttribute('rate')) || Number(el.textContent.replace('x', '')))
           .filter(Number.isFinite) }), { once: true });
@@ -565,6 +569,15 @@ const main = async () => {
     check(play.player, '视频由 xgplayer 渲染');
     check(play.crossorigin === 'anonymous', '底层 video 保留 crossorigin=anonymous', play.crossorigin || '缺失');
     check(play.rewind && play.forward, '控制栏有前后 10 秒按钮');
+    const controlOrder = play.leftControls.map(x => x.cls);
+    const rewindIndex = controlOrder.findIndex(x => x.includes('omy-skip-rewind'));
+    const forwardIndex = controlOrder.findIndex(x => x.includes('omy-skip-forward'));
+    const timeIndex = controlOrder.findIndex(x => x.includes('xgplayer-time'));
+    check(rewindIndex >= 0 && forwardIndex === rewindIndex + 1 && timeIndex === forwardIndex + 1,
+          '前后 10 秒按钮紧邻且位于时间码之前', controlOrder.join(' | '));
+    check(play.leftControls.filter(x => x.cls.includes('omy-skip')).every(x => x.width <= 40),
+          '前后 10 秒按钮尺寸保持紧凑',
+          play.leftControls.filter(x => x.cls.includes('omy-skip')).map(x => x.width.toFixed(1)).join(', '));
     check(play.playbackRates.includes(1.25) && play.playbackRates.includes(2),
           '倍速菜单包含 1.25x 与 2x', play.playbackRates.join(', '));
     const timelinePreview = await cdp.eval(`(async () => {
