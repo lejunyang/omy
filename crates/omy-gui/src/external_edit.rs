@@ -725,6 +725,7 @@ mod mobile {
         path: &'a str,
         mime: &'a str,
         extension: &'a str,
+        appearance: &'a str,
         choose_application: bool,
     }
 
@@ -773,6 +774,7 @@ mod mobile {
             mime: &str,
             extension: &str,
             choose_application: bool,
+            appearance: &str,
         ) -> Result<crate::plain::OpenExternalResult, String> {
             self.0
                 .run_mobile_plugin::<crate::plain::OpenExternalResult>(
@@ -781,6 +783,7 @@ mod mobile {
                         path,
                         mime,
                         extension,
+                        appearance,
                         choose_application,
                     },
                 )
@@ -845,12 +848,18 @@ mod mobile {
         mime: &str,
         extension: &str,
         choose_application: bool,
+        appearance: &str,
     ) -> Result<crate::plain::OpenExternalResult, String> {
         use tauri::Manager as _;
         app.try_state::<Plugin<tauri::Wry>>()
             .ok_or_else(|| String::from("外部编辑插件未注册"))?
-            .open_local(&path.to_string_lossy(), mime, extension, choose_application)
-
+            .open_local(
+                &path.to_string_lossy(),
+                mime,
+                extension,
+                choose_application,
+                appearance,
+            )
     }
 
     pub fn list_associations(
@@ -882,8 +891,9 @@ pub fn open_local(
     mime: &str,
     extension: &str,
     choose_application: bool,
+    appearance: &str,
 ) -> Result<crate::plain::OpenExternalResult, String> {
-    mobile::open_local(app, path, mime, extension, choose_application)
+    mobile::open_local(app, path, mime, extension, choose_application, appearance)
 }
 
 #[cfg(target_os = "android")]

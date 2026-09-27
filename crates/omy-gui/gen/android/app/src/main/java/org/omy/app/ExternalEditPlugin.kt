@@ -1,15 +1,12 @@
 package org.omy.app
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ResolveInfo
 import android.os.FileObserver
-import android.view.ViewGroup
-import android.widget.CheckBox
 import androidx.core.content.FileProvider
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -40,6 +37,7 @@ class OpenLocalFileArgs {
   lateinit var path: String
   lateinit var mime: String
   lateinit var extension: String
+  lateinit var appearance: String
   var chooseApplication: Boolean = false
 }
 
@@ -169,7 +167,7 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
       }
     }
 
-    showApplicationChooser(invoke, base, uri, handlers, extension, mime)
+    showApplicationChooser(invoke, base, uri, handlers, file.name, extension, mime, args.appearance)
   }
 
   /** 设置页读取由 omy 自己保存的扩展名关联。 */
@@ -213,8 +211,10 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
     base: Intent,
     uri: android.net.Uri,
     handlers: List<ResolveInfo>,
+    fileName: String,
     extension: String,
     mime: String,
+    appearance: String,
   ) {
     synchronized(this) {
       if (chooserVisible) {
@@ -225,72 +225,35 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     activity.runOnUiThread {
-      var selected = -1
-      var completed = false
-      val labels = handlers.map { it.loadLabel(activity.packageManager).toString() }.toTypedArray()
-      val remember = CheckBox(activity).apply {
-        text = if (extension == NO_EXTENSION) activity.getString(R.string.file_chooser_remember_no_ext) else
-          activity.getString(R.string.file_chooser_remember, extension)
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        setPadding(pad, 0, pad, 0)
-        layoutParams = ViewGroup.LayoutParams(
-          ViewGroup.LayoutParams.MATCH_PARENT,
-          ViewGroup.LayoutParams.WRAP_CONTENT,
-        )
-      }
-      lateinit var dialog: AlertDialog
-
-      fun finish(result: JSObject) {
-        if (completed) return
-        completed = true
-        chooserVisible = false
-        invoke.resolve(result)
-      }
-
-      dialog = AlertDialog.Builder(activity)
-        .setTitle(R.string.file_chooser_title)
-        .setSingleChoiceItems(labels, -1) { _, which ->
-          selected = which
-          dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
-        }
-        .setView(remember)
-        .setPositiveButton(R.string.file_chooser_open, null)
-        .setNegativeButton(R.string.file_chooser_cancel) { _, _ ->
-          finish(openResult(opened = false, cancelled = true, remembered = false))
-        }
-        .setOnCancelListener {
-          finish(openResult(opened = false, cancelled = true, remembered = false))
-        }
-        .create()
-
-      dialog.setOnShowListener {
-        val open = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-        open.isEnabled = false
-        open.setOnClickListener {
-          val target = handlers.getOrNull(selected) ?: return@setOnClickListener
+      OpenWithDialog(
+        activity = activity,
+        handlers = handlers,
+        fileName = fileName,
+        extension = extension,
+        appearance = appearance,
+        remembered = savedComponent(extension),
+        onOpen = { target, remember ->
           try {
-            launchResolved(base, uri, target, extension, mime, remember.isChecked)
-            finish(openResult(opened = true, cancelled = false, remembered = remember.isChecked))
-            dialog.dismiss()
+            launchResolved(base, uri, target, extension, mime, remember)
+            chooserVisible = false
+            invoke.resolve(openResult(opened = true, cancelled = false, remembered = remember))
           } catch (_: ActivityNotFoundException) {
             clearAssociation(extension)
-            completed = true
             chooserVisible = false
             invoke.reject("选择的应用无法打开此格式", "no_handler")
-            dialog.dismiss()
           } catch (_: SecurityException) {
             clearAssociation(extension)
-            completed = true
             chooserVisible = false
             invoke.reject("无法向选择的应用授予文件读取权限", "open_failed")
-            dialog.dismiss()
           }
-        }
-      }
-      dialog.show()
+        },
+        onCancel = {
+          chooserVisible = false
+          invoke.resolve(openResult(opened = false, cancelled = true, remembered = false))
+        },
+      ).show()
     }
   }
-
   private fun launchResolved(
     base: Intent,
     uri: android.net.Uri,

@@ -350,8 +350,11 @@ export const remoteVaults = (): Promise<any> => invoke('remote_vaults');
  * 只接受后端登记过的 token，前端拿不到「打开任意路径」的能力——
  * 这也是没有引入 opener 插件的原因。
  */
-export const openExternal = (token: any, chooseApplication = false): Promise<any> =>
-  invoke('open_external', { token, chooseApplication });
+export const openExternal = (
+  token: any,
+  chooseApplication = false,
+  appearance = 'auto',
+): Promise<any> => invoke('open_external', { token, chooseApplication, appearance });
 
 /** Android 上由 omy 保存的扩展名 → 应用关联；桌面端返回 supported=false。 */
 export const listFileAssociations = (): Promise<any> => invoke('list_file_associations');

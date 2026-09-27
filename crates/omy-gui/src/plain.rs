@@ -132,6 +132,7 @@ pub async fn open_external(
     state: tauri::State<'_, Shared>,
     token: String,
     choose_application: Option<bool>,
+    appearance: Option<String>,
 ) -> CmdResult<OpenExternalResult> {
     let Some(path) = state.plain.resolve(&token) else {
         return Err(CmdError::code("unknown_file"));
@@ -141,7 +142,12 @@ pub async fn open_external(
     if !path.is_file() {
         return Err(CmdError::code("unknown_file"));
     }
-    open_path(&app, &path, choose_application.unwrap_or(false))
+    open_path(
+        &app,
+        &path,
+        choose_application.unwrap_or(false),
+        appearance.as_deref().unwrap_or("auto"),
+    )
 }
 
 /// 外部打开结果。取消原生选择器不是错误，前端据此保持安静即可。
@@ -213,6 +219,7 @@ fn open_path(
     app: &tauri::AppHandle,
     path: &Path,
     choose_application: bool,
+    appearance: &str,
 ) -> CmdResult<OpenExternalResult> {
     #[cfg(target_os = "android")]
     {
@@ -222,12 +229,19 @@ fn open_path(
             .unwrap_or_default();
         let (_, mime) = crate::mime::by_extension(name);
         let extension = crate::mime::extension_of(name);
-        crate::external_edit::open_local(app, path, &mime, &extension, choose_application)
-            .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
+        crate::external_edit::open_local(
+            app,
+            path,
+            &mime,
+            &extension,
+            choose_application,
+            appearance,
+        )
+        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = app;
+        let _ = (app, appearance);
         launch(path, choose_application).map_err(|_| CmdError::code("open_failed"))?;
         Ok(OpenExternalResult {
             opened: true,

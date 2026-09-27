@@ -27,6 +27,7 @@ import { reactive, computed, watch, nextTick } from 'vue';
 import * as api from './api';
 import * as i18n from './i18n';
 import type { MessageRow, MessageWindow, RemoteEntry } from './types';
+import { theme } from './theme';
 
 export const state = reactive({
   /** 当前目录路径。空串表示还在「起点」页。 */
@@ -429,7 +430,7 @@ export function containerItemUrl(token) {
 export async function openWithSystem(entry, chooseApplication = false) {
   if (!entry?.token) return false;
   try {
-    const result = await api.openExternal(entry.token, chooseApplication);
+    const result = await api.openExternal(entry.token, chooseApplication, theme.value);
     // 用户取消原生选择器不是失败，不显示错误提示。
     return result?.cancelled !== true;
   } catch (e) {
