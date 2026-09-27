@@ -1807,8 +1807,6 @@ input {
 
   .content {
     padding: calc(var(--sp) * 2.5);
-    /* 给底部导航让位，否则最后一行卡片被导航栏盖住点不到 */
-    padding-block-end: calc(var(--sp) * 16);
   }
 
   /* 移动端按钮**不放大**：与桌面共用组件、用桌面同一尺寸即可。
@@ -1845,8 +1843,7 @@ input {
   .statusbar.mob {
     padding-inline: calc(var(--sp) * 2.5);
     font-size: 11px;
-    /* 底部导航占位后状态栏要上移，否则被盖住 */
-    margin-block-end: 52px;
+    margin-block-end: 0;
   }
 
   /* 对话框铺满宽度：桌面的固定宽度在手机上会露出两侧无用留白。
@@ -2201,8 +2198,20 @@ input {
 /* 移动端：手指目标要够大。44px 是触摸目标的通用下限，
    桌面的 12.5px 行高在手机上会频繁点错行 */
 @media (max-width: 768px) {
-  .ctxmenu {
-    min-width: 62vw;
+  .ctxlayer.mobile {
+    display: grid;
+    place-items: center;
+    padding: max(env(safe-area-inset-top, 0px), 24px) 16px
+      calc(env(safe-area-inset-bottom, 0px) + 16px);
+    background: rgb(0 0 0 / 48%);
+  }
+
+  .ctxmenu.mobile {
+    position: relative;
+    inset: auto;
+    width: min(86vw, 360px);
+    min-width: 0;
+    max-height: min(72vh, 560px);
   }
 
   .ctxmenu .mi {
@@ -2530,4 +2539,35 @@ input {
 
 .msgtext.dim {
   color: var(--fg2);
+}
+
+/* Android 视频预览自动横屏后仍是触屏界面，不依赖 768px 断点。 */
+html.omy-video-landscape .overlay-bar {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  z-index: 120;
+  padding-block-start: max(env(safe-area-inset-top, 0px), 6px);
+  height: calc(44px + max(env(safe-area-inset-top, 0px), 6px));
+  background: linear-gradient(rgb(0 0 0 / 72%), transparent);
+}
+
+html.omy-video-landscape .overlay-body {
+  padding: 0;
+}
+
+html.omy-video-landscape .omy-video-player {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+html.omy-video-landscape .omy-video-player .xgplayer-controls {
+  padding-inline: max(env(safe-area-inset-left, 0px), 6px)
+    max(env(safe-area-inset-right, 0px), 6px);
+  padding-block-end: max(env(safe-area-inset-bottom, 0px), 4px);
+}
+
+html.omy-video-landscape .omy-video-player xg-icon.omy-skip {
+  display: none;
 }

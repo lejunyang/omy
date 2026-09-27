@@ -1060,6 +1060,16 @@ export async function navigate(dir) {
   }
 }
 
+export const canGoUp = computed(() => {
+  if (state.container) return true;
+  const cwd = String(state.cwd || '');
+  if (!cwd) return false;
+  // Android/Unix 的根目录只有斜杠；Windows 盘符根可能是 C:、C:\ 或 C:/。
+  // 返回桥必须同步告诉原生层是否已处理，不能临时 await parent_of 再决定。
+  if (/^[\\/]+$/.test(cwd) || /^[A-Za-z]:[\\/]*$/.test(cwd)) return false;
+  return true;
+});
+
 /** 回到上一级。
  *
  * 在容器里时先在容器内部往上走，走到容器根再退出容器——

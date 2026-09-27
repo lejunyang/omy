@@ -55,6 +55,8 @@ The Android build shares the same components and only swaps the shell — it is 
 
 The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time. On mobile the bottom navigation has four tabs — **Files / Remote / Devices / Settings** — with language and theme moved into **Settings → General**.
 
+Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. File menus use a centered modal on mobile, and Telegram login omits the desktop-only tdata reuse entry.
+
 ::: tip Touch interaction genuinely differs
 Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
 :::

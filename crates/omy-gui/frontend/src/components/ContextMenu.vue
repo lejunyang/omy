@@ -15,6 +15,8 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
+import { isMobile } from '../viewport';
+import { isAndroid, registerMobileBack } from '../mobile-platform';
 import * as i18n from '../i18n';
 
 /** 右键菜单里一项。分隔线用 key 'sep'，其余字段按场景可选。 */
@@ -44,6 +46,7 @@ const emit = defineEmits<{
 
 const menu = useTemplateRef('menu');
 /** 实际渲染位置。先按触发点摆，测到尺寸后再夹进视口。 */
+const modalMode = computed(() => isAndroid || isMobile.value);
 const pos = ref({ left: props.x, top: props.y });
 
 /** 只显示分隔线之间真正有内容的段。
@@ -90,6 +93,7 @@ function onKey(ev: KeyboardEvent) {
  * 至少得先看见菜单再移过去，不会这么快。 */
 const SYNTHETIC_CLICK_MS = 600;
 let openedAt = 0;
+let unregisterBack: (() => void) | null = null;
 
 /** 点击关闭层。长按刚结束时的那一次不算，见 SYNTHETIC_CLICK_MS。 */
 function onLayerClick() {
@@ -100,9 +104,19 @@ function onLayerClick() {
 onMounted(async () => {
   openedAt = performance.now();
   window.addEventListener('keydown', onKey);
+  unregisterBack = registerMobileBack(() => {
+    emit('close');
+    return true;
+  });
   await nextTick();
   const el = menu.value;
   if (!el) return;
+  if (modalMode.value) {
+    // 移动端是居中模态，不读触发坐标；CSS 用 transform 精确居中。
+    pos.value = { left: 0, top: 0 };
+    (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus();
+    return;
+  }
   const r = el.getBoundingClientRect();
   const margin = 8;
   let left = props.x;
@@ -120,18 +134,22 @@ onMounted(async () => {
   (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus();
 });
 
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey);
+  unregisterBack?.();
+});
 </script>
 
 <template>
   <!-- 铺满全屏的透明层：点任何地方都关掉菜单。
        只在菜单自身上监听 blur 是不够的——点到别的条目上不会触发 -->
-  <div class="ctxlayer" @click="onLayerClick" @contextmenu.prevent="$emit('close')">
+  <div class="ctxlayer" :class="{ mobile: modalMode }" @click="onLayerClick" @contextmenu.prevent="$emit('close')">
     <div
       ref="menu"
       class="ctxmenu"
+      :class="{ mobile: modalMode }"
       role="menu"
-      :style="{ left: pos.left + 'px', top: pos.top + 'px' }"
+      :style="modalMode ? undefined : { left: pos.left + 'px', top: pos.top + 'px' }"
       @click.stop
     >
       <template v-for="(g, gi) in groups" :key="gi">

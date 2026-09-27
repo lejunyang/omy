@@ -1,10 +1,45 @@
 package org.omy.app
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 
 class MainActivity : TauriActivity() {
+  private inner class OmyAndroidBridge {
+    @JavascriptInterface
+    fun setVideoLandscape(enabled: Boolean) {
+      runOnUiThread {
+        requestedOrientation = if (enabled) {
+          ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+          ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+      }
+    }
+  }
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    webView.addJavascriptInterface(OmyAndroidBridge(), "omyAndroid")
+
+    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+      override fun handleOnBackPressed() {
+        webView.evaluateJavascript(
+          "Boolean(window.__omyHandleAndroidBack && window.__omyHandleAndroidBack())",
+        ) { handled ->
+          if (handled != "true") {
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+          }
+        }
+      }
+    })
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // 内容延伸到状态栏与导航栏下面。代价是顶栏会被状态栏压住、
     // 底部导航会被手势条盖住，靠 CSS 的 env(safe-area-inset-*)

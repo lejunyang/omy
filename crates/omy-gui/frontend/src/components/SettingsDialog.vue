@@ -19,9 +19,10 @@
  * 所以这两项在 change 时就应用；其余项在关闭时统一保存。
  */
 
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
+import { registerMobileBack } from '../mobile-platform';
 import { theme, setTheme } from '../theme';
 import * as api from '../api';
 import { state, setNotice, reloadRemotePlaces } from '../store';
@@ -342,6 +343,23 @@ function openCachePane() {
 function backMobile() {
   mobilePane.value = mobileStack.value.length ? mobileStack.value.pop() : null;
 }
+
+/** 供 Android 全局返回使用：二级页只退一层，主页交给 App 关闭设置。 */
+function handleMobileBack() {
+  if (!isMobile.value || !mobilePane.value) return false;
+  backMobile();
+  return true;
+}
+
+defineExpose({ handleMobileBack });
+
+const unregisterBack = registerMobileBack(() => {
+  if (handleMobileBack()) return true;
+  void onClose();
+  return true;
+});
+
+onBeforeUnmount(unregisterBack);
 
 /** 移动端底栏切到别的 tab：先把设置的移动端二级页/返回栈**清干净**，再离开。
  *
@@ -1097,6 +1115,7 @@ async function openLogDir() {
 /* 移动端铺满：小屏上留边框只会让本就不多的空间更挤。
    底部安全区由自带的 .setpnav 处理。 */
 .setdlg.mob {
+  padding-block-start: max(env(safe-area-inset-top, 0px), 24px);
   width: 100vw;
   height: 100%;
   max-width: none;

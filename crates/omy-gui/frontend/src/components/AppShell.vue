@@ -18,9 +18,10 @@
  * 外壳只管框架，`.main` 里放什么由调用方决定。这样远程位置也能有
  * 自己的面包屑与工具栏，而不必把两种页面的逻辑揉进一个组件。
  */
-import { ref, watch } from 'vue';
+import { ref, watch, onBeforeUnmount } from 'vue';
 
 import { isMobile } from '../viewport';
+import { registerMobileBack } from '../mobile-platform';
 import { state } from '../store';
 import * as i18n from '../i18n';
 import SideBar from './SideBar.vue';
@@ -53,6 +54,14 @@ function onNavigate() {
 function setView(v) {
   state.view = v;
 }
+
+const unregisterBack = registerMobileBack(() => {
+  if (!isMobile.value || !drawer.value) return false;
+  drawer.value = false;
+  return true;
+});
+
+onBeforeUnmount(unregisterBack);
 </script>
 
 <template>

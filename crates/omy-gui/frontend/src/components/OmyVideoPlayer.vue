@@ -14,6 +14,7 @@
 import { onBeforeUnmount, onMounted, watch, useTemplateRef } from 'vue';
 import type Player from 'xgplayer';
 import { isMobile } from '../viewport';
+import { isAndroid, requestVideoLandscape } from '../mobile-platform';
 import { generateTimelineThumbnail, type TimelineThumbnail } from '../timeline-thumbnail';
 import * as i18n from '../i18n';
 
@@ -45,6 +46,7 @@ function destroyPlayer() {
   mountGeneration += 1;
   thumbnailAbort?.abort();
   thumbnailAbort = null;
+  if (isAndroid) requestVideoLandscape(false);
   host.value?.removeAttribute('data-timeline-thumbnail');
   const current = player;
   player = null;
@@ -92,6 +94,8 @@ async function mountPlayer() {
   if (!host.value || !props.src) return;
   destroyPlayer();
   const generation = ++mountGeneration;
+  const touchMode = isAndroid || isMobile.value;
+  if (isAndroid) requestVideoLandscape(true);
   // 播放器只在打开视频预览时加载；主界面启动与图片/文本预览不需要承担这份体积。
   const [{ default: PlayerCtor, Events }, { createOmyVideoPlayerOptions }] = await Promise.all([
     import('xgplayer'),
@@ -103,7 +107,7 @@ async function mountPlayer() {
     ...createOmyVideoPlayerOptions({
       el: host.value,
       url: props.src,
-      mobile: isMobile.value,
+      mobile: touchMode,
       lang: i18n.lang.value,
       rewindLabel: i18n.t('playback.rewind_10'),
       forwardLabel: i18n.t('playback.forward_10'),
@@ -115,14 +119,22 @@ async function mountPlayer() {
   current.on(Events.PLAY, () => emit('play'));
   current.on(Events.PAUSE, () => emit('pause'));
   current.on(Events.ENDED, () => emit('pause'));
-  void prepareTimelineThumbnail(current, generation);
+  // Android WebView/设备常只给应用一个硬件视频解码器。主播放器尚未进入
+  // canplay 就再开隐藏 video 抽帧，会让两边互相等，表现为手机本地 MP4 永远转圈。
+  // 等主视频能播之后再做低优先级抽帧；桌面端也复用同一时序，减少无谓竞争。
+  current.once(Events.CANPLAY, () => {
+    if (generation === mountGeneration && player === current) {
+      window.setTimeout(() => void prepareTimelineThumbnail(current, generation), 300);
+    }
+  });
 }
 
 onMounted(mountPlayer);
 
-// URL、语言、断点发生变化时重建：xgplayer 的移动插件只在初始化时选择事件模型，
-// 单改 class 会留下旧监听器。转屏是低频动作，完整重建比动态拆插件更可靠。
-watch([() => props.src, isMobile, i18n.lang], mountPlayer);
+// URL、语言、桌面端断点发生变化时重建。Android 自动转横屏会改变视口宽度，
+// 但它仍然必须保持 touch 模式；若继续监听 isMobile 会先销毁（恢复竖屏）再重建，
+// 形成方向振荡。Android 因此用稳定的 true 作为事件模型来源。
+watch([() => props.src, () => (isAndroid ? true : isMobile.value), i18n.lang], mountPlayer);
 
 onBeforeUnmount(destroyPlayer);
 </script>

@@ -30,6 +30,8 @@ import * as i18n from './i18n';
 import {
   state,
   navigate,
+  canGoUp,
+  goUp,
   reload,
   setNotice,
   loadPlaces,
@@ -89,6 +91,8 @@ import {
   keyManageable,
   revealEntry,
   closeTransfers,
+  remoteGoUp,
+  disconnectRemote,
 } from './store';
 import MainScreen from './components/MainScreen.vue';
 import EncryptDialog from './components/EncryptDialog.vue';
@@ -110,6 +114,7 @@ import TgUnlockDialog from './components/TgUnlockDialog.vue';
 import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import { initAutoLock, configureAutoLock } from './autolock';
+import { registerMobileBack } from './mobile-platform';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
@@ -863,6 +868,44 @@ function onUnlockCancel() {
   unlockForRemote.value = false;
 }
 
+/** Android 返回键只处理最上层；返回 true 才阻止 Activity 退出。 */
+function onAndroidBack() {
+  if (ctxMenu.entry) { closeContextMenu(); return true; }
+  // SettingsDialog 自己先处理二级页；到这里时只剩关闭整个设置。
+  if (showSettings.value) { void onSettingsClose(); return true; }
+  if (placePreview.value) { void onClosePlacePreview(); return true; }
+  if (previewEntry.value) { previewEntry.value = null; return true; }
+  if (remotePreview.value) { remotePreview.value = null; return true; }
+  if (plainPreview.value) { plainPreview.value = null; return true; }
+  if (citemPreview.value) { citemPreview.value = null; return true; }
+  if (showTelegramLogin.value) { showTelegramLogin.value = false; return true; }
+  if (showAddPlace.value) { showAddPlace.value = false; return true; }
+  if (showDevices.value) { void onDevicePanelClose(); return true; }
+  if (showUnlock.value) { onUnlockCancel(); return true; }
+  if (showEncrypt.value) { showEncrypt.value = false; return true; }
+  if (showRestore.value) { showRestore.value = false; return true; }
+  if (keyTarget.value) { onKeyCancel(); return true; }
+  if (recoveryDlg.value) { onRecoveryClose(); return true; }
+  if (nameDlg.value) { nameDlg.value = null; return true; }
+  if (state.addToVirtual) { state.addToVirtual = null; return true; }
+  if (state.tgEncryptFor) { cancelTgEncrypt(); return true; }
+  if (state.tgUnlockFor) { cancelTgUnlock(); return true; }
+  if (state.vEncryptFor) { cancelVirtualEncrypt(); return true; }
+  if (state.vUnlockFor) { cancelVirtualUnlock(); return true; }
+  if (state.transfersOpen) { closeTransfers(); return true; }
+  if (state.placeBrowserOpen) {
+    if (state.remotePlace) void remoteGoUp();
+    else closePlaceBrowser();
+    return true;
+  }
+  if (state.remoteMode) { void disconnectRemote(); return true; }
+  // 本地容器或子目录逐级返回；真正处于应用起点时才交给 Activity 退出。
+  if (canGoUp.value) { void goUp(); return true; }
+  return false;
+}
+
+const unregisterAndroidBack = registerMobileBack(onAndroidBack);
+
 function onKey(e) {
   // Ctrl/Cmd+L 锁定（文档 §8）
   if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
@@ -953,6 +996,7 @@ async function applySettings() {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
+  unregisterAndroidBack();
 });
 </script>
 

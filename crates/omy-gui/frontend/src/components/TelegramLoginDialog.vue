@@ -22,6 +22,7 @@
  */
 
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
+import { isAndroid } from '../mobile-platform';
 import * as i18n from '../i18n';
 import * as api from '../api';
 
@@ -759,7 +760,7 @@ onBeforeUnmount(() => {
             <b>{{ i18n.t('tg.method_phone') }}</b>
             <span class="d">{{ i18n.t('tg.method_phone_desc') }}</span>
           </button>
-          <button class="mcard" data-tg="m-tdata" @click="openTdata">
+          <button v-if="!isAndroid" class="mcard" data-tg="m-tdata" @click="openTdata">
             <span class="mi" aria-hidden="true">🖥️</span>
             <b>{{ i18n.t('tg.method_tdata') }}</b>
             <span class="d">{{ i18n.t('tg.method_tdata_desc') }}</span>
