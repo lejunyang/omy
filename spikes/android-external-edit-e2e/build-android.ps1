@@ -1,5 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
+$target = if ([string]::IsNullOrWhiteSpace($env:OMY_ANDROID_TARGET)) {
+    'aarch64'
+} else {
+    $env:OMY_ANDROID_TARGET
+}
+if ($target -notin @('aarch64', 'x86_64', 'armv7', 'i686')) {
+    throw "不支持的 Android 目标：$target"
+}
+
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $frontend = Join-Path $repo 'crates\omy-gui\frontend'
 $gui = Join-Path $repo 'crates\omy-gui'
@@ -35,8 +44,8 @@ try {
 
 Push-Location $gui
 try {
-    & cargo tauri android build --debug --target aarch64
-    if ($LASTEXITCODE -ne 0) { throw 'Android debug APK 构建失败' }
+    & cargo tauri android build --debug --target $target
+    if ($LASTEXITCODE -ne 0) { throw "Android $target debug APK 构建失败" }
 } finally {
     Pop-Location
 }
