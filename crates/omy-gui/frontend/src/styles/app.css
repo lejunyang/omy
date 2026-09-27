@@ -1737,12 +1737,12 @@ input {
   .titlebar.mob {
     gap: calc(var(--sp) * 1.5);
     padding-inline: calc(var(--sp) * 2);
-    /* 状态栏（时间、电量那一条）会盖住顶栏：viewport-fit=cover 让页面
-       延伸到了状态栏下面，不把内容顶下来的话搜索框和汉堡键有一半点不到。
-       高度要同步撑高，否则内边距把 48px 里的内容挤扁 */
-    padding-block-start: env(safe-area-inset-top, 0px);
-    height: calc(48px + env(safe-area-inset-top, 0px));
-    flex-basis: calc(48px + env(safe-area-inset-top, 0px));
+    /* Android WebView 即使启用了 edge-to-edge，也可能把 safe-area-inset-top
+       报成 0；至少保留 24px，避免文件页与远程位置共用的顶栏钻进状态栏。
+       高度要同步撑高，否则内边距会把 48px 里的内容挤扁。 */
+    padding-block-start: max(env(safe-area-inset-top, 0px), 24px);
+    height: calc(48px + max(env(safe-area-inset-top, 0px), 24px));
+    flex-basis: calc(48px + max(env(safe-area-inset-top, 0px), 24px));
   }
 
   .overlay-bar {
@@ -1775,7 +1775,7 @@ input {
      抽屉钻到顶栏下面去 */
   .side.drawer {
     position: fixed;
-    inset-block: calc(48px + env(safe-area-inset-top, 0px)) 0;
+    inset-block: calc(48px + max(env(safe-area-inset-top, 0px), 24px)) 0;
     inset-inline-start: 0;
     z-index: 40;
     width: 240px;
@@ -1792,7 +1792,7 @@ input {
   /* 遮罩：点空白收起抽屉。移动端没有 Esc */
   .scrim {
     position: fixed;
-    inset-block: calc(48px + env(safe-area-inset-top, 0px)) 0;
+    inset-block: calc(48px + max(env(safe-area-inset-top, 0px), 24px)) 0;
     inset-inline: 0;
     z-index: 35;
     background: rgb(0 0 0 / 45%);

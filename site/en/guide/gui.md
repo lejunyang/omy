@@ -53,7 +53,7 @@ The native directory picker is invoked only on the Rust side and wrapped in a co
 
 The Android build shares the same components and only swaps the shell — it is not a second interface. List, search, progress and statistics logic are identical.
 
-The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time. On mobile the bottom navigation has four tabs — **Files / Remote / Devices / Settings** — with language and theme moved into **Settings → General**.
+The breakpoint is 768px: below it a single column with bottom navigation, above it the sidebar layout. Rotating the device switches in real time. On mobile the bottom navigation has four tabs — **Files / Remote / Devices / Settings** — with language and theme moved into **Settings → General**. The shared top bar on the Files and Remote locations pages stays below the system status bar; when Android WebView exposes no safe-area inset, it falls back to 24 px.
 
 Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. File menus use a centered modal on mobile, and Telegram login omits the desktop-only tdata reuse entry.
 
