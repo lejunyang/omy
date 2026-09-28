@@ -61,7 +61,7 @@ omy decrypt holiday.mp4.omy
 | `omy-gui` | GPL-3.0+ | Tauri v2 + Vue 3 图形界面 |
 
 ::: warning 平台验证范围
-目前只在 **Windows** 与 **Android** 上实测过。Linux 与 macOS 的代码路径已实现但**尚未验证**，流水线里对应的任务允许失败。在这两个平台上使用请自行核实。
+目前只在 **Windows** 与 **Android** 上实测过。Linux 与 macOS 的代码路径已实现，CI 会持续编译，并在每次发布时作为构建门禁（编不过就不发布），但**尚未在真机上运行过**。在这两个平台上使用请自行核实。
 :::
 
 ::: danger 密码遗忘无法找回

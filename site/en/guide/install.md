@@ -12,15 +12,19 @@ The steps below have been tested on **Windows** and **Android**. **Linux and mac
 
 ## Option 1: download a prebuilt artifact
 
-Each release attaches build artifacts to [GitHub Releases](https://github.com/lejunyang/omy/releases):
+Each release attaches artifacts for every platform to [GitHub Releases](https://github.com/lejunyang/omy/releases) (a build failure on any platform aborts the release, so either every file below is present or there is no release at all):
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Windows | `omy-x86_64-pc-windows-msvc.zip` | Contains the `omy.exe` CLI |
-| Android | `omy-gui-<version>.apk` | GUI; requires allowing unknown sources |
-| Linux / macOS | Same naming | Produced by unverified CI jobs, may be missing |
+| Windows | `omy-<version>-x86_64-pc-windows-msvc.zip` | Contains `omy.exe`, `omy-gui.exe`, and a bundled FFmpeg; unzip and run |
+| Linux | `omy-<version>-x86_64-unknown-linux-gnu.tar.gz` | Contains `omy` and `omy-gui`; no bundled FFmpeg |
+| macOS (Apple Silicon) | `omy-<version>-aarch64-apple-darwin.tar.gz` | Contains `omy` and `omy-gui`; no bundled FFmpeg |
+| macOS (Intel) | `omy-<version>-x86_64-apple-darwin.tar.gz` | Same as above |
+| Android | `*.apk` (one per ABI) | GUI; **unsigned**, requires allowing unknown sources |
 
-Put the `omy` executable anywhere on your `PATH`, then check it:
+The Linux and macOS artifacts are compiled and packaged in CI but have not been exercised on real machines; Windows and Android have been tested.
+
+Put the `omy` executable (`omy.exe` on Windows) anywhere on your `PATH`, then check it:
 
 ```bash
 omy --version

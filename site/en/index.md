@@ -61,7 +61,7 @@ omy decrypt holiday.mp4.omy
 | `omy-gui` | GPL-3.0+ | Tauri v2 + Vue 3 graphical interface |
 
 ::: warning Tested platforms
-Only **Windows** and **Android** have been tested in practice. The Linux and macOS code paths are implemented but **not yet verified**, and the corresponding CI jobs are allowed to fail. Verify for yourself before relying on those two platforms.
+Only **Windows** and **Android** have been tested in practice. The Linux and macOS code paths are implemented — CI builds them continuously and treats them as release gates (a failed build blocks the release) — but they have **never been run on real machines**. Verify for yourself before relying on those two platforms.
 :::
 
 ::: danger A forgotten password cannot be recovered

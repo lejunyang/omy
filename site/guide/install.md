@@ -12,15 +12,19 @@ omy 有两个入口：命令行工具 `omy`，以及图形界面 `omy-gui`。两
 
 ## 方式一：下载预编译产物
 
-每次发布会在 [GitHub Releases](https://github.com/lejunyang/omy/releases) 附上构建产物：
+每次发布会在 [GitHub Releases](https://github.com/lejunyang/omy/releases) 附上全部平台的构建产物（任意平台构建失败，该次发布就不会产生 Release，因此下面列出的文件要么都在，要么这次没有 Release）：
 
 | 平台 | 产物 | 说明 |
 |---|---|---|
-| Windows | `omy-x86_64-pc-windows-msvc.zip` | 内含 `omy.exe` 命令行工具 |
-| Android | `omy-gui-<版本>.apk` | 图形界面，需允许安装未知来源应用 |
-| Linux / macOS | 同名压缩包 | 由未验证的流水线任务产出，可能缺失 |
+| Windows | `omy-<版本>-x86_64-pc-windows-msvc.zip` | 含 `omy.exe`、`omy-gui.exe` 与内置 FFmpeg，解压即用 |
+| Linux | `omy-<版本>-x86_64-unknown-linux-gnu.tar.gz` | 含 `omy` 与 `omy-gui`；不内置 FFmpeg |
+| macOS（Apple Silicon） | `omy-<版本>-aarch64-apple-darwin.tar.gz` | 含 `omy` 与 `omy-gui`；不内置 FFmpeg |
+| macOS（Intel） | `omy-<版本>-x86_64-apple-darwin.tar.gz` | 同上 |
+| Android | `*.apk`（按 ABI 分包） | 图形界面，**未签名**，需允许安装未知来源应用 |
 
-下载后把 `omy` 可执行文件放到 `PATH` 里的任一目录即可。验证一下：
+Linux 与 macOS 的产物经过 CI 编译与打包，但尚未在真机上实测运行；Windows 与 Android 已实测。
+
+下载后把 `omy`（Windows 上是 `omy.exe`）可执行文件放到 `PATH` 里的任一目录即可。验证一下：
 
 ```bash
 omy --version

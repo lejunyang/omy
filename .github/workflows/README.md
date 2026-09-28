@@ -152,123 +152,93 @@ fmt，再加这一步。
 release.yml
 -----------
 
-两个动作，触发条件不同：
+### 触发方式：提交标题含 `[publish]`
 
-| 想做的事 | 怎么触发 |
-|---|---|
-| 出 GitHub Release（含各平台产物） | 推 `v*` 标签，例如 `git tag v0.0.1 && git push origin v0.0.1` |
-| 发布到 crates.io | 提交信息**首行**含 `[publish]` |
-| 手动发布到 crates.io | Actions 页面手动触发并勾选 |
+推送到 main 的提交里，**任一提交的标题（提交信息首行）含 `[publish]`**
+就触发一次完整发布；也可在 Actions 页面手动触发（workflow_dispatch）。
 
-两者独立，可同时发生（推标签且该提交标题含 `[publish]`）。
+```
+chore: 准备 0.1.0 发布 [publish]
+```
 
-### 为什么 crates.io 要单独的标记
+一次触发依次做两件事，且共享同一组构建门禁：
 
-**crates.io 上的版本发布后无法删除**，只能 yank，而且版本号不能复用。
-GitHub Release 删了可以重发，registry 不行。所以上传 registry 必须由提交
-信息里的显式标记触发，不能作为推标签的副作用顺带发生。
+1. 构建四个平台产物并创建 **GitHub Release**（自动打 `v{version}` 标签，
+   版本取自根 `Cargo.toml` 的 workspace 版本）；
+2. 发布到 **crates.io**（在所有平台构建全绿、且 `crates-io` environment
+   放行之后）。
 
-标记只认**提交信息首行**（标题）。原先是全文子串匹配，已经误触发过一次：
-某次提交在正文里解释「`[publish]` 这个标记怎么用」，推上去就把发布流水线
-拉起来了。讨论、引用、revert 说明都会命中，而这是个删不掉的动作，不能靠
-「注意别提它」来避免。写进标题才算数。
+旧设计是「推 `v*` 标签出 Release、`[publish]` 发 crates.io」两套入口。
+现在统一成一个入口：发布必须同时产出全部平台产物与 registry 包，不允许
+只做一半；标签由流水线自动创建，不再手工打。
+
+标记只认**标题（首行）**。正文中讨论、引用「`[publish]` 怎么用」不会触发。
+判定遍历本次推送的**所有**提交（从事件 payload 的 `commits[]` 读，不用
+只含最后一个提交的 `head_commit`），且用 jq 读 JSON 文件而不是把提交信息
+插值进 shell，避免反引号 / `$()` 注入。
+
+### 构建门禁：四个任务全部必过
+
+| 任务 | runner | 产物 |
+|---|---|---|
+| build-windows | windows-latest | Windows x86_64 zip（内置自建 FFmpeg） |
+| build-android | ubuntu-latest | 四个 ABI 的未签名 APK |
+| build-linux | ubuntu-latest | Linux x86_64 tar.gz |
+| build-macos | macos-latest | macOS aarch64 与 x86_64 两个 tar.gz |
+
+四个任务**都是硬门禁**，不再有 `continue-on-error`：既然发布承诺三系统
+桌面目标加 APK，哪个平台编不过就不该出 Release。但「CI 编过」不等于
+「真机用过」——目前只有 Windows 与 Android 真机实测过，Linux 与 macOS
+仅保证编译与打包成功，这一点明确写在 Release 说明的状态表里，不混淆。
+
+macOS 在 arm64 runner 上额外 `rustup target add x86_64-apple-darwin`
+交叉编译一份 Intel 产物；GitHub runner 的系统框架是 universal 的，不需要
+额外 SDK。
+
+### 发布到 crates.io 的顺序与范围
+
+`cargo publish --workspace` 由 cargo 自己算依赖顺序并等每个包在 registry
+上可见后再发下一个：
+
+    omy-core → omy-config → omy-media → omy-net → omy-secret → omy-cli
+
+`omy-gui`（build.rs 需要前端产物）、`omy-remote`（应用层远程驱动）与
+`spikes/*` 在各自 Cargo.toml 里标了 `publish = false`，自动跳过。
+
+`omy-config` 与 `omy-secret` 是可发布的库：CLI 依赖它们，不发布则
+`cargo publish -p omy-cli` 会因为找不到 registry 版本而失败。
+所有 path 依赖都同时写了 `version`，否则打包阶段直接报错。
 
 真正上传前会先跑一次 `cargo publish --workspace --dry-run`。
 
-### 发布顺序
+### 需要在 GitHub 上配置的环境（environment）
 
-用 `cargo publish --workspace`，由 cargo 自己算依赖顺序并等每个包在 registry
-上可见后再发下一个：
+crates.io 发布走名为 **`crates-io`** 的 environment，首次发布前需要在
+网页上手动建一次（YAML 只能引用环境，不能创建它）：
 
-    omy-core → omy-media → omy-net → omy-cli
+1. 仓库 **Settings → Environments → New environment**，名字必须正好是
+   `crates-io`；
+2. （可选但推荐）勾选 **Required reviewers**，把自己加为审批人——上传前
+   流水线会暂停等人确认，对一个发出去删不掉的动作值得有这道闸门；
+3. 在该环境的 **Environment secrets** 里加：
 
-手写顺序加 `sleep` 是旧做法，cargo 1.98 已内置处理。
+| Secret 名 | 值 |
+|---|---|
+| `CARGO_REGISTRY_TOKEN` | crates.io → Account Settings → API Tokens 生成的 token（publish-new 权限） |
 
-`omy-gui` 不发布到 crates.io，在它的 `Cargo.toml` 里标了 `publish = false`：
-它的 `build.rs` 在前端产物缺失时会去跑包管理器，而 `dist/` 不入库，所以
-registry 上的包对没有 Node 工具链的人是编不过的。GUI 通过 Release 里的
-安装包与 APK 分发。
+配在仓库级 Secrets 工作流也能读到，但放在 environment 里才能配合
+required reviewers。环境名拼错不会报错，只会读到空 secret，所以
+publish 的第一步就显式检查 token 非空（`--dry-run` 不查 token，缺它时
+会一路绿灯到真上传才失败，而那时可能已发出一部分包）。
 
-### 需要配置的 secret
+`GITHUB_TOKEN` 由 Actions 自动提供（Release 的 `contents: write` 权限），
+不需要额外配置。
 
-| 名称 | 配在哪 | 用途 |
-|---|---|---|
-| `CARGO_REGISTRY_TOKEN` | environment `crates-io` | 发布到 crates.io。在 crates.io 的 Account Settings 生成 |
+### 发布前还要确认的事
 
-`GITHUB_TOKEN` 由 Actions 自动提供，不用配。Pages 部署用的是工作流里声明
-的 `pages: write` / `id-token: write` 权限，也不需要额外 secret。
-
-### 为什么 publish 走 environment
-
-`publish` 任务绑定了名为 `crates-io` 的 environment。配置位置：
-**Settings → Environments → New environment**，名字必须正好是 `crates-io`，
-然后把 `CARGO_REGISTRY_TOKEN` 加到该环境的 Environment secrets 里。
-
-配在仓库级 Secrets 里工作流一样读得到，但绑 environment 多两个好处：
-可以给它加 **required reviewers**，让上传前停下来等人点确认；也能在
-Actions 页面看到这个环境的部署历史。对一个**发出去就删不掉**的动作，
-这道人工闸门值得。
-
-注意 environment 名字写错不会报错，只会创建一个新的空环境——于是
-`secrets.CARGO_REGISTRY_TOKEN` 变成空字符串。所以 `publish` 的第一步就
-显式检查 token 非空：`--dry-run` 不需要 token 也能过，缺 token 时会一路
-绿灯直到真上传那步才失败，而那时 cargo 可能已经发出去一部分包了。
-
-### 为什么 publish 要挂构建门禁
-
-crates.io 的版本发布后无法删除，所以这个不可撤销的动作不能在构建红着的
-时候发生。`publish` 因此依赖 `build-windows` 与 `build-android` 成功——
-只挂这两个已验证平台，linux/macos 是 `continue-on-error`，挂上去等于把
-未验证平台变成了发布门禁。
-
-这里有个反直觉的连带改动：**被跳过的依赖会让下游任务一起跳过**。两个构建
-任务原先只在推标签时跑，如果不动它们，一个不带标签、只含 `[publish]` 的
-提交会让构建 skip、publish 跟着 skip——表现是「写了 `[publish]` 却什么都
-没发布」，而且没有任何报错。所以它们的条件加上了 `publish == 'true'`。
-
-同理，`publish` 的 `if` 必须判 `result == 'success'` 而不是
-`!= 'failure'`：skipped 不是 failure，用后者写门禁等于没设。
-
-### 工具链版本与 osdk.toml 保持一致
-
-Android 相关任务里的 JDK 与 NDK 版本必须和仓库根 `osdk.toml` 一致
-（当前 JDK 21、NDK 29.0.14206865）。两边不一致会出现「本地能编过 CI 编不过」
-或反过来，而排查方向会完全跑偏——JDK 版本不对时 gradle 在配置期崩溃，
-报错只有一行版本号，看不出是 JDK 的问题。
-
-JDK 不能超过 21：Gradle 8.14 上限是 24，Kotlin 1.9.25 的 JVM target 上限
-是 21，两条约束叠加后 21 就是上限。
-
-### APK 要装四个 Rust 目标
-
-APK 默认打四个 ABI（`gen/android/buildSrc` 里的 `targetList` 是
-aarch64 / armv7 / i686 / x86_64），所以 `build-android` 要把这四个 Rust 目标
-都装上，`CC_<target>` / `AR_<target>` / `CARGO_TARGET_<TARGET>_LINKER` 也要
-配齐四个。只配前两个时，gradle 会在编 x86 那一档才报错，而前面几档已经编了
-十几分钟。
-
-LINKER 对打 APK 这条路径而言目前是**预防性**的：`cargo tauri android build`
-产出的是 `.so`（cdylib），由 gradle 调 NDK 链接，不读这个变量。设上是为了将来
-在这个任务里直接 cargo 出可执行文件时不会踩坑，而那个坑的表现是
-``error: linker `cc` not found``，报错完全不提 Android。
-
-四个 wrapper 的名字与四个 LINKER 变量名都已在本机核实（NDK 29）：变量名拼错
-不会报错、只会静默退回找 `cc`，所以是把变量指向一个不存在的路径、看报错里出现
-的是那个假路径还是 `cc` 来确认的。
-
-### APK 未签名
-
-签名密钥不进仓库，也不由 CI 代持，所以流水线产出的是未签名 APK，安装时
-需要允许未知来源。要正式签名版就本地签，或另配 secrets 后在
-`build-android` 里加签名步骤。
-
-首次发布到 crates.io
---------------------
-
-四个包都还没上架。首次发布只要一次带 `[publish]` 的提交即可，`--workspace`
-会按依赖顺序处理。已在本地用 `--dry-run` 验证过顺序可行，四个名字在
-crates.io 上也都还没被占用（名字归属 `--dry-run` 查不出来，它不联网校验）。
-
-发之前要先建好 `crates-io` environment 并配上 token，见上面那一节。
-注意带 `[publish]` 的提交推上去后，会先跑 Windows 与 Android 的构建，
-两者都绿了才会走到上传。
+- workspace 版本（根 `Cargo.toml`）已经按 semver 递增；crates.io 上
+  **同一个版本号不能重复使用**，发版后再触发会在上传对应包时失败。
+- 新版本若还没在 crates.io 出现过，第一次发布必须让 `--workspace` 按顺序
+  一次发完（已配置好），不要手工只发单个包。
+- APK 始终是**未签名**的；签名密钥不进仓库，需要正式签名版时本地签或
+  另配 secret 加签名步骤。

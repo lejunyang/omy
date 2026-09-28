@@ -1,41 +1,53 @@
 # 发布流水线。
 #
-# # 两个触发条件，对应两种发布动作
+# # 单一触发：提交标题含 [publish]
 #
-# 1. 推 v* 标签   → 构建各平台产物并创建 GitHub Release
-# 2. 提交信息含 [publish] → 额外发布到 crates.io
+# 推送（push 到 main）的提交里，**任一提交的标题（提交信息首行）含
+# `[publish]`**，即触发一次完整发布；也可在 Actions 页面手动触发。
+# 不再接受推 v* 标签触发：标签由本流水线在发布时创建，避免「打标签」和
+# 「写 [publish]」两套入口各自只做一半动作。
 #
-# 分开是因为两者的可逆性完全不同：GitHub Release 删了可以重发，
-# 而 **crates.io 的版本一经发布就无法删除**（只能 yank，且号不能复用）。
-# 所以上传 registry 必须由提交信息里的显式标记触发，不能顺带发生。
+# 一次触发按顺序做两件事：
+#
+# 1. 构建 Windows / Linux / macOS（Apple Silicon + Intel）/ Android 全部产物，
+#    全绿后创建 GitHub Release（自动打 v{version} 标签并挂产物）；
+# 2. 发布到 crates.io（omy-core → omy-config → omy-media → omy-net →
+#    omy-secret → omy-cli，omy-gui / omy-remote / spikes 不发布）。
+#
+# 两者共享同一组构建门禁：任何一个平台构建失败，Release 与 crates.io 都不会动。
+#
+# # 为什么 crates.io 仍单独走 environment
+#
+# GitHub Release 删了可以重发，而 **crates.io 的版本一经发布就无法删除**
+# （只能 yank，版本号不能复用）。所以 publish 任务绑定 `crates-io`
+# environment：CARGO_REGISTRY_TOKEN 配在里面，并可加 required reviewers，
+# 让上传前停下来等人确认。触发标记只决定「流水线跑不跑」，environment
+# 闸门决定「包发不发得出去」。
 #
 # # 平台策略
 #
-# 与测试流水线一致：Windows 与 Android 是已验证平台，构建失败即发布失败；
-# Linux 与 macOS 尚未验证，continue-on-error，缺了产物也照样出 Release
-# （Release 说明里会写明这一点，不让用户以为下载到的是验证过的东西）。
+# 四个构建任务全部是硬门禁（不再有 continue-on-error）：既然要发布三系统
+# 桌面目标与 APK，哪个平台编不过就不该出 Release，否则用户下载到的就是
+# 缺平台的版本。但「CI 构建通过」不等于「真机实测通过」——目前只有
+# Windows 与 Android 真正用过，Linux 与 macOS 仅保证编译与打包成功，
+# 这一点会写进 Release 说明，不把两者混为一谈。
 #
 # # 内置 FFmpeg
 #
-# Windows 产物内置自建的裁剪 FFmpeg（含 H.264/HEVC，约 12.4 MB），
-# 见 scripts/ffmpeg-build/。其余平台暂不内置——构建链只在 Windows 上实测过，
-# 而没实测过的内置二进制比不内置更糟。
+# Windows 产物内置自建的裁剪 FFmpeg（含 H.264/HEVC），见 scripts/ffmpeg-build/。
+# 其余平台暂不内置——构建链只在 Windows 上实测过，没实测过的内置二进制
+# 比不内置更糟，这些平台沿用系统 FFmpeg 或 OMY_FFMPEG 指定的路径。
 
 name: 发布
 
 on:
   push:
-    tags:
-      - 'v*'
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      publish_crates:
-        description: '同时发布到 crates.io（不可撤销）'
-        type: boolean
-        default: false
 
+# 发布是不可撤销（crates.io）或对外可见（Release）的动作，绝不为新推送
+# 取消正在跑的旧发布
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -45,82 +57,60 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # ---- 先判断这次要做什么 ----
+  # ---- 先判断这次要不要发布 ----
 
   decide:
-    name: 判定触发条件
+    name: 判定发布标记
     runs-on: ubuntu-latest
     outputs:
-      release: ${{ steps.d.outputs.release }}
       publish: ${{ steps.d.outputs.publish }}
       version: ${{ steps.d.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          # 需要读提交信息。fetch-depth: 0 是必须的：默认浅克隆下
-          # git log 拿不到完整信息，判定会静默变成「不发布」
-          fetch-depth: 0
 
       - name: 判定
         id: d
-        env:
-          # 提交信息经环境变量传入，不做字符串插值。
-          # 直接把 ${{ github.event.head_commit.message }} 写进 shell 里，
-          # 提交信息带反引号或 $() 就会被当成命令执行——这是脚本注入。
-          MSG: ${{ github.event.head_commit.message }}
-          MANUAL: ${{ inputs.publish_crates }}
         run: |
-          release=false
           publish=false
-          version=""
 
-          # 推标签 → 出 Release
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            release=true
-            version="${GITHUB_REF_NAME#v}"
-          fi
-
-          # 提交信息**首行**含 [publish] → 发 crates.io。
-          #
-          # 只看首行，是因为原先的全文子串匹配踩过一次：某次提交在正文里
-          # 解释了「[publish] 这个标记怎么用」，结果那次推送直接触发了发布
-          # 流水线。讨论、引用、revert 说明、把它写进注释，全都会误触发——
-          # 而这是个**发出去就删不掉**的动作，不能靠「注意别提它」来避免。
-          #
-          # 首行是提交标题，写进标题即视为明确的发布意图。
-          subject=$(printf '%s\n' "$MSG" | head -n 1)
-          case "$subject" in
-            *'[publish]'*) publish=true ;;
-          esac
-
-          # 手动触发时以输入为准
-          if [ "$MANUAL" = "true" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # 手动触发即视为明确发布意图
             publish=true
+          else
+            # 从事件 payload 读本次推送**每个**提交的标题（首行），
+            # 任一含 [publish] 即发布。
+            #
+            # 不用 github.event.head_commit.message：那只是最后一个提交，
+            # 一次推送带多个提交时标记写在较早的提交里会被漏判。
+            #
+            # 也不把提交信息插值进 shell（反引号 / $() 会变成命令注入）：
+            # jq 直接读 GITHUB_EVENT_PATH 这个 JSON 文件。
+            #
+            # 只看标题（首行）是吸取过的教训：正文里讨论「[publish] 怎么用」
+            # 曾经误触发过发布，而这是发出去删不掉的动作。
+            while IFS= read -r subject; do
+              [ -z "$subject" ] && continue
+              case "$subject" in
+                *'[publish]'*) publish=true ;;
+              esac
+            done < <(jq -r '.commits[]?.message | split("\n")[0]' "$GITHUB_EVENT_PATH")
           fi
 
-          # 没有标签时从 Cargo.toml 读版本，供 crates.io 发布使用
-          if [ -z "$version" ]; then
-            version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          fi
+          # workspace 版本在根 Cargo.toml 的 [workspace.package]，
+          # 该段里第一个独立的 version = "..." 即工作区统一版本
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
 
-          echo "release=$release" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-
-          echo "出 Release   = $release"
-          echo "发 crates.io = $publish"
+          echo "发布         = $publish"
           echo "版本         = $version"
 
-  # ---- 构建产物 ----
+  # ---- 构建产物：四个任务全部是发布门禁 ----
 
   build-windows:
-    name: 构建 Windows（已验证）
+    name: 构建 Windows（已实测平台）
     needs: decide
-    # 发 crates.io 时也要跑：publish 任务把这两个已验证平台的构建当作门禁，
-    # 而**被跳过的依赖会让下游任务一起跳过**。这里只写 release 的话，
-    # 不带标签的 [publish] 提交会让构建跳过，publish 也跟着跳过——
-    # 表现是「明明写了 [publish] 却什么都没发」，且没有任何报错
-    if: needs.decide.outputs.release == 'true' || needs.decide.outputs.publish == 'true'
+    if: needs.decide.outputs.publish == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -224,10 +214,9 @@ jobs:
           path: '*.zip'
 
   build-android:
-    name: 构建 Android（已验证）
+    name: 构建 Android APK（已实测平台）
     needs: decide
-    # 同 build-windows：发 crates.io 时也要跑，理由见那里
-    if: needs.decide.outputs.release == 'true' || needs.decide.outputs.publish == 'true'
+    if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -260,12 +249,11 @@ jobs:
         # 不指定的话 zstd-sys 会报「failed to find tool」。
         # 完整理由见 test.yml 里的同名步骤。
         #
-        # 这里要配齐四个 ABI，与上面 rustup target add 的四个目标对应
+        # 这里要配齐四个 ABI，与上面 rustup target add 的四个目标对应。
         #
         # LINKER 也一并设上。APK 走 gradle 调 NDK 链接 .so，目前这条路径不依赖
         # 它，所以这里是**预防性**的：一旦将来在这个任务里直接 cargo build 出
-        # 可执行文件（或 tauri 改了链接方式），缺它就会挂在
-        # `error: linker `cc` not found`，而报错完全不提 Android。设上没有代价。
+        # 可执行文件，缺它就会挂在 `error: linker `cc` not found`。
         env:
           API_LEVEL: '24'
         run: |
@@ -289,10 +277,6 @@ jobs:
             echo "CARGO_TARGET_I686_LINUX_ANDROID_LINKER=$BIN/i686-linux-android${API_LEVEL}-clang"
             echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$BIN/x86_64-linux-android${API_LEVEL}-clang"
           } >> "$GITHUB_ENV"
-
-      - uses: oven-sh/setup-bun@v2.2.0
-        with:
-          bun-version: latest
 
       # 这里装 bun 是不够的：build.rs 按 frontend/ 下的 lockfile 选包管理器，
       # 看到 pnpm-lock.yaml 就只调 pnpm，不会退回 bun 或 npm
@@ -329,15 +313,15 @@ jobs:
           path: out/*.apk
 
   build-linux:
-    name: 构建 Linux（未验证）
+    name: 构建 Linux x86_64（构建门禁，尚未真机实测）
     needs: decide
-    if: needs.decide.outputs.release == 'true'
+    if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
       - name: 安装系统依赖
+        # Tauri v2 需要 WebKitGTK 4.1，omy-gui 缺了会在链接期报错
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
@@ -362,8 +346,7 @@ jobs:
 
       - name: 构建
         run: |
-          cargo build --release -p omy-cli
-          cargo build --release -p omy-gui
+          cargo build --release -p omy-cli -p omy-gui
 
       - name: 打包
         run: |
@@ -377,16 +360,21 @@ jobs:
           path: '*.tar.gz'
 
   build-macos:
-    name: 构建 macOS（未验证）
+    name: 构建 macOS（构建门禁，尚未真机实测）
     needs: decide
-    if: needs.decide.outputs.release == 'true'
+    if: needs.decide.outputs.publish == 'true'
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
+
+      # 同时出 Apple Silicon 与 Intel 两份：macos-latest 是 arm64 机器，
+      # x86_64 靠交叉编译。GitHub runner 的系统框架（WebKit 等）是
+      # universal 的，rustup 加个 target 即可链接，不需要额外 SDK。
+      - name: 添加 Intel 目标
+        run: rustup target add x86_64-apple-darwin
 
       # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
       - uses: actions/setup-node@v6.0.0
@@ -401,30 +389,36 @@ jobs:
         with:
           key: release-macos
 
-      - name: 构建
-        run: |
-          cargo build --release -p omy-cli
-          cargo build --release -p omy-gui
+      - name: 构建 Apple Silicon
+        run: cargo build --release -p omy-cli -p omy-gui --target aarch64-apple-darwin
+
+      - name: 构建 Intel（交叉编译）
+        run: cargo build --release -p omy-cli -p omy-gui --target x86_64-apple-darwin
 
       - name: 打包
         run: |
-          mkdir -p dist
-          cp target/release/omy target/release/omy-gui README.md dist/
-          tar -czf omy-${{ needs.decide.outputs.version }}-aarch64-apple-darwin.tar.gz -C dist .
+          version='${{ needs.decide.outputs.version }}'
+          mkdir -p dist-arm dist-x86
+          cp target/aarch64-apple-darwin/release/omy \
+             target/aarch64-apple-darwin/release/omy-gui README.md dist-arm/
+          cp target/x86_64-apple-darwin/release/omy \
+             target/x86_64-apple-darwin/release/omy-gui README.md dist-x86/
+          tar -czf "omy-${version}-aarch64-apple-darwin.tar.gz" -C dist-arm .
+          tar -czf "omy-${version}-x86_64-apple-darwin.tar.gz" -C dist-x86 .
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: macos
           path: '*.tar.gz'
 
-  # ---- 创建 Release ----
+  # ---- 创建 GitHub Release ----
 
   release:
     name: 创建 GitHub Release
     needs: [decide, build-windows, build-android, build-linux, build-macos]
-    # always()：linux/macos 允许失败，若用默认的「全部成功才跑」，
-    # 未验证平台一挂就整个 Release 出不来，等于把它们变成了必过项
-    if: always() && needs.decide.outputs.release == 'true' && needs.build-windows.result == 'success' && needs.build-android.result == 'success'
+    # 四个构建全部成功才出 Release。这里不再需要 always()：所有依赖都是
+    # 硬门禁，不存在「允许失败」的构建任务了
+    if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -442,23 +436,33 @@ jobs:
 
       - name: 生成 Release 说明
         env:
-          LINUX_RESULT: ${{ needs.build-linux.result }}
-          MACOS_RESULT: ${{ needs.build-macos.result }}
           VERSION: ${{ needs.decide.outputs.version }}
         run: |
           {
             echo "## omy v${VERSION}"
             echo
+            echo "### 下载"
+            echo
+            echo "| 文件 | 平台 |"
+            echo "|---|---|"
+            echo "| \`*-x86_64-pc-windows-msvc.zip\` | Windows 10/11 x86_64（内置 FFmpeg，解压即用） |"
+            echo "| \`*-x86_64-unknown-linux-gnu.tar.gz\` | Linux x86_64 |"
+            echo "| \`*-aarch64-apple-darwin.tar.gz\` | macOS（Apple Silicon） |"
+            echo "| \`*-x86_64-apple-darwin.tar.gz\` | macOS（Intel） |"
+            echo "| \`*.apk\` | Android（四个 ABI，**未签名**） |"
+            echo
             echo "### 平台验证状态"
             echo
-            echo "| 平台 | 状态 |"
-            echo "|---|---|"
-            echo "| Windows | 已实测 |"
-            echo "| Android | 已实测 |"
-            echo "| Linux | **尚未验证**（本次构建：${LINUX_RESULT}） |"
-            echo "| macOS | **尚未验证**（本次构建：${MACOS_RESULT}） |"
+            echo "| 平台 | CI 构建 | 真机实测 |"
+            echo "|---|---|---|"
+            echo "| Windows | ✅ | ✅ |"
+            echo "| Android | ✅ | ✅ |"
+            echo "| Linux | ✅ | ❌ 尚未实测 |"
+            echo "| macOS（两种架构） | ✅ | ❌ 尚未实测 |"
             echo
-            echo "Linux 与 macOS 的产物由未经验证的构建任务产出，可能缺失或不可用。"
+            echo "Linux 与 macOS 只经过 CI 编译与打包，未在真实系统上运行过，"
+            echo "可能存在运行时问题；这两个平台不内置 FFmpeg，需要自行安装或用"
+            echo "\`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。"
             echo
             echo "### 说明"
             echo
@@ -471,32 +475,27 @@ jobs:
           cat notes.md
 
       - name: 创建 Release
+        # tag_name 指向本次提交：标签不存在时 action 会自动创建
+        # v{version}，发布入口因此只有一个（[publish] 提交），不再手工打 tag
         uses: softprops/action-gh-release@v3.0.3
         with:
+          tag_name: v${{ needs.decide.outputs.version }}
+          name: omy v${{ needs.decide.outputs.version }}
           body_path: notes.md
           files: artifacts/**/*
-          # 未验证平台可能缺产物，不能因此报错
+          # 所有平台都是硬门禁，理论上产物一定齐；仍保留宽松匹配以免
+          # APK 文件名差异直接把 Release 步骤打挂
           fail_on_unmatched_files: false
 
   # ---- 发布到 crates.io ----
 
   publish:
     name: 发布到 crates.io
-    # 已验证平台的构建是门禁：crates.io 的版本发布后**无法删除**（只能 yank，
-    # 且版本号不能复用），所以这个不可撤销的动作不能在构建红着的时候发生。
-    #
-    # 只挂 Windows 与 Android：它们是已验证平台，且 linux/macos 是
-    # continue-on-error，挂上去等于把未验证平台变成了发布门禁。
-    needs: [decide, build-windows, build-android]
-    # always() 是必须的：没有它，只要有任何依赖不是 success 就整个跳过，
-    # 而下面要做的恰恰是「显式检查依赖结果」。
-    # 注意 result 要判 success 而不是 != failure——被跳过的依赖是 skipped，
-    # 那种情况下门禁等于没设
-    if: >-
-      always()
-      && needs.decide.outputs.publish == 'true'
-      && needs.build-windows.result == 'success'
-      && needs.build-android.result == 'success'
+    # 与 Release 共享同一组构建门禁：crates.io 的版本发布后**无法删除**
+    # （只能 yank，且版本号不能复用），这个不可撤销的动作不能在任何平台
+    # 构建红着的时候发生。四个构建全绿才允许上传。
+    needs: [decide, build-windows, build-android, build-linux, build-macos]
+    if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     # 走 environment 是为了给这个不可撤销的动作加一道人工闸门：
     # CARGO_REGISTRY_TOKEN 配在这个环境里，并可在仓库设置里给它加
@@ -509,9 +508,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 安装系统依赖
-        # omy-cli 依赖 omy-media 与 omy-net，publish 默认会验证构建。
-        # 这些不需要 WebKit（omy-gui 才需要，而它 publish = false），
-        # 但 openssl 等基础库仍要有
+        # 发布的是库与 CLI（omy-gui publish = false），不需要 WebKit，
+        # 但部分依赖的 -sys 构建仍需要基础工具链与 openssl 头
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev pkg-config
@@ -551,12 +549,11 @@ jobs:
         run: cargo publish --workspace --dry-run
 
       - name: 发布
-        # --workspace 让 cargo 自己算依赖顺序（core → media → net → cli），
-        # 并等每个包在 registry 上可见后再发下一个。
-        # 手写顺序加 sleep 是旧做法，cargo 1.98 已经内置处理。
-        #
-        # omy-gui 在它的 Cargo.toml 里标了 publish = false，会被自动跳过：
-        # 它的 build.rs 需要 Node 工具链，而前端产物不入库。
+        # --workspace 让 cargo 自己算依赖顺序并等每个包在 registry 上可见后
+        # 再发下一个，顺序为：
+        #   omy-core → omy-config → omy-media → omy-net → omy-secret → omy-cli
+        # omy-gui / omy-remote / spikes 在各自 Cargo.toml 里标了
+        # publish = false，会被自动跳过。
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --workspace
@@ -564,5 +561,5 @@ jobs:
       - name: 汇总
         run: |
           echo "已发布 v${{ needs.decide.outputs.version }} 到 crates.io"
-          echo "omy-core / omy-media / omy-net / omy-cli"
-          echo "omy-gui 不发布到 registry（见其 Cargo.toml 的说明）"
+          echo "omy-core / omy-config / omy-media / omy-net / omy-secret / omy-cli"
+          echo "omy-gui、omy-remote 与 spikes 不发布到 registry（见各自 Cargo.toml）"
