@@ -504,6 +504,10 @@ jobs:
     needs: [decide, build-windows, build-android, build-linux, build-macos]
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    # 首次发布的 6 个包里第 6 个新 crate 要等 10 分钟限流冷却，加上失败重试
+    # （每次也等一个冷却窗口），正常首次约 13 分钟；给足余量，避免 GitHub
+    # Actions 默认的 360 分钟虽够、但排队时看不出还要多久——显式写出来。
+    timeout-minutes: 90
     # 走 environment 是为了给这个不可撤销的动作加一道人工闸门：
     # CARGO_REGISTRY_TOKEN 配在这个环境里，并可在仓库设置里给它加
     # required reviewers，这样上传前会停下来等人点确认。
@@ -556,14 +560,17 @@ jobs:
         run: cargo publish --workspace --dry-run
 
       - name: 发布
-        # --workspace 让 cargo 自己算依赖顺序并等每个包在 registry 上可见后
-        # 再发下一个，顺序为：
-        #   omy-core → omy-config → omy-media → omy-net → omy-secret → omy-cli
+        # 逐个发，不用 cargo publish --workspace：crates.io 对**新 crate**
+        # 限流是 burst 5 个、之后每 10 分钟 1 个，而首次要发 6 个全新包，
+        # 一把梭第 6 个必然 429。脚本按依赖顺序发，前 5 个新包后等待冷却，
+        # 并查询 crates.io API 区分「新包」与「发新版本」分别处理，
+        # 详见 scripts/publish-crates.sh。
+        #
         # omy-gui / omy-remote / spikes 在各自 Cargo.toml 里标了
-        # publish = false，会被自动跳过。
+        # publish = false，脚本的发布清单里本就没有它们。
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --workspace
+        run: bash scripts/publish-crates.sh
 
       - name: 汇总
         run: |

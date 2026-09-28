@@ -198,21 +198,41 @@ macOS 在 arm64 runner 上额外 `rustup target add x86_64-apple-darwin`
 交叉编译一份 Intel 产物；GitHub runner 的系统框架是 universal 的，不需要
 额外 SDK。
 
-### 发布到 crates.io 的顺序与范围
+### 发布到 crates.io 的顺序、范围与限流
 
-`cargo publish --workspace` 由 cargo 自己算依赖顺序并等每个包在 registry
-上可见后再发下一个：
+发布由 `scripts/publish-crates.sh` 按依赖顺序逐个执行：
 
     omy-core → omy-config → omy-media → omy-net → omy-secret → omy-cli
 
 `omy-gui`（build.rs 需要前端产物）、`omy-remote`（应用层远程驱动）与
-`spikes/*` 在各自 Cargo.toml 里标了 `publish = false`，自动跳过。
+`spikes/*` 在各自 Cargo.toml 里标了 `publish = false`，脚本清单里没有它们。
 
 `omy-config` 与 `omy-secret` 是可发布的库：CLI 依赖它们，不发布则
 `cargo publish -p omy-cli` 会因为找不到 registry 版本而失败。
 所有 path 依赖都同时写了 `version`，否则打包阶段直接报错。
 
-真正上传前会先跑一次 `cargo publish --workspace --dry-run`。
+#### 为什么不用 `cargo publish --workspace`
+
+crates.io 官方限流（https://crates.io/docs/rate-limits）：
+
+- **新 crate**：单账号 burst **5** 个，之后每 **10 分钟**只准 1 个；
+- 已有 crate 的**新版本**：burst 30 个，之后每分钟 1 个。
+
+首次发布有 **6 个全新包**，`--workspace` 会连续打出去，第 6 个必然 429，
+而前 5 个此时已经发出去删不掉。脚本因此：
+
+1. 发每个包前查 `crates.io/api/v1/crates/<name>` 区分「全新包」还是
+   「新版本」；
+2. 按依赖顺序逐个 `cargo publish -p`；包之间留 30s 让 sparse 索引（CDN）
+   传播，好让下一个包能解析到刚发的依赖；
+3. 满 5 个新包后、下一个仍是新包时，等待 **610s**（略大于 10 分钟）再发；
+4. 单个包失败最多重试 3 次，每次重试也等满一个冷却窗口。
+
+所以**首次发布会在第 5 个包后暂停约 10 分钟，全程约 13 分钟**，publish
+任务的 `timeout-minutes` 设为 90。以后都是发新版本，6 个包远在 30 的
+burst 内，只受 30s 的索引传播等待影响。
+
+真正上传前仍会先跑一次 `cargo publish --workspace --dry-run` 整体校验。
 
 ### 需要在 GitHub 上配置的环境（environment）
 
@@ -241,7 +261,7 @@ publish 的第一步就显式检查 token 非空（`--dry-run` 不查 token，�
 
 - workspace 版本（根 `Cargo.toml`）已经按 semver 递增；crates.io 上
   **同一个版本号不能重复使用**，发版后再触发会在上传对应包时失败。
-- 新版本若还没在 crates.io 出现过，第一次发布必须让 `--workspace` 按顺序
-  一次发完（已配置好），不要手工只发单个包。
+- **首次发布会持续约 13 分钟**（6 个新包撞上新 crate 限流，第 5 个后要等
+  10 分钟冷却，见上节），不要因为任务停在 publish 步骤就以为它挂了。
 - APK 始终是**未签名**的；签名密钥不进仓库，需要正式签名版时本地签或
   另配 secret 加签名步骤。
