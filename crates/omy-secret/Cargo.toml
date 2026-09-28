@@ -1,13 +1,18 @@
 [package]
 name = "omy-secret"
+description = "omy 的密钥与凭据存储：各平台原生凭据库与 Windows TPM 设备密钥。"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
-omy-core = { path = "../omy-core" }
-omy-config = { path = "../omy-config" }
+# 与 omy-config 同样定位为可复用的底层库，path 依赖必须同时给 version，
+# 否则发布到 crates.io（path 被去掉）时会打包失败。
+omy-core = { path = "../omy-core", version = "0.0.1" }
+omy-config = { path = "../omy-config", version = "0.0.1" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 zeroize = { workspace = true }

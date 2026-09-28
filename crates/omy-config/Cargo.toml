@@ -9,11 +9,12 @@ authors.workspace = true
 # 与 omy-core 一致而非 GPL：配置只是数据结构与读写，
 # 让它跟着核心库一起可被第三方复用，不构成授权负担。
 license = "MIT OR Apache-2.0"
-publish = false
 
 [dependencies]
-# 原子写盘复用 core 的实现，不自己再写一遍「写 tmp → fsync → rename」
-omy-core = { path = "../omy-core" }
+# 原子写盘复用 core 的实现，不自己再写一遍「写 tmp → fsync → rename」。
+# version 与 path 必须同时写：本地构建走 path，发布到 crates.io 时 cargo 去掉
+# path 只留 version，缺它会在 cargo package 阶段直接失败。
+omy-core = { path = "../omy-core", version = "0.0.1" }
 serde = { workspace = true }
 # 保留未知字段需要 toml 的动态类型（Value / Table）
 toml = { workspace = true }
