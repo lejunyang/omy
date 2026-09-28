@@ -165,7 +165,11 @@ jobs:
           # osdk.toml 含 conda: 工具，属于 trust-required。未信任时该目录下
           # **所有** osdk 命令都会失败，且报错不提「没信任」这件事
           osdk --yes trust osdk.toml
-          osdk -y install
+          # accept-licenses=true：osdk.toml 装 Android SDK / NDK / 模拟器 /
+          # system-image 时要求先接受 android-sdk-license。CI 无人值守，没有
+          # 人能交互确认，不接受就在这一步直接退出（实测发布流水线首次运行
+          # 即因此失败）。本地开发者 osdk 首次安装时交互接受即可。
+          osdk -y install -o accept-licenses=true
 
       - name: 构建内置 FFmpeg
         shell: pwsh

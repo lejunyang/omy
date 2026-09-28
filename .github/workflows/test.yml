@@ -331,7 +331,9 @@ jobs:
         shell: pwsh
         run: |
           osdk --yes trust osdk.toml
-          osdk -y install
+          # accept-licenses=true：osdk.toml 装 Android SDK / NDK 等需要先接受
+          # android-sdk-license，CI 无人值守无法交互确认
+          osdk -y install -o accept-licenses=true
 
       - name: 构建
         shell: pwsh
