@@ -242,7 +242,7 @@ jobs:
           # 与 osdk.toml 固定的 java 版本一致，理由见 test.yml 里的说明
           java-version: '21'
 
-      - uses: android-actions/setup-android@v4.0.1
+      - uses: android-actions/setup-android@v4.0.4
 
       - name: 安装 NDK
         env:

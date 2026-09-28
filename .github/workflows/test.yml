@@ -146,7 +146,7 @@ jobs:
           # 「CI 复现本地」的意义。改这里必须同时改 osdk.toml。
           java-version: '21'
 
-      - uses: android-actions/setup-android@v4.0.1
+      - uses: android-actions/setup-android@v4.0.4
 
       - name: 安装 NDK
         # zstd-sys 是 C 代码，交叉编译必须有 NDK 里的 clang。
