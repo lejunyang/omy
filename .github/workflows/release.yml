@@ -2,10 +2,14 @@
 #
 # # 单一触发：提交标题含 [publish]
 #
-# 推送（push 到 main）的提交里，**任一提交的标题（提交信息首行）含
-# `[publish]`**，即触发一次完整发布；也可在 Actions 页面手动触发。
-# 不再接受推 v* 标签触发：标签由本流水线在发布时创建，避免「打标签」和
+# 推送到 main 时，只看**本次推送最后一个提交**的标题（提交信息首行），
+# 含 `[publish]` 才触发一次完整发布；也可在 Actions 页面手动触发。
+# 不接受推 v* 标签触发：标签由本流水线在发布时创建，避免「打标签」和
 # 「写 [publish]」两套入口各自只做一半动作。
+#
+# 只看最后一个提交（而不是遍历本次推送的每个提交）：发布意图应当由推送
+# 链的顶端明确表达，而不是从一串中间提交里翻出来；这样旧提交里残留的
+# 标记、或 rebase 进来的历史标记不会意外触发发布。
 #
 # 一次触发按顺序做两件事：
 #
@@ -77,23 +81,26 @@ jobs:
             # 手动触发即视为明确发布意图
             publish=true
           else
-            # 从事件 payload 读本次推送**每个**提交的标题（首行），
-            # 任一含 [publish] 即发布。
+            # 只取本次推送**最后一个**提交的标题（message 的首行）。
             #
-            # 不用 github.event.head_commit.message：那只是最后一个提交，
-            # 一次推送带多个提交时标记写在较早的提交里会被漏判。
+            # 不遍历全部提交：发布意图必须由推送链顶端的那个提交明确表达，
+            # 不从一串中间提交里翻标记，避免历史/rebase 残留的 [publish]
+            # 意外触发。
             #
-            # 也不把提交信息插值进 shell（反引号 / $() 会变成命令注入）：
+            # 不把提交信息插值进 shell（反引号 / $() 会变成命令注入）：
             # jq 直接读 GITHUB_EVENT_PATH 这个 JSON 文件。
             #
-            # 只看标题（首行）是吸取过的教训：正文里讨论「[publish] 怎么用」
-            # 曾经误触发过发布，而这是发出去删不掉的动作。
-            while IFS= read -r subject; do
-              [ -z "$subject" ] && continue
-              case "$subject" in
-                *'[publish]'*) publish=true ;;
-              esac
-            done < <(jq -r '.commits[]?.message | split("\n")[0]' "$GITHUB_EVENT_PATH")
+            # 只看标题（首行）：正文里讨论「[publish] 怎么用」曾误触发过
+            # 发布，而这是发出去删不掉的动作。
+            # 空提交列表（极端情况，如删除 ref 的 push 事件）last 为 null，
+            # 直接 .message|split 会让 jq 报错使整个判定失败，故先判长度。
+            subject=$(jq -r '
+              if (.commits | length) > 0
+              then (.commits | last | .message | split("\n")[0])
+              else "" end' "$GITHUB_EVENT_PATH")
+            case "$subject" in
+              *'[publish]'*) publish=true ;;
+            esac
           fi
 
           # workspace 版本在根 Cargo.toml 的 [workspace.package]，
