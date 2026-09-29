@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
-# 在 Windows 上交叉编译 omy 所需的最小 FFmpeg（含自建的静态 libwebp 与 zlib）。
+# 在 Linux 上原生构建 omy 所需的最小 FFmpeg（含自建的静态 libwebp 与 zlib）。
 #
-# 前置条件：项目根目录的 osdk.toml 已 trust，工具链由它提供（不需要 MSYS2）。
+# 前置条件：项目根目录的 osdk.toml 已提供 nasm（系统通常不自带）；
+# gcc / make / cmake / pkg-config 用系统已有的即可，本脚本不调 osdk。
 # 用法：
-#   SYSROOT=... bash scripts/ffmpeg-build/build-windows.sh
+#   bash scripts/ffmpeg-build/build-linux.sh
 #
-# 产物只有一份，包含 omy 需要的全部解码能力（含 H.264 / HEVC）。曾经按专利
-# 风险分过两档，现已取消，理由见 configure-flags.sh 顶部。
-#
-# 注意：本脚本内**不调用 osdk**。嵌套的 osdk 会尝试交互提示并卡在等 stdin 上
-# （实测挂了 18 分钟只烧掉 4.8 CPU 秒，看起来像死锁）。所以工具路径必须由外层
-# 的 prepare-toolchain.ps1 算好后通过环境变量传入。
+# 产物只有一份，包含 omy 需要的全部解码能力（含 H.264 / HEVC），组件清单与
+# Windows 版完全相同（见 configure-flags.sh）。曾经按专利风险分过两档，现已
+# 取消，理由见 configure-flags.sh 顶部。
 
 set -euo pipefail
-
-: "${SYSROOT:?必须由外层传入（见脚本头部注释，本脚本不能自己调 osdk）}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${OMY_FF_WORK:-/tmp/omy-ffmpeg-build}"
@@ -33,24 +29,19 @@ export ZLIB="$WORK/deps/zlib"
 
 mkdir -p "$SRC" "$OUT" "$WEBP" "$ZLIB"
 
-# 下载器：优先用 Windows 自带的 curl，而不是 msys 那个。
-#
-# conda 的 m2-base 里 curl 确实有，但它附带的 /usr/ssl/certs/ca-bundle.crt
-# 是**0 字节**，于是每次下载都死在
-#   curl: (77) error setting certificate file: /usr/ssl/certs/ca-bundle.crt
-# 报错说的是「设置证书文件失败」，看起来像本机装漏了什么，实际是上游包就这样，
-# 重装、换镜像都没用。Windows 自带的 curl 走 Schannel 用系统证书store，没有
-# 这个问题（实测 8.21.0 可用）。
-#
-# 不用 -k 跳过校验：那等于把供应链校验关掉换取一次下载成功。
-pick_curl() {
-  if [ -x /c/Windows/System32/curl.exe ]; then
-    echo /c/Windows/System32/curl.exe
-  else
-    command -v curl
-  fi
-}
-CURL="$(pick_curl)"
+# nasm：osdk 的 nasm shim 按「CWD 的 osdk 配置」选版本，本脚本若不从项目根
+# 目录调起（CI / 自动化常见），shim 会报 no version selected，configure 因此
+# 认为没有 nasm。这里解析出已安装的 nasm 实体路径，经 --x86asmexe 显式传给
+# configure。调用方也可用 NASM=... 覆盖；项目根调起时 PATH 上的 shim 本就可用。
+if [ -z "${NASM:-}" ]; then
+  osdk_root="${OSDK_DATA_DIR:-$HOME/.local/share/osdk}"
+  for c in "$osdk_root"/installs/conda/nasm/*/*/bin/nasm; do
+    if [ -x "$c" ]; then NASM="$c"; break; fi
+  done
+fi
+export NASM
+
+CURL="$(command -v curl)"
 [ -n "$CURL" ] || { echo "找不到可用的 curl" >&2; exit 1; }
 
 # 校验 SHA256 而不是只看文件在不在：上游 tarball 被替换过的事情发生过，
@@ -68,7 +59,9 @@ fetch() {
     rm -f "$file"
   fi
   echo "  下载 $(basename "$file") ..."
-  "$CURL" -fsSL --retry 3 -o "$file" "$url"
+  # --retry-all-errors：实测 zlib.net 在本网路会先传几十 KB 再 connection reset，
+  # 默认只对瞬态 HTTP 码重试，reset 直接失败退出；加上后可自动重试。
+  "$CURL" -fsSL --retry 5 --retry-all-errors -o "$file" "$url"
   local got
   got="$(sha256sum "$file" | cut -d' ' -f1)"
   if [ "$got" != "$want" ]; then
@@ -87,46 +80,39 @@ fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/li
 fetch "https://zlib.net/fossils/zlib-${ZLIB_VER}.tar.gz" \
       "$SRC/zlib-${ZLIB_VER}.tar.gz" "$ZLIB_SHA256"
 
-# 解压必须在 POSIX 路径下进行：msys 的 tar 会把 "C:\..." 里的 C: 当成远程
-# 主机名，报 "Cannot connect to C: resolve failed"。
-#
-# 用 bsdtar 而不是 tar：m2-base 的 GNU tar 解 .xz 时要外部调 xz，而 m2-base
-# 里没有 xz，报 "xz: Cannot exec"。想补 conda:m2-xz 又会撞 msys2-conda-epoch
-# 版本冲突装不上。bsdtar 自带 lzma 支持，一个命令解决三种格式。
 cd "$SRC"
-[ -d "ffmpeg-${FFMPEG_VER}" ] || bsdtar -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
-[ -d "libwebp-${WEBP_VER}" ]  || bsdtar -xf "libwebp-${WEBP_VER}.tar.gz"
-[ -d "zlib-${ZLIB_VER}" ]     || bsdtar -xf "zlib-${ZLIB_VER}.tar.gz"
-
-CFLAGS_COMMON="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -O2"
+[ -d "ffmpeg-${FFMPEG_VER}" ] || tar -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
+[ -d "libwebp-${WEBP_VER}" ]  || tar -xf "libwebp-${WEBP_VER}.tar.gz"
+[ -d "zlib-${ZLIB_VER}" ]     || tar -xf "zlib-${ZLIB_VER}.tar.gz"
 
 echo
 echo "=== 2/5 构建静态 zlib ==="
-# 不用 conda 的 zlib：win-64 包是 MSVC 构建，产物会依赖 VCRUNTIME140.dll，
-# 等于要随 omy 一起分发 MSVC 运行时。
+# 不用发行版的 zlib：不能保证是静态库，且版本/path 不受控。自编一份与
+# Windows 流程同版本，产物确定只有 .a。
 rm -rf "$WORK/bld/zlib"
-cmake -S "$SRC/zlib-${ZLIB_VER}" -B "$WORK/bld/zlib" -G Ninja \
-  -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX="$ZLIB" -DBUILD_SHARED_LIBS=OFF \
-  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-  -DCMAKE_C_FLAGS="$CFLAGS_COMMON" \
-  -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres >/dev/null
+# 不用 Ninja（系统未必装）：Unix Makefiles 是系统自带 make 就能用的生成器。
+cmake -S "$SRC/zlib-${ZLIB_VER}" -B "$WORK/bld/zlib" -G "Unix Makefiles" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$ZLIB" -DBUILD_SHARED_LIBS=OFF >/dev/null
 cmake --build "$WORK/bld/zlib" --target install >/dev/null
-# cmake 装出来的名字是 libzlibstatic.a，而 FFmpeg 按 -lz 找 libz.a
-cp -f "$ZLIB/lib/libzlibstatic.a" "$ZLIB/lib/libz.a"
+# Windows 上 cmake 产物叫 libzlibstatic.a；Linux 上通常直接是 libz.a。
+# 哪个名字都补出 FFmpeg 按 -lz 查找的 libz.a，避免依赖「这次 cmake 怎么命名」。
+if [ ! -f "$ZLIB/lib/libz.a" ]; then
+  cp -f "$ZLIB"/lib/libz*.a "$ZLIB/lib/libz.a"
+fi
+# zlib 的 CMakeLists 无视 BUILD_SHARED_LIBS，始终同时装 .a 与 .so。链接器在
+# -L 目录里优先选 .so，那会让产物动态拖 libz —— 删掉共享库，强制只用静态。
+rm -f "$ZLIB"/lib/libz.so "$ZLIB"/lib/libz.so.*
 echo "  libz.a $(stat -c %s "$ZLIB/lib/libz.a") 字节"
 
 echo
 echo "=== 3/5 构建静态 libwebp ==="
-# 同样不用 conda 的 libwebp：只提供 MSVC 的 .lib，链出来的 exe 依赖
-# libwebp.dll，而该 DLL 又依赖 VCRUNTIME140.dll。
+# 关掉一切附带的命令行工具与 extras：我们只要被 FFmpeg 链接的 libwebp.a。
 rm -rf "$WORK/bld/webp"
-cmake -S "$SRC/libwebp-${WEBP_VER}" -B "$WORK/bld/webp" -G Ninja \
-  -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_BUILD_TYPE=Release \
+cmake -S "$SRC/libwebp-${WEBP_VER}" -B "$WORK/bld/webp" -G "Unix Makefiles" \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$WEBP" -DBUILD_SHARED_LIBS=OFF \
-  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-  -DCMAKE_C_FLAGS="$CFLAGS_COMMON" \
-  -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+  -DCMAKE_INSTALL_LIBDIR=lib \
   -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF \
   -DWEBP_BUILD_GIF2WEBP=OFF -DWEBP_BUILD_IMG2WEBP=OFF \
   -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF \
@@ -137,7 +123,7 @@ echo "  libwebp.a $(stat -c %s "$WEBP/lib/libwebp.a") 字节"
 
 echo
 echo "=== 4/5 配置并构建 FFmpeg ==="
-export FF_TARGET=windows
+export FF_TARGET=linux
 # shellcheck source=./configure-flags.sh
 source "$HERE/configure-flags.sh"
 
@@ -146,18 +132,22 @@ rm -rf "$BLD"
 mkdir -p "$BLD"
 cd "$BLD"
 
-export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$ZLIB/share/pkgconfig"
+# .pc 的位置随平台而变：libwebp 走 GNUInstallDirs（部分发行版默认 lib64），
+# zlib 装在 share/pkgconfig。各候选位置都给上，配置时已用 -DCMAKE_INSTALL_LIBDIR
+# 归一到 lib，lib64 只是兜底。
+export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$WEBP/lib64/pkgconfig:$ZLIB/lib/pkgconfig:$ZLIB/share/pkgconfig"
 
 # < /dev/null：不给 configure 任何标准输入，避免它在某些探测分支里等输入
 "$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null
 
 make -j"$(nproc)"
 
-cp -f ffmpeg.exe ffprobe.exe "$OUT/"
+# make 产出的 ffmpeg/ffprobe 已经是 strip 后的（未 strip 的是 ffmpeg_g/ffprobe_g）。
+cp -f ffmpeg ffprobe "$OUT/"
 
 echo
 echo "=== 5/5 产物 ==="
-for f in ffmpeg.exe ffprobe.exe; do
+for f in ffmpeg ffprobe; do
   printf '  %-12s %10d 字节\n' "$f" "$(stat -c %s "$OUT/$f")"
 done
 
@@ -165,7 +155,7 @@ done
 # 且要说明如何获取对应源码（SOURCE.txt）。
 cp -f "$SRC/ffmpeg-${FFMPEG_VER}/COPYING.LGPLv2.1" "$OUT/" 2>/dev/null || true
 cat > "$OUT/SOURCE.txt" <<EOF
-本目录中的 ffmpeg.exe / ffprobe.exe 由 omy 项目自行编译。
+本目录中的 ffmpeg / ffprobe 由 omy 项目自行编译。
 
 FFmpeg 版本: ${FFMPEG_VER}
 源码地址:    https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz

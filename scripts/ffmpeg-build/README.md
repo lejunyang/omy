@@ -5,14 +5,16 @@
 
 ## 产物
 
-单一产物，包含 omy 需要的全部能力。实测体积（win-x64）：
+单一产物，包含 omy 需要的全部能力。实测体积：
 
-| 内容 | 实测体积 |
-|---|---|
-| `ffmpeg.exe` + `ffprobe.exe` | **12.44 MB** |
+| 平台 | 内容 | 实测体积 |
+|---|---|---|
+| win-x64 | `ffmpeg.exe` + `ffprobe.exe` | **12.44 MB** |
+| linux-x64 | `ffmpeg` + `ffprobe` | **12.53 MB** |
 
-已 strip，静态链接 libwebp 与 zlib，除系统 DLL 外无任何外部依赖
-（可以只拷这两个 exe）。
+已 strip，静态链接 libwebp 与 zlib：Windows 版除系统 DLL 外无任何外部依赖
+（可以只拷这两个 exe）；Linux 版 glibc 等系统库仍动态链接（全静态 glibc 有
+NSS 等已知坑），libwebp/zlib 已嵌入，`ldd` 看不到它们。
 
 能力范围：
 
@@ -34,6 +36,8 @@
 
 ## 用法
 
+### Windows
+
 ```powershell
 # 1. 确认工具链（会打印下一步要用的 SYSROOT）
 pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
@@ -46,21 +50,32 @@ bash scripts/ffmpeg-build/build-windows.sh
 bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-build/out
 ```
 
+Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml` 提供。
+
+### Linux
+
+```bash
+# nasm 由 osdk.toml 提供（系统通常不自带），gcc/make/cmake/pkg-config 用系统的
+bash scripts/ffmpeg-build/build-linux.sh
+
+# 校验产物（verify.sh 按文件名自动识别平台，Linux 查 ldd，Windows 查 objdump）
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
 产物目录默认是 `$OMY_FF_WORK/out`（`OMY_FF_WORK` 默认
 `/tmp/omy-ffmpeg-build`），可用 `OMY_FF_OUT` 指定别处——CI 就是这么把产物
 直接放进打包目录的。
-
-Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml` 提供。
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
 | `VERSION` | 三个上游库的版本与 SHA256，每两行一组 |
-| `configure-flags.sh` | 组件配方 |
-| `build-windows.sh` | 下载校验、编 zlib 与 libwebp、编 FFmpeg |
+| `configure-flags.sh` | 组件配方（Windows / Linux 共用，由 `FF_TARGET` 区分） |
+| `build-windows.sh` | 下载校验、编 zlib 与 libwebp、交叉编 FFmpeg |
+| `build-linux.sh` | 下载校验、编 zlib 与 libwebp、原生编 FFmpeg |
 | `verify.sh` | 校验许可证边界、外部依赖、逐项复查组件 |
-| `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT` |
+| `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT`（仅 Windows） |
 
 ## 为什么必须跑 verify.sh
 

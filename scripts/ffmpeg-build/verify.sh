@@ -12,8 +12,11 @@ set -uo pipefail
 
 OUT="${1:?用法: verify.sh <产物目录>}"
 
-FFMPEG="$OUT/ffmpeg.exe"
-FFPROBE="$OUT/ffprobe.exe"
+# 产物名随平台：Windows 是 ffmpeg.exe，Linux 是 ffmpeg。按目录里实际存在的文件
+# 选择，这样在任一平台都能校验同一份产物布局。
+if [ -f "$OUT/ffmpeg.exe" ]; then EXE=.exe; else EXE=""; fi
+FFMPEG="$OUT/ffmpeg${EXE}"
+FFPROBE="$OUT/ffprobe${EXE}"
 fail=0
 
 note() { printf '  %-46s %s\n' "$1" "$2"; }
@@ -53,19 +56,36 @@ fi
 
 echo
 echo "--- 3. 外部运行时依赖 ---"
-# mingw 构建有时会拖上 libgcc_s_seh-1.dll 之类，那样就不能只拷两个 exe。
-# 同理若 libwebp/zlib 没静态进去，会多出 libwebp.dll 甚至 VCRUNTIME140.dll。
-if command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1; then
-  ext="$(x86_64-w64-mingw32-objdump -p "$FFMPEG" \
-        | sed -n 's/.*DLL Name: *//p' \
-        | grep -Ei 'libgcc|libwinpthread|libstdc|msys|libwebp|vcruntime|msvcp|libz' || true)"
-  if [ -n "$ext" ]; then
-    bad "无外部运行时 DLL" "$(tr '\n' ' ' <<<"$ext")"
+if [ "$EXE" = .exe ]; then
+  # mingw 构建有时会拖上 libgcc_s_seh-1.dll 之类，那样就不能只拷两个 exe。
+  # 同理若 libwebp/zlib 没静态进去，会多出 libwebp.dll 甚至 VCRUNTIME140.dll。
+  if command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1; then
+    ext="$(x86_64-w64-mingw32-objdump -p "$FFMPEG" \
+          | sed -n 's/.*DLL Name: *//p' \
+          | grep -Ei 'libgcc|libwinpthread|libstdc|msys|libwebp|vcruntime|msvcp|libz' || true)"
+    if [ -n "$ext" ]; then
+      bad "无外部运行时 DLL" "$(tr '\n' ' ' <<<"$ext")"
+    else
+      note "无外部运行时 DLL" "ok"
+    fi
   else
-    note "无外部运行时 DLL" "ok"
+    note "无外部运行时 DLL" "跳过（objdump 不可用）"
   fi
 else
-  note "无外部运行时 DLL" "跳过（objdump 不可用）"
+  # Linux：libwebp / zlib 必须已静态嵌入，ldd 里不应出现它们。
+  # glibc / libgcc_s 等系统库动态链接是预期的（见 configure-flags.sh 的说明）。
+  if command -v ldd >/dev/null 2>&1; then
+    ext="$(ldd "$FFMPEG" \
+          | awk '{print $1}' \
+          | grep -Ei 'libwebp|libz\.so' || true)"
+    if [ -n "$ext" ]; then
+      bad "libwebp/zlib 已静态嵌入" "$(tr '\n' ' ' <<<"$ext")"
+    else
+      note "libwebp/zlib 已静态嵌入" "ok"
+    fi
+  else
+    note "libwebp/zlib 已静态嵌入" "跳过（ldd 不可用）"
+  fi
 fi
 
 echo

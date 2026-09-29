@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # FFmpeg 裁剪构建的组件配方。
 #
-# 用法：source 本文件后读 $FF_FLAGS 数组。需要先设好 SYSROOT / WEBP / ZLIB。
+# 用法：source 本文件后读 $FF_FLAGS 数组。
+#   - Windows（交叉编译）：先设好 SYSROOT / WEBP / ZLIB，FF_TARGET=windows。
+#   - Linux（原生构建）：先设好 WEBP / ZLIB，FF_TARGET=linux。
+#   未显式给 FF_TARGET 时，从 SYSROOT 是否存在推断（兼容旧调用方式）。
 #
 # 每一条 flag 的取舍都有实测依据，见 docs/research/13-ffmpeg-minimal-build.md
 # 的 §4.2.1 与 §4.5。改动前请先读那两节，多数「看起来多余」的 flag 都是踩过坑
@@ -9,9 +12,13 @@
 
 set -euo pipefail
 
-: "${SYSROOT:?}"
 : "${WEBP:?}"
 : "${ZLIB:?}"
+
+FF_TARGET="${FF_TARGET:-}"
+if [ -z "$FF_TARGET" ]; then
+  if [ -n "${SYSROOT:-}" ]; then FF_TARGET=windows; else FF_TARGET=linux; fi
+fi
 
 # ---- 视频解码器 ---------------------------------------------------------
 #
@@ -35,25 +42,8 @@ VIDEO_BSF='extract_extradata,h264_mp4toannexb,hevc_mp4toannexb'
 # 事实标准音轨，去掉会让绝大多数视频连时长都探测不出。
 AUDIO_DEC='aac,mp3,opus,vorbis,flac,pcm_s16le'
 
+# 两个平台共用的配方：从零开始只加需要的组件，许可证边界保持 LGPL-2.1+。
 FF_FLAGS=(
-  # 交叉编译工具链。
-  # configure 不读环境变量 CC，必须用 --cc= 显式传；binutils 只有带前缀的
-  # 名字，缺 nm 时 configure 只是静默降级不报错，所以逐个显式指定。
-  --cc=x86_64-w64-mingw32-gcc
-  --nm=x86_64-w64-mingw32-nm
-  --ar=x86_64-w64-mingw32-ar
-  --ranlib=x86_64-w64-mingw32-ranlib
-  --strip=x86_64-w64-mingw32-strip
-  --windres=x86_64-w64-mingw32-windres
-  --target-os=mingw32
-  --arch=x86_64
-
-  # CRT 在 <sysroot>/usr/lib 而非 <sysroot>/lib，gcc 默认搜不到。
-  # 实测 --sysroot= 无效，必须用 -B 指出来，否则报 cannot find crt2.o。
-  --extra-cflags="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -I${WEBP}/include -I${ZLIB}/include -O2"
-  --extra-ldflags="-B${SYSROOT}/usr/lib -L${WEBP}/lib -L${ZLIB}/lib -static"
-  --pkg-config-flags=--static
-
   # 从零开始只加需要的，而不是从全集里减。
   --disable-everything
   --disable-doc
@@ -103,3 +93,51 @@ FF_FLAGS=(
   --enable-swscale
   --enable-avfilter
 )
+
+# ---- 平台相关：编译器与链接参数 ----------------------------------------
+case "$FF_TARGET" in
+  windows)
+    : "${SYSROOT:?Windows 交叉编译必须由外层传入 SYSROOT}"
+    FF_FLAGS+=(
+      # 交叉编译工具链。
+      # configure 不读环境变量 CC，必须用 --cc= 显式传；binutils 只有带前缀的
+      # 名字，缺 nm 时 configure 只是静默降级不报错，所以逐个显式指定。
+      --cc=x86_64-w64-mingw32-gcc
+      --nm=x86_64-w64-mingw32-nm
+      --ar=x86_64-w64-mingw32-ar
+      --ranlib=x86_64-w64-mingw32-ranlib
+      --strip=x86_64-w64-mingw32-strip
+      --windres=x86_64-w64-mingw32-windres
+      --target-os=mingw32
+      --arch=x86_64
+
+      # CRT 在 <sysroot>/usr/lib 而非 <sysroot>/lib，gcc 默认搜不到。
+      # 实测 --sysroot= 无效，必须用 -B 指出来，否则报 cannot find crt2.o。
+      # -static：产物不拖带 mingw 运行时 DLL（verify.sh 会复查）。
+      --extra-cflags="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -I${WEBP}/include -I${ZLIB}/include -O2"
+      --extra-ldflags="-B${SYSROOT}/usr/lib -L${WEBP}/lib -L${ZLIB}/lib -static"
+      --pkg-config-flags=--static
+    )
+    ;;
+  linux)
+    # 原生构建：不显式传 --cc，configure 自己找到系统 gcc。
+    # nasm：PATH 上的 shim 可用时自动找到；build-linux.sh 解析出实体路径时
+    # 经 --x86asmexe 显式传入，避免依赖 CWD 的 shim 选版本逻辑。
+    if [ -n "${NASM:-}" ] && [ -x "$NASM" ]; then
+      FF_FLAGS+=(--x86asmexe="$NASM")
+    fi
+    FF_FLAGS+=(
+      #
+      # 不加 -static：glibc 全静态有 NSS/getaddrinfo 等已知坑，而且 omy 只需要
+      # libwebp / zlib 静态，它们由 -L 指向自编的 .a、配合 pkg-config --static
+      # 嵌入二进制；glibc 仍动态链接（verify.sh 用 ldd 复查没有动态 libwebp/z）。
+      --extra-cflags="-I${WEBP}/include -I${ZLIB}/include -O2"
+      --extra-ldflags="-L${WEBP}/lib -L${ZLIB}/lib"
+      --pkg-config-flags=--static
+    )
+    ;;
+  *)
+    echo "未知 FF_TARGET: $FF_TARGET（只支持 windows / linux）" >&2
+    exit 1
+    ;;
+esac
