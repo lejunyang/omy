@@ -9,10 +9,17 @@ android-cmdline-tools = "latest"
 android-system-images = "android-35;google_apis;x86_64"
 # FFmpeg 裁剪构建的工具链（见 docs/research/13-ffmpeg-minimal-build.md）。
 # Windows 上不需要装 MSYS2：mingw 交叉编译器与 POSIX 构建环境都由 conda 提供。
-"conda:gcc_win-64" = "16.2.0"       # mingw-w64 交叉编译器 + binutils
-"conda:nasm" = "2.16.3"            # x86 SIMD 汇编
-"conda:cmake" = "4.4.3"            # 编 libwebp 用
-"conda:ninja" = "1.13.2"
+#
+# 平台边界：除 nasm 外，下列 conda 包都用 when 限定为 Windows 专用。
+# Linux 原生构建直接用系统已有的 gcc / make / cmake / pkg-config，不需要这些
+# 包 —— 若在 Linux 也安装，m2-base 的 expose shim 会用 MSYS2 版的
+# bash/sed/make 盖住系统同名命令（且它们是 Windows exe，在 Linux 根本跑不了），
+# gcc_win-64 这类交叉编译器则毫无用处。nasm 是唯一系统通常不自带、而两个平台
+# 都需要的工具（x86 SIMD 汇编），所以 Windows 与 Linux 都装它。
+"conda:gcc_win-64" = { version = "16.2.0", when = { os = ["windows"] } }  # mingw-w64 交叉编译器 + binutils
+"conda:nasm" = { version = "2.16.3", when = { os = ["windows", "linux"] } }  # x86 SIMD 汇编
+"conda:cmake" = { version = "4.4.3", when = { os = ["windows"] } }  # 编 libwebp 用
+"conda:ninja" = { version = "1.13.2", when = { os = ["windows"] } }
 #
 # POSIX 环境刻意只 pin m2-base 一个包、其余用 `with` 装进同一 prefix，
 # 而不是每个 m2-* 各 pin 一行。原因不是少写几行：
@@ -34,7 +41,7 @@ android-system-images = "android-35;google_apis;x86_64"
 # 本段由 `osdk use conda:m2-base@2022.6.1 --opt with=m2-make,m2-diffutils,m2-pkg-config`
 # 生成，改动请用 osdk 命令而非手工编辑（`with` 参与安装 identity，
 # 手改会指向另一个 prefix）。
-"conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config" }
+"conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config", when = { os = ["windows"] } }
 node = "22.23.3"
 pnpm = "9.15.1"
 android-platforms = "=android-36"
@@ -44,6 +51,33 @@ expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tai
 
 [settings.shims.tools."conda:gcc_win-64"]
 expose = ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++", "x86_64-w64-mingw32-ar", "x86_64-w64-mingw32-as", "x86_64-w64-mingw32-nm", "x86_64-w64-mingw32-ranlib", "x86_64-w64-mingw32-strip", "x86_64-w64-mingw32-objdump", "x86_64-w64-mingw32-windres", "x86_64-w64-mingw32-ld", "x86_64-w64-mingw32-dlltool"]
+
+# Linux 宿主系统开发包。osdk 只负责声明与检查（osdk pkg status / plan），
+# 安装由 osdk pkg apply 打印命令、用宿主包管理器执行，osdk 自己不提权。
+#
+# 清单依据两条线索核对过：Tauri 2 官方 Linux 前置包（与 .github/workflows 里
+# apt-get 装的完全一致），以及 `cargo tree` 里实际出现的全部 *-sys crate：
+# webkit2gtk/gtk/soup/atk/pango 等 -sys 由 Tauri/tao 带入，libdbus-sys 由
+# omy-secret 的 keyring（Secret Service）带入。
+#
+# nasm 不在此列：它由上方 osdk conda 提供，不重复声明。
+[syspkg.packages]
+# ---- 基础构建环境：FFmpeg 构建与各 -sys crate 编译 C 代码都依赖 ----
+"apt:build-essential" = { version = "latest", os = ["linux"] }  # gcc/g++/make/libc-dev
+"apt:pkg-config" = { version = "latest", os = ["linux"] }       # -sys crate 的 build script 查库
+"apt:cmake" = { version = "latest", os = ["linux"] }            # 编 zlib/libwebp；aws-lc-sys 也需要
+"apt:perl" = { version = "latest", os = ["linux"] }             # aws-lc-sys（rustls）构建脚本需要
+"apt:curl" = { version = "latest", os = ["linux"] }             # 下载 FFmpeg 等源码
+"apt:wget" = { version = "latest", os = ["linux"] }             # Tauri 构建需要
+"apt:file" = { version = "latest", os = ["linux"] }             # Tauri 构建需要
+# ---- omy-secret：keyring 的 Secret Service 后端 ----
+"apt:libdbus-1-dev" = { version = "latest", os = ["linux"] }
+# ---- omy-gui：Tauri 2 前置包 ----
+"apt:libwebkit2gtk-4.1-dev" = { version = "latest", os = ["linux"] }  # WebView（会带入 libgtk-3-dev）
+"apt:libxdo-dev" = { version = "latest", os = ["linux"] }             # tao 全局快捷键
+"apt:libssl-dev" = { version = "latest", os = ["linux"] }             # native-tls
+"apt:libayatana-appindicator3-dev" = { version = "latest", os = ["linux"] }  # 系统托盘
+"apt:librsvg2-dev" = { version = "latest", os = ["linux"] }           # SVG 加载
 
 [tasks.android-avd-prepare]
 run = 'pwsh -File spikes\android-external-edit-e2e\prepare-avd.ps1'
