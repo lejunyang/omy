@@ -63,6 +63,15 @@ fn make_encrypted(
     plaintext.to_vec()
 }
 
+/// 目录里是否存在 `<stem>.*.tmp` 形式的临时文件。
+/// tmp 名带 pid/nonce（见 AtomicWriter::create），无法按固定名字比对。
+fn any_tmp(dir: &Path, stem: &str) -> bool {
+    fs::read_dir(dir).expect("read_dir").flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with(&format!("{stem}.")) && n.ends_with(".tmp")
+    })
+}
+
 // ============================================================
 // 原子写入
 // ============================================================
@@ -115,8 +124,8 @@ fn aborted_writer_does_not_create_target() {
     w.abort();
 
     assert!(!target.exists(), "abort 后目标文件不应存在");
-    let tmp = d.join("never.bin.tmp");
-    assert!(!tmp.exists(), "abort 后临时文件必须被删除");
+    // tmp 名带 pid/nonce（见 AtomicWriter::create），按前缀+后缀扫描
+    assert!(!any_tmp(&d, "never.bin"), "abort 后临时文件必须被删除");
 }
 
 #[test]
@@ -131,7 +140,7 @@ fn dropped_writer_cleans_up_without_commit() {
     }
 
     assert!(!target.exists(), "未提交的写入不应产生目标文件");
-    assert!(!d.join("dropped.bin.tmp").exists(), "drop 必须清理临时文件");
+    assert!(!any_tmp(&d, "dropped.bin"), "drop 必须清理临时文件");
 }
 
 #[test]
@@ -162,6 +171,31 @@ fn atomic_write_creates_missing_parent_dirs() {
     let target = d.join("a").join("b").join("c.bin");
     write_atomic(&target, b"nested").expect("should create parents");
     assert_eq!(fs::read(&target).expect("read"), b"nested");
+}
+
+#[test]
+fn concurrent_writes_to_same_target_all_succeed() {
+    // 多个线程同时保存同一个文件：tmp 名必须互不相同，否则一个提交者的
+    // rename 会吃掉另一个的 tmp，后者报 ENOENT（真实出现过）。
+    let d = tmpdir("atomic-concurrent");
+    let target = d.join("shared.bin");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+    let mut handles = Vec::new();
+    for i in 0..16u8 {
+        let b = barrier.clone();
+        let t = target.clone();
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            write_atomic(&t, &[i]).map(|()| i)
+        }));
+    }
+    let written: u8 = handles
+        .into_iter()
+        .map(|h| h.join().expect("thread").expect("every write must succeed"))
+        .fold(0, |acc, i| acc ^ i);
+    assert_eq!(written, (0..16u8).fold(0, |a, i| a ^ i));
+    assert_eq!(fs::read(&target).unwrap().len(), 1, "最后一次提交的内容必须完整");
+    assert!(!any_tmp(&d, "shared.bin"), "提交后不应残留临时文件");
 }
 
 #[test]

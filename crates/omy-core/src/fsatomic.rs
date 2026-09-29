@@ -8,7 +8,7 @@
 //! 本模块实现规范 §10 的五步流程：
 //!
 //! ```text
-//! 1. 写入 <target>.tmp
+//! 1. 写入 <target>.<pid>.<nonce>.tmp
 //! 2. fsync(文件)
 //! 3. fsync(父目录)          ← 容易遗漏，但在部分文件系统上必需
 //! 4. rename(tmp → target)   ← 同文件系统内原子
@@ -40,6 +40,9 @@ pub const TMP_SUFFIX: &str = ".tmp";
 
 /// 断点续传的进度文件后缀（移动端后台挂起场景，规范 §10）。
 pub const PROGRESS_SUFFIX: &str = ".progress";
+
+/// 进程内自增序号：参与临时文件名，避免同一纳秒内的并发创建发生撞名。
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 把 [`io::Error`] 包装为带路径上下文的 [`Error::Io`]。
 ///
@@ -143,8 +146,15 @@ impl std::fmt::Debug for AtomicWriter {
 impl AtomicWriter {
     /// 创建临时文件并准备写入。
     ///
-    /// 临时文件名为 `<target><TMP_SUFFIX>`，与目标**同目录**——这是 rename
-    /// 原子性的前提（跨文件系统的 rename 不是原子操作，且多数平台直接失败）。
+    /// 临时文件名为 `<target>.<pid>.<nonce><TMP_SUFFIX>`，与目标**同目录**——
+    /// 这是 rename 原子性的前提（跨文件系统的 rename 不是原子操作，且多数平台
+    /// 直接失败）。
+    ///
+    /// 名字必须每个实例唯一，不能固定为 `<target>.tmp`：两个并发写入者（例如
+    /// 两个 Tauri 命令线程同时保存同一配置）会共用同一个 tmp 文件，先提交者
+    /// 的 rename 会把 tmp 移走，后提交者的 rename 报 ENOENT——并发保存因此
+    /// 偶发失败。唯一的 tmp 让各写入者互不干扰，最终语义仍是「最后一次提交
+    /// 胜出」。
     ///
     /// # Errors
     ///
@@ -155,9 +165,19 @@ impl AtomicWriter {
             fs::create_dir_all(&dir).map_err(|e| io_err(&dir, "create_dir_all", &e))?;
         }
 
-        let mut tmp = target.as_os_str().to_os_string();
-        tmp.push(TMP_SUFFIX);
-        let tmp = PathBuf::from(tmp);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_name = format!(
+            "{}.{}.{:x}-{}{}",
+            target.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
+            std::process::id(),
+            nanos,
+            seq,
+            TMP_SUFFIX
+        );
+        let tmp = dir.join(tmp_name);
 
         let file = OpenOptions::new()
             .write(true)
