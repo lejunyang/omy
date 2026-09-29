@@ -13,10 +13,23 @@
 //! 重启就没了**。用它存的远程位置密码，每次开机都要重新输入——这和没有
 //! 持久化差不多，偏偏 API 上完全看不出来，只有真的重启一次才会发现。
 //!
-//! 所以这里显式要求 Secret Service（gnome-keyring / KWallet 都实现了它）。
+//! 所以这里显式要求 Secret Service（gnome-keyring / KWallet / KeePassXC
+//! 都实现了它）。
 //! 代价是 headless 服务器上没有 D-Bus 就用不了，那时**如实报
 //! [`Error::NoBackend`]**，让上层告诉用户「装一个 gnome-keyring，或者
 //! 这个位置只能每次手动输密码」。
+//!
+//! # 存入前必须编码成纯文本（兼容所有提供者）
+//!
+//! Secret Service 规范允许 secret 是任意字节，但提供者的实现质量参差：
+//! kwalletd5 及 Plasma 6 早期的 ksecretd 会把 `text/*` 类型的数据经
+//! `QString::fromUtf8` 处理，非法字节被替换成 U+FFFD（KDE bug #520509）。
+//! 而 keyring crate 硬编码 `text/plain` 且我们存的是 32 字节随机密钥——
+//! 在 KDE 上必然被损坏，取回长度不对导致每次都重建密钥（远程密码全部要
+//! 重输）。这是 KDE 上大量软件（Zed、Salesforce CLI 等）的共性问题。
+//!
+//! 不能要求用户换提供者，所以存入前用 hex 编码成纯 ASCII、读回再解码
+//! （见 [`encode_key_text`]），对任何提供者及其版本都免疫。
 //!
 //! 这条是刻意的取舍：宁可明说不支持，也不要悄悄退回一个重启就失效、
 //! 或者干脆明文落盘的方案——用户会以为密码被保护着。
@@ -34,6 +47,40 @@
 
 use crate::{Error, ProtectKey, Protector, Result, KEY_LEN};
 use zeroize::Zeroizing;
+
+/// 文本编码密钥的前缀：识别新旧两种存储格式（见模块文档「存入前必须编码」）。
+const TEXT_KEY_PREFIX: &str = "omyhex:";
+
+/// 把密钥编码成 `omyhex:<hex>` 纯 ASCII 字符串，供凭据库存储。
+fn encode_key_text(key: &ProtectKey) -> Zeroizing<String> {
+    let mut s = String::with_capacity(TEXT_KEY_PREFIX.len() + KEY_LEN * 2);
+    s.push_str(TEXT_KEY_PREFIX);
+    for b in key.as_ref() {
+        use std::fmt::Write;
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    Zeroizing::new(s)
+}
+
+/// 解码凭据库里的密钥：带新前缀的走 hex 解码；无格式前缀、恰好为
+/// [`KEY_LEN`] 字节的视为旧版裸二进制（兼容已发布版本写入的条目）；
+/// 其余（如被提供者损坏过的数据）返回 `None`，让上层按「没有」重建。
+fn decode_key_text(raw: &[u8]) -> Option<ProtectKey> {
+    if let Some(hexpart) = raw.strip_prefix(TEXT_KEY_PREFIX.as_bytes()) {
+        if hexpart.len() != KEY_LEN * 2 {
+            return None;
+        }
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        for (i, pair) in hexpart.chunks_exact(2).enumerate() {
+            let hi = char::from(pair[0]).to_digit(16)?;
+            let lo = char::from(pair[1]).to_digit(16)?;
+            key[i] = u8::try_from((hi << 4) | lo).ok()?;
+        }
+        return Some(key);
+    }
+    // 旧格式：直接存的裸 32 字节
+    raw.try_into().map(Zeroizing::new).ok()
+}
 
 /// 用系统原生凭据库保管密钥。
 pub struct MachineProtector {
@@ -77,8 +124,7 @@ impl MachineProtector {
     all(unix, not(target_os = "macos"), not(target_os = "android"))
 ))]
 mod imp {
-    use super::{Error, ProtectKey, Result, KEY_LEN};
-    use zeroize::Zeroizing;
+    use super::{Error, ProtectKey, Result, decode_key_text, encode_key_text};
 
     /// 把 keyring 的错误翻成我们的分类。
     ///
@@ -103,19 +149,18 @@ mod imp {
         let raw = entry(service, id)?
             .get_secret()
             .map_err(|e| map_err(&e))?;
-        let bytes: [u8; KEY_LEN] = raw
-            .as_slice()
-            .try_into()
-            // 长度不对说明这条记录不是我们写的（或格式变了）。
-            // 当成「没有」而不是报错，让上层重新建一把——否则用户会卡在
-            // 一个自己无法修复的错误上
-            .map_err(|_| Error::NotFound)?;
-        Ok(Zeroizing::new(bytes))
+        // 解码两种存储格式（见 decode_key_text）；解不出说明这条记录不是
+        // 我们写的、或已被提供者损坏。当成「没有」而不是报错，让上层
+        // 重新建一把——否则用户会卡在一个自己无法修复的错误上。
+        decode_key_text(raw.as_slice()).ok_or(Error::NotFound)
     }
 
     pub(super) fn store(service: &str, id: &str, key: &ProtectKey) -> Result<()> {
+        // 先编码成纯 ASCII：避免 KWallet 系提供者损坏二进制 secret
+        // （见模块文档「存入前必须编码成纯文本」）。
+        let text = encode_key_text(key);
         entry(service, id)?
-            .set_secret(key.as_slice())
+            .set_secret(text.as_bytes())
             .map_err(|e| map_err(&e))
     }
 
@@ -305,5 +350,25 @@ mod tests {
                 "后端用不了时必须是 NoBackend，实际是 {e:?}"
             ),
         }
+    }
+
+    #[test]
+    fn key_text_roundtrips_and_accepts_legacy_raw() {
+        let key = Zeroizing::new([7u8; KEY_LEN]);
+        let text = encode_key_text(&key);
+        assert!(text.is_ascii(), "编码结果必须纯 ASCII");
+        let back = decode_key_text(text.as_bytes()).expect("解码");
+        assert_eq!(back.as_ref(), key.as_ref(), "往返必须逐字节一致");
+
+        // 旧版裸 32 字节条目必须仍能读（已发布版本的用户不能被迫重输密码）
+        let legacy = [192u8; KEY_LEN];
+        let got = decode_key_text(&legacy).expect("旧格式可读");
+        assert_eq!(got.as_ref(), legacy.as_slice());
+
+        // 被提供者损坏（长度不对）或内容不是 hex 的条目 → None
+        assert!(decode_key_text(b"not a key").is_none());
+        let mut bad = TEXT_KEY_PREFIX.to_string();
+        bad.push_str(&"zz".repeat(KEY_LEN));
+        assert!(decode_key_text(bad.as_bytes()).is_none());
     }
 }
