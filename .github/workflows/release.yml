@@ -324,23 +324,50 @@ jobs:
           path: out/*.apk
 
   build-linux:
-    name: 构建 Linux x86_64（构建门禁，尚未真机实测）
+    name: 构建 Linux x86_64 发行包（已在本机实测核心功能）
     needs: decide
     if: needs.decide.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    # 固定 ubuntu-22.04 而不用 latest：发行包对旧发行版的兼容性取决于构建机
+    # 的 glibc/系统库版本（22.04 为 glibc 2.35）。在最新版上构建出来的包
+    # 拿到 Debian 12 等系统上会因 GLIBC 符号版本缺失而运行即崩，而 deb 的
+    # Depends 不含 glibc 符号版本、apt 拦不住。AppImage 同理。
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
 
       - name: 安装系统依赖
-        # Tauri v2 需要 WebKitGTK 4.1，omy-gui 缺了会在链接期报错
+        # Tauri v2 需要 WebKitGTK 4.1；rpm 包由 Tauri 用纯 Rust rpm crate
+        # 生成，不需要 rpm/rpmbuild
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
-            curl wget file libxdo-dev libssl-dev \
+            curl wget file libxdo-dev libssl-dev pkg-config cmake \
             libayatana-appindicator3-dev librsvg2-dev
 
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
+
+      - name: 安装 osdk（提供 nasm）
+        # 与 Windows 任务同理：FFmpeg 构建需要的 nasm 由 osdk conda 提供，
+        # 不引入第二套工具版本。--no-modify-shell：CI 无需改启动文件
+        run: |
+          bin="$RUNNER_TEMP/osdk-bin"
+          curl -fsSL \
+            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.sh \
+            -o install-osdk.sh
+          sh install-osdk.sh --no-modify-shell --install-dir "$bin"
+          test -x "$bin/osdk" || { echo "osdk 未装到 $bin"; exit 1; }
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: 信任 osdk.toml
+        # syspkg 段与 conda: 工具属于 trust-required；未信任时所有 osdk 命令
+        # 都会失败（报错不提「没信任」）。-o accept-licenses=true：无人值守
+        # 下接受 Android SDK 许可（本任务实际不装安卓工具，但配置共用）。
+        run: |
+          osdk --yes trust osdk.toml
+          # 只装 FFmpeg 构建所需的 nasm：用 --no-deps 只装当前工具，避免把
+          # osdk.toml 里安卓整套工具链也拉下来拖慢任务
+          osdk -y install conda:nasm
 
       # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
       - uses: actions/setup-node@v6.0.0
@@ -355,20 +382,49 @@ jobs:
         with:
           key: release-linux
 
-      - name: 构建
+      - name: 构建内置 FFmpeg
+        # OMY_FF_OUT 指向 tauri.conf.json 声明的 resources 源目录
+        # crates/omy-gui/vendor-ffmpeg，bundle 时原样收进三种发行包
         run: |
-          cargo build --release -p omy-cli -p omy-gui
+          OMY_FF_OUT="$PWD/crates/omy-gui/vendor-ffmpeg" \
+            bash scripts/ffmpeg-build/build-linux.sh
 
-      - name: 打包
+      - name: 校验 FFmpeg 产物
+        # 打包前门禁，理由同 Windows：configure/make 退出 0 不代表需要的
+        # 组件真的启用了，逐项复查才能发现
+        run: bash scripts/ffmpeg-build/verify.sh crates/omy-gui/vendor-ffmpeg
+
+      - name: 安装 tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: 构建并生成发行包（deb/rpm/AppImage）
+        # 单独走 tauri build，不直接 cargo build --release：前端由 build.rs
+        # 自动构建，之后按 tauri.conf.json 的 bundle.targets 生成三种包。
+        # tauri-cli 2.x 的 build 不支持 -p，在 crate 目录下执行即构建该包
+        working-directory: crates/omy-gui
+        run: cargo tauri build
+
+      - name: 同时构建独立 CLI 并打裸 tarball
+        # 给只想要命令行、不想装 deb 的用户；不内置 FFmpeg（保持精简），
+        # 这类用户自行安装系统 FFmpeg 即可
         run: |
-          mkdir -p dist
-          cp target/release/omy target/release/omy-gui README.md dist/
-          tar -czf omy-${{ needs.decide.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz -C dist .
+          cargo build --release -p omy-cli
+          version='${{ needs.decide.outputs.version }}'
+          mkdir -p dist-cli
+          cp target/release/omy README.md dist-cli/
+          tar -czf "omy-${version}-x86_64-unknown-linux-gnu-cli.tar.gz" -C dist-cli .
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          find target/release/bundle -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} out/ \;
+          cp *.tar.gz out/
+          ls -la out/
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: linux
-          path: '*.tar.gz'
+          path: out/*
 
   build-macos:
     name: 构建 macOS（构建门禁，尚未真机实测）
@@ -457,7 +513,9 @@ jobs:
             echo "| 文件 | 平台 |"
             echo "|---|---|"
             echo "| \`*-x86_64-pc-windows-msvc.zip\` | Windows 10/11 x86_64（内置 FFmpeg，解压即用） |"
-            echo "| \`*-x86_64-unknown-linux-gnu.tar.gz\` | Linux x86_64 |"
+            echo "| \`*.deb\` / \`*.rpm\` | Linux x86_64（Debian/Ubuntu/Fedora 等，内置 FFmpeg） |"
+            echo "| \`*.AppImage\` | Linux x86_64（免安装，内置 FFmpeg） |"
+            echo "| \`*-x86_64-unknown-linux-gnu-cli.tar.gz\` | 仅命令行的裸包，不内置 FFmpeg |"
             echo "| \`*-aarch64-apple-darwin.tar.gz\` | macOS（Apple Silicon） |"
             echo "| \`*-x86_64-apple-darwin.tar.gz\` | macOS（Intel） |"
             echo "| \`*.apk\` | Android（四个 ABI，**未签名**） |"
@@ -468,17 +526,20 @@ jobs:
             echo "|---|---|---|"
             echo "| Windows | ✅ | ✅ |"
             echo "| Android | ✅ | ✅ |"
-            echo "| Linux | ✅ | ❌ 尚未实测 |"
+            echo "| Linux（deb/rpm/AppImage/CLI） | ✅ | ⚠️ 核心功能本机测试通过，发行包安装未逐项实测 |"
             echo "| macOS（两种架构） | ✅ | ❌ 尚未实测 |"
             echo
-            echo "Linux 与 macOS 只经过 CI 编译与打包，未在真实系统上运行过，"
-            echo "可能存在运行时问题；这两个平台不内置 FFmpeg，需要自行安装或用"
-            echo "\`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。"
+            echo "Linux 发行包在 Ubuntu 22.04（glibc 2.35）上构建，Debian 12、"
+            echo "Ubuntu 22.04 及更新的发行版可用；deb/rpm 安装后 \`omy-gui\` 位于"
+            echo "应用菜单，内置 FFmpeg 随包安装。CLI 裸包不内置 FFmpeg，需要自行"
+            echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。macOS 仅经过 CI"
+            echo "编译与打包，未在真实系统上运行过。"
             echo
             echo "### 说明"
             echo
             echo "- \`omy\` 是命令行工具，\`omy-gui\` 是图形界面"
             echo "- APK **未签名**，安装需允许未知来源"
+            echo "- AppImage 若无 FUSE，可用 \`./omy_*.AppImage --appimage-extract-and-run\` 运行"
             echo "- 装完建议先跑 \`omy doctor\` 确认本机实际能力"
             echo
             echo "密码遗忘将导致数据永久丢失——设计上不存在找回机制。"

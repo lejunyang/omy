@@ -97,6 +97,12 @@ fn candidate_dirs() -> Vec<PathBuf> {
             dirs.push(d.to_path_buf());
             dirs.push(d.join("ffmpeg"));
             dirs.push(d.join("ffmpeg").join("bin"));
+            // 发行包布局（deb/rpm/AppImage）：主程序在 <prefix>/bin，
+            // 内置 FFmpeg 作为资源位于 <prefix>/lib/omy/ffmpeg。
+            // AppImage 运行时挂载目录里也是同样的相对结构。
+            if let Some(prefix) = d.parent() {
+                dirs.push(prefix.join("lib").join("omy").join("ffmpeg"));
+            }
             // 开发期：target/release/omy.exe → 仓库根/tools/ffmpeg/bin
             if let Some(up2) = d.parent().and_then(Path::parent) {
                 dirs.push(up2.join("tools").join("ffmpeg").join("bin"));

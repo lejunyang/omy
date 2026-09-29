@@ -35,8 +35,11 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
-    "icon": ["icons/icon.ico"]
+    "active": true,
+    "targets": ["deb", "rpm", "appimage"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": {
+      "vendor-ffmpeg/": "ffmpeg/"
+    }
   }
 }
