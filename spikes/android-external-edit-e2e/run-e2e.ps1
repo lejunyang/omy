@@ -82,17 +82,12 @@ function Read-EditorResult {
 }
 
 function Select-TestEditor {
-    # ACTION_EDIT 只有一个处理器时，系统可能跳过选择列表并直接启动；
-    # 多处理器时才显示 chooser。先等直达结果，再按节点选择，兼容两种设备状态。
-    $deadline = (Get-Date).AddSeconds(4)
-    do {
-        $direct = Read-EditorResult
-        if ($direct) { return $direct }
-        Start-Sleep -Milliseconds 300
-    } while ((Get-Date) -lt $deadline)
-
-    $pair = Wait-Ui 'chooser' { param($x) $x.SelectSingleNode('//node[@text="omy test editor"]') }
+    # 按自定义 chooser 的结构与稳定 content-desc 定位，避免应用名与文件名
+    # 互相包含时点错节点，把探针错误误报成产品缺陷。
+    $pair = Wait-Ui 'chooser' { param($x) $x.SelectSingleNode('//node[@class="android.widget.LinearLayout" and @content-desc="omy test editor"]') }
     Tap-Node $pair[1] 'omy test editor'
+    $pair = Wait-Ui 'chooser-open' { param($x) $x.SelectSingleNode('//node[@class="android.widget.TextView" and @content-desc="omy-file-chooser-open"]') }
+    Tap-Node $pair[1] 'chooser open'
     return Wait-Until { Read-EditorResult } 15 '测试编辑器未写入结果'
 }
 
@@ -214,6 +209,28 @@ try {
     Assert-True ($editResult['write_result'] -eq 'ok') '第三方编辑器必须能写入可编辑 URI'
     Assert-True ($editResult['uri'] -eq $stableUri) '同一远端文件的 URI 必须稳定不变'
     Wait-Until { [IO.File]::ReadAllText((Join-Path $davRoot 'note.txt'), (New-Object Text.UTF8Encoding $false, $true)) -eq "edited-by-omy-test-editor-v1`n" } 15 '回到前台后未立即同步到 WebDAV'
+
+    # 接收 Activity 已结束后杀掉 Omy 的 UI 进程，再让编辑器不带任何 URI grant
+    # 重开原 URI。只有显式 grantUriPermission 留下的包级授权能让这次访问成功；
+    # 单靠首次 ACTION_EDIT 上的临时 flags，这里会直接得到 SecurityException。
+    & adb -s $script:serial shell input keyevent 3 | Out-Null
+    Start-Sleep -Milliseconds 500
+    & adb -s $script:serial shell am kill org.omy.app | Out-Null
+    Wait-Until {
+        [string]::IsNullOrWhiteSpace(((& adb -s $script:serial shell pidof org.omy.app 2>$null) | Out-String))
+    } 5 'Omy 后台进程未被杀掉，无法验证 FileProvider 冷启动'
+    & adb -s $script:serial shell run-as org.omy.testeditor rm -rf shared_prefs 2>$null
+    & adb -s $script:serial shell am start -W -n org.omy.testeditor/.EditorActivity `
+        -a org.omy.testeditor.REOPEN_GRANTED_URI -d $stableUri -t text/plain | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '测试编辑器无法重开已授权 URI' }
+    $reopenResult = Wait-Until { Read-EditorResult } 15 '测试编辑器未记录重开结果'
+    Assert-True (-not $reopenResult['flag_read'] -and -not $reopenResult['flag_write']) '重开探针不能携带新的临时 URI 授权'
+    Assert-True ([string]::IsNullOrEmpty($reopenResult['read_error'])) 'Omy 进程退出后原 URI 已无法读取'
+    Assert-True ($reopenResult['before'] -eq "edited-by-omy-test-editor-v1`n") '重开 URI 没有读到同一份稳定工作文件'
+    Assert-True ($reopenResult['write_result'] -eq 'ok') 'Omy 进程退出后原 URI 已无法写入'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $davRoot 'note.txt'), (New-Object Text.UTF8Encoding $false, $true)) -eq "edited-by-omy-test-editor-v1`n") 'Omy 未启动时不应在后台偷偷同步'
+    & adb -s $script:serial shell monkey -p org.omy.app -c android.intent.category.LAUNCHER 1 | Out-Null
+    Wait-Until { [IO.File]::ReadAllText((Join-Path $davRoot 'note.txt'), (New-Object Text.UTF8Encoding $false, $true)) -eq "reopened-after-omy-kill`n" } 20 '重启 Omy 后未同步通过持久授权写入的内容'
 
     $timed = Join-Path $stateDir 'timed.txt'
     [IO.File]::WriteAllText($timed, "timed-sync`n", (New-Object Text.UTF8Encoding $false))

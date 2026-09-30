@@ -25,6 +25,7 @@ class OpenExternalFileArgs {
   lateinit var path: String
   lateinit var mime: String
   var writable: Boolean = false
+  var explicitGrant: Boolean = false
 }
 
 @InvokeArg
@@ -46,12 +47,18 @@ class FileAssociationArgs {
   lateinit var extension: String
 }
 
+@InvokeArg
+class RevokeFilesArgs {
+  lateinit var paths: Array<String>
+}
+
 /**
  * Android 外部应用桥。
  *
  * WebDAV 外部编辑仍只允许应用私有缓存目录；普通本地文件由 Rust 的 token
  * 登记表解析出真实路径后才进入这里，前端不能直接传任意路径。FileProvider
- * 虽覆盖共享存储路径，但每次只向最终选中的组件授予当前 URI 的临时权限。
+ * 虽覆盖共享存储路径，但每次只向最终选中的组件授权。普通文件使用包级
+ * 长期授权；加密文件的明文工作副本只使用随接收 Activity 生命周期存在的临时授权。
  */
 @TauriPlugin
 class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
@@ -114,15 +121,45 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
       watch(file)
     }
 
-    try {
-      activity.startActivity(Intent.createChooser(intent, null).apply { addFlags(flags) })
-    } catch (_: ActivityNotFoundException) {
+    val handlers = queryHandlers(intent)
+    if (handlers.isEmpty()) {
       invoke.reject("没有能打开此格式的应用", "no_handler")
       return
     }
-    val ret = JSObject()
-    ret.put("uri", uri.toString())
-    invoke.resolve(ret)
+    // 应用内 chooser 让我们拿到确切包名：普通文件再显式 grant，使 Omy
+    // 进程退出后该包仍能重开稳定 URI；加密文件只保留 Intent 临时授权，
+    // 避免锁定后第三方还能重新读取明文工作副本。
+    showApplicationChooser(
+      invoke = invoke,
+      base = intent,
+      uri = uri,
+      handlers = handlers,
+      fileName = file.name,
+      extension = normalizeExtension(file.extension),
+      mime = mime,
+      appearance = "auto",
+      grantFlags = flags,
+      explicitGrant = args.explicitGrant,
+      allowRemember = false,
+      replaceExistingGrant = true,
+    )
+  }
+
+  /** 锁定时撤销全部加密工作副本的 URI 权限，并停止对应文件观察器。 */
+  @Command
+  fun revokeFiles(invoke: Invoke) {
+    val args = invoke.parseArgs(RevokeFilesArgs::class.java)
+    val root = File(activity.filesDir, "external-edit/files").canonicalFile
+    val rootPrefix = root.path + File.separator
+    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    args.paths.forEach { path ->
+      val file = File(path).canonicalFile
+      if (file.path.startsWith(rootPrefix)) {
+        activity.revokeUriPermission(fileUri(file), flags)
+        observers.remove(file.absolutePath)?.stopWatching()
+      }
+    }
+    invoke.resolve(JSObject())
   }
 
   /**
@@ -215,6 +252,10 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
     extension: String,
     mime: String,
     appearance: String,
+    grantFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION,
+    explicitGrant: Boolean = true,
+    allowRemember: Boolean = true,
+    replaceExistingGrant: Boolean = false,
   ) {
     synchronized(this) {
       if (chooserVisible) {
@@ -231,20 +272,37 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
         fileName = fileName,
         extension = extension,
         appearance = appearance,
-        remembered = savedComponent(extension),
+        remembered = if (allowRemember) savedComponent(extension) else null,
+        allowRemember = allowRemember,
         onOpen = { target, remember ->
           try {
-            launchResolved(base, uri, target, extension, mime, remember)
+            launchResolved(
+              base,
+              uri,
+              target,
+              extension,
+              mime,
+              remember && allowRemember,
+              grantFlags,
+              explicitGrant,
+              replaceExistingGrant,
+            )
             chooserVisible = false
-            invoke.resolve(openResult(opened = true, cancelled = false, remembered = remember))
+            invoke.resolve(
+              openResult(
+                opened = true,
+                cancelled = false,
+                remembered = remember && allowRemember,
+              ),
+            )
           } catch (_: ActivityNotFoundException) {
-            clearAssociation(extension)
+            if (allowRemember) clearAssociation(extension)
             chooserVisible = false
             invoke.reject("选择的应用无法打开此格式", "no_handler")
           } catch (_: SecurityException) {
-            clearAssociation(extension)
+            if (allowRemember) clearAssociation(extension)
             chooserVisible = false
-            invoke.reject("无法向选择的应用授予文件读取权限", "open_failed")
+            invoke.reject("无法向选择的应用授予文件访问权限", "open_failed")
           }
         },
         onCancel = {
@@ -261,11 +319,29 @@ class ExternalEditPlugin(private val activity: Activity) : Plugin(activity) {
     extension: String,
     mime: String,
     remember: Boolean,
+    grantFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION,
+    explicitGrant: Boolean = true,
+    replaceExistingGrant: Boolean = false,
   ) {
     val component = resolveComponent(target)
-    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-    activity.grantUriPermission(component.packageName, uri, flags)
-    activity.startActivity(Intent(base).apply { setComponent(component) })
+    if (replaceExistingGrant) {
+      // 同一稳定 URI 同时只交给最后选中的应用；否则普通文件每换一次
+      // 编辑器都会多留一个长期授权，加密文件还可能残留上次打开的授权。
+      activity.revokeUriPermission(
+        uri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+      )
+    }
+    if (explicitGrant) {
+      activity.grantUriPermission(component.packageName, uri, grantFlags)
+    }
+    try {
+      activity.startActivity(Intent(base).apply { setComponent(component) })
+    } catch (error: RuntimeException) {
+      // 启动失败不能遗留一个用户从未真正选用的长期授权。
+      if (explicitGrant) activity.revokeUriPermission(uri, grantFlags)
+      throw error
+    }
     if (remember) {
       associations.edit()
         .putString("component.$extension", component.flattenToString())

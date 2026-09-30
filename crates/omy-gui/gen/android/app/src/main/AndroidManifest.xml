@@ -39,6 +39,13 @@
             <category android:name="android.intent.category.DEFAULT" />
             <data android:scheme="content" android:mimeType="*/*" />
         </intent>
+        <intent>
+            <!-- WebDAV 的可编辑打开改为先查询确切组件再做包级 URI 授权；
+                 没有这条时 Android 11+ 会把 ACTION_EDIT 处理器隐藏掉。 -->
+            <action android:name="android.intent.action.EDIT" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="content" android:mimeType="*/*" />
+        </intent>
     </queries>
 
     <uses-feature android:name="android.software.leanback" android:required="false" />

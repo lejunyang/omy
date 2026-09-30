@@ -239,6 +239,7 @@ pub async fn external_edit_open(
     let session_id = stable_id(&req.place_id, &req.path);
     edits.detect_changes();
     let existing = edits.snapshot().into_iter().find(|s| s.id == session_id);
+    let mut encrypted = existing.as_ref().is_some_and(|s| s.encrypted);
     let pending_sync = existing.as_ref().is_some_and(|s| s.dirty || s.conflict);
 
     let roots = edits.roots()?;
@@ -258,7 +259,7 @@ pub async fn external_edit_open(
             .read_with_revision(&req.path)
             .await
             .map_err(|e| remote_error(&e))?;
-        let encrypted = omy_core::file::is_omy_file(&remote);
+        encrypted = omy_core::file::is_omy_file(&remote);
         let plaintext = if encrypted {
             let header =
                 omy_core::file::peek_header(&remote).map_err(|_| CmdError::code("corrupted"))?;
@@ -325,7 +326,15 @@ pub async fn external_edit_open(
         edits.upsert(session)?;
     }
 
-    open_native(&app, &local, &req.mime, req.editable)?;
+    // 普通文件允许所选应用在 Omy 退出后重新访问；加密文件暴露的是明文
+    // 工作副本，只能给随接收 Activity 生命周期结束的临时权限。
+    open_native(
+        &app,
+        &local,
+        &req.mime,
+        req.editable,
+        explicit_grant_allowed(encrypted),
+    )?;
     Ok(OpenResult {
         session_id,
         editable: req.editable,
@@ -710,6 +719,7 @@ mod mobile {
         path: &'a str,
         mime: &'a str,
         writable: bool,
+        explicit_grant: bool,
     }
 
     #[derive(Serialize)]
@@ -730,6 +740,11 @@ mod mobile {
     #[derive(Serialize)]
     struct AssociationArgs<'a> {
         extension: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct RevokeFilesArgs<'a> {
+        paths: &'a [String],
     }
     #[derive(serde::Deserialize)]
     struct RootResult {
@@ -752,7 +767,13 @@ mod mobile {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }
-        fn open(&self, path: &str, mime: &str, writable: bool) -> Result<(), String> {
+        fn open(
+            &self,
+            path: &str,
+            mime: &str,
+            writable: bool,
+            explicit_grant: bool,
+        ) -> Result<(), String> {
             self.0
                 .run_mobile_plugin::<serde_json::Value>(
                     "openFile",
@@ -760,7 +781,18 @@ mod mobile {
                         path,
                         mime,
                         writable,
+                        explicit_grant,
                     },
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+
+        pub(super) fn revoke_files(&self, paths: &[String]) -> Result<(), String> {
+            self.0
+                .run_mobile_plugin::<serde_json::Value>(
+                    "revokeFiles",
+                    RevokeFilesArgs { paths },
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -833,11 +865,12 @@ mod mobile {
         path: &std::path::Path,
         mime: &str,
         writable: bool,
+        explicit_grant: bool,
     ) -> Result<(), String> {
         use tauri::Manager as _;
         app.try_state::<Plugin<tauri::Wry>>()
             .ok_or_else(|| String::from("外部编辑插件未注册"))?
-            .open(&path.to_string_lossy(), mime, writable)
+            .open(&path.to_string_lossy(), mime, writable, explicit_grant)
     }
 
     pub fn open_local(
@@ -916,20 +949,56 @@ pub fn restore_watchers(app: &tauri::AppHandle, edits: &ExternalEdits) {
     }
 }
 
+/// 锁定时撤销加密工作副本的 URI 授权；普通文件的包级授权不受影响。
+pub fn revoke_encrypted_grants(app: &tauri::AppHandle, edits: &ExternalEdits) {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager as _;
+
+        let paths: Vec<String> = edits
+            .snapshot()
+            .into_iter()
+            .filter(|session| session.encrypted)
+            .map(|session| session.local_file)
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(plugin) = app.try_state::<mobile::Plugin<tauri::Wry>>()
+            && let Err(error) = plugin.revoke_files(&paths)
+        {
+            eprintln!("[omy] 撤销加密外部编辑授权失败: {error}");
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, edits);
+}
+
 #[cfg(target_os = "android")]
 pub use mobile::init;
 
-fn open_native(app: &tauri::AppHandle, path: &Path, mime: &str, writable: bool) -> CmdResult<()> {
+fn open_native(
+    app: &tauri::AppHandle,
+    path: &Path,
+    mime: &str,
+    writable: bool,
+    explicit_grant: bool,
+) -> CmdResult<()> {
     #[cfg(target_os = "android")]
     {
-        mobile::open(app, path, mime, writable)
+        mobile::open(app, path, mime, writable, explicit_grant)
             .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e })))
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, path, mime, writable);
+        let _ = (app, path, mime, writable, explicit_grant);
         Err(CmdError::code("external_edit_android_only"))
     }
+}
+
+/// 只有原本就是明文的普通文件可以在外部应用中保留包级授权。
+const fn explicit_grant_allowed(encrypted: bool) -> bool {
+    !encrypted
 }
 
 #[cfg(test)]
@@ -942,6 +1011,18 @@ mod tests {
         assert_eq!(a, stable_id("p1", "/私人/报告.docx"));
         assert_ne!(a, stable_id("p2", "/私人/报告.docx"));
         assert!(!a.contains("报告"), "URI 路径不能泄露远端目录");
+    }
+
+    #[test]
+    fn explicit_grant_is_never_used_for_decrypted_working_copies() {
+        assert!(
+            explicit_grant_allowed(false),
+            "普通文件退出 Omy 后仍应允许已选应用重新打开"
+        );
+        assert!(
+            !explicit_grant_allowed(true),
+            "加密文件的明文工作副本绝不能获得长期包级授权"
+        );
     }
 
     #[test]

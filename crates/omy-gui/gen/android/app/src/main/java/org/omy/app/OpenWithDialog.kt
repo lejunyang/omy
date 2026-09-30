@@ -36,6 +36,7 @@ internal class OpenWithDialog(
   private val extension: String,
   private val appearance: String,
   private val remembered: ComponentName?,
+  private val allowRemember: Boolean,
   private val onOpen: (ResolveInfo, Boolean) -> Unit,
   private val onCancel: () -> Unit,
 ) {
@@ -164,7 +165,9 @@ internal class OpenWithDialog(
       )
     })
 
-    root.addView(rememberRow())
+    if (allowRemember) {
+      root.addView(rememberRow())
+    }
 
     val actions = LinearLayout(activity).apply {
       orientation = LinearLayout.HORIZONTAL
@@ -188,7 +191,7 @@ internal class OpenWithDialog(
       activity.getString(R.string.file_chooser_open),
       primary = true,
       enabled = selected >= 0,
-    )
+    ).apply { contentDescription = "omy-file-chooser-open" }
     openButton = open
     open.setOnClickListener {
       val target = handlers.getOrNull(selected) ?: return@setOnClickListener

@@ -16,6 +16,8 @@ import java.nio.charset.StandardCharsets;
  */
 public final class EditorActivity extends Activity {
     private static final String EDITED = "edited-by-omy-test-editor-v1\n";
+    private static final String REOPEN_ACTION = "org.omy.testeditor.REOPEN_GRANTED_URI";
+    private static final String REOPENED = "reopened-after-omy-kill\n";
 
     @Override
     protected void onCreate(Bundle state) {
@@ -41,7 +43,8 @@ public final class EditorActivity extends Activity {
         if (uri != null) {
             try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
                 if (out == null) throw new IllegalStateException("null output stream");
-                out.write(EDITED.getBytes(StandardCharsets.UTF_8));
+                String replacement = REOPEN_ACTION.equals(action) ? REOPENED : EDITED;
+                out.write(replacement.getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 writeResult = "ok";
             } catch (Exception e) {

@@ -297,6 +297,7 @@ pub(crate) fn parse_salt(hex: &str) -> Option<[u8; 16]> {
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn lock(
+    app: tauri::AppHandle,
     state: State<'_, Shared>,
     devices: State<'_, crate::device_cmds::SharedDevices>,
     remote: State<'_, std::sync::Arc<crate::remote::RemoteSession>>,
@@ -305,7 +306,11 @@ pub async fn lock(
     place_containers: State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
     places: State<'_, std::sync::Arc<crate::places::PlaceRegistry>>,
     vreg: State<'_, std::sync::Arc<crate::virtual_place::VirtualRegistry>>,
+    external_edits: State<'_, std::sync::Arc<crate::external_edit::ExternalEdits>>,
 ) -> CmdResult<()> {
+    // 加密远程文件交给外部应用的是明文工作副本；锁定不仅要清内存密钥，
+    // 还要撤销它们的 FileProvider 授权。普通文件本来就是明文，不受影响。
+    crate::external_edit::revoke_encrypted_grants(&app, &external_edits);
     state.lock();
     devices.close();
     // Telegram 云位置的实时连接与虚拟位置的明文树也必须一起锁，否则「锁定」
