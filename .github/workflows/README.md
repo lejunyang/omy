@@ -144,6 +144,10 @@ resolver 3 也无法自动降级。因此流水线必须用 1.88 核实真实下
 
 windows 用 `choco`、linux 用 `apt`、macos 用 `brew`，都装在「测试」步骤之前。
 
+不同 FFmpeg 版本的列表表头分隔线并不固定：有的是 `--`，有的是 `------`。
+能力解析只把「至少两个连字符且没有其他字符」当作分隔线；若写死成三个以上，
+Ubuntu runner 上的 FFmpeg 虽然安装成功，最终仍会被误报成 `muxers=[]`。
+
 android 任务只跑 `cargo test -p omy-core`，core 不碰 FFmpeg，所以不用装。
 
 注意这不会掩盖「没装 FFmpeg 时怎么降级」那条路径：相关单元测试直接调降级

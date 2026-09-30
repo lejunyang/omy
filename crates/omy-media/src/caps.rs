@@ -144,8 +144,9 @@ fn parse_listing(text: &str, want_prefix: char) -> BTreeSet<String> {
     let mut past_header = false;
     for line in text.lines() {
         if !past_header {
-            // 分隔线是一串连字符，它之后才是数据行
-            if line.trim_start().starts_with("---") {
+            // FFmpeg 版本间列数不同，分隔线可能是 `--` 或 `------`；
+            // 只认「至少两个连字符且没有别的字符」，避免把普通说明误当分隔线。
+            if is_header_separator(line) {
                 past_header = true;
             }
             continue;
@@ -175,7 +176,7 @@ fn parse_muxers(text: &str) -> BTreeSet<String> {
     let mut past_header = false;
     for line in text.lines() {
         if !past_header {
-            if line.trim_start().starts_with("---") {
+            if is_header_separator(line) {
                 past_header = true;
             }
             continue;
@@ -189,6 +190,11 @@ fn parse_muxers(text: &str) -> BTreeSet<String> {
         }
     }
     out
+}
+
+fn is_header_separator(line: &str) -> bool {
+    let line = line.trim();
+    line.len() >= 2 && line.bytes().all(|b| b == b'-')
 }
 
 /// 跑一次 `ffmpeg <arg>` 并取 stdout。
@@ -295,7 +301,7 @@ Muxers:
  E matroska        Matroska
  E mov             QuickTime / MOV
  E webp            WebP
- ------
+ --
  E mp4             MP4 (MPEG-4 Part 14)
  E matroska        Matroska
  E mov             QuickTime / MOV
