@@ -49,9 +49,11 @@ use crate::{Error, ProtectKey, Protector, Result, KEY_LEN};
 use zeroize::Zeroizing;
 
 /// 文本编码密钥的前缀：识别新旧两种存储格式（见模块文档「存入前必须编码」）。
+#[cfg(not(target_os = "android"))]
 const TEXT_KEY_PREFIX: &str = "omyhex:";
 
 /// 把密钥编码成 `omyhex:<hex>` 纯 ASCII 字符串，供凭据库存储。
+#[cfg(not(target_os = "android"))]
 fn encode_key_text(key: &ProtectKey) -> Zeroizing<String> {
     let mut s = String::with_capacity(TEXT_KEY_PREFIX.len() + KEY_LEN * 2);
     s.push_str(TEXT_KEY_PREFIX);
@@ -65,6 +67,7 @@ fn encode_key_text(key: &ProtectKey) -> Zeroizing<String> {
 /// 解码凭据库里的密钥：带新前缀的走 hex 解码；无格式前缀、恰好为
 /// [`KEY_LEN`] 字节的视为旧版裸二进制（兼容已发布版本写入的条目）；
 /// 其余（如被提供者损坏过的数据）返回 `None`，让上层按「没有」重建。
+#[cfg(not(target_os = "android"))]
 fn decode_key_text(raw: &[u8]) -> Option<ProtectKey> {
     if let Some(hexpart) = raw.strip_prefix(TEXT_KEY_PREFIX.as_bytes()) {
         if hexpart.len() != KEY_LEN * 2 {
@@ -352,6 +355,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn key_text_roundtrips_and_accepts_legacy_raw() {
         let key = Zeroizing::new([7u8; KEY_LEN]);
