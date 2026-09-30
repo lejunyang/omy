@@ -189,11 +189,11 @@ It reports each missing item and how to obtain it:
 
 | Requirement | How to get it |
 |---|---|
-| JDK 17+ | Comes with Android Studio |
-| Android SDK (`ANDROID_HOME` points at it) | SDK Manager: Platform 34 + Build-Tools + Platform-Tools |
-| Android NDK (`NDK_HOME` points at it) | SDK Tools → NDK (Side by side) |
+| JDK 21 | Comes with Android Studio; keep it aligned with `osdk.toml` |
+| Android SDK (`ANDROID_HOME` points at it) | SDK Manager: Platform 36 + Build-Tools 37.0.0 + Platform-Tools |
+| Android NDK 29.0.14206865 (`NDK_HOME` points at it) | SDK Tools → NDK (Side by side) |
 | clang inside the NDK | Ships with the NDK |
-| Rust targets | `rustup target add aarch64-linux-android armv7-linux-androideabi` |
+| Rust targets | `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`, `x86_64-linux-android` |
 | tauri-cli | `cargo install tauri-cli --version "^2"` |
 
 ::: tip The NDK's clang is the easiest thing to miss
@@ -217,11 +217,18 @@ Note the armv7 wrapper is prefixed `armv7a-` (with an extra `a`), which does not
 Once ready:
 
 ```bash
+osdk run android-release-build  # build the frontend and four-ABI release APK
+
+# For interactive development, Tauri can still be invoked directly:
 cd crates/omy-gui
 cargo tauri android init
 cargo tauri android dev      # attach a device or emulator
-cargo tauri android build    # produce an APK
 ```
+
+`android-release-build` adds all four Rust Android targets, installs the locked
+frontend dependencies, builds `frontendDist`, installs the Tauri CLI, and then
+builds the APK. This prevents Tauri from checking for web assets before they
+have been generated.
 
 ## Running the tests
 

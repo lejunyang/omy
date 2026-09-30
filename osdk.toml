@@ -92,6 +92,18 @@ depends = ["android-avd-prepare"]
 run = 'pwsh -File spikes\android-external-edit-e2e\build-android.ps1'
 description = "执行前端检查与生产构建，再构建 Android debug APK"
 
+[tasks.android-release-build]
+dir = "crates/omy-gui"
+run = [
+  { argv = ["rustup", "target", "add", "aarch64-linux-android", "armv7-linux-androideabi", "i686-linux-android", "x86_64-linux-android"] },
+  { argv = ["pnpm", "--dir", "frontend", "install", "--frozen-lockfile"] },
+  { argv = ["pnpm", "--dir", "frontend", "build"] },
+  { argv = ["cargo", "install", "tauri-cli", "--version", "^2", "--locked"] },
+  { argv = ["cargo", "tauri", "android", "build", "--apk"] },
+]
+description = "构建前端并生成包含四个 ABI 的 Android release APK"
+timeout = "60m"
+
 [tasks.android-external-edit-e2e]
 run = 'pwsh -File spikes\android-external-edit-e2e\run-e2e.ps1 -SkipBuild'
 description = "在真实模拟器验证 WebDAV 只读/编辑、稳定 URI、同步与进程恢复"

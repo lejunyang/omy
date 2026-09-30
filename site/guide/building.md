@@ -184,11 +184,11 @@ pwsh -NoProfile -File spikes\check-android-env.ps1
 
 | 需要 | 怎么装 |
 |---|---|
-| JDK 17+ | 装 Android Studio 会带上 |
-| Android SDK（`ANDROID_HOME` 指向它） | SDK Manager 里勾 Platform 34 + Build-Tools + Platform-Tools |
-| Android NDK（`NDK_HOME` 指向它） | SDK Tools → NDK (Side by side) |
+| JDK 21 | 装 Android Studio 会带上，版本与 `osdk.toml` 一致 |
+| Android SDK（`ANDROID_HOME` 指向它） | SDK Manager 里勾 Platform 36 + Build-Tools 37.0.0 + Platform-Tools |
+| Android NDK 29.0.14206865（`NDK_HOME` 指向它） | SDK Tools → NDK (Side by side) |
 | NDK 里的 clang | 随 NDK 提供 |
-| Rust 目标 | `rustup target add aarch64-linux-android armv7-linux-androideabi` |
+| Rust 目标 | `aarch64-linux-android`、`armv7-linux-androideabi`、`i686-linux-android`、`x86_64-linux-android` |
 | tauri-cli | `cargo install tauri-cli --version "^2"` |
 
 ::: tip NDK 的 clang 最容易被漏掉
@@ -212,11 +212,17 @@ export CC_armv7_linux_androideabi="$BIN/armv7a-linux-androideabi24-clang"
 齐了之后：
 
 ```bash
+osdk run android-release-build  # 构建前端并生成四 ABI release APK
+
+# 需要交互调试时仍可直接使用 Tauri：
 cd crates/omy-gui
 cargo tauri android init
 cargo tauri android dev      # 连真机或模拟器
-cargo tauri android build    # 出 APK
 ```
+
+`android-release-build` 会补齐四个 Rust Android target，安装锁定的前端依赖并
+构建 `frontendDist`，再安装 Tauri CLI、执行 APK 构建。这样不会在 Tauri 检查
+静态资源时才发现前端尚未生成。
 
 ## 跑测试
 

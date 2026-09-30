@@ -61,8 +61,9 @@ frontend；未验证平台的红叉不会阻塞合并。
 以及 release 里的各构建任务）都必须先装 Node 与 pnpm。
 
 `cargo tauri android build` 是例外：Tauri CLI 会在 Rust `build.rs` 获得执行机会前
-先校验 `frontendDist`，因此 Android 发布任务还必须显式执行 `pnpm install
---frozen-lockfile` 与 `pnpm build`。只安装 pnpm 仍会报
+先校验 `frontendDist`。因此 `osdk.toml` 的 `android-release-build` task 把
+`pnpm install --frozen-lockfile`、`pnpm build` 与 Tauri 构建按顺序封装在一起；发布
+流水线只调用这个 task。只安装 pnpm 就直接运行 Tauri 仍会报
 `Unable to find your web assets`。
 
 runner 镜像自带 node 与 npm，但**不带 pnpm**。缺它时 `build.rs` 直接 panic，
@@ -229,6 +230,11 @@ jq 从事件 JSON（`GITHUB_EVENT_PATH`）读出，不插值进 shell，避免�
 macOS 在 arm64 runner 上额外 `rustup target add x86_64-apple-darwin`
 交叉编译一份 Intel 产物；GitHub runner 的系统框架是 universal 的，不需要
 额外 SDK。
+
+Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、NDK、SDK
+平台与 Build Tools；随后执行 `osdk run --no-deps android-release-build`。安装列表
+刻意不含 emulator 和 system image：生成 APK 不需要启动虚拟设备，把本地 E2E 的
+大镜像带进发布任务只会增加下载超时面。
 
 ### 发布到 crates.io 的顺序、范围与限流
 
