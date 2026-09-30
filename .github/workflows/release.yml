@@ -296,6 +296,14 @@ jobs:
         with:
           version: 9.15.1
 
+      - name: 构建前端
+        working-directory: crates/omy-gui/frontend
+        # `cargo tauri android build` 会在 Rust build.rs 运行前先检查 frontendDist；
+        # 不能依赖 build.rs 补产物，否则会直接报 “Unable to find your web assets”。
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: release-android

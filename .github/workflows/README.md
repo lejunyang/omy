@@ -54,6 +54,11 @@ frontend；未验证平台的红叉不会阻塞合并。
 不入库——所以**凡是会编到 omy-gui 的任务**（windows / linux / macos / msrv，
 以及 release 里的各构建任务）都必须先装 Node 与 pnpm。
 
+`cargo tauri android build` 是例外：Tauri CLI 会在 Rust `build.rs` 获得执行机会前
+先校验 `frontendDist`，因此 Android 发布任务还必须显式执行 `pnpm install
+--frozen-lockfile` 与 `pnpm build`。只安装 pnpm 仍会报
+`Unable to find your web assets`。
+
 runner 镜像自带 node 与 npm，但**不带 pnpm**。缺它时 `build.rs` 直接 panic，
 而报错长得跟 Rust 毫无关系：
 
