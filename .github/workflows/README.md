@@ -40,7 +40,7 @@ test.yml
 | windows | windows-latest | 是 | build / test / clippy |
 | android | ubuntu-latest | 是 | 交叉编译 omy-core 到 aarch64 与 armv7，宿主上跑单测 |
 | frontend | ubuntu-latest | 是 | 构建文档站、检查 i18n 键 |
-| msrv | ubuntu-latest | 否 | 用 1.85 编一遍，核实声明的下限 |
+| msrv | ubuntu-latest | 否 | 用 1.88 编一遍，核实声明的下限 |
 | linux | ubuntu-latest | 否 | build / test / clippy |
 | macos | macos-latest | 否 | build / test / clippy |
 | result | ubuntu-latest | 是 | 汇总必过任务，供分支保护使用 |
@@ -122,12 +122,14 @@ Android 目标的 clippy：平台专属分支只有在对应目标下才会被 l
 
 ### 为什么必过任务用 stable 而不是 MSRV
 
-`Cargo.toml` 写着 `rust-version = "1.85"`。这个下限**已在本机核实**：装上
-1.85 工具链后 `cargo +1.85 check --workspace --all-targets` 通过。
+`Cargo.toml` 写着 `rust-version = "1.88"`。edition 2024 自身虽然只要求 1.85，
+但 `grammers-mtsender 0.10` 依赖的 `hickory-net`、`hickory-proto`、
+`hickory-resolver` 0.26.3 都明确要求 1.88；这条版本约束内没有 1.85 兼容候选，
+resolver 3 也无法自动降级。因此流水线必须用 1.88 核实真实下限。
 
 但仍然由 stable 负责门禁、`msrv` 任务非阻塞。首次核实就抓到 5 处 let-chain
 （`if let Some(x) = a && cond`，该语法 1.88 才稳定），说明这条线以前没人盯，
-短期内还可能再冒出别的 1.85 不支持的写法。等它在 CI 上连续绿再提升为必过。
+短期内还可能再冒出别的不兼容写法。等它在 CI 上连续绿再提升为必过。
 
 ### 跑测试的任务都要装 FFmpeg
 

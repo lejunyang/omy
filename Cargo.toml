@@ -18,10 +18,11 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-# edition 2024 的最低要求即 1.85。omy-core 定位为可复用库，MSRV 保持低位是优点。
-# resolver="3" 会做 MSRV 感知的版本选择，因此依赖会解析到与 1.85 兼容的版本 ——
-# 这正好匹配下方刻意固定的 RustCrypto 0.10 系列 API。
-rust-version = "1.85"
+# edition 2024 自身只要求 1.85，但 grammers-mtsender 0.10 依赖的
+# hickory-{net,proto,resolver} 0.26.3 明确要求 1.88；该链没有仍满足 grammers
+# 版本约束的 1.85 兼容版本。resolver="3" 只能在存在兼容候选时降级，不能凭空
+# 解开这个约束，所以 workspace 的真实 MSRV 是 1.88。
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lejunyang/omy"
 authors = ["omy contributors"]
@@ -82,7 +83,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 
 # ---- 进度显示（仅 omy-cli 使用）----
 # 大文件加解密是纯 CPU 循环，没有进度反馈时用户无法区分「在算」和「卡死」。
-# 版本经 cargo search 核实；MIT 许可，rust-version 1.85 与本 workspace 一致。
+# 版本经 cargo search 核实；MIT 许可，rust-version 不高于本 workspace。
 indicatif = "0.18"
 
 # ---- 回收站（仅 omy-gui 使用）----

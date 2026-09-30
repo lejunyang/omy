@@ -49,7 +49,8 @@ The installed binary is named `omy`, not `omy-cli`.
 
 ## Option 3: build from source
 
-Requires Rust 1.85 or newer, since the project uses edition 2024.
+Requires Rust 1.88 or newer because `grammers-mtsender`'s DNS dependencies need
+1.88, which is higher than edition 2024's own 1.85 floor.
 
 ```bash
 git clone https://github.com/lejunyang/omy.git

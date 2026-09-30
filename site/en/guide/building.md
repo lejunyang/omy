@@ -6,7 +6,8 @@ title: Building from source
 
 ## Prerequisites
 
-**Rust 1.85 or newer** — the project uses edition 2024, which sets that floor.
+**Rust 1.88 or newer** — `grammers-mtsender`'s DNS dependencies require 1.88,
+which is higher than edition 2024's own 1.85 floor.
 
 ```bash
 rustc --version

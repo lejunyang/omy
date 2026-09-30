@@ -6,7 +6,8 @@ title: 从源码构建
 
 ## 前置条件
 
-**Rust 1.85 或更高**——项目用 edition 2024，这是最低要求。
+**Rust 1.88 或更高**——`grammers-mtsender` 的 DNS 依赖要求 1.88，
+高于 edition 2024 自身的 1.85 下限。
 
 ```bash
 rustc --version

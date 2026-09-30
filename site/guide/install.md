@@ -49,7 +49,8 @@ cargo install omy-cli
 
 ## 方式三：从源码构建
 
-需要 Rust 1.85 或更高——项目用的是 edition 2024。
+需要 Rust 1.88 或更高——`grammers-mtsender` 的 DNS 依赖要求 1.88，
+高于 edition 2024 自身的 1.85 下限。
 
 ```bash
 git clone https://github.com/lejunyang/omy.git

@@ -15,8 +15,8 @@
 #
 # # 为什么必过任务用 stable 而不是 MSRV
 #
-# Cargo.toml 声明 rust-version = "1.85"。这个下限**已在本机核实过**：装上
-# 1.85 工具链后 `cargo +1.85 check --workspace --all-targets` 通过。
+# Cargo.toml 声明 rust-version = "1.88"。1.85 已不足以解析 grammers-mtsender
+# 依赖的 hickory 0.26.3；1.88 是这条依赖链公开声明的真实下限。
 #
 # 但仍先不把它设成门禁，等它在 CI 上连续绿了再提升——首次核实时就抓到 5 处
 # let-chain（`if let Some(x) = a && cond`，1.88 才稳定），说明这条线以前没人
@@ -382,10 +382,10 @@ jobs:
   # ---- 非阻塞核实：MSRV 与未验证平台 ----
 
   msrv:
-    name: MSRV 1.85（未核实）
+    name: MSRV 1.88（未核实）
     runs-on: ubuntu-latest
     # 声明的下限已在本机核实（见文件头），但还没在 CI 上连续绿过，
-    # 所以先不设门禁：万一还有别的 1.85 不支持的写法，不该让所有 PR 陪着挂红。
+    # 所以先不设门禁：万一还有别的 1.88 不支持的写法，不该让所有 PR 陪着挂红。
     # 连续绿之后再把这个 continue-on-error 删掉。
     continue-on-error: true
     steps:
@@ -398,8 +398,8 @@ jobs:
             curl wget file libxdo-dev libssl-dev \
             libayatana-appindicator3-dev librsvg2-dev
 
-      - name: 安装 Rust 1.85
-        run: rustup toolchain install 1.85 --profile minimal
+      - name: 安装 Rust 1.88
+        run: rustup toolchain install 1.88 --profile minimal
 
       # 同 windows 任务：--all-targets 会编到 omy-gui，它的 build.rs 需要 pnpm。理由见 windows 任务
       - uses: actions/setup-node@v6.0.0
@@ -417,7 +417,7 @@ jobs:
       - name: 用 MSRV 编译
         # 只 build 不 test：这一步要回答的是「声明的下限站得住吗」，
         # 测试行为由 stable 任务保证
-        run: cargo +1.85 build --workspace --all-targets
+        run: cargo +1.88 build --workspace --all-targets
 
   linux:
     name: Linux（未验证）
