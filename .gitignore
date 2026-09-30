@@ -27,8 +27,10 @@ src-tauri/target/
 # 开发期工具（便携版 ffmpeg 等，体积大且可脚本重建）
 /tools/
 
-# Linux 发行包构建时由 build-linux.sh 产出的内置 FFmpeg，随 deb/rpm/AppImage 打包
-/crates/omy-gui/vendor-ffmpeg/
+# Linux 发行包构建时由 build-linux.sh 产出的内置 FFmpeg，随 deb/rpm/AppImage 打包。
+# README 必须保留：Tauri 即使只做 cargo build 也会校验 resources 源目录存在。
+/crates/omy-gui/vendor-ffmpeg/*
+!/crates/omy-gui/vendor-ffmpeg/README.md
 
 # spike 的测试素材（视频与加密样本，可由 make-fixture.ps1 重建）
 /spikes/fixtures/
