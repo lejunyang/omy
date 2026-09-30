@@ -119,6 +119,8 @@ jobs:
     needs: decide
     if: needs.decide.outputs.publish == 'true'
     runs-on: windows-latest
+    # 上游下载失去响应时尽快失败，不能再等 GitHub 的 6 小时全局上限。
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -143,33 +145,28 @@ jobs:
       # 装 osdk 而不是 MSYS2：本地开发用的就是根目录 osdk.toml 那套工具链，
       # CI 复用同一份配置才能保证「CI 里构建出来的 = 本地验证过的」。
       # 换成 MSYS2 等于维护第二套版本组合，而两套之间的漂移只会在产物里暴露。
-      - name: 安装 osdk
-        shell: pwsh
-        run: |
-          # -NoModifyShell：CI 不需要改 shell 启动文件，装完把 bin 加进 PATH 即可。
-          # -InstallDir 显式指定：默认值是 LocalAppData 下的路径，写死在这里
-          # 会与安装脚本的默认值形成两个真相，改了那边这里就悄悄失效
-          $bin = Join-Path $env:RUNNER_TEMP 'osdk-bin'
-          Invoke-WebRequest `
-            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.ps1 `
-            -OutFile install-osdk.ps1
-          ./install-osdk.ps1 -NoModifyShell -InstallDir $bin
-          if (-not (Test-Path (Join-Path $bin 'osdk.exe'))) {
-            throw "osdk 未装到 $bin"
-          }
-          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      # v0.0.4 还没有 Action，故固定到包含 Action 的已审阅提交；version
+      # 则显式选择已发布的 CLI，避免 SHA 引用触发 latest API 查询。
+      - name: 安装 osdk 并恢复工具缓存
+        uses: lejunyang/one-sdk@fa5430bc372854d5998b2e5de3501e1ebec6cd5d
+        with:
+          version: '0.0.4'
+          # Action 默认会在工作目录运行全量 install。改到无项目配置的临时目录，
+          # 再由下一步只装 FFmpeg 所需工具，避免拉取 Android system image。
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: ffmpeg-tools
 
-      - name: 信任 osdk.toml 并装工具链
+      - name: 信任 osdk.toml 并安装 FFmpeg 工具链
         shell: pwsh
         run: |
           # osdk.toml 含 conda: 工具，属于 trust-required。未信任时该目录下
           # **所有** osdk 命令都会失败，且报错不提「没信任」这件事
           osdk --yes trust osdk.toml
-          # accept-licenses=true：osdk.toml 装 Android SDK / NDK / 模拟器 /
-          # system-image 时要求先接受 android-sdk-license。CI 无人值守，没有
-          # 人能交互确认，不接受就在这一步直接退出（实测发布流水线首次运行
-          # 即因此失败）。本地开发者 osdk 首次安装时交互接受即可。
-          osdk -y install -o accept-licenses=true
+          # 这里只构建 Windows FFmpeg；裸 `osdk install` 会连 Android 模拟器与
+          # system image 一起装，首次发布因此卡在 Google 镜像下载整整 6 小时。
+          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base
 
       - name: 构建内置 FFmpeg
         shell: pwsh
@@ -347,26 +344,22 @@ jobs:
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
 
-      - name: 安装 osdk（提供 nasm）
-        # 与 Windows 任务同理：FFmpeg 构建需要的 nasm 由 osdk conda 提供，
-        # 不引入第二套工具版本。--no-modify-shell：CI 无需改启动文件
-        run: |
-          bin="$RUNNER_TEMP/osdk-bin"
-          curl -fsSL \
-            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.sh \
-            -o install-osdk.sh
-          sh install-osdk.sh --no-modify-shell --install-dir "$bin"
-          test -x "$bin/osdk" || { echo "osdk 未装到 $bin"; exit 1; }
-          echo "$bin" >> "$GITHUB_PATH"
+      - name: 安装 osdk 并恢复工具缓存
+        uses: lejunyang/one-sdk@fa5430bc372854d5998b2e5de3501e1ebec6cd5d
+        with:
+          version: '0.0.4'
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: ffmpeg-tools
 
       - name: 信任 osdk.toml
         # syspkg 段与 conda: 工具属于 trust-required；未信任时所有 osdk 命令
-        # 都会失败（报错不提「没信任」）。-o accept-licenses=true：无人值守
-        # 下接受 Android SDK 许可（本任务实际不装安卓工具，但配置共用）。
+        # 都会失败（报错不提「没信任」）。本任务只装 nasm，不触碰 Android
+        # 工具，所以也不需要接受 Android SDK 许可。
         run: |
           osdk --yes trust osdk.toml
-          # 只装 FFmpeg 构建所需的 nasm：用 --no-deps 只装当前工具，避免把
-          # osdk.toml 里安卓整套工具链也拉下来拖慢任务
+          # 只装 FFmpeg 构建所需的 nasm，避免把安卓整套工具链也拉下来。
           osdk -y install conda:nasm
 
       # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows

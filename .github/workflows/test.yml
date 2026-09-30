@@ -302,6 +302,8 @@ jobs:
   ffmpeg-build:
     name: 内置 FFmpeg（Windows）
     runs-on: windows-latest
+    # 网络或上游下载端点失去响应时不能再占满 runner 的 6 小时全局上限。
+    timeout-minutes: 90
     # 只在改动构建配方时跑。
     #
     # 不挂进日常 PR 是因为它要从源码编 zlib + libwebp + FFmpeg，比其它任务都慢，
@@ -313,27 +315,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: 安装 osdk
-        shell: pwsh
-        # 与 release.yml 里的同名步骤保持一致，理由见那里
-        run: |
-          $bin = Join-Path $env:RUNNER_TEMP 'osdk-bin'
-          Invoke-WebRequest `
-            https://raw.githubusercontent.com/lejunyang/one-sdk/main/install.ps1 `
-            -OutFile install-osdk.ps1
-          ./install-osdk.ps1 -NoModifyShell -InstallDir $bin
-          if (-not (Test-Path (Join-Path $bin 'osdk.exe'))) {
-            throw "osdk 未装到 $bin"
-          }
-          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      # v0.0.4 还没有 Action，故固定到包含 Action 的已审阅提交；version
+      # 则显式选择已发布的 CLI，避免 SHA 引用触发 latest API 查询。
+      - name: 安装 osdk 并恢复工具缓存
+        uses: lejunyang/one-sdk@fa5430bc372854d5998b2e5de3501e1ebec6cd5d
+        with:
+          version: '0.0.4'
+          # Action 只负责安装、缓存与导出环境；若让它在仓库根目录执行默认的
+          # 全量 install，会把本任务完全不用的 Android system image 也下载。
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: ffmpeg-tools
 
-      - name: 信任 osdk.toml 并装工具链
+      - name: 信任 osdk.toml 并安装 FFmpeg 工具链
         shell: pwsh
         run: |
           osdk --yes trust osdk.toml
-          # accept-licenses=true：osdk.toml 装 Android SDK / NDK 等需要先接受
-          # android-sdk-license，CI 无人值守无法交互确认
-          osdk -y install -o accept-licenses=true
+          # 显式列出配方实际使用的工具。特别是不要退回裸 `osdk install`：
+          # 它会下载约 1 GiB 的 Google Android system image，曾静默卡满 6 小时。
+          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base
 
       - name: 构建
         shell: pwsh

@@ -144,6 +144,21 @@ android 任务只跑 `cargo test -p omy-core`，core 不碰 FFmpeg，所以不�
 注意这不会掩盖「没装 FFmpeg 时怎么降级」那条路径：相关单元测试直接调降级
 函数，不依赖 runner 上缺不缺 ffmpeg。
 
+### FFmpeg 任务只安装所需的 osdk 工具
+
+Windows 的 FFmpeg 测试与发布任务、Linux 发布任务都通过 one-sdk 仓库的
+composite Action 安装 osdk，并缓存 Action 管理的 data/cache 目录。Action 固定到包含
+该能力的完整提交 SHA，CLI 版本显式固定为 0.0.4；这样既不跟随可变分支，也不会因 SHA
+引用而额外查询 latest Release。
+
+Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根目录信任 `osdk.toml`，
+按任务显式安装工具。Windows 只装 FFmpeg 配方使用的五个 conda 工具，Linux 只装
+`conda:nasm`。不要把它改回无参数的 `osdk install`：根配置还声明了本地 Android E2E
+所需的 emulator 与 `android-35;google_apis;x86_64` system image；FFmpeg 任务不使用它们，
+但全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
+最终被 GitHub 取消。Windows FFmpeg job 另设 90 分钟上限，保证类似的上游静默阻塞能
+尽早暴露。
+
 ### 为什么没有 cargo fmt --check
 
 实测有 89 个文件、649 处不符合 rustfmt 默认风格——本仓库的中文注释和对齐
