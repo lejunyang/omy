@@ -509,12 +509,14 @@ pub fn vendor_str(v: Vendor) -> &'static str {
 }
 
 /// 凭据在本机凭据库里的服务名。
+#[cfg(not(test))]
 const SECRET_SERVICE: &str = "omy-remote-places";
 
 /// 所有远程位置共用的那一把密钥的 id。
 ///
 /// 只用一把：每个位置一条钥匙串记录的话，删位置时漏清就会在用户的
 /// 钥匙串里堆垃圾，而 Linux 的 Secret Service 对条目数也不友好。
+#[cfg(not(test))]
 const SECRET_KEY_ID: &str = "places-key-v1";
 
 /// 持久化状态：这台机器上凭据能不能保护。
@@ -537,9 +539,19 @@ impl PlaceRegistry {
     ///
     /// 每次现取而不缓存：钥匙串可能中途被锁上，缓存会让我们用一把
     /// 已经无权使用的密钥，错误也就推迟到更难解释的地方才出现。
+    #[cfg(not(test))]
     fn protect_key() -> Option<omy_secret::ProtectKey> {
         let p = omy_secret::default_protector(SECRET_SERVICE).ok()?;
         p.retrieve_or_create(SECRET_KEY_ID).ok()
+    }
+
+    #[cfg(test)]
+    fn protect_key() -> Option<omy_secret::ProtectKey> {
+        // 注册表单测验证的是密文持久化与恢复编排；系统凭据库的真实读写由
+        // omy-secret 自己的测试负责。若这里也碰 macOS Keychain，并行恢复
+        // 同一个 service/id 会在无界面的 runner 上等待授权窗口而永久挂住。
+        static KEY: std::sync::OnceLock<omy_secret::ProtectKey> = std::sync::OnceLock::new();
+        Some(KEY.get_or_init(omy_secret::random_key).clone())
     }
 
     /// 本机凭据保护是否可用。

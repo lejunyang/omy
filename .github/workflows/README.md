@@ -48,6 +48,12 @@ test.yml
 **分支保护只需要勾 `测试结论` 这一项。** 它只看 windows / android /
 frontend；未验证平台的红叉不会阻塞合并。
 
+`omy-gui` 的远程位置单元测试与 `omy-remote` 的 session 单元测试使用进程内
+测试密钥，不访问系统凭据库。凭据库本身的真实读写仍由 `omy-secret` 的专门
+测试覆盖。两层不能重复测同一件事：macOS runner 没有可交互桌面，并行访问
+同一个 Keychain service/id 会等待授权窗口，表现为若干纯编排测试同时卡到
+6 小时，而不是业务逻辑失败。
+
 ### 每个编 omy-gui 的任务都要装 Node 与 pnpm
 
 `omy-gui` 的 `build.rs` 在 `dist/` 缺失时会调包管理器构建前端，而 `dist/`

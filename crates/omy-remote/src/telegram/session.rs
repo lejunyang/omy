@@ -58,6 +58,7 @@ use crate::telegram::place_secret::{PlaceKeyError, PlaceSlots, SlotKey};
 ///
 /// 与远程位置那把（`omy-remote-places`）分开：两者的生命周期不同——用户删光
 /// WebDAV 位置时不该顺带让 Telegram 登录态失效。
+#[cfg(not(test))]
 const SECRET_SERVICE: &str = "omy-telegram";
 
 /// 保护密钥在凭据库里的 id。
@@ -66,6 +67,7 @@ const SECRET_SERVICE: &str = "omy-telegram";
 /// 用户的钥匙串里堆垃圾，而 Linux 的 Secret Service 对条目数也不友好——
 /// 这与 `places.rs` 对多个 WebDAV 位置只用一把密钥是同一条理由。
 /// 隔离由**文件名**保证，不靠密钥。
+#[cfg(not(test))]
 const SECRET_KEY_ID: &str = "telegram-session-key-v1";
 
 /// 旧的单账号落盘文件名。**只用于一次性迁移**，新代码不要再写它。
@@ -186,9 +188,19 @@ pub fn legacy_session_path() -> Result<PathBuf, SessionError> {
 ///
 /// 每次现取而不缓存：钥匙串可能中途被锁上，缓存会让我们拿着一把已经无权使用的
 /// 密钥去解，错误推迟到更难解释的地方才出现。与 `places.rs` 同一条理由。
+#[cfg(not(test))]
 fn protect_key() -> Option<omy_secret::ProtectKey> {
     let p = omy_secret::default_protector(SECRET_SERVICE).ok()?;
     p.retrieve_or_create(SECRET_KEY_ID).ok()
+}
+
+#[cfg(test)]
+fn protect_key() -> Option<omy_secret::ProtectKey> {
+    // session 单测只验证序列化、加密与迁移；真实系统凭据库的集成契约由
+    // omy-secret 测试负责。测试进程内复用同一把随机密钥，既能完成跨调用
+    // 往返，又不会让 macOS CI 等待无法交互的 Keychain 授权窗口。
+    static KEY: std::sync::OnceLock<omy_secret::ProtectKey> = std::sync::OnceLock::new();
+    Some(KEY.get_or_init(omy_secret::random_key).clone())
 }
 
 /// 无库回退用的「机器密钥 KEK」：从系统凭据库取那把随机密钥，包成一个 KEK。
