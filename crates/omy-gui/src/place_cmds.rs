@@ -247,8 +247,8 @@ pub async fn remote_browse(
     //
     // 只在**根目录**（dir 为空）且是 Telegram 位置时做：对话内层是文件、
     // 走的是另一条缩略图路径。
-    if dir.is_empty() {
-        if let Some(tg) = place.store.as_telegram() {
+    if dir.is_empty()
+        && let Some(tg) = place.store.as_telegram() {
             let jobs = tg.take_pending_avatars();
             if !jobs.is_empty() {
                 spawn_avatar_backfill(
@@ -260,7 +260,6 @@ pub async fn remote_browse(
                 );
             }
         }
-    }
 
     Ok(entries)
 }
@@ -2014,13 +2013,11 @@ async fn fetch_full_header<S: RemoteStore>(
     let key = header_cache_key(path, size);
 
     // size 为 0 的条目没有任何字节可读，也没必要为它写一个空缓存块
-    if size > 0 {
-        if let Some(c) = cache {
-            if let Some(hit) = c.get(place_id, &key, HEADER_BLOCK) {
+    if size > 0
+        && let Some(c) = cache
+            && let Some(hit) = c.get(place_id, &key, HEADER_BLOCK) {
                 return Ok(hit);
             }
-        }
-    }
 
     let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
     let mut buf = if probe_len == 0 {
@@ -2041,11 +2038,10 @@ async fn fetch_full_header<S: RemoteStore>(
 
     // 补读之后才写缓存：存半截头部的话，下次命中会拿到一段不完整的字节，
     // 而 open 会把它报成「文件损坏」——那个症状完全指不到缓存
-    if size > 0 {
-        if let Some(c) = cache {
+    if size > 0
+        && let Some(c) = cache {
             c.put(place_id, &key, HEADER_BLOCK, &buf);
         }
-    }
     Ok(buf)
 }
 

@@ -376,15 +376,15 @@ fn main() {
 
                 // 与 faststart 版本对比：验证"产物有效性"判据在两种布局下都成立
                 let fs = dir.join("h264_aac_faststart.mp4");
-                if fs.is_file() {
-                    if let Ok(fb) = std::fs::read(&fs) {
-                        match thumbnail::from_video_bytes(fb, 3.0, 320) {
-                            Ok(t) => c.check(
-                                image_decodable(&t.bytes),
-                                &format!("faststart 版本同样能抽帧（{} 字节）", t.bytes.len()),
-                            ),
-                            Err(e) => c.check(false, &format!("faststart 抽帧失败: {e}")),
-                        }
+                if fs.is_file()
+                    && let Ok(fb) = std::fs::read(&fs)
+                {
+                    match thumbnail::from_video_bytes(fb, 3.0, 320) {
+                        Ok(t) => c.check(
+                            image_decodable(&t.bytes),
+                            &format!("faststart 版本同样能抽帧（{} 字节）", t.bytes.len()),
+                        ),
+                        Err(e) => c.check(false, &format!("faststart 抽帧失败: {e}")),
                     }
                 }
             } else {
@@ -474,16 +474,16 @@ fn verify_prepare(dir: &Path, c: &mut Checker) {
         );
 
         // 反证：重排后的 moov 与缓存必须不同，否则说明存错了
-        if let Ok(Some(re)) = mp4::to_faststart(&bytes) {
-            if let Ok(Some(r2)) = mp4::find_moov(&re) {
-                let s2 = usize::try_from(r2.offset).unwrap_or(0);
-                let e2 = s2 + usize::try_from(r2.size).unwrap_or(0);
-                let reordered = re.get(s2..e2).unwrap_or(&[]);
-                c.check(
-                    reordered != cached.as_slice(),
-                    "重排后的 moov 与缓存内容不同（证明缓存取的是原始版本）",
-                );
-            }
+        if let Ok(Some(re)) = mp4::to_faststart(&bytes)
+            && let Ok(Some(r2)) = mp4::find_moov(&re)
+        {
+            let s2 = usize::try_from(r2.offset).unwrap_or(0);
+            let e2 = s2 + usize::try_from(r2.size).unwrap_or(0);
+            let reordered = re.get(s2..e2).unwrap_or(&[]);
+            c.check(
+                reordered != cached.as_slice(),
+                "重排后的 moov 与缓存内容不同（证明缓存取的是原始版本）",
+            );
         }
     }
 

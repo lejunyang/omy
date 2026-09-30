@@ -72,11 +72,10 @@ impl RemoteCache {
     /// 存一份元数据 blob（对话列表 / 列表快照等），落进同一临时层 LRU。
     /// 缓存目录不可用时静默忽略（降级为不缓存）。
     pub fn put_meta(&self, kind: &str, key: &str, data: &[u8]) {
-        if let Ok(g) = self.inner.lock() {
-            if let Some(c) = g.as_ref() {
+        if let Ok(g) = self.inner.lock()
+            && let Some(c) = g.as_ref() {
                 c.put_meta(kind, key, data);
             }
-        }
     }
 
     /// 读一份元数据 blob。未命中 / 缓存不可用返回 `None`。

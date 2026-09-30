@@ -198,10 +198,10 @@ impl MkvIndex {
 
         for c in self.clusters.iter().skip(start_idx + 1) {
             // 已经攒够时长就停
-            if let (Some(s), Some(cur)) = (start_ts, c.timestamp_ms) {
-                if cur.saturating_sub(s) >= min_ms {
-                    break;
-                }
+            if let (Some(s), Some(cur)) = (start_ts, c.timestamp_ms)
+                && cur.saturating_sub(s) >= min_ms
+            {
+                break;
             }
             end = c.end();
         }

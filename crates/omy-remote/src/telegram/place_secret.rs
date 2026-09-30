@@ -273,15 +273,12 @@ impl PlaceSlots {
         keks: &[Kek],
     ) -> Result<Zeroizing<[u8; PDK_LEN]>, PlaceKeyError> {
         // 先试现场密码（若这个位置有密码槽）
-        if let Some(kdf) = &self.pw_kdf {
-            if !password.is_empty() {
-                if let Ok(pw_kek) = kdf.derive(password) {
-                    if let Ok(pdk) = self.unlock(&[pw_kek]) {
+        if let Some(kdf) = &self.pw_kdf
+            && !password.is_empty()
+                && let Ok(pw_kek) = kdf.derive(password)
+                    && let Ok(pdk) = self.unlock(&[pw_kek]) {
                         return Ok(pdk);
                     }
-                }
-            }
-        }
         // 再试会话已解锁的 KEK（复用已解锁态）
         self.unlock(keks)
     }

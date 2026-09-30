@@ -323,13 +323,11 @@ impl BlockCache {
     fn pinned_bytes_of(&self, place: &str, key: &str, total_blocks: u64) -> u64 {
         let mut n = 0u64;
         for block in 0..total_blocks {
-            if let Some(p) = self.pinned_path_of(place, key, block) {
-                if let Ok(m) = std::fs::metadata(&p) {
-                    if m.is_file() {
+            if let Some(p) = self.pinned_path_of(place, key, block)
+                && let Ok(m) = std::fs::metadata(&p)
+                    && m.is_file() {
                         n = n.saturating_add(m.len());
                     }
-                }
-            }
         }
         n
     }
@@ -380,11 +378,10 @@ impl BlockCache {
             let Some(to) = self.pinned_path_of(place, key, block) else {
                 continue;
             };
-            if let Some(d) = to.parent() {
-                if std::fs::create_dir_all(d).is_err() {
+            if let Some(d) = to.parent()
+                && std::fs::create_dir_all(d).is_err() {
                     continue;
                 }
-            }
             let size = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
             if move_file(&from, &to) {
                 moved = moved.saturating_add(size);
@@ -429,11 +426,10 @@ impl BlockCache {
             }
             let size = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
             let to = self.path_of(place, key, block);
-            if let Some(d) = to.parent() {
-                if std::fs::create_dir_all(d).is_err() {
+            if let Some(d) = to.parent()
+                && std::fs::create_dir_all(d).is_err() {
                     continue;
                 }
-            }
             if move_file(&from, &to) {
                 moved = moved.saturating_add(size);
             }
@@ -462,11 +458,10 @@ impl BlockCache {
             let Some(p) = self.pinned_path_of(place, key, block) else {
                 continue;
             };
-            if let Ok(m) = std::fs::metadata(&p) {
-                if m.is_file() && std::fs::remove_file(&p).is_ok() {
+            if let Ok(m) = std::fs::metadata(&p)
+                && m.is_file() && std::fs::remove_file(&p).is_ok() {
                     freed = freed.saturating_add(m.len());
                 }
-            }
         }
         Ok(freed)
     }
@@ -477,11 +472,10 @@ impl BlockCache {
     /// 两层的键完全一样，所以命中哪层对调用方没有区别。
     #[must_use]
     pub fn get(&self, place: &str, id: &str, block: u64) -> Option<Vec<u8>> {
-        if let Some(p) = self.pinned_path_of(place, id, block) {
-            if let Ok(data) = std::fs::read(&p) {
+        if let Some(p) = self.pinned_path_of(place, id, block)
+            && let Ok(data) = std::fs::read(&p) {
                 return Some(data);
             }
-        }
         let p = self.path_of(place, id, block);
         let data = std::fs::read(&p).ok()?;
         // 更新访问时间供 LRU 使用。失败不影响读取结果。
@@ -637,12 +631,11 @@ impl BlockCache {
                 .pinned_path_of(place, key, block)
                 .filter(|p| p.is_file())
                 .or_else(|| Some(self.path_of(place, key, block)).filter(|p| p.is_file()));
-            if let Some(p) = hit {
-                if let Ok(m) = std::fs::metadata(&p) {
+            if let Some(p) = hit
+                && let Ok(m) = std::fs::metadata(&p) {
                     cached_blocks += 1;
                     cached_bytes = cached_bytes.saturating_add(m.len());
                 }
-            }
         }
         FileCacheStat {
             cached_blocks,
@@ -667,11 +660,10 @@ impl BlockCache {
         let mut freed = 0u64;
         for block in 0..total_blocks {
             let p = self.path_of(place, key, block);
-            if let Ok(m) = std::fs::metadata(&p) {
-                if m.is_file() && std::fs::remove_file(&p).is_ok() {
+            if let Ok(m) = std::fs::metadata(&p)
+                && m.is_file() && std::fs::remove_file(&p).is_ok() {
                     freed = freed.saturating_add(m.len());
                 }
-            }
         }
         freed
     }
@@ -797,11 +789,10 @@ fn block_path(root: &Path, place: &str, id: &str, block: u64) -> PathBuf {
 
 /// 原子写一个缓存块，失败即放弃。
 fn write_block(path: &Path, data: &[u8]) {
-    if let Some(d) = path.parent() {
-        if std::fs::create_dir_all(d).is_err() {
+    if let Some(d) = path.parent()
+        && std::fs::create_dir_all(d).is_err() {
             return;
         }
-    }
     // 原子写：半截缓存块会被当成完整数据读出来，解密时表现为
     // 认证失败——而文件本身其实是好的
     omy_core::fsatomic::write_atomic(path, data).ok();

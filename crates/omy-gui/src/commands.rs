@@ -832,11 +832,10 @@ pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Opti
         //
         // 为什么不用 #[cfg(test)]：单元测试跑不起 Tauri 运行时，
         // 这条路径只有真实 GUI 进程里才走得到。
-        if let Ok(forced) = std::env::var("OMY_GUI_PICK_FOLDER") {
-            if !forced.is_empty() {
+        if let Ok(forced) = std::env::var("OMY_GUI_PICK_FOLDER")
+            && !forced.is_empty() {
                 return Ok(Some(forced));
             }
-        }
 
         let (tx, rx) = std::sync::mpsc::channel();
         app.dialog()

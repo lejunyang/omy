@@ -73,25 +73,21 @@ pub fn current() -> Lang {
 /// 按优先级检测语言。
 fn detect(configured: Option<&str>) -> Lang {
     // 1. OMY_LANG 优先级最高，便于临时覆盖与测试
-    if let Ok(v) = std::env::var("OMY_LANG") {
-        if let Some(l) = Lang::from_locale(&v) {
+    if let Ok(v) = std::env::var("OMY_LANG")
+        && let Some(l) = Lang::from_locale(&v) {
             return l;
         }
-    }
     // 2. 配置文件；"auto" 表示继续往下探测
-    if let Some(c) = configured {
-        if !c.eq_ignore_ascii_case("auto") {
-            if let Some(l) = Lang::from_locale(c) {
+    if let Some(c) = configured
+        && !c.eq_ignore_ascii_case("auto")
+            && let Some(l) = Lang::from_locale(c) {
                 return l;
             }
-        }
-    }
     // 3. 系统 locale
-    if let Some(sys) = sys_locale::get_locale() {
-        if let Some(l) = Lang::from_locale(&sys) {
+    if let Some(sys) = sys_locale::get_locale()
+        && let Some(l) = Lang::from_locale(&sys) {
             return l;
         }
-    }
     // 4. 英语兜底
     Lang::En
 }

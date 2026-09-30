@@ -466,25 +466,23 @@ pub fn tree_remove_slot(
     let mut stack = vec![root.to_path_buf()];
     while let Some(cur) = stack.pop() {
         let path = cur.join(crate::dirsidecar::KEYS_SIDECAR);
-        if let Ok(blob) = std::fs::read(&path) {
-            if crate::dirsidecar::is_managed(&blob) {
-                if let Ok((dk, nonce, _)) =
-                    crate::dirsidecar::open_sidecar_at(&blob, keks, vault_salt, cipher)
-                {
-                    let mut plans: Vec<crate::dirsidecar::SidecarPlan> =
-                        (0..crate::dirsidecar::SIDECAR_SLOTS)
-                            .map(|_| crate::dirsidecar::SidecarPlan::Keep)
-                            .collect();
-                    if let Some(p) = plans.get_mut(slot) {
-                        *p = crate::dirsidecar::SidecarPlan::Clear;
-                    }
-                    let out = crate::dirsidecar::rewrite_sidecar_managed(
-                        &blob, &plans, &after, &dk, vault_salt, &nonce, cipher,
-                    )?;
-                    crate::fsatomic::write_atomic(&path, &out)?;
-                    changed = changed.saturating_add(1);
-                }
+        if let Ok(blob) = std::fs::read(&path)
+            && crate::dirsidecar::is_managed(&blob)
+            && let Ok((dk, nonce, _)) =
+                crate::dirsidecar::open_sidecar_at(&blob, keks, vault_salt, cipher)
+        {
+            let mut plans: Vec<crate::dirsidecar::SidecarPlan> =
+                (0..crate::dirsidecar::SIDECAR_SLOTS)
+                    .map(|_| crate::dirsidecar::SidecarPlan::Keep)
+                    .collect();
+            if let Some(p) = plans.get_mut(slot) {
+                *p = crate::dirsidecar::SidecarPlan::Clear;
             }
+            let out = crate::dirsidecar::rewrite_sidecar_managed(
+                &blob, &plans, &after, &dk, vault_salt, &nonce, cipher,
+            )?;
+            crate::fsatomic::write_atomic(&path, &out)?;
+            changed = changed.saturating_add(1);
         }
         let Ok(rd) = std::fs::read_dir(&cur) else { continue };
         for ent in rd.flatten() {
@@ -771,9 +769,7 @@ pub struct RekeyReport {
 impl RekeyReport {
     /// 是否整棵树都改成功了。
     #[must_use]
-    // 不标 const：Vec::is_empty 在 const 上下文要 Rust 1.87，
-    // 本仓库 MSRV 是 1.85
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.failed.is_empty()
     }
 }

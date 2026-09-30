@@ -82,11 +82,10 @@ async fn main() {
                 let root = root_for_conn.clone();
                 let auth = auth_for_conn.clone();
                 async move {
-                    if let Some((u, p)) = &auth {
-                        if !check_auth(&req, u, p) {
+                    if let Some((u, p)) = &auth
+                        && !check_auth(&req, u, p) {
                             return Ok::<_, Infallible>(unauthorized());
                         }
-                    }
                     maybe_inject(&mut req, &root).await;
                     Ok::<_, Infallible>(handler.handle(req).await)
                 }

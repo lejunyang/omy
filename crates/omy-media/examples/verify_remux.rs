@@ -406,14 +406,14 @@ fn main() {
             );
             c.check(ci.has_tracks, "截断后仍能读到 Tracks（头部完整）");
             // 截断的前半部分仍应能 remux 出可播放内容
-            if let Some((o, l)) = ci.cluster_range(0, 2000) {
-                if (o + l) as usize <= cut.len() {
-                    let reg = &cut[o as usize..(o + l) as usize];
-                    if let Ok(sp) = mkv::splice(cut, ci.header_len, reg) {
-                        let ok = remux::remux_to_fmp4(&sp, &remux::RemuxOptions::default())
-                            .is_ok_and(|out| probe_bytes(&out.data).is_some());
-                        c.check(ok, "截断文件的可用部分仍能播放");
-                    }
+            if let Some((o, l)) = ci.cluster_range(0, 2000)
+                && (o + l) as usize <= cut.len()
+            {
+                let reg = &cut[o as usize..(o + l) as usize];
+                if let Ok(sp) = mkv::splice(cut, ci.header_len, reg) {
+                    let ok = remux::remux_to_fmp4(&sp, &remux::RemuxOptions::default())
+                        .is_ok_and(|out| probe_bytes(&out.data).is_some());
+                    c.check(ok, "截断文件的可用部分仍能播放");
                 }
             }
         }

@@ -653,11 +653,10 @@ impl VirtualRegistry {
         }
         // save 用 unlock 里的密钥把当前树封好；失败回滚加密标记
         if let Err(e) = self.save() {
-            if let Ok(mut ps) = self.places.lock() {
-                if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
+            if let Ok(mut ps) = self.places.lock()
+                && let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
                     vp.encrypted = false;
                 }
-            }
             if let Ok(mut u) = self.unlock.lock() {
                 u.remove(id);
             }
@@ -759,11 +758,10 @@ impl VirtualRegistry {
 
         {
             // 开了：载入明文树
-            if let Ok(mut ps) = self.places.lock() {
-                if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
+            if let Ok(mut ps) = self.places.lock()
+                && let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
                     vp.root = root;
                 }
-            }
             let vaults = match self.unlock.lock() {
                 Ok(u0) => u0.get(id).map(|st| st.vaults.clone()).unwrap_or_default(),
                 Err(_) => Vec::new(),
@@ -793,18 +791,15 @@ impl VirtualRegistry {
 
     /// 锁定：清空内存明文树与派生密钥（磁盘上仍是信封）。未加密位置忽略。
     pub fn lock(&self, id: &str) {
-        if let Ok(mut ps) = self.places.lock() {
-            if let Some(vp) = ps.iter_mut().find(|p| p.id == id) {
-                if vp.encrypted {
+        if let Ok(mut ps) = self.places.lock()
+            && let Some(vp) = ps.iter_mut().find(|p| p.id == id)
+                && vp.encrypted {
                     vp.root = VFolder::root();
                 }
-            }
-        }
-        if let Ok(mut u) = self.unlock.lock() {
-            if let Some(st) = u.get_mut(id) {
+        if let Ok(mut u) = self.unlock.lock()
+            && let Some(st) = u.get_mut(id) {
                 st.key = None;
             }
-        }
     }
 }
 

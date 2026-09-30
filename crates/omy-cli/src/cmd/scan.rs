@@ -301,11 +301,10 @@ fn collect_vaults(
 
 /// 展开路径开头的 `~`。
 fn expand_tilde(s: &String) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(h) = dirs::home_dir() {
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Some(h) = dirs::home_dir() {
             return h.join(rest);
         }
-    }
     PathBuf::from(s)
 }
 

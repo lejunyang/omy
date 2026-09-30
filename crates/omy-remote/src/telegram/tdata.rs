@@ -259,7 +259,7 @@ pub fn derive_passcode_key(passcode: &[u8], salt: &[u8]) -> [u8; 256] {
 pub fn decrypt_local(encrypted: &[u8], key: &[u8; 256]) -> Result<Vec<u8>, TdataError> {
     use sha1::{Digest as _, Sha1};
 
-    if encrypted.len() < 16 || (encrypted.len() - 16) % 16 != 0 {
+    if encrypted.len() < 16 || !(encrypted.len() - 16).is_multiple_of(16) {
         return Err(TdataError::Corrupt("加密块长度非法"));
     }
     let (msg_key, body) = encrypted.split_at(16);
@@ -293,7 +293,7 @@ fn encrypt_local(plain: &[u8], key: &[u8; 256]) -> Vec<u8> {
 
     // 补齐到 16 的倍数
     let mut buf = plain.to_vec();
-    while buf.len() % 16 != 0 {
+    while !buf.len().is_multiple_of(16) {
         buf.push(0);
     }
     // msgKey = SHA1(整个缓冲区) 的前 16 字节

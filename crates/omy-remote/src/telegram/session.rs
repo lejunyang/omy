@@ -705,8 +705,8 @@ pub fn load_with_keks_from(
 
     // 先按新格式解析。带 fmt 标记才当新格式，避免把恰好能反序列化成
     // StoredSession 的旧内容误判
-    if let Ok(stored) = serde_json::from_str::<StoredSession>(&text) {
-        if stored.fmt == STORED_FMT {
+    if let Ok(stored) = serde_json::from_str::<StoredSession>(&text)
+        && stored.fmt == STORED_FMT {
             let pdk = match stored.slots.unlock(keks) {
                 Ok(p) => p,
                 // 没有 KEK 能开 = 未解锁，正常态
@@ -723,7 +723,6 @@ pub fn load_with_keks_from(
             SessionIdentity { api_id: saved.api_id }.check(app)?;
             return Ok(LoadOutcome::Unlocked(saved));
         }
-    }
 
     // 回退：旧格式是裸 Envelope（机器密钥加密）。能解出就标记「需迁移」，
     // 解不出（换了机器/清了钥匙串）就当锁着——两者都不是「没存过」

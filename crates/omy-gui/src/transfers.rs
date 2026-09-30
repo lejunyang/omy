@@ -232,14 +232,13 @@ impl Transfers {
 
     /// 结束一条任务。
     pub fn finish(&self, app: &tauri::AppHandle, id: u64, state: TaskState) {
-        if let Ok(mut t) = self.tasks.lock() {
-            if let Some(task) = t.iter_mut().find(|x| x.id == id) {
+        if let Ok(mut t) = self.tasks.lock()
+            && let Some(task) = t.iter_mut().find(|x| x.id == id) {
                 if matches!(state, TaskState::Done) {
                     task.done = task.total;
                 }
                 task.state = state;
             }
-        }
         if let Ok(mut hs) = self.handles.lock() {
             hs.retain(|h| h.id != id);
         }
@@ -254,11 +253,10 @@ impl Transfers {
 
     /// 取消一条任务。执行体会在下一个分片边界退出。
     pub fn cancel(&self, app: &tauri::AppHandle, id: u64) {
-        if let Ok(hs) = self.handles.lock() {
-            if let Some(h) = hs.iter().find(|h| h.id == id) {
+        if let Ok(hs) = self.handles.lock()
+            && let Some(h) = hs.iter().find(|h| h.id == id) {
                 h.canceled.store(true, Ordering::Relaxed);
             }
-        }
         // 立刻把状态改掉，不等执行体——否则用户点了取消，界面要等到
         // 下一个分片才有反应，看起来像没点上
         self.finish(app, id, TaskState::Canceled);

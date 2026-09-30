@@ -185,15 +185,14 @@ impl LoginTask {
     /// 用户关掉登录窗口就该立刻断开：那条连接挂着会占一个连接配额，而
     /// Telegram 对同一账号的并发连接数有限制，反复开关几次就开始收到 429。
     pub fn cancel(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            if let Some(r) = g.take() {
+        if let Ok(mut g) = self.inner.lock()
+            && let Some(r) = g.take() {
                 r.handle.abort();
                 // abort 只是请求取消，任务可能还没真的停下。立刻置位是对的：
                 // 这个标志回答的是「还该不该拦下一次登录」，而取消之后显然
                 // 不该再拦——否则用户取消完立刻重开会被拒绝
                 r.done.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-        }
     }
 
     /// 把云密码送给正在等它的后台任务。
@@ -1200,11 +1199,10 @@ pub async fn ensure_connected(
         user_id,
     );
     // 补取了 user id 就落盘一次，让它下次启动也在（否则每次进都要重取）
-    if backfilled {
-        if let Err(e) = reg.persist() {
+    if backfilled
+        && let Err(e) = reg.persist() {
             eprintln!("[omy] 保存补取的 user id 失败：{e}");
         }
-    }
 
     // 注意：**不在这里自动加密/迁移 session**。加密是 per-place 的可选功能，
     // 由用户显式触发（右键「加密此位置」或添加账号后的可选步骤，见
@@ -1606,12 +1604,11 @@ impl PhoneLoginTask {
 
     /// 取消并清理。
     pub fn cancel(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            if let Some(r) = g.take() {
+        if let Ok(mut g) = self.inner.lock()
+            && let Some(r) = g.take() {
                 r.handle.abort();
                 r.done.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-        }
     }
 
     /// 把一个输入送给后台任务。返回是否送出去了。

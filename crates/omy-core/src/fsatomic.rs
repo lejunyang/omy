@@ -364,28 +364,26 @@ fn shred_file(path: &Path, overwrite: bool) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    if overwrite {
-        if let Ok(meta) = fs::metadata(path) {
-            let len = meta.len();
-            // 写成嵌套 if 而不是 `len > 0 && let Ok(..)` 的 let-chain：
-            // 后者到 Rust 1.88 才稳定，而本仓库 MSRV 是 1.85。
-            if len > 0 {
-                if let Ok(mut f) = OpenOptions::new().write(true).open(path) {
-                    // 分块覆写，避免为大文件一次性分配缓冲区
-                    const BUF: usize = 64 * 1024;
-                    let mut buf = [0u8; BUF];
-                    crate::util::fill_random(&mut buf);
-                    let mut left = len;
-                    while left > 0 {
-                        let n = usize::try_from(left.min(BUF as u64)).unwrap_or(BUF);
-                        if f.write_all(buf.get(..n).unwrap_or(&buf)).is_err() {
-                            break;
-                        }
-                        left = left.saturating_sub(n as u64);
-                    }
-                    let _ = f.sync_all();
+    if overwrite
+        && let Ok(meta) = fs::metadata(path)
+    {
+        let len = meta.len();
+        if len > 0
+            && let Ok(mut f) = OpenOptions::new().write(true).open(path)
+        {
+            // 分块覆写，避免为大文件一次性分配缓冲区
+            const BUF: usize = 64 * 1024;
+            let mut buf = [0u8; BUF];
+            crate::util::fill_random(&mut buf);
+            let mut left = len;
+            while left > 0 {
+                let n = usize::try_from(left.min(BUF as u64)).unwrap_or(BUF);
+                if f.write_all(buf.get(..n).unwrap_or(&buf)).is_err() {
+                    break;
                 }
+                left = left.saturating_sub(n as u64);
             }
+            let _ = f.sync_all();
         }
     }
     fs::remove_file(path).map_err(|e| io_err(path, "remove temp plaintext", &e))

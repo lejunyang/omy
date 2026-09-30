@@ -332,11 +332,10 @@ impl<S: RemoteStore> RemoteSource<S> {
     /// 写进缓存目录，那是威胁模型不允许的。
     fn fetch_block(&self, block: u64) -> CoreResult<Vec<u8>> {
         let key = self.cache_key();
-        if let Some(c) = &self.cache {
-            if let Some(hit) = c.get(&self.place, &key, block) {
+        if let Some(c) = &self.cache
+            && let Some(hit) = c.get(&self.place, &key, block) {
                 return Ok(hit);
             }
-        }
 
         let abs = self.payload_start.saturating_add(block.saturating_mul(BLOCK_SIZE));
         // 末块可能不足一个 BLOCK_SIZE，要按剩余长度裁剪，
@@ -742,11 +741,10 @@ mod tests {
                 let path = e.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if let Ok(buf) = std::fs::read(&path) {
-                    if buf.windows(marker.len()).any(|w| w == marker) {
+                } else if let Ok(buf) = std::fs::read(&path)
+                    && buf.windows(marker.len()).any(|w| w == marker) {
                         found = true;
                     }
-                }
             }
         }
         assert!(!found, "缓存目录里出现了明文——缓存写入点必须在解密之前");

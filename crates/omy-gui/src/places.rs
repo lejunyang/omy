@@ -156,11 +156,10 @@ impl PlaceRegistry {
     /// 恢复配置时用：配置里已经有 `p7` 的话，这次运行必须从 8 开始发，
     /// 否则新位置会撞上一个已经存在、且可能还带着 session 文件的 id。
     fn bump_seq_to(&self, n: usize) {
-        if let Ok(mut seq) = self.next_seq.lock() {
-            if *seq < n {
+        if let Ok(mut seq) = self.next_seq.lock()
+            && *seq < n {
                 *seq = n;
             }
-        }
     }
 
     /// 从一个位置 id 里取出序号（`p7` → 7）。认不出就返回 `None`。
@@ -255,11 +254,10 @@ impl PlaceRegistry {
             user_id,
             store,
         });
-        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock()) {
-            if m.insert(id.clone(), place).is_none() {
+        if let (Ok(mut m), Ok(mut o)) = (self.places.lock(), self.order.lock())
+            && m.insert(id.clone(), place).is_none() {
                 o.push(id);
             }
-        }
     }
 
     /// 已注册的**全部** Telegram 位置 id，按注册顺序。

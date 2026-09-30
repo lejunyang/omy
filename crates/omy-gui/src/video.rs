@@ -323,14 +323,13 @@ pub async fn convert_video(
     if !caps.has_ffmpeg {
         return Err(CmdError::code("ffmpeg_unavailable"));
     }
-    if let Some(e) = &req.encode {
-        if !caps.video_encoders.iter().any(|x| x == &e.encoder) {
+    if let Some(e) = &req.encode
+        && !caps.video_encoders.iter().any(|x| x == &e.encoder) {
             return Err(CmdError::with(
                 "encoder_unavailable",
                 serde_json::json!({ "encoder": e.encoder }),
             ));
         }
-    }
 
     let handle: Shared = std::sync::Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {

@@ -203,7 +203,7 @@ pub const MIN_CHUNK: u64 = 4 * 1024;
 /// 不整除 1 MiB。
 #[must_use]
 pub const fn chunk_is_valid(chunk: u64) -> bool {
-    chunk >= MIN_CHUNK && chunk <= MAX_CHUNK && MAX_CHUNK % chunk == 0
+    chunk >= MIN_CHUNK && chunk <= MAX_CHUNK && MAX_CHUNK.is_multiple_of(chunk)
 }
 
 /// 判断对话列表还有没有下一页。
@@ -1232,11 +1232,10 @@ impl TelegramStore {
             // 头像：先看上次有没有下过这个对话的。有就直接复用（省一次往返），
             // 没有才在下面并发下。photo(false) 只查 session、不下载
             let cached_avatar = prev_avatars.get(&chat_id).cloned();
-            if cached_avatar.is_none() {
-                if let Some(p) = peer.photo(false).await.ok().flatten() {
+            if cached_avatar.is_none()
+                && let Some(p) = peer.photo(false).await.ok().flatten() {
                     avatar_jobs.push((chat_id, p));
                 }
-            }
             out.push(Conversation {
                 chat: chat_id,
                 title,
@@ -1295,11 +1294,10 @@ impl TelegramStore {
     ///
     /// 找不到该对话（用户已离开、列表已变）就静默忽略——那张头像本就没人要了。
     pub fn set_conversation_avatar(&self, chat: i64, avatar: Option<Vec<u8>>) {
-        if let Ok(mut c) = self.conversations.lock() {
-            if let Some(conv) = c.iter_mut().find(|c| c.chat == chat) {
+        if let Ok(mut c) = self.conversations.lock()
+            && let Some(conv) = c.iter_mut().find(|c| c.chat == chat) {
                 conv.avatar = avatar;
             }
-        }
     }
 
     /// 取访问某个对话所需的引用。
@@ -2032,9 +2030,9 @@ impl RemoteStore for TelegramStore {
         let key = id.encode();
         // 顺手把下载位置记进缓存：刚传完的文件多半马上就要被读
         // （上层要校验、界面要出缩略图），没有的话又得重列一次消息
-        if let Some(media) = msg.media() {
-            if let Some(loc) = media.to_raw_input_location() {
-                if let Ok(mut m) = self.media.lock() {
+        if let Some(media) = msg.media()
+            && let Some(loc) = media.to_raw_input_location()
+                && let Ok(mut m) = self.media.lock() {
                     m.insert(
                         key.clone(),
                         CachedMedia {
@@ -2043,8 +2041,6 @@ impl RemoteStore for TelegramStore {
                         },
                     );
                 }
-            }
-        }
 
         Ok(Entry {
             id: key,
@@ -2867,11 +2863,10 @@ mod tests {
             let mut out = src.to_vec();
             let mut i = 0;
             while i + 1 < out.len() {
-                if out.get(i) == Some(&0xFF) && out.get(i + 1) == Some(&marker) {
-                    if let Some(b) = out.get_mut(i + 1) {
+                if out.get(i) == Some(&0xFF) && out.get(i + 1) == Some(&marker)
+                    && let Some(b) = out.get_mut(i + 1) {
                         *b = 0xEE; // 换成一个无意义的段标记
                     }
-                }
                 i += 1;
             }
             out

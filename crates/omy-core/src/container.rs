@@ -214,10 +214,11 @@ pub fn validate_component(c: &str) -> Result<()> {
     // 某个字符的中间，既判不准也没有意义。
     {
         let mut ch = c.chars();
-        if let (Some(a), Some(b)) = (ch.next(), ch.next()) {
-            if a.is_ascii_alphabetic() && b == ':' {
-                return Err(bad("路径组件形如盘符"));
-            }
+        if let (Some(a), Some(b)) = (ch.next(), ch.next())
+            && a.is_ascii_alphabetic()
+            && b == ':'
+        {
+            return Err(bad("路径组件形如盘符"));
         }
     }
     // 任何位置的冒号在 Windows 上都会被当作 NTFS 数据流分隔符

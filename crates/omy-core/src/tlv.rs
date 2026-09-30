@@ -129,10 +129,8 @@ impl TlvEntry {
     }
 
     /// 编码后占用的总字节数。
-    ///
-    /// 未标 `const`：`Vec::len` 在 const 上下文中需要 Rust 1.87，而本 crate MSRV 为 1.85。
     #[must_use]
-    pub fn encoded_len(&self) -> usize {
+    pub const fn encoded_len(&self) -> usize {
         TLV_HEADER_LEN.saturating_add(self.value.len())
     }
 }

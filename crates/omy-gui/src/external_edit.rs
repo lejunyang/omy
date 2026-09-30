@@ -394,17 +394,15 @@ pub async fn sync_all(
                 session.conflict = false;
                 session.last_error = None;
                 session.updated_at = now_secs();
-                if session.encrypted {
-                    if let Some(source) = session.source_file.as_deref() {
-                        if omy_core::fsatomic::write_atomic(Path::new(source), &uploaded).is_err() {
+                if session.encrypted
+                    && let Some(source) = session.source_file.as_deref()
+                        && omy_core::fsatomic::write_atomic(Path::new(source), &uploaded).is_err() {
                             session.dirty = true;
                             session.last_error = Some(String::from("external_edit_source_failed"));
                             let _ = edits.update(session);
                             summary.failed += 1;
                             continue;
                         }
-                    }
-                }
                 if edits.update(session.clone()).is_err() {
                     summary.failed += 1;
                     continue;

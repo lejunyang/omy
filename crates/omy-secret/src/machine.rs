@@ -71,7 +71,7 @@ fn decode_key_text(raw: &[u8]) -> Option<ProtectKey> {
             return None;
         }
         let mut key = Zeroizing::new([0u8; KEY_LEN]);
-        for (i, pair) in hexpart.chunks_exact(2).enumerate() {
+        for (i, pair) in hexpart.as_chunks::<2>().0.iter().enumerate() {
             let hi = char::from(pair[0]).to_digit(16)?;
             let lo = char::from(pair[1]).to_digit(16)?;
             key[i] = u8::try_from((hi << 4) | lo).ok()?;

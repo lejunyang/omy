@@ -301,27 +301,27 @@ pub fn classify(info: &MediaInfo) -> TierVerdict {
     // 切轨前后都是 P2，但含义完全不同——切轨前要转码音轨，
     // 切轨后只需纯 remux，耗时差一个数量级。若按 target < tier 过滤，
     // 这个备选会被丢掉，用户就看不到本可以避免转码。
-    if !default_audio_native {
-        if let Some(a) = native_audio_track {
-            let target = if container_ok {
-                PlaybackTier::P1
-            } else {
-                PlaybackTier::P2
-            };
-            let note = if container_ok {
-                format!("选择音轨 {}（{}）即可直通播放", a.index, a.codec)
-            } else {
-                format!(
-                    "选择音轨 {}（{}）可仅转封装、无需转码",
-                    a.index, a.codec
-                )
-            };
-            alternatives.push(Alternative {
-                tier: target,
-                note,
-                audio_index: Some(a.index),
-            });
-        }
+    if !default_audio_native
+        && let Some(a) = native_audio_track
+    {
+        let target = if container_ok {
+            PlaybackTier::P1
+        } else {
+            PlaybackTier::P2
+        };
+        let note = if container_ok {
+            format!("选择音轨 {}（{}）即可直通播放", a.index, a.codec)
+        } else {
+            format!(
+                "选择音轨 {}（{}）可仅转封装、无需转码",
+                a.index, a.codec
+            )
+        };
+        alternatives.push(Alternative {
+            tier: target,
+            note,
+            audio_index: Some(a.index),
+        });
     }
 
     // 视频可 copy 但音轨需转码：只转音轨比全解码快得多，值得单列
