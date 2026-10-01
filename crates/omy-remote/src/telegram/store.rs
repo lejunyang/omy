@@ -1059,6 +1059,17 @@ fn normalize_forward_ids(message_ids: &[i32]) -> Result<Vec<i32>> {
     Ok(ids)
 }
 
+fn forward_target_of(conversation: Conversation) -> Option<ForwardTarget> {
+    if !conversation.can_send || conversation.kind == "channel" {
+        return None;
+    }
+    Some(ForwardTarget {
+        dir_id: conversation.dir_id(),
+        title: conversation.title,
+        kind: conversation.kind,
+    })
+}
+
 impl Default for TelegramStore {
     fn default() -> Self {
         Self::new()
@@ -1853,17 +1864,12 @@ impl TelegramStore {
     /// 返回当前账号中可接收转发的会话。
     ///
     /// 刷新一次对话表，使目标列表与上传按钮使用同一份最新能力；只返回
-    /// `can_send=true` 的群组、频道和个人对话。
+    /// `can_send=true` 的群组和个人对话。广播频道不属于本功能的目标范围。
     pub async fn forward_targets(&self) -> Result<Vec<ForwardTarget>> {
         let conversations = self.refresh_conversations().await?;
         Ok(conversations
             .into_iter()
-            .filter(|c| c.can_send)
-            .map(|c| ForwardTarget {
-                dir_id: c.dir_id(),
-                title: c.title,
-                kind: c.kind,
-            })
+            .filter_map(forward_target_of)
             .collect())
     }
 
@@ -2450,6 +2456,25 @@ mod tests {
         assert_eq!(w3.newest, None);
         assert!(!w3.found);
         assert!(!w3.has_older && !w3.has_newer);
+    }
+
+    #[test]
+    fn forward_targets_include_only_writable_groups_and_users() {
+        let mut writable_group = conv(1, "群", true, false);
+        writable_group.kind = "group";
+        let mut writable_user = conv(2, "个人", true, false);
+        writable_user.kind = "user";
+        let mut writable_channel = conv(3, "频道", true, false);
+        writable_channel.kind = "channel";
+        let readonly_group = conv(4, "只读群", false, false);
+
+        assert!(forward_target_of(writable_group).is_some());
+        assert!(forward_target_of(writable_user).is_some());
+        assert!(
+            forward_target_of(writable_channel).is_none(),
+            "产品范围只允许群组或个人，广播频道即便管理员可发也不应出现在目标列表"
+        );
+        assert!(forward_target_of(readonly_group).is_none());
     }
 
     #[test]
