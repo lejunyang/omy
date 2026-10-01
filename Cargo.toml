@@ -5,6 +5,7 @@ members = [
     "crates/omy-config",
     "crates/omy-remote",
     "crates/omy-secret",
+    "crates/omy-password-manager",
     "crates/omy-cli",
     "crates/omy-media",
     "crates/omy-net",
@@ -41,6 +42,9 @@ sha2             = "0.10"
 blake2           = "0.10"
 zeroize          = { version = "1.8", features = ["derive"] }
 subtle           = "2.6"
+# KeePassXC-Browser 协议用 NaCl box（X25519 + XSalsa20-Poly1305）。不能换成
+# 仓库已有的 ChaCha20-Poly1305：协议字节不兼容，不是同类原语任选其一。
+crypto_box       = { version = "0.9", features = ["std"] }
 
 # ---- 压缩 ----
 zstd = { version = "0.13", default-features = false }
@@ -50,6 +54,7 @@ uuid       = { version = "1.11", default-features = false, features = ["v4"] }
 crc32fast  = "1.4"
 rand_core  = { version = "0.6", features = ["getrandom"] }
 thiserror  = "2.0"
+base64     = "0.22"
 
 # ---- 测试 ----
 hex        = "0.4"

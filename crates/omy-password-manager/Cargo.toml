@@ -1,0 +1,30 @@
+[package]
+name = "omy-password-manager"
+description = "omy 的第三方密码管理器桥接：通用凭据模型与 KeePassXC-Browser provider。"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+base64.workspace = true
+crypto_box.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+indexing_slicing = "warn"
+unwrap_used = "warn"
+panic = "warn"
+expect_used = "warn"
+todo = "warn"
+unimplemented = "warn"
