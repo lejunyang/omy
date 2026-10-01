@@ -1219,7 +1219,7 @@ const LOCAL_WRITE_CHUNK: u64 = 1024 * 1024;
 /// 多个远程命令都要这三样（打开、解密到本地、未来的写操作），合成一个嵌套
 /// 请求结构，既避免 Tauri 命令参数过多，也让前端传参口径统一。嵌套结构走
 /// serde 默认的 snake_case，与 `EncryptRequest` 等一致。
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RemoteFileRef {
     pub place_id: String,
     pub path: String,
@@ -1413,9 +1413,9 @@ pub async fn remote_decrypt_to_local(
 /// 原先这里对非 omy 文件一律返回 `not_an_omy_file`，于是 pin / unpin /
 /// 缓存统计 / 清除四条命令**全都拒绝普通文件**，界面上那几个菜单项
 /// 对它们永远不出现。
-async fn build_remote_source(
-    reg: &tauri::State<'_, Arc<PlaceRegistry>>,
-    cache: &tauri::State<'_, Arc<RemoteCache>>,
+pub(crate) async fn build_remote_source_with_cache(
+    reg: &PlaceRegistry,
+    cache: Option<omy_remote::cache::BlockCache>,
     req: &RemoteFileRef,
 ) -> CmdResult<RemoteSource<PlaceStore>> {
     let place = reg
@@ -1426,23 +1426,20 @@ async fn build_remote_source(
         store.as_ref(),
         &req.path,
         req.size,
-        cache.snapshot().as_ref(),
+        cache.as_ref(),
         &req.place_id,
     )
     .await
     .map_err(|e| to_cmd_err(&e))?;
     let rt = tokio::runtime::Handle::current();
 
-    // 是 omy 就按 omy 建（载荷从 header_len 起算），否则按普通文件建
-    // （整个文件都是载荷）。判据是头部能不能解析，与「解不解得开」无关——
-    // 缓存操作本来就不需要密码。
     match RemoteSource::new(
         Arc::clone(&store),
         req.place_id.clone(),
         req.path.clone(),
         &header,
         req.size,
-        cache.snapshot(),
+        cache.clone(),
         rt.clone(),
     ) {
         Ok(src) => Ok(src),
@@ -1451,10 +1448,18 @@ async fn build_remote_source(
             req.place_id.clone(),
             req.path.clone(),
             req.size,
-            cache.snapshot(),
+            cache,
             rt,
         )),
     }
+}
+
+pub(crate) async fn build_remote_source(
+    reg: &PlaceRegistry,
+    cache: &RemoteCache,
+    req: &RemoteFileRef,
+) -> CmdResult<RemoteSource<PlaceStore>> {
+    build_remote_source_with_cache(reg, cache.snapshot(), req).await
 }
 
 /// 列出一个**远程**目录容器里的条目。
@@ -2208,11 +2213,13 @@ pub fn transfer_cancel(
     app: tauri::AppHandle,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     pins: tauri::State<'_, Arc<PinRetryStore>>,
+    copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     id: u64,
 ) {
     xfer.cancel(&app, id);
-    // 取消即不再是「可重试的失败」，登记的重试请求也没意义了，一并清掉。
+    // 取消即不再是「可重试的失败」，两类原始请求登记都一并清掉。
     pins.forget(id);
+    copies.forget(id);
 }
 
 /// pin 任务的重试登记表：任务 id -> 原始 `RemoteFileRef`。
@@ -2263,8 +2270,19 @@ pub async fn transfer_retry(
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     pins: tauri::State<'_, Arc<PinRetryStore>>,
+    copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     id: u64,
 ) -> CmdResult<u64> {
+    if copies.get(id).is_some() {
+        return crate::remote_copy::retry_copy(
+            app,
+            Arc::clone(&reg),
+            Arc::clone(&cache),
+            Arc::clone(&xfer),
+            &copies,
+            id,
+        );
+    }
     let Some(req) = pins.get(id) else {
         // 登记丢了（多半是重启后内存表已空）：没法原地重试，让界面引导用户
         // 回文件那里重新「转为永久」。给明确码而不是静默失败。
@@ -2296,10 +2314,12 @@ pub fn transfer_clear_done(
     app: tauri::AppHandle,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     pins: tauri::State<'_, Arc<PinRetryStore>>,
+    copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
 ) {
-    // 清掉的任务其 pin 重试登记也一并丢，避免内存表随清除次数无限增长
+    // 清掉的任务其原始请求登记也一并丢，避免内存表随清除次数无限增长。
     for id in xfer.clear_done(&app) {
         pins.forget(id);
+        copies.forget(id);
     }
 }
 

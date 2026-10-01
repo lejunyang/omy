@@ -35,6 +35,9 @@ pub struct RemoteSource<S: RemoteStore> {
     /// 字段，硬填假值等于在类型上声称「这是个 omy 文件」，
     /// 哪天有人顺着它去解密会拿到一组编造的参数，而错误出现在很远的地方。
     header: Option<FixedHeader>,
+    /// 原始头部字节。远程位置间复制要原样输出完整文件；只保留解析后的
+    /// `FixedHeader` 会丢掉扩展 TLV（文件名、缩略图、容器索引等）。普通文件为空。
+    header_bytes: Vec<u8>,
     payload_start: u64,
     payload_len: u64,
     /// 缓存键里的「文件版本」：完整密文头部 + 密文大小的 blake2 哈希（十六进制）。
@@ -90,6 +93,7 @@ impl<S: RemoteStore> RemoteSource<S> {
             payload_start: hlen,
             payload_len: total_size.saturating_sub(hlen),
             header: Some(header),
+            header_bytes: header_bytes.to_vec(),
             cache_version,
             cache,
             rt,
@@ -144,9 +148,77 @@ impl<S: RemoteStore> RemoteSource<S> {
             payload_start: 0,
             payload_len: total_size,
             header: None,
+            header_bytes: Vec::new(),
             cache,
             rt,
         }
+    }
+
+    /// 读取远程对象的原始字节区间，供不解密的远程位置间复制使用。
+    ///
+    /// 普通文件等同 [`Self::read_plain_range`]；omy 文件的头部从已探测到的原始
+    /// 头部字节返回，载荷经 `fetch_block` 进入同一套版本化缓存。这样既不会
+    /// 丢掉扩展 TLV，也不会为了复制另写一套缓存键和淘汰规则。
+    ///
+    /// # Errors
+    ///
+    /// 区间读取或远程分块失败时返回。
+    pub fn read_raw_range(&self, offset: u64, len: u64) -> CoreResult<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let total = self.payload_start.saturating_add(self.payload_len);
+        if offset >= total {
+            return Ok(Vec::new());
+        }
+        let end = offset.saturating_add(len).min(total);
+        let mut out = Vec::with_capacity(usize::try_from(end - offset).unwrap_or(0));
+
+        if offset < self.payload_start {
+            let head_end = end.min(self.payload_start);
+            let from = usize::try_from(offset).unwrap_or(usize::MAX);
+            let to = usize::try_from(head_end).unwrap_or(usize::MAX);
+            out.extend_from_slice(self.header_bytes.get(from..to).unwrap_or_default());
+        }
+
+        if end > self.payload_start {
+            let payload_offset = offset.saturating_sub(self.payload_start);
+            let payload_end = end.saturating_sub(self.payload_start);
+            out.extend_from_slice(&self.read_payload_range(
+                payload_offset,
+                payload_end.saturating_sub(payload_offset),
+            )?);
+        }
+        Ok(out)
+    }
+
+    /// 从载荷区域读取一段原始字节；普通文件的载荷就是整个文件。
+    fn read_payload_range(&self, offset: u64, len: u64) -> CoreResult<Vec<u8>> {
+        if len == 0 || offset >= self.payload_len {
+            return Ok(Vec::new());
+        }
+        let end = offset.saturating_add(len).min(self.payload_len);
+        let mut out = Vec::with_capacity(usize::try_from(end - offset).unwrap_or(0));
+        let mut used: Vec<u64> = Vec::new();
+        for b in blocks_for(offset, end - offset) {
+            let data = self.fetch_block(b)?;
+            used.push(b);
+            if let Some(c) = &self.cache {
+                let key = self.cache_key();
+                let keep: Vec<_> = used
+                    .iter()
+                    .map(|n| c.path_of(&self.place, &key, *n))
+                    .collect();
+                c.evict(&keep);
+            }
+            let bs = b.saturating_mul(BLOCK_SIZE);
+            let from = usize::try_from(offset.saturating_sub(bs).min(data.len() as u64))
+                .unwrap_or(usize::MAX);
+            let to = usize::try_from(end.saturating_sub(bs).min(data.len() as u64))
+                .unwrap_or(usize::MAX);
+            out.extend_from_slice(data.get(from..to).unwrap_or_default());
+        }
+        Ok(out)
     }
 
     /// 读一个**普通文件**的任意区间（不解密，原样返回）。
@@ -576,6 +648,44 @@ mod tests {
             assert_eq!(got, want, "区间 ({off},{len}) 不符");
         }
         assert!(src.is_remote(), "远程来源必须自报为远程");
+    }
+
+    /// 远程复制读取的是完整原始对象，必须包含扩展头部，且跨头部边界不重不漏。
+    ///
+    /// 不这样会怎样：只复制密文载荷会生成一个没有文件头的目标文件，上传任务显示
+    /// 成功，但目标端无法识别、更无法解密；这是最危险的“成功但产物坏了”。
+    #[test]
+    fn raw_read_preserves_complete_encrypted_file() {
+        let (bytes, _) = make_file(300_000);
+        let total = bytes.len() as u64;
+        let header_len = u64::from(
+            omy_core::file::peek_header(&bytes)
+                .expect("解析头部")
+                .header_len,
+        );
+        let store = Arc::new(FakeStore::new(bytes.clone()));
+        let r = rt();
+        let src = RemoteSource::new(
+            store,
+            "test",
+            "/copy.omy",
+            &bytes[..usize::try_from(header_len).expect("头部长度")],
+            total,
+            None,
+            r.handle().clone(),
+        )
+        .expect("构造来源");
+
+        let start = header_len.saturating_sub(32);
+        let got = src
+            .read_raw_range(start, 128)
+            .expect("跨头部边界读取");
+        let end = usize::try_from(start + 128).expect("结束偏移");
+        assert_eq!(
+            got,
+            bytes[usize::try_from(start).expect("开始偏移")..end],
+            "头部末尾与载荷开头必须连续，不能漏头或重复字节"
+        );
     }
 
     /// 同一块重复读只应请求一次网络。

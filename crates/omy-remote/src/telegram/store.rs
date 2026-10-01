@@ -45,6 +45,7 @@ use grammers_client::media::{Downloadable, Media, PhotoSize};
 use grammers_client::message::InputMessage;
 use grammers_client::{tl, Client, InvocationError};
 use grammers_session::types::PeerRef;
+use tokio::io::AsyncRead;
 
 use crate::store::{Entry, RemoteStore};
 use crate::{Capabilities, Error, Result};
@@ -2002,6 +2003,22 @@ impl RemoteStore for TelegramStore {
     ///
     /// 未登录、对话不存在、没有发送权限、网络失败或被限流时返回。
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
+        self.write_stream(
+            dir_id,
+            name,
+            data.len() as u64,
+            Box::new(std::io::Cursor::new(data.to_vec())),
+        )
+        .await
+    }
+
+    async fn write_stream(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        mut reader: Box<dyn AsyncRead + Unpin + Send>,
+    ) -> Result<Entry> {
         let client = self.client()?;
         let chat = Conversation::parse_dir_id(dir_id)?;
 
@@ -2012,9 +2029,13 @@ impl RemoteStore for TelegramStore {
         }
 
         let peer = self.peer_ref(chat).await?;
-        let mut cursor = std::io::Cursor::new(data);
+        let upload_size = usize::try_from(size)
+            .map_err(|_| Error::Protocol(String::from("文件大小超出本平台可上传范围")))?;
+        // grammers 会为本次调用新建 file_id 并把流切成 Telegram 分片。
+        // 它没有暴露 file_id / 已成功分片集合，所以本调用失败后的任务重试
+        // 必须从头上传；这与“协议本身采用分片”是两件事。
         let uploaded = client
-            .upload_stream(&mut cursor, data.len(), name.to_string())
+            .upload_stream(&mut reader, upload_size, name.to_string())
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
 
@@ -2046,7 +2067,7 @@ impl RemoteStore for TelegramStore {
             id: key,
             name: String::from(name),
             is_dir: false,
-            size: Some(data.len() as u64),
+            size: Some(size),
             mtime: None,
             etag: None,
             // 刚上传完的文件，服务端还没回缩略图；下次列目录时会有

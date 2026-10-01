@@ -62,6 +62,7 @@ mod password_manager;
 mod protocol;
 mod remote;
 mod remote_cmds;
+mod remote_copy;
 mod settings;
 mod state;
 mod storage;
@@ -166,6 +167,8 @@ pub fn run() {
     let transfers = Arc::new(transfers::Transfers::default());
     // pin 失败重试要能重跑原操作，而 Task 不带请求参数——用它记 id->请求
     let pin_retry = Arc::new(place_cmds::PinRetryStore::default());
+    // 远程复制同样要保存完整源/目标/模式，失败后才能重建同一条管线。
+    let copy_retry = Arc::new(remote_copy::CopyRetryStore::default());
 
     // Telegram 扫码登录任务。同一时刻只允许一个：并发扫码会让两条流程抢同一份
     // session，而且必然撞限流——Telegram 对 exportLoginToken 的频率限制很紧。
@@ -207,6 +210,7 @@ pub fn run() {
         .manage(Arc::clone(&place_containers))
         .manage(Arc::clone(&transfers))
         .manage(Arc::clone(&pin_retry))
+        .manage(Arc::clone(&copy_retry))
         .manage(Arc::clone(&telegram_login))
         .manage(Arc::clone(&telegram_phone_login))
         .manage(Arc::clone(&password_managers))
@@ -325,6 +329,7 @@ pub fn run() {
             place_cmds::remote_effective_caps,
             place_cmds::remote_probe_entry,
             place_cmds::remote_upload,
+            remote_copy::remote_copy,
             place_cmds::remote_place_vaults,
             place_cmds::remote_place_open,
             place_cmds::remote_place_close,

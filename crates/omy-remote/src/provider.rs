@@ -31,6 +31,7 @@
 //! 各自的注释里也标了这条。
 
 use crate::store::{Entry, RemoteStore};
+use tokio::io::AsyncRead;
 use crate::telegram::TelegramStore;
 use crate::webdav::WebDavStore;
 use crate::{Capabilities, Result};
@@ -155,10 +156,30 @@ impl RemoteStore for PlaceStore {
         }
     }
 
+    fn child_id(&self, dir_id: &str, name: &str) -> Option<String> {
+        match self {
+            Self::WebDav(s) => s.child_id(dir_id, name),
+            Self::Telegram(s) => s.child_id(dir_id, name),
+        }
+    }
+
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.write(dir_id, name, data).await,
             Self::Telegram(s) => s.write(dir_id, name, data).await,
+        }
+    }
+
+    async fn write_stream(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+    ) -> Result<Entry> {
+        match self {
+            Self::WebDav(s) => s.write_stream(dir_id, name, size, reader).await,
+            Self::Telegram(s) => s.write_stream(dir_id, name, size, reader).await,
         }
     }
 

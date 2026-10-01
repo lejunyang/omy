@@ -9,6 +9,8 @@
 //! 而 `RemoteStore` 是网络层，天然异步。两者的桥在 [`crate::source`]：
 //! `RemoteSource` 在内部 `block_on`，把异步收敛在这一层，不外溢。
 
+use tokio::io::{AsyncRead, AsyncReadExt as _};
+
 use crate::{Capabilities, Result};
 
 /// 远程位置里的一个条目。
@@ -153,6 +155,16 @@ pub trait RemoteStore: Send + Sync {
         Err(crate::Error::Unsupported("search"))
     }
 
+    /// 若该存储的目标条目 ID 可由目录与文件名确定，返回该 ID。
+    ///
+    /// WebDAV 这类路径型存储可返回路径，供失败后精确清理；Telegram 的条目 ID
+    /// 由服务端分配的消息号组成，发送前无法预知，保持 `None`。调用方不得用
+    /// “重新列目录并按名字找”替代——并发上传同名文件时可能删错对象。
+    fn child_id(&self, dir_id: &str, name: &str) -> Option<String> {
+        let _ = (dir_id, name);
+        None
+    }
+
     /// 上传一个文件。
     ///
     /// # Errors
@@ -161,6 +173,34 @@ pub trait RemoteStore: Send + Sync {
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         let _ = (dir_id, name, data);
         Err(crate::Error::Unsupported("write"))
+    }
+
+    /// 从异步字节流上传一个已知长度的文件。
+    ///
+    /// 远程位置间复制必须走这个入口；先聚合成 `Vec<u8>` 会让内存占用随文件大小
+    /// 增长，所谓“内存中上传”最终只是把磁盘爆满换成内存爆满。默认实现保持兼容，
+    /// 但会整份读入内存；真正声明 `write=true` 的网络驱动应覆盖它。
+    ///
+    /// # Errors
+    ///
+    /// 流读取失败、长度与声明不符，或目标写入失败时返回。
+    async fn write_stream(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        mut reader: Box<dyn AsyncRead + Unpin + Send>,
+    ) -> Result<Entry> {
+        let capacity = usize::try_from(size).unwrap_or(0);
+        let mut data = Vec::with_capacity(capacity);
+        reader.read_to_end(&mut data).await?;
+        if data.len() as u64 != size {
+            return Err(crate::Error::Protocol(format!(
+                "流长度不符：声明 {size} 字节，实际 {} 字节",
+                data.len()
+            )));
+        }
+        self.write(dir_id, name, &data).await
     }
 
     /// 删除。

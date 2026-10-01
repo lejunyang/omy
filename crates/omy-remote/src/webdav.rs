@@ -26,10 +26,12 @@
 use std::time::Duration;
 
 use reqwest::header::{
-    HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_RANGE, ETAG, IF_MATCH, IF_UNMODIFIED_SINCE,
-    LAST_MODIFIED, RANGE,
+    HeaderMap, HeaderValue, ALLOW, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_MATCH,
+    IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
 };
 use reqwest::StatusCode;
+use tokio::io::AsyncRead;
+use tokio_util::io::ReaderStream;
 
 use crate::store::{Entry, RemoteStore};
 use crate::{Capabilities, Error, Result};
@@ -369,6 +371,44 @@ impl RemoteStore for WebDavStore {
         }
     }
 
+    async fn effective_capabilities(&self, dir_id: &str) -> Result<Capabilities> {
+        let upper = self.capabilities();
+        if !upper.write {
+            return Ok(upper);
+        }
+
+        let mut req = self.http.request(reqwest::Method::OPTIONS, self.url_for(dir_id));
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            // OPTIONS 是增强探测，不应让“不实现 OPTIONS 但实际可写”的服务器
+            // 整个变成只读；网络故障会在真正写入时按正常错误路径暴露。
+            Err(_) => return Ok(upper),
+        };
+        if matches!(resp.status(), StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED) {
+            return Ok(upper);
+        }
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), dir_id));
+        }
+        let Some(allow) = resp.headers().get(ALLOW).and_then(|v| v.to_str().ok()) else {
+            return Ok(upper);
+        };
+        let methods: std::collections::HashSet<_> = allow
+            .split(',')
+            .map(|m| m.trim().to_ascii_uppercase())
+            .collect();
+        Ok(Capabilities {
+            write: upper.write && methods.contains("PUT"),
+            delete: upper.delete && methods.contains("DELETE"),
+            rename: upper.rename && methods.contains("MOVE"),
+            create_dir: upper.create_dir && methods.contains("MKCOL"),
+            ..upper
+        })
+    }
+
     fn describe(&self) -> String {
         format!("webdav:{}", self.cfg.base_url)
     }
@@ -477,6 +517,10 @@ impl RemoteStore for WebDavStore {
         Ok(body.to_vec())
     }
 
+    fn child_id(&self, dir_id: &str, name: &str) -> Option<String> {
+        Some(join(dir_id, name))
+    }
+
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         if !self.cfg.writable {
             return Err(Error::Unsupported("write"));
@@ -491,6 +535,43 @@ impl RemoteStore for WebDavStore {
             name: name.to_owned(),
             is_dir: false,
             size: Some(data.len() as u64),
+            mtime: None,
+            etag: None,
+            thumb: None,
+            media_tab: None,
+        })
+    }
+
+    async fn write_stream(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+    ) -> Result<Entry> {
+        if !self.cfg.writable {
+            return Err(Error::Unsupported("write"));
+        }
+        let path = join(dir_id, name);
+        let stream = ReaderStream::new(reader);
+        let body = reqwest::Body::wrap_stream(stream);
+        let mut req = self
+            .http
+            .put(self.url_for(&path))
+            .header(CONTENT_LENGTH, size)
+            .body(body);
+        if let Some(a) = self.auth_header() {
+            req = req.header(AUTHORIZATION, a);
+        }
+        let resp = req.send().await.map_err(|e| Error::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(Self::map_status(resp.status(), &path));
+        }
+        Ok(Entry {
+            id: path,
+            name: name.to_owned(),
+            is_dir: false,
+            size: Some(size),
             mtime: None,
             etag: None,
             thumb: None,

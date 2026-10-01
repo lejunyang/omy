@@ -79,6 +79,9 @@ dirs          = "6.0"
 # 提到 workspace 统一版本：两处各自声明迟早会漂移，
 # 而 tokio 的版本不一致会导致 runtime 类型不兼容这种难查的问题
 tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
+# 把 AsyncRead 适配成 HTTP body stream；远程位置间复制用它保持有界内存，
+# 不先把整文件聚进 Vec。
+tokio-util = { version = "0.7", features = ["io"] }
 
 # ---- 媒体（仅 omy-media 使用）----
 # 缩略图缩放与编码。默认关掉全部格式再按需开启：

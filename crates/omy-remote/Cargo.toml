@@ -29,6 +29,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 # WebDAV 动词（PROPFIND / MKCOL / MOVE）。与 reqwest 同源，不额外拖一套 HTTP 栈。
 reqwest_dav = "0.3"
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 # 位置密钥槽的 PDK 用 Zeroizing 包裹，用完即擦
