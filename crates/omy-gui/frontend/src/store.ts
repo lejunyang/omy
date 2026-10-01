@@ -1637,6 +1637,40 @@ export async function tryDeviceUnlock() {
   }
 }
 
+/** 用密码管理器候选直接解锁当前目录。
+ *
+ * 前端只传候选 UUID；真正的密码留在 Rust 缓存里，由后端直接走与手工密码
+ * 相同的 unlock_directory 链路。这样 Vue 状态和浏览器调试工具都看不到秘密。
+ */
+export async function tryPasswordManagerUnlock(credentialId: string) {
+  if (!state.cwd) return false;
+  state.busy = true;
+  state.busyKey = 'busy.deriving';
+  state.error = '';
+  state.notice = '';
+  try {
+    const r = await api.passwordManagerUnlock(state.cwd, credentialId);
+    state.credentials = r.credentials;
+    await reload();
+    void reloadRemotePlaces();
+    const opened = state.entries.filter(
+      (e) => (e.is_encrypted || e.is_encrypted_dir) && e.unlocked,
+    ).length;
+    if (opened > 0) {
+      setNotice(i18n.tn('notice.unlocked', opened));
+      return true;
+    }
+    state.error = i18n.te('wrong_password');
+    return false;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+    return false;
+  } finally {
+    state.busy = false;
+    state.busyKey = '';
+  }
+}
+
 /** 在**远程位置**里试密码。
  *
  * 与局域网那条 `unlockRemote` 同构：远端没有「目录」可探测 vault，

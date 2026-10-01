@@ -61,6 +61,9 @@ dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
+    // 系统统一的密码/passkey 选择器。Android 14+ 可由 KeePassDX 等第三方
+    // Credential Provider 接管；旧系统仍保留现有 WebView Autofill 回退。
+    implementation("androidx.credentials:credentials:1.5.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     testImplementation("junit:junit:4.13.2")

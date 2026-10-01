@@ -8,15 +8,18 @@
 import { ref, computed, onMounted } from 'vue';
 import * as i18n from '../i18n';
 import * as api from '../api';
+import type { PasswordManagerCredential } from '../types';
 import VideoDialog from './VideoDialog.vue';
 
 const props = defineProps({
   /** 待加密的条目。 */
   targets: { type: Array as () => any[], required: true },
   busy: { type: Boolean, default: false },
+  passwordManager: { type: Boolean, default: false },
+  managerCredential: { type: Object as () => PasswordManagerCredential | null, default: null },
 });
 
-const emit = defineEmits(['cancel', 'submit']);
+const emit = defineEmits(['cancel', 'submit', 'password-manager', 'clear-password-manager']);
 
 const password = ref('');
 const password2 = ref('');
@@ -165,11 +168,13 @@ onMounted(async () => {
 const hasFolder = computed(() => props.targets.some((t) => t.is_dir));
 
 const mismatch = computed(
-  () => password2.value.length > 0 && password.value !== password2.value,
+  () => !props.managerCredential && password2.value.length > 0 && password.value !== password2.value,
 );
 
 const canSubmit = computed(
-  () => password.value.length > 0 && !mismatch.value && !props.busy,
+  () =>
+    (!!props.managerCredential || (password.value.length > 0 && !mismatch.value)) &&
+    !props.busy,
 );
 
 const totalSize = computed(() =>
@@ -179,7 +184,8 @@ const totalSize = computed(() =>
 function submit() {
   if (!canSubmit.value) return;
   emit('submit', {
-    password: password.value,
+    password: props.managerCredential ? '' : password.value,
+    password_manager_credential_id: props.managerCredential?.id ?? null,
     encrypt_filename: filenameMode.value !== 'plain',
     preserve_extension: filenameMode.value === 'keep_ext',
     compress: compress.value,
@@ -240,12 +246,32 @@ function submit() {
 
       <div class="hr"></div>
 
-      <div class="field">
+      <div v-if="passwordManager" class="field">
+        <div class="flabel">{{ i18n.t('password_manager.key_source') }}</div>
+        <button type="button" class="btn wide" data-sf="pm_encrypt" @click="$emit('password-manager')">
+          {{
+            managerCredential
+              ? i18n.t('password_manager.selected', { name: managerCredential.login || managerCredential.name })
+              : i18n.t('password_manager.choose_or_create')
+          }}
+        </button>
+        <button
+          v-if="managerCredential"
+          type="button"
+          class="btn small"
+          @click="$emit('clear-password-manager')"
+        >
+          {{ i18n.t('password_manager.use_manual') }}
+        </button>
+        <div class="fhint">{{ i18n.t('password_manager.sync_hint') }}</div>
+      </div>
+
+      <div v-if="!managerCredential" class="field">
         <label class="flabel" for="e-pass">{{ i18n.t('encrypt.password') }}</label>
         <input id="e-pass" v-model="password" type="password" autocomplete="new-password" />
       </div>
 
-      <div class="field">
+      <div v-if="!managerCredential" class="field">
         <label class="flabel" for="e-pass2">{{ i18n.t('encrypt.password_again') }}</label>
         <input id="e-pass2" v-model="password2" type="password" autocomplete="new-password" />
         <div v-if="mismatch" class="ferr">{{ i18n.t('encrypt.password_mismatch') }}</div>

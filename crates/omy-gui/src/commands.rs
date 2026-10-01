@@ -306,6 +306,7 @@ pub async fn lock(
     place_containers: State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
     places: State<'_, std::sync::Arc<crate::places::PlaceRegistry>>,
     vreg: State<'_, std::sync::Arc<crate::virtual_place::VirtualRegistry>>,
+    password_managers: State<'_, std::sync::Arc<crate::password_manager::PasswordManagerState>>,
     external_edits: State<'_, std::sync::Arc<crate::external_edit::ExternalEdits>>,
 ) -> CmdResult<()> {
     // 加密远程文件交给外部应用的是明文工作副本；锁定不仅要清内存密钥，
@@ -318,6 +319,9 @@ pub async fn lock(
     // 顺序无所谓——它们各自清自己的内存状态，不依赖会话密钥清空的先后。
     places.disconnect_all_telegram();
     vreg.lock_all();
+    // get-logins 一次可能返回多把明文密码。它们只为当前选择对话框存在，
+    // 应用锁定时必须与会话 KEK 一起清，不等缓存自然被下一次查询覆盖。
+    password_managers.clear();
     // 远端连接也必须断开，而且必须断在**后端**。
     //
     // 一开始只在前端的 doLock() 里调了 disconnect，实测发现锁定后

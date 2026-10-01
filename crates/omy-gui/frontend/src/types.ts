@@ -88,3 +88,23 @@ export interface RemoteEntry {
 export type MessageListItem =
   | { type: 'group'; key: string; label: string }
   | { type: 'msg'; key: string; m: MessageRow };
+
+/** 第三方密码管理器连接状态；不包含任何凭据内容。 */
+export interface PasswordManagerStatus {
+  provider: 'keepassxc' | 'android_credential_manager';
+  installed: boolean;
+  running: boolean;
+  database_open: boolean;
+  associated: boolean;
+  database_hash: string | null;
+  version: string | null;
+  detail: string | null;
+}
+
+/** 可以安全进入 WebView 的凭据摘要；真正的 password 只留在 Rust 后端。 */
+export interface PasswordManagerCredential {
+  id: string;
+  name: string;
+  login: string;
+  group: string;
+}

@@ -43,7 +43,7 @@ const KEY_LEN: usize = 32;
 /// 一个 KDBX 与 omy 客户端之间的长期关联。
 ///
 /// `key` 是恢复授权的 bearer credential，不应进入普通配置或日志。
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct Association {
     /// 数据库 root UUID 的哈希。
     pub database_hash: String,
@@ -60,6 +60,27 @@ impl core::fmt::Debug for Association {
             .field("id", &self.id)
             .field("key", &"<redacted>")
             .finish()
+    }
+}
+
+impl Association {
+    /// 取出适合交给系统凭据库保存的 32 字节关联 key。
+    ///
+    /// # Errors
+    ///
+    /// 持久化数据损坏、不是 base64 或长度不对时返回。
+    pub fn key_bytes(&self) -> Result<[u8; KEY_LEN]> {
+        decode_fixed::<KEY_LEN>(&self.key, "KeePassXC association key")
+    }
+
+    /// 用系统凭据库取回的 key 重建关联。
+    #[must_use]
+    pub fn from_key_bytes(database_hash: String, id: String, key: &[u8; KEY_LEN]) -> Self {
+        Self {
+            database_hash,
+            id,
+            key: encode(key),
+        }
     }
 }
 
@@ -229,8 +250,10 @@ impl Drop for ProxyTransport {
 /// 这里猜命令包装方式，找不到时让用户选择路径。
 #[must_use]
 pub fn discover_proxy(explicit: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = explicit.filter(|p| p.is_file()) {
-        return Some(path.to_path_buf());
+    if let Some(path) = explicit {
+        // 显式配置代表用户指定了可信二进制；拼错时应明确失败。若继续回退
+        // PATH，会在用户毫不知情时启动另一份同名程序。
+        return path.is_file().then(|| path.to_path_buf());
     }
 
     let binary = if cfg!(target_os = "windows") {
@@ -430,7 +453,7 @@ impl<T: Transport> Client<T> {
         }
         let response = self.send(
             ACTION_TEST_ASSOCIATE,
-            json!({ "id": association.id, "key": association.key }),
+            json!({ "id": &association.id, "key": &association.key }),
             false,
         )?;
         if string_field(&response, "id")? != association.id {
@@ -446,10 +469,10 @@ impl<T: Transport> Client<T> {
         let response = self.send(
             ACTION_GET_LOGINS,
             json!({
-                "id": association.id,
+                "id": &association.id,
                 "url": namespace,
                 "submitUrl": namespace,
-                "keys": [{ "id": association.id, "key": association.key }],
+                "keys": [{ "id": &association.id, "key": &association.key }],
             }),
             true,
         )?;
@@ -500,7 +523,7 @@ impl<T: Transport> Client<T> {
     ) -> Result<()> {
         let association = self.association()?.clone();
         let mut fields = Map::new();
-        fields.insert(String::from("id"), Value::String(association.id));
+        fields.insert(String::from("id"), Value::String(association.id.clone()));
         fields.insert(String::from("login"), Value::String(label.to_owned()));
         fields.insert(
             String::from("password"),
@@ -633,7 +656,12 @@ impl<T: Transport> PasswordManager for Client<T> {
         label: &str,
         secret: &CredentialSecret,
     ) -> Result<Option<String>> {
-        self.set_login(namespace, label, secret, None, None)?;
+        let groups = self.groups()?;
+        let group = find_group(&groups, DEFAULT_GROUP)
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| self.create_group(DEFAULT_GROUP))?;
+        self.set_login(namespace, label, secret, None, Some(&group))?;
         // set-login 的创建响应不含 UUID。回读不仅拿到 UUID，也防止“响应成功但
         // 实际没有写入”的上游回归；没有精确匹配就不能拿这把钥匙去加密。
         let entries = self.get_logins(namespace)?;
@@ -645,6 +673,18 @@ impl<T: Transport> PasswordManager for Client<T> {
                 Error::Protocol(String::from("KeePassXC 报告写入成功，但无法回读新条目"))
             })
     }
+}
+
+fn find_group<'a>(groups: &'a [Group], name: &str) -> Option<&'a Group> {
+    for group in groups {
+        if group.name == name {
+            return Some(group);
+        }
+        if let Some(found) = find_group(&group.children, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn parse_group(value: &Value) -> Result<Group> {
@@ -818,6 +858,23 @@ mod tests {
     }
 
     #[test]
+    fn association_key_roundtrip_preserves_all_bytes() {
+        let key = core::array::from_fn(|i| (i as u8).wrapping_mul(17) ^ 0xA5);
+        let association = Association::from_key_bytes(String::from("db"), String::from("id"), &key);
+        // 不这样会怎样：配置里的公开元数据还在，但系统凭据库取回的 key 被
+        // 错误编码，重启后所有关联都会看似存在却无法恢复。
+        assert_eq!(association.key_bytes().expect("decode"), key);
+    }
+
+    #[test]
+    fn invalid_explicit_proxy_does_not_silently_fall_back() {
+        let missing = Path::new("/definitely-not-an-omy-keepassxc-proxy");
+        // 不这样会怎样：用户显式选择的可信 proxy 路径失效后，应用会悄悄
+        // 从 PATH 启动另一个同名程序，既误导诊断也扩大本机执行边界。
+        assert_eq!(discover_proxy(Some(missing)), None);
+    }
+
+    #[test]
     fn provider_errors_keep_user_actions_distinct() {
         // 不这样会怎样：数据库锁定、用户取消和无条目都会显示成通信失败，
         // 界面无法决定该重试、安静退出还是提示创建。
@@ -866,6 +923,10 @@ mod tests {
         assert_eq!(group.name, "root");
         assert_eq!(group.children.first().map(|g| g.name.as_str()), Some("omy"));
         assert_eq!(group.children.first().map(|g| g.uuid.as_str()), Some("bb"));
+        assert_eq!(
+            find_group(core::slice::from_ref(&group), "omy").map(|g| g.uuid.as_str()),
+            Some("bb")
+        );
     }
 
     #[test]

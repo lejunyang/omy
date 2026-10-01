@@ -8,6 +8,10 @@
 //! 原生 API，但使用本 crate 的同一套领域类型，避免把 KeePassXC 写死进 GUI。
 
 #![deny(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
+)]
 
 use rand_core::RngCore as _;
 use zeroize::Zeroizing;

@@ -972,7 +972,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d6cf87adf719ddf43a805e92c6870a531aedda35ff640442cbaf8674e141e1"
 dependencies = [
  "aead",
- "cipher",
+ "cipher 0.4.4",
  "generic-array",
  "poly1305",
  "salsa20",
@@ -1059,6 +1059,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1804,6 +1805,7 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+ "zeroize",
 ]
 
 [[package]]
@@ -3595,6 +3597,7 @@ dependencies = [
  "omy-core",
  "omy-media",
  "omy-net",
+ "omy-password-manager",
  "omy-remote",
  "omy-secret",
  "serde",
@@ -3606,6 +3609,7 @@ dependencies = [
  "tokio",
  "toml 1.1.4+spec-1.1.0",
  "trash",
+ "uuid",
  "zeroize",
 ]
 
@@ -3642,6 +3646,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omy-password-manager"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "crypto_box",
+ "omy-core",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
 name = "omy-remote"
 version = "0.0.1"
 dependencies = [
@@ -3673,19 +3691,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
- "zeroize",
-]
-
-[[package]]
-name = "omy-password-manager"
-version = "0.0.1"
-dependencies = [
- "base64 0.22.1",
- "crypto_box",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
  "zeroize",
 ]
 
@@ -4707,21 +4712,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "salsa20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
+dependencies = [
+ "cipher 0.4.4",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "salsa20"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
-dependencies = [
- "cipher",
 ]
 
 [[package]]

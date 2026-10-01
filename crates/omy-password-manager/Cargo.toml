@@ -17,6 +17,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+omy-core = { path = "../omy-core" }
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

@@ -21,6 +21,7 @@ use omy_core::file::{EncryptOptions, RandomMaterial, encrypt_with_progress};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{Emitter as _, State};
+use zeroize::Zeroize as _;
 
 /// 进度事件的名字。前端用同名字符串 listen。
 ///
@@ -44,12 +45,19 @@ pub struct EncryptProgress {
 }
 
 /// 前端传来的加密参数。
-#[derive(Debug, Clone, Deserialize)]
+// 不派生 Debug：password 可能是密码管理器里的 256 bit 主秘密，任何错误日志
+// 打印整个请求都会把它永久写盘。
+#[derive(Deserialize)]
 pub struct EncryptRequest {
     /// 要加密的路径。
     pub paths: Vec<String>,
     /// 密码。
+    #[serde(default)]
     pub password: String,
+    /// 密码管理器候选的临时 UUID。设置后由 Rust 后端取出秘密，前端永远
+    /// 看不到密码内容；与 `password` 二选一。
+    #[serde(default)]
+    pub password_manager_credential_id: Option<String>,
     /// 是否加密文件名。
     #[serde(default = "default_true")]
     pub encrypt_filename: bool,
@@ -105,6 +113,14 @@ pub struct EncryptRequest {
     /// 只在恰好加密一个文件时有意义（视频处理对话框也只在单选时开放）。
     #[serde(default)]
     pub converted_path: Option<String>,
+}
+
+impl Drop for EncryptRequest {
+    fn drop(&mut self) {
+        // 密码管理器秘密最终会进入这个与手工密码共用的请求对象。若只依赖
+        // CredentialSecret 清零，这份为了 KDF 产生的 String 副本仍会留在堆里。
+        self.password.zeroize();
+    }
 }
 
 fn default_true() -> bool {
@@ -207,10 +223,18 @@ fn params_of(profile: &str) -> Argon2Params {
 pub async fn encrypt_paths(
     app: tauri::AppHandle,
     state: State<'_, Shared>,
-    req: EncryptRequest,
+    password_managers: State<'_, std::sync::Arc<crate::password_manager::PasswordManagerState>>,
+    mut req: EncryptRequest,
 ) -> CmdResult<EncryptSummary> {
     if req.paths.is_empty() {
         return Err(CmdError::code("empty_selection"));
+    }
+    if !req.password.is_empty() && req.password_manager_credential_id.is_some() {
+        return Err(CmdError::code("password_source_conflict"));
+    }
+    if let Some(id) = req.password_manager_credential_id.take() {
+        let entry = password_managers.take(&id)?;
+        req.password = entry.secret.expose().to_owned();
     }
     if req.password.is_empty() {
         return Err(CmdError::code("password_required"));
@@ -758,6 +782,7 @@ mod tests {
         EncryptRequest {
             paths,
             password: String::from("test-password"),
+            password_manager_credential_id: None,
             encrypt_filename: true,
             preserve_extension: false,
             compress: true,
@@ -1115,11 +1140,8 @@ mod tests {
         std::fs::create_dir_all(root.join("target")).unwrap();
         std::fs::write(root.join("target/a.txt"), b"a").unwrap();
 
-        let req = EncryptRequest {
-            paths: vec![root.join("target").to_string_lossy().into_owned()],
-            password: String::from("x"),
-            ..req_with(vec![])
-        };
+        let mut req = req_with(vec![root.join("target").to_string_lossy().into_owned()]);
+        req.password = String::from("x");
 
         // run_encrypt 内部算出的 out_dir 必须是 target 的父目录
         let first = std::path::PathBuf::from(req.paths.first().unwrap());

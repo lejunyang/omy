@@ -39,6 +39,8 @@ omy-config = { path = "../omy-config" }
 # 远程位置：RemoteStore 抽象与 WebDAV 驱动
 omy-remote = { path = "../omy-remote" }
 omy-secret = { path = "../omy-secret" }
+# 外部密码管理器只经这个抽象接入；GUI 不直接理解 KeePassXC 的 NaCl 协议。
+omy-password-manager = { path = "../omy-password-manager" }
 # 远程位置的凭据信封以 toml::Value 形式存进配置，不透明转发
 toml = { workspace = true }
 omy-media = { path = "../omy-media" }
@@ -67,6 +69,7 @@ dirs.workspace = true
 tokio = { workspace = true }
 # 设备库密码留在会话里以免反复询问，Drop 时必须抹掉
 zeroize = { workspace = true }
+uuid = { workspace = true }
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

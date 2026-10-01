@@ -58,6 +58,7 @@ mod place_files;
 mod place_keys;
 mod places;
 mod plain;
+mod password_manager;
 mod protocol;
 mod remote;
 mod remote_cmds;
@@ -171,6 +172,9 @@ pub fn run() {
     let telegram_login: telegram_cmds::SharedLogin = Arc::new(telegram_cmds::LoginTask::new());
     let telegram_phone_login: telegram_cmds::SharedPhoneLogin =
         Arc::new(telegram_cmds::PhoneLoginTask::new());
+    // 密码候选里含明文同步密钥，只保留在 Rust 后端。前端拿到的只是摘要和
+    // provider UUID；锁定或下一次查询会清掉旧候选。
+    let password_managers = Arc::new(password_manager::PasswordManagerState::new());
 
     // CDP 端口：仅在设了环境变量时开启，供自动化验证用。
     // 默认不开——远程调试端口意味着任何本地进程都能接管这个
@@ -185,7 +189,8 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(storage::init())
-        .plugin(external_edit::init());
+        .plugin(external_edit::init())
+        .plugin(password_manager::init());
 
     let app = match builder
         .manage(Arc::clone(&shared))
@@ -204,6 +209,7 @@ pub fn run() {
         .manage(Arc::clone(&pin_retry))
         .manage(Arc::clone(&telegram_login))
         .manage(Arc::clone(&telegram_phone_login))
+        .manage(Arc::clone(&password_managers))
         .manage(Arc::clone(&external_edits))
         // 必须是**异步**协议：同步版本会阻塞 WebView 线程，
         // 大文件解密时界面直接卡死（Spike S1 实测）
@@ -262,6 +268,13 @@ pub fn run() {
             device_key::device_key_unlock,
             device_key::device_key_enroll,
             device_key::device_key_forget,
+            password_manager::password_manager_status,
+            password_manager::password_manager_connect,
+            password_manager::password_manager_list,
+            password_manager::password_manager_generate,
+            password_manager::password_manager_unlock,
+            password_manager::password_manager_forget,
+            password_manager::password_manager_clear,
             keymgmt::retry_key_files,
             keymgmt::generate_recovery,
             keymgmt::restore_with_recovery,

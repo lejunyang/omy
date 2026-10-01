@@ -27,9 +27,11 @@ defineProps({
    * 不显示按钮——摆一个点了就报错的按钮比没有更糟。
    */
   deviceKey: { type: Boolean, default: false },
+  /** 本机存在可用的外部密码管理器。远程位置暂不显示。 */
+  passwordManager: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['cancel', 'submit', 'device-unlock']);
+const emit = defineEmits(['cancel', 'submit', 'device-unlock', 'password-manager']);
 
 const password = ref('');
 const input = useTemplateRef('input');
@@ -67,6 +69,18 @@ function submit() {
           @click="$emit('device-unlock')"
         >
           {{ i18n.t('devicekey.unlock_with_hello') }}
+        </button>
+      </div>
+
+      <div v-if="passwordManager" class="field">
+        <button
+          type="button"
+          class="btn wide"
+          :disabled="busy"
+          data-sf="pm_unlock"
+          @click="$emit('password-manager')"
+        >
+          {{ i18n.t('password_manager.choose') }}
         </button>
       </div>
 

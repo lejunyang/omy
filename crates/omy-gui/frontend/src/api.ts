@@ -16,6 +16,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
 
 /** 从后端错误里取出错误码。
  *
@@ -172,6 +173,34 @@ export const deviceKeyEnroll = (path: any, password: any): Promise<any> => invok
 
 /** 关闭免密解锁。只清这台机器上保管的密钥，文件不动。 */
 export const deviceKeyForget = (dir: any): Promise<any> => invoke('device_key_forget', { dir });
+
+/* ---------------- 第三方密码管理器 ---------------- */
+
+/** 查询 KeePassXC / 系统 Credential Manager 状态，不会返回秘密。 */
+export const passwordManagerStatus = (): Promise<PasswordManagerStatus> =>
+  invoke('password_manager_status');
+
+/** 首次把当前 KeePassXC 数据库与 omy 关联；KeePassXC 会弹出确认。 */
+export const passwordManagerConnect = (): Promise<PasswordManagerStatus> =>
+  invoke('password_manager_connect');
+
+/** 查询同步密钥。返回的只有摘要，密码保留在 Rust 后端短期缓存。 */
+export const passwordManagerList = (): Promise<PasswordManagerCredential[]> =>
+  invoke('password_manager_list');
+
+/** 生成 256-bit 同步密钥并保存，返回可选摘要。 */
+export const passwordManagerGenerate = (label: string): Promise<PasswordManagerCredential> =>
+  invoke('password_manager_generate', { label });
+
+/** 用摘要 id 对应的后端秘密直接解锁，不把密码送进 WebView。 */
+export const passwordManagerUnlock = (dir: string, credentialId: string): Promise<any> =>
+  invoke('password_manager_unlock', { dir, credentialId });
+
+/** 关闭选择器或锁定时清除后端候选密码。 */
+export const passwordManagerClear = (): Promise<void> => invoke('password_manager_clear');
+
+/** 忘记当前 KDBX 的 omy 关联，不删除其中的密码条目。 */
+export const passwordManagerForget = (): Promise<void> => invoke('password_manager_forget');
 
 /**
  * 只重试上次失败的那些文件。

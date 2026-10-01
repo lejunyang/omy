@@ -42,6 +42,7 @@ import {
   encryptSelected,
   restoreSelected,
   tryDeviceUnlock,
+  tryPasswordManagerUnlock,
   tryUnlock,
   lock,
   switchLanguage,
@@ -113,6 +114,8 @@ import TgEncryptDialog from './components/TgEncryptDialog.vue';
 import TgUnlockDialog from './components/TgUnlockDialog.vue';
 import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
+import PasswordManagerDialog from './components/PasswordManagerDialog.vue';
+import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
 import { initAutoLock, configureAutoLock } from './autolock';
 import { registerMobileBack } from './mobile-platform';
 
@@ -235,6 +238,15 @@ const keyTarget = ref(null);
 const keyError = ref('');
 const keyErrorFiles = ref([]);
 const showUnlock = ref(false);
+/** 密码管理器选择器及其用途。候选摘要不含密码。 */
+const showPasswordManager = ref(false);
+const passwordManagerPurpose = ref<'unlock' | 'encrypt'>('unlock');
+const passwordManagerStatus = ref<PasswordManagerStatus | null>(null);
+const passwordManagerEntries = ref<PasswordManagerCredential[]>([]);
+const passwordManagerBusy = ref(false);
+const passwordManagerError = ref('');
+/** 加密对话框选中的后端候选；只有 UUID 和显示字段。 */
+const encryptCredential = ref<PasswordManagerCredential | null>(null);
 const showDevices = ref(false);
 const unlockError = ref('');
 const previewEntry = ref(null);
@@ -503,7 +515,141 @@ async function onRestoreSubmit(opts) {
 
 async function onEncryptSubmit(opts) {
   const r = await encryptSelected(opts);
-  if (r) showEncrypt.value = false;
+  if (r) {
+    showEncrypt.value = false;
+    encryptCredential.value = null;
+    await api.passwordManagerClear().catch(() => {});
+  } else if (opts.password_manager_credential_id) {
+    // 后端无论成功失败都会消费秘密 handle；保留它只会让“重试”稳定报过期。
+    encryptCredential.value = null;
+    await api.passwordManagerClear().catch(() => {});
+  }
+}
+
+async function refreshPasswordManagerStatus() {
+  try {
+    passwordManagerStatus.value = await api.passwordManagerStatus();
+  } catch (e) {
+    passwordManagerStatus.value = null;
+    passwordManagerError.value = i18n.te(api.errCode(e));
+  }
+}
+
+async function refreshPasswordManagerEntries() {
+  passwordManagerBusy.value = true;
+  passwordManagerError.value = '';
+  try {
+    passwordManagerEntries.value = await api.passwordManagerList();
+    // Android Credential Manager 自己已经完成了 provider 与条目的选择，Rust
+    // 只会返回那一条；再让用户在 omy 里点一次是重复确认。桌面 get-logins
+    // 可能返回多条，仍由本对话框选择。
+    if (
+      passwordManagerStatus.value?.provider === 'android_credential_manager' &&
+      passwordManagerEntries.value.length === 1
+    ) {
+      await selectPasswordManagerKey(passwordManagerEntries.value[0]);
+    }
+  } catch (e) {
+    passwordManagerEntries.value = [];
+    const code = api.errCode(e);
+    if (code !== 'password_manager_not_found') passwordManagerError.value = i18n.te(code);
+  } finally {
+    passwordManagerBusy.value = false;
+  }
+}
+
+async function retryPasswordManager() {
+  passwordManagerError.value = '';
+  await refreshPasswordManagerStatus();
+  if (passwordManagerStatus.value?.associated) await refreshPasswordManagerEntries();
+}
+
+async function openPasswordManager(purpose: 'unlock' | 'encrypt') {
+  passwordManagerPurpose.value = purpose;
+  passwordManagerEntries.value = [];
+  passwordManagerError.value = '';
+  showPasswordManager.value = true;
+  await refreshPasswordManagerStatus();
+  if (passwordManagerStatus.value?.associated) await refreshPasswordManagerEntries();
+}
+
+async function connectPasswordManager() {
+  passwordManagerBusy.value = true;
+  passwordManagerError.value = '';
+  try {
+    passwordManagerStatus.value = await api.passwordManagerConnect();
+    await refreshPasswordManagerEntries();
+  } catch (e) {
+    passwordManagerError.value = i18n.te(api.errCode(e));
+    await refreshPasswordManagerStatus();
+  } finally {
+    passwordManagerBusy.value = false;
+  }
+}
+
+async function forgetPasswordManager() {
+  passwordManagerBusy.value = true;
+  passwordManagerError.value = '';
+  try {
+    await api.passwordManagerForget();
+    passwordManagerEntries.value = [];
+    await refreshPasswordManagerStatus();
+  } catch (e) {
+    passwordManagerError.value = i18n.te(api.errCode(e));
+  } finally {
+    passwordManagerBusy.value = false;
+  }
+}
+
+async function generatePasswordManagerKey(label: string) {
+  passwordManagerBusy.value = true;
+  passwordManagerError.value = '';
+  try {
+    const entry = await api.passwordManagerGenerate(label);
+    encryptCredential.value = entry;
+    showPasswordManager.value = false;
+  } catch (e) {
+    passwordManagerError.value = i18n.te(api.errCode(e));
+  } finally {
+    passwordManagerBusy.value = false;
+  }
+}
+
+async function selectPasswordManagerKey(entry: PasswordManagerCredential) {
+  if (passwordManagerPurpose.value === 'encrypt') {
+    encryptCredential.value = entry;
+    showPasswordManager.value = false;
+    return;
+  }
+  const ok = await tryPasswordManagerUnlock(entry.id);
+  if (ok) {
+    showPasswordManager.value = false;
+    showUnlock.value = false;
+    unlockError.value = '';
+    passwordManagerEntries.value = [];
+    await api.passwordManagerClear().catch(() => {});
+  } else {
+    passwordManagerError.value = state.error;
+    state.error = '';
+  }
+}
+
+async function closePasswordManager() {
+  showPasswordManager.value = false;
+  passwordManagerEntries.value = [];
+  await api.passwordManagerClear().catch(() => {});
+}
+
+function openEncryptDialog() {
+  encryptCredential.value = null;
+  showEncrypt.value = true;
+  void refreshPasswordManagerStatus();
+}
+
+async function closeEncryptDialog() {
+  showEncrypt.value = false;
+  encryptCredential.value = null;
+  await api.passwordManagerClear().catch(() => {});
 }
 
 /** 查询槽位清单。交给对话框自己处理失败——用户可能只是密码还没打完。 */
@@ -664,7 +810,7 @@ async function onCtxPick(key) {
       await openWithSystem(entry, true);
       break;
     case 'encrypt':
-      showEncrypt.value = true;
+      openEncryptDialog();
       break;
     case 'restore':
       showRestore.value = true;
@@ -882,8 +1028,9 @@ function onAndroidBack() {
   if (showTelegramLogin.value) { showTelegramLogin.value = false; return true; }
   if (showAddPlace.value) { showAddPlace.value = false; return true; }
   if (showDevices.value) { void onDevicePanelClose(); return true; }
+  if (showPasswordManager.value) { void closePasswordManager(); return true; }
   if (showUnlock.value) { onUnlockCancel(); return true; }
-  if (showEncrypt.value) { showEncrypt.value = false; return true; }
+  if (showEncrypt.value) { void closeEncryptDialog(); return true; }
   if (showRestore.value) { showRestore.value = false; return true; }
   if (keyTarget.value) { onKeyCancel(); return true; }
   if (recoveryDlg.value) { onRecoveryClose(); return true; }
@@ -966,6 +1113,7 @@ onMounted(async () => {
   // 远程「边扫边出」事件监听注册一次即可，不必阻塞首屏
   void ensureRemoteListeners();
   await refreshDeviceOverview();
+  await refreshPasswordManagerStatus();
 
   // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
   // 都是界面首屏需要的，不该为它推迟
@@ -1042,7 +1190,7 @@ onBeforeUnmount(() => {
     v-else
     @open="onOpen"
     @menu="onEntryMenu"
-    @encrypt="showEncrypt = true"
+    @encrypt="openEncryptDialog"
     @restore="showRestore = true"
     @manage-key="((keyError = ''), (keyTarget = $event))"
     @lock="doLock"
@@ -1075,8 +1223,12 @@ onBeforeUnmount(() => {
     v-if="showEncrypt"
     :targets="encryptable"
     :busy="state.busy"
-    @cancel="showEncrypt = false"
+    :password-manager="passwordManagerStatus?.installed === true"
+    :manager-credential="encryptCredential"
+    @cancel="closeEncryptDialog"
     @submit="onEncryptSubmit"
+    @password-manager="openPasswordManager('encrypt')"
+    @clear-password-manager="encryptCredential = null"
   />
 
   <KeyDialog
@@ -1131,9 +1283,26 @@ onBeforeUnmount(() => {
     :error="unlockError"
     :loaded="state.credentials"
     :device-key="deviceKeyReady"
+    :password-manager="!unlockForRemote && passwordManagerStatus?.installed === true"
     @cancel="onUnlockCancel"
     @submit="onUnlockSubmit"
     @device-unlock="onDeviceUnlock"
+    @password-manager="openPasswordManager('unlock')"
+  />
+
+  <PasswordManagerDialog
+    v-if="showPasswordManager"
+    :purpose="passwordManagerPurpose"
+    :status="passwordManagerStatus"
+    :entries="passwordManagerEntries"
+    :busy="passwordManagerBusy || state.busy"
+    :error="passwordManagerError"
+    @cancel="closePasswordManager"
+    @connect="connectPasswordManager"
+    @forget="forgetPasswordManager"
+    @refresh="retryPasswordManager"
+    @select="selectPasswordManagerKey"
+    @generate="generatePasswordManagerKey"
   />
 
   <PreviewOverlay

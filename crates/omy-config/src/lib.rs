@@ -89,6 +89,8 @@ pub struct Config {
     pub ui: Ui,
     /// 安全相关。
     pub security: Security,
+    /// 第三方密码管理器。
+    pub password_managers: PasswordManagers,
     /// 远程位置与缓存。
     pub remote: Remote,
 }
@@ -242,6 +244,37 @@ impl Default for Security {
             wipe_temp_plaintext: true,
         }
     }
+}
+
+/// 第三方密码管理器配置。
+///
+/// 这里只保存非秘密元数据。恢复 KeePassXC 授权所需的 association key 交给
+/// `omy-secret` 的系统凭据库；把它也写进 TOML 会让任意能读配置的进程继承
+/// 用户已经批准过的数据库访问权。
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasswordManagers {
+    /// KeePassXC-Browser provider。
+    pub keepassxc: KeePassXc,
+}
+
+/// KeePassXC provider 配置。
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeePassXc {
+    /// 用户显式选择的 `keepassxc-proxy`；为空时自动探测。
+    pub proxy_path: Option<String>,
+    /// 已配对数据库的非秘密索引。
+    pub associations: Vec<KeePassXcAssociation>,
+}
+
+/// 一个已配对 KeePassXC 数据库的非秘密部分。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeePassXcAssociation {
+    /// 数据库 root UUID 的哈希。
+    pub database_hash: String,
+    /// 用户在 KeePassXC 确认窗口中输入的关联名。
+    pub id: String,
 }
 
 /// 远程位置与缓存配置。
@@ -640,6 +673,23 @@ mod tests {
         assert_eq!(s.auto_lock_secs, 0, "默认不按时间自动锁定");
         assert!(!s.lock_on_background, "切后台默认按闲置处理，不立即锁");
         assert!(s.wipe_temp_plaintext);
+    }
+
+    /// KeePassXC 关联的 bearer key 绝不能出现在配置结构里。
+    #[test]
+    fn password_manager_config_contains_only_public_metadata() {
+        let mut c = Config::default();
+        c.password_managers.keepassxc.proxy_path = Some(String::from("/opt/KeePassXC/proxy"));
+        c.password_managers.keepassxc.associations.push(KeePassXcAssociation {
+            database_hash: String::from("db-hash"),
+            id: String::from("omy-test"),
+        });
+        let text = toml::to_string(&c).expect("配置应可序列化");
+        // 不这样会怎样：为了省一次 keyring 调用把关联 key 顺手塞进 TOML，
+        // 任何读配置的进程都能继承用户授予 KeePassXC 的访问权。
+        assert!(text.contains("database_hash"), "需要保留查找数据库的公开索引");
+        assert!(text.contains("omy-test"), "需要保留用户可辨认的关联名");
+        assert!(!text.contains("association_key"), "配置不得出现关联 bearer key");
     }
 
     /// 缓存默认 2 GiB，且并发默认 8。
