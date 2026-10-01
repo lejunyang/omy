@@ -58,6 +58,8 @@ vi.mock('../store.js', async () => {
     remoteProtected: false,
     busy: false,
     remoteRetrying: [],
+    remoteSelected: [],
+    remoteMessageSelected: [],
     remoteCacheStat: {},
     remoteDirCaps: { read: true, write: false },
     showThumbnails: true,
@@ -104,7 +106,19 @@ vi.mock('../store.js', async () => {
     addVirtualFolder: noop,
     openAddToVirtual: noop,
     openUploadToRemote: noop,
-    // 网格几何回写：测试不关心，给空实现（组件 onMounted 会调）
+    remoteSelectionActive: () => hst.state.remoteSelected.length > 0,
+    toggleRemoteSelected: noop,
+    clearRemoteSelection: noop,
+    selectedRemoteEntries: () => [],
+    remoteMessageSelectionActive: () => hst.state.remoteMessageSelected.length > 0,
+    toggleRemoteMessageSelected: vi.fn((id) => {
+      const i = hst.state.remoteMessageSelected.indexOf(id);
+      if (i >= 0) hst.state.remoteMessageSelected.splice(i, 1);
+      else hst.state.remoteMessageSelected.push(id);
+    }),
+    clearRemoteMessageSelection: vi.fn(() => { hst.state.remoteMessageSelected = []; }),
+    openTelegramForward: vi.fn(),
+    openTelegramForwardFiles: vi.fn(),
     setGridLayout: noop,
     // 任务 #10 虚拟位置整理操作：组件引用了它们，mock 成空实现/常量。
     newVirtualFolderPrompt: noop,
@@ -200,7 +214,8 @@ beforeEach(() => {
     remoteTab: 'messages',
     remoteViewMode: 'messages',
     remoteItems: [],
-    loadingMessages: false,
+    remoteSelected: [],
+    remoteMessageSelected: [],
     loadingNewer: false,
     locatingMsg: null,
     highlightMsg: null,
@@ -289,6 +304,27 @@ describe('PlaceBrowser 消息时间线', () => {
     await flushPromises();
     expect(w.find('[data-tg="msgloading-newer"]').exists()).toBe(true);
     expect(w.findAll('[data-tg="msgrow"]')).toHaveLength(3);
+  });
+
+  it('消息复选后出现多选转发工具条，清除后消失', async () => {
+    const w = mountView();
+    await flushPromises();
+    const first = w.find('.msgcheck');
+    expect(first.exists()).toBe(true);
+    await first.setValue(true);
+    await nextTick();
+    expect(state.remoteMessageSelected.length).toBe(1);
+    expect(w.find('.msg-selectbar').exists()).toBe(true);
+  });
+
+  it('消息行右键菜单包含转发入口', async () => {
+    const w = mount(PlaceBrowser, {
+      global: { stubs: { WindowList: WindowListStub } },
+    });
+    await flushPromises();
+    await w.find('[data-tg="msgrow"]').trigger('contextmenu');
+    await nextTick();
+    expect(w.text()).toContain('tg_forward.menu');
   });
 
   it('日期组标题带吸顶 top 内联样式（落在搜索栏下方而非 top:0）', async () => {

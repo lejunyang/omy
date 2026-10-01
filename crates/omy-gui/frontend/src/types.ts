@@ -84,6 +84,12 @@ export interface RemoteEntry {
   [k: string]: unknown;
 }
 
+export interface TelegramForwardTarget {
+  dir_id: string;
+  title: string;
+  kind: 'user' | 'group';
+}
+
 /** 消息窗口化列表里拍平后的一行：日期组标题或一条消息。 */
 export type MessageListItem =
   | { type: 'group'; key: string; label: string }

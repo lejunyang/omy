@@ -2432,6 +2432,31 @@ input {
   flex-direction: column;
   gap: 6px;
 }
+.msgrow.sel {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.msg-selectbar {
+  position: sticky;
+  z-index: 9;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin: 0 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--bg);
+}
+.msgcheck {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent-solid);
+}
 
 /* 自己发的稍作区分。不做成聊天气泡的左右分栏——
    这是找文件的时间线，不是聊天界面 */

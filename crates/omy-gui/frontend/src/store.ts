@@ -45,6 +45,10 @@ export const state = reactive({
   addToVirtual: null,
   /** “上传至”目标选择对话框。source 为 local 或 remote，确认后进入统一传输页。 */
   uploadTo: null,
+  /** Telegram 原生转发对话框上下文：同账号、同源对话的一组消息号。 */
+  telegramForward: null,
+  /** 消息时间线的多选消息号；切位置、目录或分栏必须清空。 */
+  remoteMessageSelected: [],
   /** 当前所在的远程位置 id；为空表示在本地。 */
   remotePlace: '',
   /** 远程位置里的当前目录。 */
@@ -2231,6 +2235,9 @@ export async function setRemoteViewMode(mode) {
 export async function setRemoteTab(tab) {
   if (state.remoteTab === tab) return;
   state.remoteTab = tab;
+  state.remoteSelected = [];
+  state.remoteMessageSelected = [];
+  state.telegramForward = null;
   api.uiLog('switch-tab', tab);
   if (tab === 'messages') {
     // remoteViewMode 仍用 'messages' 驱动模板渲染消息时间线
@@ -2586,6 +2593,79 @@ export function clearRemoteSelection() {
   state.remoteSelected = [];
 }
 
+/** 当前消息时间线是否处于多选态。 */
+export function remoteMessageSelectionActive() {
+  return state.remoteMessageSelected.length > 0;
+}
+
+/** 切换一条消息的选中态；addTo=true 时只加不取消。 */
+export function toggleRemoteMessageSelected(message: number, addTo = false) {
+  const i = state.remoteMessageSelected.indexOf(message);
+  if (i >= 0) {
+    if (!addTo) state.remoteMessageSelected.splice(i, 1);
+  } else {
+    state.remoteMessageSelected.push(message);
+  }
+}
+
+export function clearRemoteMessageSelection() {
+  state.remoteMessageSelected = [];
+}
+
+/** 打开 Telegram 原生转发目标选择器。 */
+export function openTelegramForward(messageIds: number[]) {
+  const place = state.remotePlaces.find((p) => p.id === state.remotePlace);
+  const ids = [...new Set((messageIds || []).filter(Number.isInteger))].sort((a, b) => a - b);
+  if (state.remoteProtected) {
+    state.placeError = i18n.te('tg_forward_protected');
+    return false;
+  }
+  if (place?.kind !== 'telegram' || !state.remoteDir || !ids.length) return false;
+  if (ids.length > 100) {
+    state.placeError = i18n.t('tg_forward.too_many');
+    return false;
+  }
+  state.telegramForward = {
+    placeId: state.remotePlace,
+    sourceDir: state.remoteDir,
+    messageIds: ids,
+  };
+  return true;
+}
+
+/** 从文件网格的一条或多条 Telegram 文件打开转发。 */
+export function openTelegramForwardFiles(items) {
+  const list = Array.isArray(items) ? items : [items];
+  return openTelegramForward(list.map((f) => tgMsgOfId(f?.id)).filter((n) => n != null));
+}
+
+export function cancelTelegramForward() {
+  state.telegramForward = null;
+}
+
+/** 确认转发；成功才清选择，失败保留原选择便于换目标重试。 */
+export async function confirmTelegramForward(targetDir: string) {
+  const pending = state.telegramForward;
+  if (!pending || !targetDir) return 0;
+  try {
+    const count = await api.telegramForwardMessages(
+      pending.placeId,
+      pending.sourceDir,
+      targetDir,
+      pending.messageIds,
+    );
+    state.telegramForward = null;
+    state.remoteSelected = [];
+    state.remoteMessageSelected = [];
+    state.placeError = '';
+    setNotice(i18n.tn('tg_forward.done', count, { count }));
+    return count;
+  } catch (e) {
+    state.placeError = i18n.te(api.errCode(e), i18n.t('tg_forward.failed'));
+    return 0;
+  }
+}
+
 /** 取当前选中的完整条目（按当前 remoteItems，顺序稳定）。 */
 export function selectedRemoteEntries() {
   return state.remoteItems.filter((f) => state.remoteSelected.includes(f.id));
@@ -2844,6 +2924,9 @@ export async function openRemotePlace(id, opts?: { skipReload?: boolean }) {
   // reloadRemoteDir 随后若命中缓存会立刻把内容摆回来，所以有缓存的账号仍是
   // 「先出缓存」，不受影响——三态就此区分开。
   state.remoteItems = [];
+  state.remoteSelected = [];
+  state.remoteMessageSelected = [];
+  state.telegramForward = null;
   // skipReload：调用方紧接着要直接进某个对话的消息时间线（虚拟引用「定位到
   // 真实位置」），此时先拉根目录对话列表纯属浪费一次请求，还会让界面先在文件
   // 视图闪一下根列表再跳消息 tab。由调用方负责随后加载目标视图。
@@ -2880,6 +2963,8 @@ export function leaveRemotePlace() {
   state.highlightMsg = null;
   state.highlightFile = null;
   state.remoteSelected = [];
+  state.remoteMessageSelected = [];
+  state.telegramForward = null;
   state.remoteDirName = '';
 }
 
@@ -4100,6 +4185,9 @@ export async function confirmTgUnlock(password) {
 /** 进入远程子目录。 */
 export async function enterRemoteDir(id: string, name?: string) {
   state.remoteDir = id;
+  state.remoteSelected = [];
+  state.remoteMessageSelected = [];
+  state.telegramForward = null;
   // 换对话/回根都回到默认媒体栏：留着上个对话选的栏，会让用户以为
   // 新对话「只有链接」之类（其实是停在链接栏且新对话没链接）
   state.remoteTab = 'media';

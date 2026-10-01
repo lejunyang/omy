@@ -999,5 +999,30 @@
     "mode_memory": "内存中上传",
     "mode_memory_hint": "使用固定容量内存队列，不写本地缓存。下载过快时会自动等待；失败后重新下载。",
     "confirm": "上传到这里"
+  },
+  "tg_forward": {
+    "menu": "转发…",
+    "forward": "转发",
+    "title": "转发 Telegram 消息",
+    "hint_one": "选择接收这 1 条消息的群组或个人。",
+    "hint_other": "选择接收这 {{count}} 条消息的群组或个人。",
+    "search": "搜索群组或个人…",
+    "loading": "正在读取可写会话…",
+    "load_failed": "读取转发目标失败",
+    "no_targets": "没有找到可写的群组或个人",
+    "confirm": "转发到这里",
+    "forwarding": "正在转发…",
+    "failed": "转发失败",
+    "done_one": "已转发 1 条消息",
+    "done_other": "已转发 {{count}} 条消息",
+    "n_selected_one": "已选 1 项",
+    "n_selected_other": "已选 {{count}} 项",
+    "select_message": "选择消息 #{{id}}",
+    "too_many": "单次最多转发 100 条消息，请减少选择后重试",
+    "create_title": "新建仅自己群组",
+    "group_name": "群组名称",
+    "create": "新建群组",
+    "create_hint": "创建一个初始成员只有你自己的 Telegram 超级群；创建后仍需点击转发确认。",
+    "create_failed": "新建群组失败"
   }
 }

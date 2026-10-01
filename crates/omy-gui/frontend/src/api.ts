@@ -677,6 +677,24 @@ export const telegramApiIdReset = (): Promise<any> => invoke('telegram_api_id_re
  * `ok` | `bad_proxy` | `no_route`。三种要分开显示：用户该做的事不同。 */
 export const telegramCheckConnection = (proxyUrl: any): Promise<any> => invoke('telegram_check_connection', { proxyUrl });
 
+/** 列出当前 Telegram 账号中实际可写、可接收转发的群组或个人。 */
+export const telegramForwardTargets = (placeId: string): Promise<any> =>
+  invoke('telegram_forward_targets', { placeId });
+
+/** Telegram 原生批量转发；不下载媒体、不重新上传。 */
+export const telegramForwardMessages = (
+  placeId: string,
+  sourceDir: string,
+  targetDir: string,
+  messageIds: number[],
+): Promise<number> => invoke('telegram_forward_messages', {
+  placeId, sourceDir, targetDir, messageIds,
+});
+
+/** 新建一个初始成员只有当前账号的超级群。 */
+export const telegramCreateSelfGroup = (placeId: string, title: string): Promise<any> =>
+  invoke('telegram_create_self_group', { placeId, title });
+
 /** 批量查一批远程文件的缓存状态（本地查询，不碰网络）。 */
 export const remoteCacheFileStats = (reqs: any): Promise<any> => invoke('remote_cache_file_stats', { reqs });
 

@@ -80,6 +80,11 @@ import {
   toggleRemoteSelected,
   clearRemoteSelection,
   selectedRemoteEntries,
+  remoteMessageSelectionActive,
+  toggleRemoteMessageSelected,
+  clearRemoteMessageSelection,
+  openTelegramForward,
+  openTelegramForwardFiles,
   removeSelectedVirtualRefs,
   clipSelectedVirtual,
 } from '../store';
@@ -432,6 +437,18 @@ function fmtDur(secs) {
 const isTelegram = computed(
   () => state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram',
 );
+/** 当前是否位于一个真实 Telegram 对话内（转发只在这里有明确源对话）。 */
+const inTelegramConversation = computed(
+  () => isTelegram.value && typeof state.remoteDir === 'string' && state.remoteDir.startsWith('tg:'),
+);
+/** 当前文件多选能否整体转发。含目录/引用/非 Telegram 条目时整项不出现，不做部分忽略。 */
+const selectedTelegramFiles = computed(() => selectedRemoteEntries().filter(
+  (f) => !f.is_dir && !f.is_ref && msgIdOf(f) != null,
+));
+const canForwardSelectedFiles = computed(() => {
+  const all = selectedRemoteEntries();
+  return inTelegramConversation.value && all.length > 0 && selectedTelegramFiles.value.length === all.length;
+});
 
 /** 这个位置有没有「本机登录态」这回事。
  *
@@ -759,6 +776,14 @@ const rmenuItems = computed(() => {
   // 「添加到虚拟远程」：真实位置里的文件才给（虚拟位置里的引用不再套娃）。
   // 弹树形选择对话框选目标虚拟位置+文件夹（方案甲）。
   if (!f.is_dir && !f.is_ref && !isVirtualPlace()) {
+    if (inTelegramConversation.value && msgIdOf(f) != null) {
+      items.push({
+        key: 'forward',
+        icon: '↗',
+        label: i18n.t('tg_forward.menu'),
+        disabled: state.remoteProtected,
+      });
+    }
     items.push({
       key: 'upload-to',
       icon: '⬆️',
@@ -803,10 +828,12 @@ const rmenuItems = computed(() => {
 
 async function onMenuPick(key) {
   // 消息文件块菜单与文件条目菜单是两个对象，先处理它，否则会被下面的 !f 拦掉。
-  if (key === 'show-in-files') {
+  if (key === 'show-in-files' || key === 'forward-message') {
     const m = msgMenu.value?.m;
     msgMenu.value = null;
-    if (m?.file_id) {
+    if (key === 'forward-message') {
+      if (m?.message) openTelegramForward([m.message]);
+    } else if (m?.file_id) {
       await locateFile({ id: m.file_id, tab: m.media_tab ?? null, name: m.file_name });
     }
     return;
@@ -827,6 +854,8 @@ async function onMenuPick(key) {
   } else if (key === 'locate-source') {
     const mid = msgIdOf(f);
     if (mid != null) await locateMessage(mid);
+  } else if (key === 'forward') {
+    openTelegramForwardFiles(f);
   } else if (key === 'upload-to') {
     openUploadToRemote(f);
   } else if (key === 'add-to-virtual') {
@@ -850,6 +879,18 @@ async function onMenuPick(key) {
   } else if (key === 'vdelete-folder') {
     await confirmRemoveFolder(f);
   }
+}
+
+/** 多选 Telegram 文件原生转发。 */
+function forwardSelectedFiles() {
+  if (!canForwardSelectedFiles.value) return;
+  openTelegramForwardFiles(selectedTelegramFiles.value);
+}
+
+/** 多选消息原生转发。 */
+function forwardSelectedMessages() {
+  if (!state.remoteMessageSelected.length) return;
+  openTelegramForward(state.remoteMessageSelected);
 }
 
 /** 多选批量删除（工具条按钮）。 */
@@ -883,6 +924,16 @@ function isTelegramRef(f) {
 /** 消息文件块的右键菜单（与条目菜单分开，避免把消息行当文件条目）。 */
 const msgMenu = ref(null);
 
+const msgMenuItems = computed(() => {
+  const items = [
+    { key: 'forward-message', icon: '↗', label: i18n.t('tg_forward.menu'), disabled: state.remoteProtected },
+  ];
+  if (msgMenu.value?.m?.file_id) {
+    items.push({ key: 'show-in-files', icon: '📂', label: i18n.t('rplace.menu_show_in_files'), disabled: false });
+  }
+  return items;
+});
+
 /** 内容区空白处的右键菜单（虚拟位置里新建文件夹 / 在当前文件夹粘贴）。 */
 const blankMenu = ref(null);
 const blankMenuItems = computed(() => {
@@ -910,7 +961,7 @@ async function onBlankMenuPick(key) {
   }
 }
 
-function onMsgFileMenu(m, ev) {
+function onMsgMenu(m, ev) {
   ev.preventDefault();
   ev.stopPropagation();
   msgMenu.value = { m, x: ev.clientX, y: ev.clientY };
@@ -1208,6 +1259,13 @@ function rowTitle(f) {
           <button class="btn small danger" @click="onBatchDelete">🗑️ {{ i18n.t('virtual.selection_delete') }}</button>
           <button class="btn small" @click="clearRemoteSelection">{{ i18n.t('view.clear_selection') }}</button>
         </template>
+        <template v-if="!isVirtualPlace() && remoteSelectionActive()">
+          <span class="selcount">{{ i18n.tn('tg_forward.n_selected', state.remoteSelected.length, { count: state.remoteSelected.length }) }}</span>
+          <button v-if="canForwardSelectedFiles" class="btn small" :disabled="state.remoteProtected" @click="forwardSelectedFiles">
+            ↗ {{ i18n.t('tg_forward.forward') }}
+          </button>
+          <button class="btn small" @click="clearRemoteSelection">{{ i18n.t('view.clear_selection') }}</button>
+        </template>
         <!-- 虚拟位置没有上传，但要能新建文件夹与粘贴剪贴板。 -->
         <template v-if="isVirtualPlace()">
           <button class="btn small" data-pb="vnew-folder" @click="newVirtualFolderPrompt">
@@ -1401,6 +1459,13 @@ function rowTitle(f) {
         <!-- 消息时间线。与文件网格并列的一种渲染，不是另一个页面：
              对话是同一个、面包屑同一条、返回行为也一样。 -->
         <template v-if="state.remoteViewMode === 'messages'">
+          <div v-if="remoteMessageSelectionActive()" class="msg-selectbar">
+            <span>{{ i18n.tn('tg_forward.n_selected', state.remoteMessageSelected.length, { count: state.remoteMessageSelected.length }) }}</span>
+            <button class="btn small" :disabled="state.remoteProtected" @click="forwardSelectedMessages">
+              ↗ {{ i18n.t('tg_forward.forward') }}
+            </button>
+            <button class="btn small" @click="clearRemoteMessageSelection">{{ i18n.t('view.clear_selection') }}</button>
+          </div>
           <div v-if="state.loadingMessages" class="empty">
             <div class="icon" aria-hidden="true">⏳</div>
             <div class="title">{{ i18n.t('msgs.loading') }}</div>
@@ -1442,11 +1507,20 @@ function rowTitle(f) {
                 <div
                   v-else
                   class="msgrow"
-                  :class="{ out: it.m.outgoing, hasfile: !!it.m.file_id, hl: it.m.message === state.highlightMsg }"
+                  :class="{ out: it.m.outgoing, hasfile: !!it.m.file_id, hl: it.m.message === state.highlightMsg, sel: state.remoteMessageSelected.includes(it.m.message) }"
                   data-tg="msgrow"
                   :data-msgid="it.m.message"
+                  @contextmenu="onMsgMenu(it.m, $event)"
                 >
                   <div class="msgmeta">
+                    <input
+                      type="checkbox"
+                      class="msgcheck"
+                      :checked="state.remoteMessageSelected.includes(it.m.message)"
+                      :aria-label="i18n.t('tg_forward.select_message', { id: it.m.message })"
+                      @click.stop
+                      @change="toggleRemoteMessageSelected(it.m.message)"
+                    />
                     <span class="msgid">#{{ it.m.message }}</span>
                     <span class="msgdate">{{ fmtTime(it.m.date) }}</span>
                     <span v-if="it.m.outgoing" class="msgout">{{ i18n.t('msgs.outgoing') }}</span>
@@ -1475,7 +1549,6 @@ function rowTitle(f) {
                     class="msgfile"
                     :data-tg-file="it.m.file_id"
                     @click="openFromMessage(it.m)"
-                    @contextmenu="onMsgFileMenu(it.m, $event)"
                   >
                     <span v-if="!it.m.thumb" aria-hidden="true">📎</span>
                     <span v-else class="mfthumb" data-tg="msgthumb">
@@ -1710,7 +1783,7 @@ function rowTitle(f) {
     />
     <ContextMenu
       v-if="msgMenu"
-      :items="[{ key: 'show-in-files', icon: '📂', label: i18n.t('rplace.menu_show_in_files') }]"
+      :items="msgMenuItems"
       :x="msgMenu.x"
       :y="msgMenu.y"
       @pick="onMenuPick"

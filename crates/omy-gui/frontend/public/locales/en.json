@@ -999,5 +999,30 @@
     "mode_memory": "Upload through memory",
     "mode_memory_hint": "Use a bounded in-memory queue without writing cache. Download waits when upload is slower; retries download again.",
     "confirm": "Upload here"
+  },
+  "tg_forward": {
+    "menu": "Forward…",
+    "forward": "Forward",
+    "title": "Forward Telegram messages",
+    "hint_one": "Choose a group or person to receive this message.",
+    "hint_other": "Choose a group or person to receive these {{count}} messages.",
+    "search": "Search groups or people…",
+    "loading": "Loading writable chats…",
+    "load_failed": "Failed to load forwarding destinations",
+    "no_targets": "No writable group or person found",
+    "confirm": "Forward here",
+    "forwarding": "Forwarding…",
+    "failed": "Forwarding failed",
+    "done_one": "Forwarded 1 message",
+    "done_other": "Forwarded {{count}} messages",
+    "n_selected_one": "1 selected",
+    "n_selected_other": "{{count}} selected",
+    "select_message": "Select message #{{id}}",
+    "too_many": "At most 100 messages can be forwarded at once. Reduce the selection and try again.",
+    "create_title": "Create a group for yourself",
+    "group_name": "Group name",
+    "create": "Create group",
+    "create_hint": "Creates a Telegram supergroup whose only initial member is you. You still confirm forwarding afterward.",
+    "create_failed": "Failed to create group"
   }
 }

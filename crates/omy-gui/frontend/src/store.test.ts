@@ -46,6 +46,7 @@ vi.mock('./api.js', () => ({
   remotePlaceList: vi.fn(),
   remoteCopy: vi.fn(),
   remoteUpload: vi.fn(),
+  telegramForwardMessages: vi.fn(),
   // 加密虚拟位置时收集同密码 vault 的探测命令（mock，绝不出网）
   vaultParamsOf: vi.fn(),
   remotePlaceVaults: vi.fn(),
@@ -83,6 +84,9 @@ import {
   openUploadToLocal,
   openUploadToRemote,
   confirmUploadTo,
+  openTelegramForward,
+  openTelegramForwardFiles,
+  confirmTelegramForward,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -972,5 +976,70 @@ describe('上传至远程位置', () => {
     );
     expect(vi.mocked(api.remoteCopy)).not.toHaveBeenCalled();
     expect(state.uploadTo).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telegram 原生转发：三种入口收敛成同一组消息号与一次后端请求
+// ---------------------------------------------------------------------------
+
+describe('Telegram 原生转发', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'p1',
+      remoteDir: 'tg:-100',
+      remotePlaces: [{ id: 'p1', kind: 'telegram', name: 'TG' }],
+      remoteProtected: false,
+      remoteSelected: ['tg:-100:9'],
+      remoteMessageSelected: [8],
+      telegramForward: null,
+      placeError: '',
+      notice: '',
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.telegramForwardMessages).mockResolvedValue(2);
+  });
+
+  it('文件入口只取 Telegram 消息号，并排序去重后保存同一源对话', () => {
+    const ok = openTelegramForwardFiles([
+      { id: 'tg:-100:9', is_dir: false },
+      { id: 'tg:-100:3', is_dir: false },
+      { id: 'tg:-100:9', is_dir: false },
+    ]);
+    expect(ok).toBe(true);
+    expect(state.telegramForward).toEqual({
+      placeId: 'p1',
+      sourceDir: 'tg:-100',
+      messageIds: [3, 9],
+    });
+  });
+
+  it('确认后参数原样传入原生转发，并清空文件与消息选择', async () => {
+    openTelegramForward([9, 3]);
+    const n = await confirmTelegramForward('tg:-200');
+    expect(n).toBe(2);
+    expect(vi.mocked(api.telegramForwardMessages)).toHaveBeenCalledWith(
+      'p1', 'tg:-100', 'tg:-200', [3, 9],
+    );
+    expect(state.telegramForward).toBeNull();
+    expect(state.remoteSelected).toEqual([]);
+    expect(state.remoteMessageSelected).toEqual([]);
+  });
+
+  it('失败时保留选择与待转发上下文，用户可以更换目标重试', async () => {
+    vi.mocked(api.telegramForwardMessages).mockRejectedValue(new Error('network'));
+    openTelegramForward([8]);
+    expect(await confirmTelegramForward('tg:-200')).toBe(0);
+    expect(state.telegramForward).not.toBeNull();
+    expect(state.remoteSelected).toEqual(['tg:-100:9']);
+    expect(state.remoteMessageSelected).toEqual([8]);
+    expect(state.placeError).not.toBe('');
+  });
+
+  it('受保护内容在前端即拒绝打开转发弹窗', () => {
+    state.remoteProtected = true;
+    expect(openTelegramForward([8])).toBe(false);
+    expect(state.telegramForward).toBeNull();
+    expect(api.telegramForwardMessages).not.toHaveBeenCalled();
   });
 });
