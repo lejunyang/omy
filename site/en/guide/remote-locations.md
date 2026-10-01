@@ -99,7 +99,7 @@ Right-click a local file or a file in a real remote location and choose **Upload
 
 - **Local → remote** uses the ordinary local-file upload path.
 - **Remote → remote (Cache locally and upload)** stores downloaded ciphertext blocks in the permanent cache. A retry reuses those blocks, at the cost of local disk space.
-- **Remote → remote (Upload through memory)** connects download and upload with a fixed 8 MiB in-memory queue and writes no local cache. If upload is slower, download waits instead of accumulating without bound.
+- **Remote → remote (Upload through memory)** reads up to 8 MiB from the source at a time and connects download to upload with a fixed, bounded 64 MiB in-memory queue. It writes no local cache; if upload is slower, download waits instead of accumulating without bound.
 
 Commit and cleanup follow the destination's capabilities rather than assuming every remote can rename or delete:
 
@@ -174,6 +174,18 @@ When a message carries a "reply #N" reference, clicking it jumps to the referenc
 
 For the file block inside a message: a plain click **previews/opens** it; right-click and choose "Show in files" to switch to the matching file tab (Media / Files / Links / Audio / GIF, chosen from the file's type) and scroll that file card into the middle with a highlight. If the target is outside the loaded range, omy fetches one page anchored on it — it never triggers endless paging.
 
+### Multi-select and forwarding
+
+Files and messages inside a Telegram conversation can be forwarded natively:
+
+- In file view, right-click one file and choose **Forward…**. Use Ctrl/Command-click on desktop or long-press on mobile to enter multi-select; the selection toolbar then offers **Forward**.
+- In message view, each row has a checkbox, so text-only and file-bearing messages can be selected together. Right-clicking a message row also forwards that single message.
+- The destination dialog lists only **groups or people the current Telegram account can actually write to**. Read-only conversations and broadcast channels are omitted, and destinations can be searched by name.
+- Forwarding uses Telegram's native `forwardMessages`; the server forwards the message directly, so omy **does not download the file and upload it again**. Message IDs are deduplicated and sent in original chronological order.
+- One operation accepts at most 100 messages, keeping the action to one server request and avoiding a partially completed multi-batch operation that cannot be retried safely.
+- The destination dialog can **create a supergroup whose only initial member is you**. The new group is selected after creation, but nothing is sent until you press **Forward here**.
+- Forwarding stays within the same Telegram account. A source conversation with protected content cannot be forwarded, and omy reports that before sending the request.
+
 Search comes in two forms, and the interface keeps them clearly apart:
 
 - **Filter locally**: narrows the entries already listed. The search term is not sent anywhere.
@@ -187,7 +199,7 @@ When uploading into a writable conversation, omy always sends **as a file** rath
 
 ### Current limitations
 
-- Some groups enable "restrict saving content" (`noforwards`). omy can still read and play those files normally, but **cannot forward** them; that restriction is enforced by the server.
+- Some groups enable "restrict saving content" (`noforwards`). omy can still read and play those files normally, but **cannot forward** them. The Forward action is disabled, and the backend rejects the operation again before sending a request.
 - A few files are served via a CDN redirect, which this version does not support. It reports a clear error instead of failing silently.
 - **The message view for broadcast channels is read-only, and omy does not implement sponsored messages.** Telegram's terms require clients that display a message stream to support and faithfully display sponsored messages (ads), and carrying ad delivery and impression reporting inside a local encrypted file manager conflicts with what omy is for. omy's choice is to **browse channel messages read-only and not implement sponsored messages** (i.e. not participate in ad delivery), rather than refusing to show messages at all. Files and the media tabs in those channels work as usual.
 
