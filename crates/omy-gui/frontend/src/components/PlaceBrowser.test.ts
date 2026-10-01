@@ -103,6 +103,7 @@ vi.mock('../store.js', async () => {
     isVirtualPlace: () => false,
     addVirtualFolder: noop,
     openAddToVirtual: noop,
+    openUploadToRemote: noop,
     // 网格几何回写：测试不关心，给空实现（组件 onMounted 会调）
     setGridLayout: noop,
     // 任务 #10 虚拟位置整理操作：组件引用了它们，mock 成空实现/常量。

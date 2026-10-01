@@ -43,6 +43,8 @@ export const state = reactive({
   /** 「添加到虚拟远程」树形选择对话框的待添加条目（真实位置里的文件）。
    *  { placeId, dirId, items:[{fileId,name,size}] }；null=对话框关闭。 */
   addToVirtual: null,
+  /** “上传至”目标选择对话框。source 为 local 或 remote，确认后进入统一传输页。 */
+  uploadTo: null,
   /** 当前所在的远程位置 id；为空表示在本地。 */
   remotePlace: '',
   /** 远程位置里的当前目录。 */
@@ -679,9 +681,19 @@ export const ctxItems = computed(() => {
     });
   }
 
-  items.push({ key: 'sep' });
+  // “上传至”只接受真实磁盘文件；目录与容器内虚拟条目没有可直接上传的对象。
+  const uploadEntries = state.selected
+    .map((path) => state.entries.find((entry) => entry.path === path))
+    .filter((entry) => entry && !entry.is_dir);
+  items.push({
+    key: 'upload-to',
+    icon: '⬆️',
+    label: t('upload_to.menu'),
+    disabled: uploadEntries.length !== state.selected.length || uploadEntries.length === 0,
+    hint: uploadEntries.length ? '' : t('upload_to.files_only'),
+  });
 
-  // 加密：非加密项才行。加密目录本身已经是密文，再套一层没有意义
+  items.push({ key: 'sep' });
   const canEncrypt = encryptable.value.length > 0;
   items.push({
     key: 'encrypt',
@@ -2680,6 +2692,78 @@ export async function createVirtualPlace(name) {
   const id = await createVirtualPlaceOnly(name);
   await openRemotePlace(id);
   return id;
+}
+
+export function openUploadToLocal(entries) {
+  const items = (Array.isArray(entries) ? entries : [entries])
+    .filter((entry) => entry && !entry.is_dir && entry.path)
+    .map((entry) => ({ path: entry.path, name: entry.name, size: entry.size ?? 0 }));
+  if (!items.length) return;
+  state.uploadTo = { source: 'local', items };
+}
+
+/** 远程文件复制到另一远程位置。目标名使用远端存储名，不使用解密后的 real_name：
+ * 后者可能是用户刻意加密隐藏的信息，把它交给目标服务等于主动泄露。 */
+export function openUploadToRemote(entry) {
+  if (!entry || entry.is_dir || !state.remotePlace || !entry.id || !entry.size) return;
+  state.uploadTo = {
+    source: 'remote',
+    item: {
+      placeId: state.remotePlace,
+      path: entry.id,
+      name: entry.name,
+      size: entry.size,
+    },
+  };
+}
+
+export function cancelUploadTo() {
+  state.uploadTo = null;
+}
+
+export async function confirmUploadTo(targetPlaceId, targetDir, mode) {
+  const pending = state.uploadTo;
+  if (!pending || !targetPlaceId) return false;
+  try {
+    if (pending.source === 'local') {
+      const result = await api.remoteUpload(
+        targetPlaceId,
+        targetDir || '',
+        pending.items.map((item) => item.path),
+      );
+      const failed = result.filter((row) => !row.ok);
+      if (failed.length) {
+        state.error = i18n.t('rplace.upload_partial', {
+          ok: result.length - failed.length,
+          names: failed.map((row) => row.name).join('、'),
+        });
+        return false;
+      }
+      setNotice(i18n.tn('rplace.upload_done', result.length));
+    } else {
+      const item = pending.item;
+      await api.remoteCopy({
+        source: {
+          place_id: item.placeId,
+          path: item.path,
+          size: item.size,
+          name: item.name,
+        },
+        target_place_id: targetPlaceId,
+        target_dir: targetDir || '',
+        target_name: item.name,
+        mode: mode === 'memory' ? 'memory' : 'permanent_cache',
+      });
+      state.uploadTo = null;
+      openTransfers();
+      return true;
+    }
+    state.uploadTo = null;
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('rplace.upload_failed'));
+    return false;
+  }
 }
 
 /** 打开「添加到虚拟远程」树形选择对话框。entries 是真实位置里选中的一批条目。 */

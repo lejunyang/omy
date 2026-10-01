@@ -157,7 +157,8 @@ function canRetry(t) {
   return t.state === 'failed' && t.retryable === true;
 }
 
-/** 重试一条失败任务。重跑走断点续传：已缓存的块不重下。 */
+/** 重试一条失败任务。是否复用进度由任务自身决定：永久缓存会复用已有分块，
+ * 内存中转与 Telegram 目标上传会从头开始。 */
 async function retry(t) {
   await api.transferRetry(t.id).catch(() => {});
   await refresh();

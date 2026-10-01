@@ -74,11 +74,11 @@ Capabilities come from the backend's real probe, not from a UI toggle:
 | Decrypt to local (plaintext lands only on this machine) | ✅ | ✅ |
 | Ciphertext block cache | ✅ | ✅ |
 | Remove a single file from the cache (local ciphertext only) | ✅ | ✅ |
-| Encrypted upload | ✅ | ❌ rejected before any request is sent |
+| Encrypted upload / Upload to another remote | ✅ | ❌ rejected before any request is sent |
 | Keep permanently / stop keeping | ✅ | ✅ |
 | New folder, rename, delete | Not available yet | ❌ |
 
-**Right-click on desktop, long-press on mobile** on an entry opens its context menu: "Preview / Open", "Decrypt to local…", "Keep permanently" (shown as "Stop keeping" for files already kept), and — once that file actually has local ciphertext blocks cached — "Remove from cache".
+**Right-click on desktop, long-press on mobile** on an entry opens its context menu: "Preview / Open", "Upload to…", "Decrypt to local…", "Keep permanently" (shown as "Stop keeping" for files already kept), and — once that file actually has local ciphertext blocks cached — "Remove from cache".
 
 Menu items follow the capabilities of the **current directory**, not of the location. Within one Telegram location the conversation list is not writable, a read-only channel is not writable, and your own group is — so the upload button only appears where writing actually works.
 
@@ -91,7 +91,31 @@ A read-only location cannot be rewritten, yet you may still need to bring a file
 - The file name comes from the original name recorded in the header (and is sanitized to stop a crafted name from writing outside the target folder). It **never overwrites**: if a same-named file already exists, it errors out and asks you to pick another location.
 - Encrypted folders (containers) cannot yet be decrypted to local from a remote location; handle them locally for now.
 
-Encrypted upload is available (see the Telegram section below). Delete, rename, and new folder still have no entry point. When they arrive, they will be **hidden entirely** (not greyed out) on a read-only location, and only greyed out with a note under the item — left-aligned with its label — where the location is writable but cannot rewrite in place, so you never walk half-way into an action the location cannot accept.
+Encrypted upload is available (see the Telegram section below). Delete, rename, and new folder still have no general-purpose UI entry point; **Upload to…** uses the target's capabilities internally for safe commit and cleanup, as described next.
+
+### Upload to another remote location
+
+Right-click a local file or a file in a real remote location and choose **Upload to…**. The destination picker can browse WebDAV folders or Telegram conversations. It re-queries effective capabilities after every directory change, and confirmation is enabled only when that specific directory reports `write`; a location-level upper bound is never treated as proof that the current directory is writable.
+
+- **Local → remote** uses the ordinary local-file upload path.
+- **Remote → remote (Cache locally and upload)** stores downloaded ciphertext blocks in the permanent cache. A retry reuses those blocks, at the cost of local disk space.
+- **Remote → remote (Upload through memory)** connects download and upload with a fixed 8 MiB in-memory queue and writes no local cache. If upload is slower, download waits instead of accumulating without bound.
+
+Commit and cleanup follow the destination's capabilities rather than assuming every remote can rename or delete:
+
+1. If write, rename, and delete are all supported, omy writes a random temporary name and renames it only after the upload succeeds; failures can delete that exact temporary object.
+2. If either rename or delete is unavailable, omy writes the final name directly. When delete is available it attempts cleanup after failure. When delete is unavailable or cleanup fails, Transfer Management reports that an incomplete object may remain and does not offer Retry until you inspect the destination.
+3. Path-based destinations such as WebDAV refuse to overwrite a same-named existing file.
+
+Every remote-copy operation appears immediately in **Transfer Management**, with progress, cancellation, and Retry for failures that are safe to retry.
+
+#### Can Telegram resume transfers?
+
+Download and upload have different answers:
+
+- **Downloads can continue from an offset.** Telegram's download API accepts `offset`; in permanent-cache mode a retry reuses blocks already downloaded rather than fetching them again.
+- **The upload protocol is chunked, but current omy cannot continue an entire failed upload from chunks already accepted by Telegram.** The grammers upload API used by omy creates a new `file_id` for each call and does not expose the completed-part set, so retrying an upload to Telegram starts that upload again. Temporary uploaded parts are short-lived as well.
+- Memory mode keeps no source blocks, so a failed task reads the source again. Permanent-cache mode can avoid repeated downloading, but the destination upload still restarts.
 
 ## Telegram
 

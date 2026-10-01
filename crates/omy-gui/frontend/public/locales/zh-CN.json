@@ -976,5 +976,28 @@
     "n_selected_other": "已选 {{count}} 项",
     "delete_refs_confirm_one": "删除选中的 1 条引用？只移除收藏指针，不影响真实文件。",
     "delete_refs_confirm_other": "删除选中的 {{count}} 条引用？只移除收藏指针，不影响真实文件。"
+  },
+  "upload_to": {
+    "menu": "上传至…",
+    "files_only": "只支持上传文件",
+    "title": "上传至远程位置",
+    "hint": "选择目标位置和文件夹。只有目标目录实际支持写入时才能确认。",
+    "no_writable_place": "还没有可写的远程位置",
+    "up": "上一级",
+    "loading": "正在读取目录…",
+    "load_failed": "读取目标目录失败",
+    "no_subfolders": "当前目录没有子文件夹，可直接上传到这里",
+    "writable": "可写",
+    "readonly": "只读，不能上传",
+    "rename_yes": "支持重命名：先传临时名，完成后改名",
+    "rename_no": "不支持重命名：直接写最终文件名",
+    "delete_yes": "失败时可清理残留",
+    "delete_no": "失败时可能保留残留文件",
+    "mode": "远程中转方式",
+    "mode_cache": "缓存到本地并上传",
+    "mode_cache_hint": "永久缓存已下载分块；失败重试可复用这些分块，但会占用本地磁盘。",
+    "mode_memory": "内存中上传",
+    "mode_memory_hint": "使用固定容量内存队列，不写本地缓存。下载过快时会自动等待；失败后重新下载。",
+    "confirm": "上传到这里"
   }
 }

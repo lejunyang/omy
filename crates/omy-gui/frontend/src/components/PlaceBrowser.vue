@@ -67,6 +67,7 @@ import {
   isVirtualPlace,
   addVirtualFolder,
   openAddToVirtual,
+  openUploadToRemote,
   setGridLayout,
   newVirtualFolderPrompt,
   renameVirtualFolderPrompt,
@@ -759,6 +760,11 @@ const rmenuItems = computed(() => {
   // 弹树形选择对话框选目标虚拟位置+文件夹（方案甲）。
   if (!f.is_dir && !f.is_ref && !isVirtualPlace()) {
     items.push({
+      key: 'upload-to',
+      icon: '⬆️',
+      label: i18n.t('upload_to.menu'),
+    });
+    items.push({
       key: 'add-to-virtual',
       icon: '🗂️',
       label: i18n.t('virtual.menu_add'),
@@ -821,6 +827,8 @@ async function onMenuPick(key) {
   } else if (key === 'locate-source') {
     const mid = msgIdOf(f);
     if (mid != null) await locateMessage(mid);
+  } else if (key === 'upload-to') {
+    openUploadToRemote(f);
   } else if (key === 'add-to-virtual') {
     openAddToVirtual(f);
   } else if (key === 'locate-ref-msg') {

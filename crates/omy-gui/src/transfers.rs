@@ -92,6 +92,8 @@ pub fn code_retryable(code: &str) -> bool {
         // 目标不存在 / 协议不支持 / CDN 重定向 / 广播无消息视图：都是确定性失败
         | "remote_not_found"
         | "remote_unsupported"
+        // 目标端无法清理不完整对象：再次重试可能覆盖或制造重复，必须先人工处理
+        | "remote_copy_residue"
         | "tg_cdn_unsupported"
         | "tg_broadcast_no_messages"
     )
@@ -488,6 +490,7 @@ mod tests {
             "remote_forbidden",
             "remote_not_found",
             "remote_unsupported",
+            "remote_copy_residue",
             "tg_cdn_unsupported",
             "tg_broadcast_no_messages",
         ] {

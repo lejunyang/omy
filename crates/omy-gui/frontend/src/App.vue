@@ -91,6 +91,7 @@ import {
   // 而 onCtxPick 的异常没人接——表现就是「点了完全没反应」。
   keyManageable,
   revealEntry,
+  openUploadToLocal,
   closeTransfers,
   remoteGoUp,
   disconnectRemote,
@@ -113,6 +114,7 @@ import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import TgEncryptDialog from './components/TgEncryptDialog.vue';
 import TgUnlockDialog from './components/TgUnlockDialog.vue';
 import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
+import UploadTargetDialog from './components/UploadTargetDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import PasswordManagerDialog from './components/PasswordManagerDialog.vue';
 import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
@@ -855,6 +857,13 @@ async function onCtxPick(key) {
     case 'delete':
       await doDelete(false);
       break;
+    case 'upload-to': {
+      const entries = state.selected
+        .map((path) => state.entries.find((item) => item.path === path))
+        .filter(Boolean);
+      openUploadToLocal(entries);
+      break;
+    }
     case 'reveal':
       await revealEntry(entry);
       break;
@@ -1036,6 +1045,7 @@ function onAndroidBack() {
   if (recoveryDlg.value) { onRecoveryClose(); return true; }
   if (nameDlg.value) { nameDlg.value = null; return true; }
   if (state.addToVirtual) { state.addToVirtual = null; return true; }
+  if (state.uploadTo) { state.uploadTo = null; return true; }
   if (state.tgEncryptFor) { cancelTgEncrypt(); return true; }
   if (state.tgUnlockFor) { cancelTgUnlock(); return true; }
   if (state.vEncryptFor) { cancelVirtualEncrypt(); return true; }
@@ -1394,6 +1404,7 @@ onBeforeUnmount(() => {
   />
 
   <VirtualPickerDialog v-if="state.addToVirtual" />
+  <UploadTargetDialog v-if="state.uploadTo" />
 
   <!-- 虚拟位置加密：复用 Telegram 的加密对话框组件（同款密码 + KDF 档）。 -->
   <TgEncryptDialog

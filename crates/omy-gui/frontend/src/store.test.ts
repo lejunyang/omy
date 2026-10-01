@@ -44,6 +44,8 @@ vi.mock('./api.js', () => ({
   virtualLock: vi.fn(),
   virtualPlaces: vi.fn(),
   remotePlaceList: vi.fn(),
+  remoteCopy: vi.fn(),
+  remoteUpload: vi.fn(),
   // 加密虚拟位置时收集同密码 vault 的探测命令（mock，绝不出网）
   vaultParamsOf: vi.fn(),
   remotePlaceVaults: vi.fn(),
@@ -78,6 +80,9 @@ import {
   pasteVirtualHere,
   promptVirtualEncrypt,
   confirmVirtualEncrypt,
+  openUploadToLocal,
+  openUploadToRemote,
+  confirmUploadTo,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -897,5 +902,75 @@ describe('confirmVirtualEncrypt 收集 vault', () => {
     state.vEncryptFor = null;
     expect(await confirmVirtualEncrypt({ password: '132' })).toBe(false);
     expect(api.virtualEncrypt).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// “上传至”：本地普通上传与远程流式复制必须走不同后端入口
+// ---------------------------------------------------------------------------
+
+describe('上传至远程位置', () => {
+  beforeEach(() => {
+    Object.assign(state, {
+      remotePlace: 'src',
+      uploadTo: null,
+      transfersOpen: false,
+      placeBrowserOpen: true,
+      error: '',
+      notice: '',
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.remoteCopy).mockResolvedValue(7);
+    vi.mocked(api.remoteUpload).mockResolvedValue([]);
+  });
+
+  it('远程来源保留存储名、目标目录与内存模式，并打开传输页', async () => {
+    openUploadToRemote({
+      id: 'tg:1:2',
+      name: 'cipher-name.omy',
+      real_name: 'private-name.mp4',
+      size: 42,
+      is_dir: false,
+    });
+
+    await confirmUploadTo('dst', '/movies', 'memory');
+
+    expect(vi.mocked(api.remoteCopy)).toHaveBeenCalledWith({
+      source: {
+        place_id: 'src',
+        path: 'tg:1:2',
+        size: 42,
+        name: 'cipher-name.omy',
+      },
+      target_place_id: 'dst',
+      target_dir: '/movies',
+      target_name: 'cipher-name.omy',
+      mode: 'memory',
+    });
+    expect(vi.mocked(api.remoteUpload)).not.toHaveBeenCalled();
+    expect(state.uploadTo).toBeNull();
+    expect(state.transfersOpen).toBe(true);
+    expect(state.placeBrowserOpen).toBe(false);
+  });
+
+  it('本地来源继续走普通批量上传，不误用远程复制命令', async () => {
+    openUploadToLocal([
+      { path: 'C:\\a.bin', name: 'a.bin', size: 3, is_dir: false },
+      { path: 'C:\\b.bin', name: 'b.bin', size: 4, is_dir: false },
+    ]);
+    vi.mocked(api.remoteUpload).mockResolvedValue([
+      { path: 'C:\\a.bin', name: 'a.bin', ok: true },
+      { path: 'C:\\b.bin', name: 'b.bin', ok: true },
+    ]);
+
+    await confirmUploadTo('dst', '/inbox', 'permanent_cache');
+
+    expect(vi.mocked(api.remoteUpload)).toHaveBeenCalledWith(
+      'dst',
+      '/inbox',
+      ['C:\\a.bin', 'C:\\b.bin'],
+    );
+    expect(vi.mocked(api.remoteCopy)).not.toHaveBeenCalled();
+    expect(state.uploadTo).toBeNull();
   });
 });

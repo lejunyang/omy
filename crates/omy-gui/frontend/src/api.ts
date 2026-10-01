@@ -588,6 +588,15 @@ export const remoteCacheUnpin = (placeId: any, path: any, size: any): Promise<an
     req: { place_id: placeId, path, size },
   });
 
+/** 启动一条远程位置间复制任务；命令立即返回任务 id，字节搬运在后台进行。 */
+export const remoteCopy = (req: {
+  source: { place_id: string; path: string; size: number; name: string | null };
+  target_place_id: string;
+  target_dir: string;
+  target_name: string;
+  mode: 'permanent_cache' | 'memory';
+}): Promise<number> => invoke('remote_copy', { req });
+
 /** 上传一批本地文件到远程目录。
  *
  * 逐个返回成败：部分成功是常态，压成一个布尔的话用户不知道哪些传上去了，
@@ -643,8 +652,8 @@ export const transferList = (): Promise<any> => invoke('transfer_list');
 /** 取消一条任务。执行体会在下一个分片边界干净退出。 */
 export const transferCancel = (id: any): Promise<any> => invoke('transfer_cancel', { id });
 
-/** 重试一条失败任务。只对可重试的失败有意义（磁盘满 / 认证失效不给按钮），
- *  重跑走断点续传：已缓存的块不会重下。 */
+/** 重试一条失败任务。只对后端标记为可重试的失败有意义；
+ * 是否复用进度由具体任务模式与目标协议决定。 */
 export const transferRetry = (id: any): Promise<any> => invoke('transfer_retry', { id });
 
 /** 全部暂停 / 全部继续。 */

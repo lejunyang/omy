@@ -976,5 +976,28 @@
     "n_selected_other": "{{count}} selected",
     "delete_refs_confirm_one": "Delete the selected reference? Only the bookmark is removed; the real file is unaffected.",
     "delete_refs_confirm_other": "Delete the {{count}} selected references? Only bookmarks are removed; real files are unaffected."
+  },
+  "upload_to": {
+    "menu": "Upload to…",
+    "files_only": "Files only",
+    "title": "Upload to remote location",
+    "hint": "Choose a destination and folder. Confirmation is enabled only when the target directory is actually writable.",
+    "no_writable_place": "No writable remote location is available",
+    "up": "Up",
+    "loading": "Loading folder…",
+    "load_failed": "Failed to load destination folder",
+    "no_subfolders": "This folder has no subfolders; upload here directly",
+    "writable": "Writable",
+    "readonly": "Read-only",
+    "rename_yes": "Rename supported: upload a temporary name, then rename",
+    "rename_no": "Rename unsupported: write the final name directly",
+    "delete_yes": "Partial uploads can be cleaned up",
+    "delete_no": "A failed upload may leave a partial object",
+    "mode": "Remote transfer mode",
+    "mode_cache": "Cache locally and upload",
+    "mode_cache_hint": "Keep downloaded chunks in the permanent cache. Retries reuse them, but local disk space is used.",
+    "mode_memory": "Upload through memory",
+    "mode_memory_hint": "Use a bounded in-memory queue without writing cache. Download waits when upload is slower; retries download again.",
+    "confirm": "Upload here"
   }
 }
