@@ -7,7 +7,6 @@ use omy_password_manager::PasswordManager as _;
 use omy_password_manager::keepassxc::{Association, Client, DEFAULT_NAMESPACE, ProxyTransport};
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::path::Path;
 use zeroize::Zeroizing;
 
 const SAMPLE_LABEL: &str = "测试主密钥";
@@ -17,12 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let command = args
         .next()
-        .ok_or("用法：keepassxc_probe pair|verify|create <association.json>")?;
+        .ok_or("用法：keepassxc_probe pair|verify|create <association.json> [keepassxc-proxy]")?;
     let association_path = args
         .next()
         .ok_or("缺少 association.json 路径（应放在临时目录）")?;
 
-    let transport = ProxyTransport::spawn(Path::new("/usr/bin/keepassxc-proxy"))?;
+    let proxy_path = args.next().map(std::path::PathBuf::from);
+    let proxy_path = omy_password_manager::keepassxc::discover_proxy(proxy_path.as_deref())
+        .ok_or("找不到 keepassxc-proxy；便携版请把完整路径作为第三参数传入")?;
+    let transport = ProxyTransport::spawn(&proxy_path)?;
     let mut client = Client::connect(transport)?;
 
     match command.as_str() {
