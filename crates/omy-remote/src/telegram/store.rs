@@ -93,6 +93,10 @@ pub const CDN_REDIRECT: &str = "telegram cdn redirect";
 /// 若又收紧口径重新拒绝广播频道」时界面仍能给专门文案。当前路径不会产生它——
 /// 单测 broadcast_channels_allow_readonly_messages 正是断言它不再被特判触发。
 pub const BROADCAST_NO_MESSAGES: &str = "telegram broadcast has no message view";
+/// 源对话开启“受保护内容”时，Telegram 禁止原生转发。
+pub const FORWARD_PROTECTED: &str = "telegram protected content cannot be forwarded";
+/// 单次原生转发的最大消息数。保持一次用户操作对应一个请求，避免分批部分成功。
+pub const MAX_FORWARD_BATCH: usize = 100;
 
 /// 进一个对话时默认拉多少条带文件的消息。
 ///
@@ -373,6 +377,17 @@ pub struct Conversation {
     pub avatar: Option<Vec<u8>>,
 }
 
+/// 转发目标选择器需要的最小会话信息。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForwardTarget {
+    /// 对话目录 id（`tg:<chat>`），前端不解析，确认时原样回传。
+    pub dir_id: String,
+    /// 显示名。
+    pub title: String,
+    /// `user` | `group` | `channel`，供界面选图标。
+    pub kind: &'static str,
+}
+
 /// 取媒体的缩略图字节。
 ///
 /// # 为什么要挑尺寸而不是拿第一个
@@ -527,6 +542,66 @@ fn is_migrated_away(peer: &grammers_client::peer::Peer) -> bool {
         // Empty / Forbidden 也进不去，但那属于「没权限」而不是「迁移走了」，
         // 交给权限那条路径去表达，这里只管迁移
         _ => false,
+    }
+}
+
+/// 从对话对象推导当前账号能否发送消息/媒体，以及能否删除消息。
+///
+/// `ChatBannedRights` 里的布尔值表示“被禁止”，不是“被允许”，所以这里必须取反。
+/// 频道/超级群的创建者或管理员权限优先于默认禁发；普通成员再受
+/// `banned_rights`（个人限制）和 `default_banned_rights`（群默认限制）共同约束。
+fn conversation_permissions(peer: &grammers_client::peer::Peer) -> (bool, bool) {
+    use grammers_client::peer::Peer;
+
+    let bans_send = |rights: &Option<tl::enums::ChatBannedRights>| {
+        rights.as_ref().is_some_and(|rights| match rights {
+            tl::enums::ChatBannedRights::Rights(r) => {
+                r.send_messages || r.send_media || r.send_plain || r.send_docs
+            }
+        })
+    };
+
+    match peer {
+        Peer::User(_) => (true, false),
+        Peer::Group(group) => match &group.raw {
+            tl::enums::Chat::Chat(chat) => {
+                if chat.left || chat.deactivated {
+                    return (false, false);
+                }
+                let admin = chat.creator || chat.admin_rights.is_some();
+                let can_send = admin || !bans_send(&chat.default_banned_rights);
+                let can_delete = chat.creator || chat.admin_rights.as_ref().is_some_and(|r| {
+                    matches!(r, tl::enums::ChatAdminRights::Rights(r) if r.delete_messages)
+                });
+                (can_send, can_delete)
+            }
+            tl::enums::Chat::Channel(channel) => {
+                if channel.left {
+                    return (false, false);
+                }
+                let admin = channel.creator || channel.admin_rights.is_some();
+                let can_send = admin
+                    || (!bans_send(&channel.banned_rights)
+                        && !bans_send(&channel.default_banned_rights));
+                let can_delete = channel.creator || channel.admin_rights.as_ref().is_some_and(|r| {
+                    matches!(r, tl::enums::ChatAdminRights::Rights(r) if r.delete_messages)
+                });
+                (can_send, can_delete)
+            }
+            tl::enums::Chat::Empty(_)
+            | tl::enums::Chat::Forbidden(_)
+            | tl::enums::Chat::ChannelForbidden(_) => (false, false),
+        },
+        Peer::Channel(channel) => {
+            if channel.raw.left {
+                return (false, false);
+            }
+            let can_send = channel.raw.creator
+                || channel.admin_rights().is_some_and(|r| r.post_messages);
+            let can_delete = channel.raw.creator
+                || channel.admin_rights().is_some_and(|r| r.delete_messages);
+            (can_send, can_delete)
+        }
     }
 }
 
@@ -971,6 +1046,19 @@ fn map_rpc(e: &InvocationError) -> Error {
     Error::Network(e.to_string())
 }
 
+/// 将转发消息号排序去重，保持消息原时间顺序。
+fn normalize_forward_ids(message_ids: &[i32]) -> Result<Vec<i32>> {
+    if message_ids.is_empty() || message_ids.len() > MAX_FORWARD_BATCH {
+        return Err(Error::Protocol(format!(
+            "转发消息数必须在 1..={MAX_FORWARD_BATCH}"
+        )));
+    }
+    let mut ids = message_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
 impl Default for TelegramStore {
     fn default() -> Self {
         Self::new()
@@ -1186,16 +1274,9 @@ impl TelegramStore {
                 // 只有「自己」这个特殊 peer 会没有 id，跳过即可
                 continue;
             };
-            // 频道默认只读：只有管理员能发，而判断管理员要额外请求。
-            // 拿不到权限时按**不能**处理——猜「能」会让界面点亮一个
-            // 点了才失败的按钮，猜「不能」只是少一个入口，代价不对称。
             let is_channel = matches!(peer, grammers_client::peer::Peer::Channel(_));
-            let (can_send, can_delete) = if is_channel {
-                (false, false)
-            } else {
-                (true, false)
-            };
-            // grammers 把「超级群」也归进 Peer::Group，只有真正的广播频道
+            let (can_send, can_delete) = conversation_permissions(peer);
+            // grammers 把「超级群」归进 Peer::Group，只有真正的广播频道
             // 才是 Peer::Channel——正好是我们要区分的那条线
             let broadcast = is_channel;
             if let Ok(Some(r)) = peer.to_ref().await {
@@ -1769,6 +1850,130 @@ impl TelegramStore {
         Ok(self.rows_from_messages(chat, msgs))
     }
 
+    /// 返回当前账号中可接收转发的会话。
+    ///
+    /// 刷新一次对话表，使目标列表与上传按钮使用同一份最新能力；只返回
+    /// `can_send=true` 的群组、频道和个人对话。
+    pub async fn forward_targets(&self) -> Result<Vec<ForwardTarget>> {
+        let conversations = self.refresh_conversations().await?;
+        Ok(conversations
+            .into_iter()
+            .filter(|c| c.can_send)
+            .map(|c| ForwardTarget {
+                dir_id: c.dir_id(),
+                title: c.title,
+                kind: c.kind,
+            })
+            .collect())
+    }
+
+    /// 将同一源对话中的消息原生转发到目标会话。
+    ///
+    /// 不下载媒体、不重新上传。消息号先排序去重，保持原时间顺序，并避免同一条
+    /// 同时出现在多个文件筛选结果时被重复转发。单次上限固定为 100 条，使一次
+    /// 用户操作只对应一个 Telegram 请求，避免分批后半途失败造成不可安全重试。
+    pub async fn forward_messages(
+        &self,
+        source_dir: &str,
+        target_dir: &str,
+        message_ids: &[i32],
+    ) -> Result<usize> {
+        let source_chat = Conversation::parse_dir_id(source_dir)?;
+        let target_chat = Conversation::parse_dir_id(target_dir)?;
+        if self.conversation(source_chat).is_none() || self.conversation(target_chat).is_none() {
+            self.refresh_conversations().await?;
+        }
+        let source = self
+            .conversation(source_chat)
+            .ok_or_else(|| Error::NotFound(format!("未知源对话：{source_dir}")))?;
+        let target = self
+            .conversation(target_chat)
+            .ok_or_else(|| Error::NotFound(format!("未知目标对话：{target_dir}")))?;
+        if source.protected {
+            return Err(Error::Unsupported(FORWARD_PROTECTED));
+        }
+        if !target.can_send {
+            return Err(Error::Forbidden);
+        }
+
+        let ids = normalize_forward_ids(message_ids)?;
+        let client = self.client()?;
+        let source_peer = self.peer_ref(source_chat).await?;
+        let target_peer = self.peer_ref(target_chat).await?;
+        let results = client
+            .forward_messages(target_peer, &ids, source_peer)
+            .await
+            .map_err(|e| map_rpc(&e))?;
+        Ok(results.into_iter().filter(Option::is_some).count())
+    }
+
+    /// 创建一个只包含当前账号的超级群，并立刻加入可写会话缓存。
+    ///
+    /// 基础群 `messages.createChat` 要求至少邀请一个联系人，不满足“只包含自己”。
+    /// `channels.createChannel(megagroup=true)` 创建的超级群初始成员只有创建者。
+    pub async fn create_self_group(&self, title: &str) -> Result<ForwardTarget> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 128 {
+            return Err(Error::Protocol(String::from("群组名称长度无效")));
+        }
+        let client = self.client()?;
+        let updates = client
+            .invoke(&tl::functions::channels::CreateChannel {
+                broadcast: false,
+                megagroup: true,
+                for_import: false,
+                forum: false,
+                title: title.to_owned(),
+                about: String::new(),
+                geo_point: None,
+                address: None,
+                ttl_period: None,
+            })
+            .await
+            .map_err(|e| map_rpc(&e))?;
+        let chats = match updates {
+            tl::enums::Updates::Combined(u) => u.chats,
+            tl::enums::Updates::Updates(u) => u.chats,
+            _ => Vec::new(),
+        };
+        let raw = chats
+            .into_iter()
+            .find(|chat| matches!(chat, tl::enums::Chat::Channel(c) if c.megagroup))
+            .ok_or_else(|| Error::Protocol(String::from("建群响应中缺少新群组")))?;
+        let peer = grammers_client::peer::Peer::from_raw(client, raw);
+        let chat = peer
+            .id()
+            .bot_api_dialog_id()
+            .ok_or_else(|| Error::Protocol(String::from("新群组缺少对话标识")))?;
+        let peer_ref = peer
+            .to_ref()
+            .await
+            .map_err(|e| Error::Protocol(e.to_string()))?
+            .ok_or_else(|| Error::Protocol(String::from("新群组缺少访问引用")))?;
+        let conversation = Conversation {
+            chat,
+            title: title.to_owned(),
+            can_send: true,
+            can_delete: true,
+            broadcast: false,
+            kind: "group",
+            avatar: None,
+            protected: false,
+        };
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.insert(chat, peer_ref);
+        }
+        if let Ok(mut conversations) = self.conversations.lock() {
+            conversations.retain(|c| c.chat != chat);
+            conversations.push(conversation.clone());
+        }
+        Ok(ForwardTarget {
+            dir_id: conversation.dir_id(),
+            title: conversation.title,
+            kind: conversation.kind,
+        })
+    }
+
     /// 取一个文件的下载位置；缓存里没有就重新列一次那个对话。
     ///
     /// 会重新列是因为 `file_reference` 有时效：过期后必须靠重新拉消息换新的，
@@ -2245,6 +2450,21 @@ mod tests {
         assert_eq!(w3.newest, None);
         assert!(!w3.found);
         assert!(!w3.has_older && !w3.has_newer);
+    }
+
+    #[test]
+    fn forward_ids_are_sorted_deduplicated_and_bounded() {
+        assert_eq!(
+            normalize_forward_ids(&[9, 3, 9, 5]).expect("合法转发集合"),
+            vec![3, 5, 9],
+            "不排序会把文件分栏的新→旧顺序原样转发，目标里的消息时间顺序会反过来；不去重会重复转发"
+        );
+        assert!(normalize_forward_ids(&[]).is_err(), "空请求不应发给 Telegram");
+        let too_many: Vec<i32> = (0..=MAX_FORWARD_BATCH as i32).collect();
+        assert!(
+            normalize_forward_ids(&too_many).is_err(),
+            "超过单请求上限若静默分批，中途失败后无法安全重试，会产生重复消息"
+        );
     }
 
     /// id 必须能原样往返。

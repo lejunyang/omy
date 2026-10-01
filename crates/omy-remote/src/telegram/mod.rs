@@ -62,5 +62,8 @@ pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
 pub use qr::{decide as decide_qr, encode_matrix, token_url, QrMatrix, QrOutcome, QrStep};
 pub use qrlogin::{QrError, QrEvent, QrSession};
 pub use session::{SavedSession, SessionError};
-pub use store::{plan_chunks, ChunkPlan, Conversation, TelegramId, TelegramStore};
+pub use store::{
+    plan_chunks, ChunkPlan, Conversation, ForwardTarget, TelegramId, TelegramStore,
+    MAX_FORWARD_BATCH,
+};
 pub use tdata::{read_tdata, to_saved_session, MtpAuthorization, TdataError};

@@ -32,8 +32,9 @@ use omy_remote::telegram::device::DeviceInfo;
 use omy_remote::telegram::qr::{encode_matrix, QrMatrix};
 use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
-use omy_remote::telegram::store::TelegramStore;
-use omy_remote::telegram::{connect, proxy, session as tgsession, tdata};
+use omy_remote::telegram::store::{FORWARD_PROTECTED, TelegramStore};
+use omy_remote::telegram::{connect, proxy, session as tgsession, tdata, ForwardTarget};
+use omy_remote::Error as RemoteError;
 
 use crate::commands::{CmdError, CmdResult};
 
@@ -2009,6 +2010,87 @@ async fn phone_finish(app: &tauri::AppHandle, sess: &PhoneSession) {
     }
 }
 
+fn telegram_action_error(e: &RemoteError) -> CmdError {
+    let code = match e {
+        RemoteError::Unauthorized => "remote_unauthorized",
+        RemoteError::Forbidden => "tg_forward_forbidden",
+        RemoteError::NotFound(_) => "remote_not_found",
+        RemoteError::RateLimited => "remote_rate_limited",
+        RemoteError::Unsupported(what) if *what == FORWARD_PROTECTED => "tg_forward_protected",
+        RemoteError::Network(_) => "remote_network",
+        RemoteError::Protocol(_) => "tg_forward_failed",
+        _ => "remote_failed",
+    };
+    CmdError::with(code, detail(&e.to_string()))
+}
+
+/// 列出当前 Telegram 账号中可接收转发的会话。
+#[tauri::command]
+pub async fn telegram_forward_targets(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+) -> CmdResult<Vec<ForwardTarget>> {
+    ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = place
+        .store
+        .as_telegram()
+        .ok_or_else(|| CmdError::code("tg_forward_requires_telegram"))?;
+    store
+        .forward_targets()
+        .await
+        .map_err(|e| telegram_action_error(&e))
+}
+
+/// 原生转发同一源对话中的一批消息。
+#[tauri::command]
+pub async fn telegram_forward_messages(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+    source_dir: String,
+    target_dir: String,
+    message_ids: Vec<i32>,
+) -> CmdResult<usize> {
+    ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = place
+        .store
+        .as_telegram()
+        .ok_or_else(|| CmdError::code("tg_forward_requires_telegram"))?;
+    store
+        .forward_messages(&source_dir, &target_dir, &message_ids)
+        .await
+        .map_err(|e| telegram_action_error(&e))
+}
+
+/// 创建只包含当前账号的超级群，并返回其目标信息。
+#[tauri::command]
+pub async fn telegram_create_self_group(
+    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
+    state: tauri::State<'_, crate::commands::Shared>,
+    place_id: String,
+    title: String,
+) -> CmdResult<ForwardTarget> {
+    ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let place = reg
+        .get(&place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let store = place
+        .store
+        .as_telegram()
+        .ok_or_else(|| CmdError::code("tg_forward_requires_telegram"))?;
+    store
+        .create_self_group(&title)
+        .await
+        .map_err(|e| telegram_action_error(&e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2056,6 +2138,15 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(before, codes.len(), "不同失败原因不能共用同一个错误码");
+    }
+
+    #[test]
+    fn protected_forward_has_its_own_error_code() {
+        let e = telegram_action_error(&RemoteError::Unsupported(FORWARD_PROTECTED));
+        assert_eq!(
+            e.code, "tg_forward_protected",
+            "不这样会把受保护内容误报成普通失败，用户不知道应换源消息而不是重试"
+        );
     }
 
     /// 限流必须带上秒数，其余失败不带。
