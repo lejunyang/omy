@@ -1,7 +1,8 @@
 # 第三方密码管理器集成
 
-> 状态：实现期设计，2026-10-01。首个桌面 provider 为 KeePassXC，Android
-> provider 走系统 Credential Manager；文件格式与密码 slot 不变。
+> 状态：首期已实现并完成桌面实测，2026-10-01。首个桌面 provider 为
+> KeePassXC，Android provider 走系统 Credential Manager；文件格式与密码
+> slot 不变。Android 真机与跨端元数据仍待验证，见 5.1。
 
 ## 1. 目标
 
@@ -197,12 +198,36 @@ WebView Autofill / KeePassDX Autofill / Magikeyboard 回退。omy 当前最低 A
 - KeePassXC 按 `URL=https://credentials.omy.app/` 查询；
 - KeePassDX 为原生应用记录 `AndroidApp=org.omy.app` 与发布签名指纹。
 
-同一条记录最终应同时包含 URL 与 AndroidApp 元数据。首期真实验证必须覆盖：
+对 KeePassDX 4.5.5 与 KeePassXC Browser 源码的核验结论是：**普通客户端无法
+在任意一端通过现有标准 API 自动把两类元数据同时写入同一条记录**。
 
-1. 桌面创建后同步到 Android，KeePassDX 能否在首次选择时追加 app 关联；
-2. Android 创建后同步到桌面，是否有 URL 可供 `get-logins` 命中；
-3. 若不能自动互补，界面提供一次性“关联此条目”步骤，并向 KeePassDX 上游
-   提交兼容改进，不能靠 omy 直接修改 KDBX。
+| 创建入口 | API 能提供的字段 | 缺少的字段 |
+|---|---|---|
+| KeePassXC-Browser `set-login` | URL、用户名、密码、分组 | `AndroidApp` 与签名；协议不接收任意自定义字段 |
+| Android `CreatePasswordRequest` | 用户名、密码、由系统认证的调用方包名/签名 | Web URL；普通应用不能自报 Web origin |
+
+Android 的 `origin` 参数不是通用扩展点。只有持有系统级
+`CREDENTIAL_MANAGER_SET_ORIGIN` 权限并被密码管理器列入特权调用方名单的
+浏览器才能代表网页设置它；omy 冒充 Web origin 会破坏 Credential Manager
+用来防止钓鱼应用读取网站密码的边界，也会被系统拒绝。另一方面，当前
+KeePassXC-Browser 的 `set-login` 只消费 URL/login/password/group，无法写
+KeePassDX 使用的自定义 `AndroidApp` 字段。
+
+因此首期实现保留平台原生且安全的路径，并明确要求一次性补关联：
+
+1. **Android 创建 → 桌面使用**：KeePassDX 会自动写包名和签名；同步前在同一
+   条目补上 `URL=https://credentials.omy.app/`，桌面即可查询。
+2. **桌面创建 → Android 使用**：URL 已存在；第一次在 Android 上通过普通密码
+   输入框的 KeePassDX Autofill 手动选中这条记录，并允许 KeePassDX 把当前应用
+   关联写回该条目。之后 Android 14+ 的 Credential Manager 才能直接命中。
+3. 不能在 Android 的“生成并保存”流程里选择一个已有桌面条目来冒充关联：
+   `CreatePasswordRequest` 携带的是刚生成的新秘密，更新旧条目会覆盖原密码，
+   让旧文件失去原来的解锁材料。
+
+这不满足“任意一端创建时零人工步骤写齐两端元数据”的理想目标；它是两个上游
+API 的能力缺口，不应由 omy 伪造来源或直接改用户 KDBX 来绕过。后续可向
+KeePassXC-Browser 提议受确认的自定义字段写入，并向 KeePassDX 提议在创建界面
+附加受用户确认的 Web URL；只有两边至少一边提供这种能力后，才能安全自动化。
 
 Android 包名与发布签名必须长期稳定。debug 与 release 签名被视为不同应用，
 测试报告要同时打印包名和签名指纹，避免把关联失败误判成密钥错误。
@@ -268,7 +293,9 @@ Passkey 与设备密钥都属于便利凭据，不能成为唯一 slot。缺少 
 5. 密码候选只在 Rust 内存短暂存在，锁定/取消/超时全部清零。
 6. 只查询固定 omy URL，不请求整库枚举，不要求“总是允许所有访问”。
 7. 新密钥由 omy CSPRNG 生成；KeePassXC 密码生成器只作为可选人工入口。
-8. 保存后必须回读同一 UUID 和秘密再开始加密。
+8. 支持回读的 provider（当前为 KeePassXC）保存后必须回读同一 UUID 和秘密再
+   开始加密；Android 标准创建响应不返回 provider 条目，也没有安全的无交互
+   回读，所以真机测试必须验证保存结果，界面不得声称已经回读。
 9. 任何 provider 失败都不静默回退到弱存储。
 10. 示例 KDBX 只含测试数据，文件名和同目录说明必须明确密码为 `123456`，
     产品代码与文档不得把它当安全示例。
@@ -297,6 +324,10 @@ Passkey 与设备密钥都属于便利凭据，不能成为唯一 slot。缺少 
 7. 取消授权、切换数据库、关闭 KeePassXC 都清除候选；
 8. proxy 退出后不留下子进程。
 
+2026-10-01 在 Linux、KeePassXC 2.7.4 与仓库 fixture 上完成了 2、4、5、6、8：
+真实关联和条目授权成功，固定秘密经过 `omy-core` 加密/解密往返，生成条目也能
+回读 UUID。锁定、撤销授权与切库仍应在桌面 GUI 端到端测试中继续覆盖。
+
 ### 9.3 Android 真实验证
 
 Android 验证必须走真实界面和 KeePassDX，不用 mock 代替最终结论：
@@ -308,6 +339,9 @@ Android 验证必须走真实界面和 KeePassDX，不用 mock 代替最终结�
 - Android 创建 → 云同步 → 桌面使用；
 - debug/release 签名差异；
 - Android 13 及以下的 Autofill 回退。
+
+本轮只完成 Android 原生桥的 Kotlin 编译；以上项目不能用编译或 mock 冒充
+真机结论，由后续 Android 设备验证记录结果。
 
 ## 10. 分阶段交付
 

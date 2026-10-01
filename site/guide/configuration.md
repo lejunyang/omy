@@ -164,6 +164,8 @@ scan_omy_only = true
 | `security.auto_lock_secs` | `0` | 闲置多少秒后锁定，`0` 为从不（仅 GUI）|
 | `security.lock_on_background` | `false` | 切后台时**立即**锁定；关闭时切后台只按闲置计时、播放中豁免（仅 GUI）|
 | `security.wipe_temp_plaintext` | `true` | 外部程序关闭后清理临时明文（GUI 能力待接入）|
+| `password_managers.keepassxc.proxy_path` | 无 | KeePassXC proxy 的自定义路径；留空时自动探测 |
+| `password_managers.keepassxc.associations` | `[]` | 已关联数据库的公开 hash 与名称；授权 key 单独存入系统凭据库 |
 | `remote.cache_limit` | `2147483648` | 密文缓存上限，2 GiB；`0` 不限制（仅 GUI）|
 | `remote.cache_dir` | 无 | 自定义缓存目录，留空用默认便携路径（仅 GUI）|
 | `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI）|

@@ -164,6 +164,8 @@ The command line has no use for auto-lock or a remote cache, but both read the s
 | `security.auto_lock_secs` | `0` | Lock after this many idle seconds; `0` never (GUI only) |
 | `security.lock_on_background` | `false` | Lock **immediately** when backgrounded; when off, backgrounding only counts as idle and playback is exempt (GUI only) |
 | `security.wipe_temp_plaintext` | `true` | Wipe temporary plaintext when the external opener closes (GUI wiring pending) |
+| `password_managers.keepassxc.proxy_path` | none | Custom KeePassXC proxy path; empty enables automatic discovery |
+| `password_managers.keepassxc.associations` | `[]` | Public hashes and names of paired databases; authorization keys live in the OS credential store |
 | `remote.cache_limit` | `2147483648` | Ciphertext cache limit, 2 GiB; `0` unlimited (GUI only) |
 | `remote.cache_dir` | none | Custom cache directory; empty uses the default portable path (GUI only) |
 | `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only) |

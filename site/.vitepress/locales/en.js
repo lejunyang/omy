@@ -34,6 +34,7 @@ export const en = {
           items: [
             { text: 'Encrypt and decrypt', link: '/en/guide/encrypt-decrypt' },
             { text: 'Passwords and key slots', link: '/en/guide/passwords' },
+            { text: 'Password-manager sync keys', link: '/en/guide/password-managers' },
             { text: 'Media preview and playback', link: '/en/guide/media' },
             { text: 'Sharding', link: '/en/guide/sharding' },
             { text: 'LAN sharing', link: '/en/guide/lan-sharing' },

@@ -34,6 +34,7 @@ export const zh = {
           items: [
             { text: '加密与解密', link: '/guide/encrypt-decrypt' },
             { text: '密码与密钥槽', link: '/guide/passwords' },
+            { text: '密码管理器同步密钥', link: '/guide/password-managers' },
             { text: '媒体预览与播放', link: '/guide/media' },
             { text: '分片', link: '/guide/sharding' },
             { text: '局域网共享', link: '/guide/lan-sharing' },
