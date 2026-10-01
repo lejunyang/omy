@@ -42,9 +42,9 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // 内容延伸到状态栏与导航栏下面。代价是顶栏会被状态栏压住、
-    // 底部导航会被手势条盖住，靠 CSS 的 env(safe-area-inset-*)
-    // 把内容顶回来——两者必须一起看，只改一边就会出现
-    // 「界面看着正常但点不到」
+    // 底部导航会被手势条盖住；CSS 优先使用 env(safe-area-inset-*)，
+    // 并为 WebView 把 inset 错报成 0 的设备保留最小兜底。两边必须一起看，
+    // 只改一边就会出现「界面看着正常但点不到」。
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
 

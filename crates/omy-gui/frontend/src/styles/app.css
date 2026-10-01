@@ -1861,8 +1861,8 @@ input {
   /* 对话框自身也要避开状态栏和手势条：它是 fixed 居中的，
      真机上顶部会有一截钻到状态栏下面 */
   .dlg-overlay {
-    padding-block: calc(env(safe-area-inset-top, 0px) + var(--sp) * 2)
-      calc(env(safe-area-inset-bottom, 0px) + var(--sp) * 2);
+    padding-block: calc(max(env(safe-area-inset-top, 0px), 24px) + var(--sp) * 2)
+      calc(max(env(safe-area-inset-bottom, 0px), 24px) + var(--sp) * 2);
   }
 
   /* 指纹是 44 字符不带空格的 base64，break-all 只在有换行机会时生效。
@@ -1896,10 +1896,10 @@ input {
   display: flex;
   background: var(--bg2);
   border-block-start: 1px solid var(--border);
-  /* 手势导航条会盖住底部这一条。加安全区内边距把内容顶上去，
-     并把整体高度撑高，否则真机上这排按钮点不到 */
-  padding-block-end: env(safe-area-inset-bottom, 0px);
-  height: calc(52px + env(safe-area-inset-bottom, 0px));
+  /* Android WebView 在 edge-to-edge 下可能仍把 bottom inset 报成 0。
+     至少留 24px，避免导航按钮与系统手势横条重叠。 */
+  padding-block-end: max(env(safe-area-inset-bottom, 0px), 24px);
+  height: calc(52px + max(env(safe-area-inset-bottom, 0px), 24px));
 }
 
 /* 给固定底栏让位。
@@ -1911,7 +1911,7 @@ input {
    远程位置没有 statusbar，实测最后一行 bottom=812 而底栏 top=792，
    被盖住 20px。靠某个视图恰好有别的元素来挡，不是留位。 */
 .body.mob {
-  padding-block-end: calc(52px + env(safe-area-inset-bottom, 0px));
+  padding-block-end: calc(52px + max(env(safe-area-inset-bottom, 0px), 24px));
 }
 
 .pnavi {
