@@ -606,10 +606,10 @@ fn android_places(app: &tauri::AppHandle) -> Vec<DirEntry> {
     }
 
     // 应用缓存：解密临时文件落在这里，让用户能看到并手动清理
-    if let Ok(p) = app.path().app_cache_dir() {
-        if std::fs::create_dir_all(&p).is_ok() {
-            out.push(android_entry(&p, "cache"));
-        }
+    if let Ok(p) = app.path().app_cache_dir()
+        && std::fs::create_dir_all(&p).is_ok()
+    {
+        out.push(android_entry(&p, "cache"));
     }
 
     out

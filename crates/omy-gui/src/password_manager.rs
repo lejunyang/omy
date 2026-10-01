@@ -226,7 +226,7 @@ pub async fn password_manager_status(app: tauri::AppHandle) -> CmdResult<Passwor
                 serde_json::json!({ "detail": e }),
             )
         })?;
-        return Ok(PasswordManagerStatus {
+        Ok(PasswordManagerStatus {
             provider: "android_credential_manager",
             installed: status.available,
             running: status.available,
@@ -235,7 +235,7 @@ pub async fn password_manager_status(app: tauri::AppHandle) -> CmdResult<Passwor
             database_hash: None,
             version: None,
             detail: (!status.reason.is_empty()).then_some(status.reason),
-        });
+        })
     }
 
     #[cfg(not(target_os = "android"))]
@@ -325,7 +325,7 @@ fn status_desktop() -> CmdResult<PasswordManagerStatus> {
 pub async fn password_manager_connect(app: tauri::AppHandle) -> CmdResult<PasswordManagerStatus> {
     #[cfg(target_os = "android")]
     {
-        return password_manager_status(app).await;
+        password_manager_status(app).await
     }
 
     #[cfg(not(target_os = "android"))]
@@ -368,7 +368,7 @@ pub async fn password_manager_list(
             group: String::new(),
             secret: omy_password_manager::CredentialSecret::new(selected.secret),
         };
-        return managers.replace(vec![entry]);
+        managers.replace(vec![entry])
     }
 
     #[cfg(not(target_os = "android"))]
@@ -414,10 +414,10 @@ pub async fn password_manager_generate(
             group: String::new(),
             secret,
         };
-        return managers
+        managers
             .replace(vec![entry])?
             .pop()
-            .ok_or_else(|| CmdError::code("internal"));
+            .ok_or_else(|| CmdError::code("internal"))
     }
 
     #[cfg(not(target_os = "android"))]
@@ -469,7 +469,7 @@ pub async fn password_manager_forget(
     managers.clear();
     #[cfg(target_os = "android")]
     {
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "android"))]
@@ -603,6 +603,7 @@ fn forget_association(database_hash: &str) -> CmdResult<()> {
         .map_err(|_| CmdError::code("config_write_failed"))
 }
 
+#[cfg(not(target_os = "android"))]
 fn pm_error(error: omy_password_manager::Error) -> CmdError {
     use omy_password_manager::Error as PmError;
     let detail = error.to_string();
