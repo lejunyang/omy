@@ -19,6 +19,12 @@ Enable **Browser Integration** in KeePassXC settings first. omy talks to KeePass
 the bundled `keepassxc-proxy` over a local encrypted channel. No browser window or browser
 extension is required.
 
+Standard installation directories are detected automatically. For a portable build, open
+**Settings → Security → Portable KeePassXC** and enter the full path to
+`keepassxc-proxy.exe` (for example, `E:\KeePassXC\keepassxc-proxy.exe`). If that explicit
+path becomes invalid, omy reports the error instead of silently launching another binary
+from `PATH` or a standard installation directory.
+
 The first “Choose from password manager” action causes KeePassXC to show a new association
 request. Give it a recognizable name such as `omy-my-laptop` and approve it. omy then only
 queries entries for `https://credentials.omy.app/`. KeePassXC may separately ask whether a

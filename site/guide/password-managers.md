@@ -19,6 +19,11 @@ omy 可以把随机生成的高强度密钥交给第三方密码管理器保存�
 自带的 `keepassxc-proxy` 建立本地加密连接，不需要打开浏览器，也不要求安装
 浏览器扩展。
 
+标准安装目录会自动探测。便携版请到“设置 → 安全与密码 → KeePassXC 便携版”
+填写 `keepassxc-proxy.exe` 的完整路径（例如
+`E:\KeePassXC\keepassxc-proxy.exe`）。显式路径失效时，omy 会直接报错，
+不会悄悄启动 PATH 或标准目录中的另一份同名程序。
+
 第一次点击“从密码管理器选择”时，KeePassXC 会显示新的关联请求。给连接起一个
 能认出的名字（例如 `omy-我的电脑`）并允许访问。以后 omy 只查询 URL 为
 `https://credentials.omy.app/` 的条目；第一次读取某个条目时，KeePassXC 仍可能

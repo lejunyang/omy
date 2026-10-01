@@ -53,6 +53,18 @@ const clearing = ref(false);
 /** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
 const loadedCount = ref(0);
 
+/** KeePassXC 便携版路径：空输入必须回写 null 才能恢复自动探测。
+ * 直接把空字符串写进 Option<String> 会变成“显式指定了空路径”，后端按安全
+ * 规则拒绝回退，标准安装也会因此被误报成未找到。 */
+const keepassxcProxyPath = computed({
+  get: () => cfg.value?.password_managers?.keepassxc?.proxy_path ?? '',
+  set: (value: string) => {
+    if (cfg.value?.password_managers?.keepassxc) {
+      cfg.value.password_managers.keepassxc.proxy_path = value.trim() || null;
+    }
+  },
+});
+
 /** 关于页的版本信息，来自后端编译期常量。 */
 const aboutInfo = ref<any>({});
 
@@ -873,6 +885,20 @@ async function openLogDir() {
                 >
                   {{ i18n.t('settings.lock_now_btn') }}
                 </button>
+              </div>
+            </div>
+            <div class="row" v-if="!isAndroid">
+              <label class="lb" for="keepassxc-proxy-path">{{ i18n.t('settings.keepassxc_proxy') }}</label>
+              <div class="fld">
+                <input
+                  id="keepassxc-proxy-path"
+                  v-model="keepassxcProxyPath"
+                  data-sf="keepassxc_proxy_path"
+                  type="text"
+                  autocomplete="off"
+                  :placeholder="i18n.t('settings.keepassxc_proxy_placeholder')"
+                />
+                <div class="desc">{{ i18n.t('settings.keepassxc_proxy_desc') }}</div>
               </div>
             </div>
             <div class="row">
