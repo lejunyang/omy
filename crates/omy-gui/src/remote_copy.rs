@@ -16,10 +16,10 @@ use crate::place_files::RemoteCache;
 use crate::places::PlaceRegistry;
 use crate::transfers::{TaskHandle, TaskKind, TaskState, Transfers};
 
-/// 每次从源端读取 1 MiB；与远程块缓存大小一致，避免跨块后又拆一次。
-const COPY_CHUNK: u64 = 1024 * 1024;
-/// 下载与上传之间最多积压 8 MiB。上传慢时写端会阻塞，形成真正的背压。
-const PIPE_CAPACITY: usize = 8 * 1024 * 1024;
+/// 每次从源端读取 8 MiB。一次请求可合并多个缓存块，减少高速链路上的调度与请求开销。
+const COPY_CHUNK: u64 = 8 * 1024 * 1024;
+/// 下载与上传之间最多积压 64 MiB，吸收短时速率抖动；达到上限后仍会背压下载。
+const PIPE_CAPACITY: usize = 64 * 1024 * 1024;
 
 /// 远程来源采用哪种中转方式。
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -366,9 +366,16 @@ mod tests {
 
     #[test]
     fn memory_queue_is_bounded() {
+        assert_eq!(COPY_CHUNK, 8 * 1024 * 1024);
+        assert_eq!(PIPE_CAPACITY, 64 * 1024 * 1024);
         assert!(PIPE_CAPACITY >= COPY_CHUNK as usize);
+        assert_eq!(
+            PIPE_CAPACITY % COPY_CHUNK as usize,
+            0,
+            "完整窗口能留在管道中，避免固定产生半窗口尾巴"
+        );
         assert!(
-            PIPE_CAPACITY <= 16 * 1024 * 1024,
+            PIPE_CAPACITY <= 64 * 1024 * 1024,
             "队列上限失控会在下载远快于上传时吞掉大量内存"
         );
     }
