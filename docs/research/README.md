@@ -4,8 +4,8 @@
 
 > **文档状态**：01–12 为设计定稿（v1.0）。
 > 13 是**实现期新增的待评审方案**，14 是实现期设计（首期已落地），
-> 15 为**实现期调研与设计**（消息视图等部分已随主线落地），不属于 v1.0 定稿范围。
-> **最后更新**：2026-09-19
+> 15–17 为**实现期调研与设计**，不属于 v1.0 定稿范围。
+> **最后更新**：2026-10-01
 
 ---
 
@@ -41,6 +41,7 @@
 | 14 | [远程位置：云盘接入](14-remote-locations-cloud.md) | `RemoteStore` 抽象、云端 omy 文件识别、只读位置的能力矩阵与 UI | 实现者、设计 |
 | 15 | [远程位置：Telegram 接入](15-telegram-remote.md) | MTProto 选型（grammers）、登录方式、分片下载/上传、受保护内容、传输管理与永久缓存、UI 与交互设计 | 实现者、设计、法务 |
 | 16 | [引用模型与虚拟远程位置（调研）](16-references-and-virtual-locations.md) | 各类型唯一 id 与引用能力（消息/媒体标识、视频定位源消息、消息引用跳转，均据 grammers TL 核实）；虚拟位置的数据模型、接入 RemoteStore、缓存共享可行性、跳转/搜索与工作量估 | 实现者、设计 |
+| 17 | [第三方密码管理器集成](17-password-manager-integration.md) | 通用 provider 抽象、KeePassXC-Browser 桌面协议、Android Credential Manager、KDBX 跨端元数据、Passkey PRF 演进路线 | 实现者、安全审计、设计 |
 
 **附录**
 - [appendix/ui-prototype.html](appendix/ui-prototype.html) — **可交互界面原型**（浏览器直接打开，可切换深/浅主题、网格/列表、锁定/解锁态）
