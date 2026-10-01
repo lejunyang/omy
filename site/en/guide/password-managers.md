@@ -41,31 +41,22 @@ or enters the KDBX master password for you.
 
 ## Android and KeePassDX
 
-On Android 14 and later, omy uses the system Credential Manager. The system picker can be
-served by KeePassDX, Google Password Manager, or another enabled provider, both when
-choosing and when saving a generated key.
+Android currently uses KeePassDX Autofill or Magikeyboard on the ordinary password field.
+omy does not show **Choose from password manager** or **Generate and save** there. After
+syncing a KeePassXC sync-key entry to the phone, choose that same entry through KeePassDX on
+the password field; the key still follows the existing Argon2id and key-slot path.
 
-Android 13 and earlier cannot use third-party Credential Providers. The existing input
-fields continue to support Autofill and KeePassDX's Magikeyboard as a fallback.
+The explicit Android 14+ Credential Manager password API is disabled for now because a real
+KeePassDX 4.5.5 round trip created entries containing only `AndroidApp=org.omy.app`, without
+the paired protected `AndroidApp Signature` field. KeePassDX then requires both package name
+and signature before returning the password, so the entry appears in the system picker but
+always ends in `Password origin do not match`. The system also prioritizes that invalid
+candidate, and the calling app cannot force KeePassDX to open its complete entry picker.
 
-The two clients use different matching metadata in one KDBX entry: KeePassXC matches the
-URL, while KeePassDX records `org.omy.app` and the app signing certificate. Standard APIs
-do not let an ordinary app write another platform's origin metadata, so syncing the KDBX
-syncs the secret value but does not automatically add the other locator.
-
-- After creating on Android, add `URL=https://credentials.omy.app/` to that same entry in
-  KeePassDX before syncing it to the desktop.
-- After creating on the desktop, use KeePassDX Autofill on the ordinary password field the
-  first time on Android. Select the same entry and allow KeePassDX to save the app link.
-  Android 14+'s system picker can find it on subsequent uses.
-- Do not select an existing desktop entry from Android's **Generate and save** flow merely
-  to link it. That request carries a newly generated secret and would replace the old
-  password, leaving files encrypted with the old value without that recovery path.
-
-This is an API boundary: Android prevents an app from impersonating a website, while the
-KeePassXC-Browser protocol cannot write arbitrary KDBX custom fields. It is not a KDBX sync
-failure. Debug and release builds also have different signatures and are treated as
-different apps.
+omy will not forge a web origin, bypass APK-signature checks, or rewrite protected fields in
+a third-party KDBX. Explicit selection can be restored after providers reliably persist and
+read back the signature field. Debug and release builds also have different signatures and
+are treated as different apps by password managers.
 
 ## It is still stored as a password
 

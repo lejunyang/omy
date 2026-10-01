@@ -917,7 +917,7 @@
     "title": "密码管理器同步密钥",
     "checking": "正在检查密码管理器…",
     "not_installed": "没有找到 KeePassXC。请先安装，并在设置中启用浏览器集成。",
-    "requires_android_14": "显式选择第三方密码管理器需要 Android 14 或更高版本；当前系统请使用密码框的自动填充。",
+    "requires_android_14": "Android 暂不提供显式密码管理器选择；请在密码框使用 KeePassDX Autofill 或 Magikeyboard。",
     "not_running": "KeePassXC 尚未运行。请打开 KeePassXC 后重试。",
     "database_locked": "KeePassXC 数据库尚未解锁。解锁后点重试。",
     "connect_hint": "首次使用需要把 omy 与当前 KeePassXC 数据库关联。KeePassXC 会弹窗，请将连接命名为 omy。",

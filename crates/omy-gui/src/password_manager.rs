@@ -18,8 +18,11 @@ use std::collections::HashMap;
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(not(target_os = "android"))]
+use std::time::Duration;
+use std::time::Instant;
 use tauri::State;
+#[cfg(not(target_os = "android"))]
 use uuid::Uuid;
 #[cfg(not(target_os = "android"))]
 use zeroize::Zeroizing;
@@ -31,78 +34,20 @@ mod android {
     const IDENTIFIER: &str = "org.omy.app";
     const CLASS: &str = "PasswordManagerPlugin";
 
-    #[derive(serde::Deserialize)]
-    pub struct AndroidCredential {
-        pub id: String,
-        pub secret: String,
+    struct Plugin<R: tauri::Runtime> {
+        _handle: PluginHandle<R>,
     }
 
-    #[derive(serde::Deserialize)]
-    pub struct AndroidStatus {
-        pub available: bool,
-        pub reason: String,
-    }
-
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct SaveArgs<'a> {
-        label: &'a str,
-        secret: &'a str,
-    }
-
-    pub struct Plugin<R: tauri::Runtime>(PluginHandle<R>);
-
-    impl<R: tauri::Runtime> Plugin<R> {
-        fn status(&self) -> Result<AndroidStatus, String> {
-            self.0
-                .run_mobile_plugin("status", ())
-                .map_err(|e| e.to_string())
-        }
-
-        fn select(&self) -> Result<AndroidCredential, String> {
-            self.0
-                .run_mobile_plugin("selectPassword", ())
-                .map_err(|e| e.to_string())
-        }
-
-        fn save(&self, label: &str, secret: &str) -> Result<String, String> {
-            #[derive(serde::Deserialize)]
-            struct Saved {
-                id: String,
-            }
-            self.0
-                .run_mobile_plugin::<Saved>("savePassword", SaveArgs { label, secret })
-                .map(|r| r.id)
-                .map_err(|e| e.to_string())
-        }
-    }
-
+    /// 仍注册原生插件，避免 Android 工程配置与生成代码漂移；显式密码操作在
+    /// KeePassDX 能可靠持久化签名字段前由命令层禁用。
     pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         tauri::plugin::Builder::new("omy-password-manager")
             .setup(|app, api| {
                 let handle = api.register_android_plugin(IDENTIFIER, CLASS)?;
-                tauri::Manager::manage(app, Plugin(handle));
+                tauri::Manager::manage(app, Plugin { _handle: handle });
                 Ok(())
             })
             .build()
-    }
-
-    fn plugin(app: &tauri::AppHandle) -> Result<tauri::State<'_, Plugin<tauri::Wry>>, String> {
-        use tauri::Manager as _;
-        app.try_state::<Plugin<tauri::Wry>>()
-            .ok_or_else(|| String::from("Android Credential Manager 插件未注册"))
-    }
-
-    pub fn status(app: &tauri::AppHandle) -> Result<AndroidStatus, String> {
-        plugin(app)?.status()
-    }
-
-    pub fn select(app: &tauri::AppHandle) -> Result<AndroidCredential, String> {
-        plugin(app)?.select()
-    }
-
-    pub fn save(app: &tauri::AppHandle, label: &str, secret: &str) -> Result<String, String> {
-        plugin(app)?.save(label, secret)
     }
 }
 
@@ -115,6 +60,7 @@ const ASSOCIATION_SERVICE: &str = "omy-password-manager";
 const ASSOCIATION_PREFIX: &str = "keepassxc-association-";
 
 /// 候选秘密最长只在内存中保留五分钟。
+#[cfg(not(target_os = "android"))]
 const CANDIDATE_TTL: Duration = Duration::from_secs(5 * 60);
 
 struct CandidateCache {
@@ -139,6 +85,7 @@ impl PasswordManagerState {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     fn replace(&self, entries: Vec<Credential>) -> CmdResult<Vec<CredentialSummary>> {
         let mut cache = self.cache.lock().map_err(|_| CmdError::code("internal"))?;
         // 先清旧值再装新值：CredentialSecret 的 Drop 会清零。若不断开两轮查询，
@@ -214,27 +161,25 @@ pub struct PasswordManagerStatus {
     pub detail: Option<String>,
 }
 
-/// 查询桌面密码管理器状态。Android 的显式 Credential Manager 状态由原生
-/// provider 命令覆盖；这里先如实报告桌面 KeePassXC 不适用。
+/// 查询桌面密码管理器状态。Android 暂不暴露显式 Credential Manager 入口：
+/// KeePassDX 4.5.5 创建的密码条目只写 `AndroidApp`，却不写它返回前强制校验的
+/// `AndroidApp Signature`，导致条目可见但永远无法取回。普通应用既不能替 provider
+/// 补签名，也不能要求系统绕过 origin 校验；因此保留密码框 Autofill，而不是暴露
+/// 一个会制造不可用条目的按钮。
 #[tauri::command]
 pub async fn password_manager_status(app: tauri::AppHandle) -> CmdResult<PasswordManagerStatus> {
     #[cfg(target_os = "android")]
     {
-        let status = android::status(&app).map_err(|e| {
-            CmdError::with(
-                "password_manager_unavailable",
-                serde_json::json!({ "detail": e }),
-            )
-        })?;
+        let _ = app;
         Ok(PasswordManagerStatus {
             provider: "android_credential_manager",
-            installed: status.available,
-            running: status.available,
-            database_open: status.available,
-            associated: status.available,
+            installed: false,
+            running: false,
+            database_open: false,
+            associated: false,
             database_hash: None,
             version: None,
-            detail: (!status.reason.is_empty()).then_some(status.reason),
+            detail: Some(String::from("use_autofill")),
         })
     }
 
@@ -351,24 +296,8 @@ pub async fn password_manager_list(
 ) -> CmdResult<Vec<CredentialSummary>> {
     #[cfg(target_os = "android")]
     {
-        let selected = android::select(&app).map_err(|e| {
-            let code = if e.contains("user_cancelled") {
-                "user_cancelled"
-            } else if e.contains("password_manager_not_found") {
-                "password_manager_not_found"
-            } else {
-                "password_manager_failed"
-            };
-            CmdError::with(code, serde_json::json!({ "detail": e }))
-        })?;
-        let entry = Credential {
-            id: selected.id.clone(),
-            name: selected.id.clone(),
-            login: selected.id,
-            group: String::new(),
-            secret: omy_password_manager::CredentialSecret::new(selected.secret),
-        };
-        managers.replace(vec![entry])
+        let _ = (app, managers);
+        Err(CmdError::code("password_manager_unsupported"))
     }
 
     #[cfg(not(target_os = "android"))]
@@ -398,26 +327,8 @@ pub async fn password_manager_generate(
 
     #[cfg(target_os = "android")]
     {
-        let secret = omy_password_manager::generate_sync_secret();
-        let id = android::save(&app, label.trim(), secret.expose()).map_err(|e| {
-            let code = if e.contains("user_cancelled") {
-                "user_cancelled"
-            } else {
-                "password_manager_failed"
-            };
-            CmdError::with(code, serde_json::json!({ "detail": e }))
-        })?;
-        let entry = Credential {
-            id,
-            name: label.trim().to_owned(),
-            login: label.trim().to_owned(),
-            group: String::new(),
-            secret,
-        };
-        managers
-            .replace(vec![entry])?
-            .pop()
-            .ok_or_else(|| CmdError::code("internal"))
+        let _ = (app, managers);
+        Err(CmdError::code("password_manager_unsupported"))
     }
 
     #[cfg(not(target_os = "android"))]

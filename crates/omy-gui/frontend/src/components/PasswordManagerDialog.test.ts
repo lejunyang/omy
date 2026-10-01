@@ -61,7 +61,7 @@ describe('PasswordManagerDialog', () => {
     expect(wrapper.emitted('generate')?.[0]).toEqual(['工作资料']);
   });
 
-  it('Android 不可用时不误报成未安装 KeePassXC', () => {
+  it('Android 显式入口停用时引导使用 Autofill', () => {
     const wrapper = mount(PasswordManagerDialog, {
       props: {
         purpose: 'unlock',
@@ -76,10 +76,11 @@ describe('PasswordManagerDialog', () => {
         entries: [],
       },
     });
-    // 不这样会怎样：Android 13 用户会被要求安装一个根本不存在于该平台的
-    // KeePassXC 桌面程序，而不是得知应改用 Autofill。
+    // 不这样会怎样：用户会继续进入一个能显示候选、但选中后必然 origin
+    // 校验失败的流程，并误以为只需升级系统或安装 KeePassXC。
     expect(wrapper.text()).toContain('password_manager.requires_android_14');
     expect(wrapper.text()).not.toContain('password_manager.not_installed');
+    expect(wrapper.find('[data-pm="connect"]').exists()).toBe(false);
   });
 
   it('Android 不显示无意义的 KeePassXC 取消关联按钮', () => {

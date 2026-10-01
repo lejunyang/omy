@@ -917,7 +917,7 @@
     "title": "Password manager sync key",
     "checking": "Checking the password manager…",
     "not_installed": "KeePassXC was not found. Install it and enable Browser Integration in its settings.",
-    "requires_android_14": "Explicit third-party password-manager selection requires Android 14 or later. Use Autofill on the password field on this system.",
+    "requires_android_14": "Explicit password-manager selection is temporarily unavailable on Android. Use KeePassDX Autofill or Magikeyboard on the password field.",
     "not_running": "KeePassXC is not running. Open KeePassXC and try again.",
     "database_locked": "The KeePassXC database is locked. Unlock it, then retry.",
     "connect_hint": "First use requires pairing omy with the current KeePassXC database. KeePassXC will ask you to name and approve the connection.",

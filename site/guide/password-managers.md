@@ -39,28 +39,21 @@ KeePassXC 锁住时，omy 可以请求把它带到前台，但不会代替你输
 
 ## Android 与 KeePassDX
 
-Android 14 及以上使用系统 Credential Manager。点击同一个按钮后，由系统显示
-KeePassDX、Google Password Manager 或其它已启用 provider；创建新密钥时也由
-系统让你选择保存位置。
+Android 目前通过普通密码框使用 KeePassDX Autofill 或 Magikeyboard，不显示“从密码
+管理器选择”和“生成并保存”入口。将 KeePassXC 中的同步密钥条目同步到手机后，
+在密码框使用 KeePassDX 选择同一条目即可；密钥仍会由现有 Argon2id 与 key slot
+流程处理。
 
-Android 13 及以下没有第三方 Credential Provider，继续使用输入框上的 Autofill
-或 KeePassDX Magikeyboard。
+暂不启用 Android 14+ Credential Manager 的显式密码 API，是因为实测 KeePassDX
+4.5.5 创建的条目只写入 `AndroidApp=org.omy.app`，没有写入配对的受保护字段
+`AndroidApp Signature`；而 KeePassDX 在返回密码前又要求包名和签名同时匹配，
+因此这些条目虽然会出现在系统选择器里，选择后却固定报 `Password origin do not
+match`。系统还会优先显示这个无效候选，无法由调用应用强制打开完整的 KeePassDX
+条目选择器。
 
-同一条 KDBX 记录在两端使用不同的自动匹配信息：KeePassXC 按 URL，KeePassDX
-绑定 `org.omy.app` 与应用签名。标准 API 不允许普通应用在创建时替另一个平台
-写入来源信息，因此“同步 KDBX”会同步秘密值，却不会自动补齐另一端的匹配字段。
-
-- 在 Android 创建后，请在 KeePassDX 的同一条目里补上
-  `URL=https://credentials.omy.app/`，再同步到桌面。
-- 在桌面创建后，第一次到 Android 请使用普通密码框的 KeePassDX Autofill，
-  手动选中同一条目并允许它保存当前应用关联；之后 Android 14+ 的系统选择器
-  才能直接找到它。
-- 不要在 Android 的“生成并保存”中选择已有桌面条目来完成关联：那会用新生成
-  的秘密覆盖旧值，原先用旧秘密加密的文件将无法再靠该条目解锁。
-
-这是 Android 防止应用冒充网站、KeePassXC-Browser 又不能写任意 KDBX 自定义
-字段所形成的能力边界，不是云同步失败。正式发布包与调试包的签名不同，也会被
-视为两个应用。
+omy 不会伪造 Web origin、绕过 APK 签名校验，或自行改写第三方 KDBX 的受保护
+字段。等 provider 能可靠写入并回读签名字段后，才会重新开放显式选择。正式发布包
+与调试包的签名不同，也会被密码管理器视为两个应用。
 
 ## 它仍然是一把密码
 
