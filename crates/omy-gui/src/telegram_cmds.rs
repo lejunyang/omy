@@ -408,16 +408,23 @@ pub struct ApiIdStatus {
 pub fn telegram_api_id_status() -> ApiIdStatus {
     // 与 settings.rs 的 config_get / config_set 走同一条路：配置按需读写，
     // 不做成常驻 state。多一种访问方式就多一处会不同步的地方
-    let (id, hash) = omy_config::Config::load()
-        .map(|c| (c.remote.telegram_api_id, c.remote.telegram_api_hash.clone()))
-        .unwrap_or((None, None));
-    let configured = id.is_some() && hash.is_some();
-    // 解不开信封时回落到内置：连不上比「用错身份」更糟
-    let app = AppId::from_config(id, hash.as_deref()).unwrap_or_else(|_| AppId::builtin());
-    ApiIdStatus {
-        builtin: app.is_builtin(),
-        id: app.id(),
-        configured,
+    let Ok(c) = omy_config::Config::load() else {
+        return ApiIdStatus { builtin: true, id: AppId::builtin().id(), configured: false };
+    };
+    // 与 CLI 同源：解析规则集中在 omy_remote::telegram::appid_store。
+    let protector = omy_remote::placebook::protect_key();
+    match omy_remote::telegram::appid_store::resolve(&c.remote, protector.as_ref()) {
+        Ok(r) => ApiIdStatus {
+            builtin: r.app.is_builtin(),
+            id: r.app.id(),
+            configured: r.configured,
+        },
+        // 填过但凭据库暂时打不开：configured 仍为 true（界面要能说「填过但没读出来」）
+        Err(_) => ApiIdStatus {
+            builtin: false,
+            id: c.remote.telegram_api_id.unwrap_or(0),
+            configured: true,
+        },
     }
 }
 
@@ -441,11 +448,23 @@ pub fn telegram_api_id_save(api_id: i32, api_hash: String) -> CmdResult<()> {
     AppId::from_config(Some(api_id), Some(&api_hash))
         .map_err(|e| CmdError::with("tg_bad_api_id", detail(&e.to_string())))?;
 
+    // 封成 omy-secret 信封再写。与 CLI 同源（appid_store::seal）：
+    // 没有凭据库时拒绝写明文，而不是退而求其次存裸 hash。
+    let protector = omy_remote::placebook::protect_key();
+    let envelope = omy_remote::telegram::appid_store::seal(protector.as_ref(), &api_hash)
+        .map_err(|_| CmdError::with("tg_seal_failed", detail("加密 api_hash 失败")))?
+        .ok_or_else(|| {
+            CmdError::with(
+                "tg_no_protector",
+                detail("本机没有可用的凭据库，无法安全保存 api_hash（绝不写明文）"),
+            )
+        })?;
+
     // 放进共享跨进程锁的读-改-写里：锁内重读磁盘最新配置再写回，
     // 不拿早先 load 的快照整体覆盖。
     omy_config::Config::update(|fresh| {
         fresh.remote.telegram_api_id = Some(api_id);
-        fresh.remote.telegram_api_hash = Some(api_hash);
+        fresh.remote.telegram_api_hash = Some(envelope);
         Ok::<(), omy_config::Error>(())
     })
     .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
@@ -485,6 +504,21 @@ pub fn telegram_api_id_reset() -> CmdResult<()> {
     })
     .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
     Ok(())
+}
+
+/// 登录/建连要用的应用身份：从配置解析，填了自己的就用自己的。
+///
+/// 与 CLI 同源（`appid_store::resolve`）。解不开信封时回落内置——连不上比
+/// 「用错身份」更糟；此时 status 会显示「填过但没读出来」，不会无声无息。
+fn login_app_id() -> AppId {
+    let Ok(c) = omy_config::Config::load() else {
+        return AppId::builtin();
+    };
+    let protector = omy_remote::placebook::protect_key();
+    match omy_remote::telegram::appid_store::resolve(&c.remote, protector.as_ref()) {
+        Ok(r) => r.app,
+        Err(_) => AppId::builtin(),
+    }
 }
 
 #[tauri::command]
@@ -1354,7 +1388,8 @@ async fn run_login(
 ) {
     emit(app, &LoginPhase::Connecting);
 
-    let appid = AppId::builtin();
+    // 登录要用配置里的自定义身份（填了自己的才用自己的）；与 CLI 同源。
+    let appid = login_app_id();
     let device = DeviceInfo::current();
     let mut sess = match QrSession::connect(appid.clone(), proxy.as_deref(), &device) {
         Ok(s) => s,
@@ -1825,7 +1860,8 @@ async fn run_phone_login(
         ),
     );
     phone_emit(app, &PhonePhase::Connecting);
-    let appid = AppId::builtin();
+    // 登录要用配置里的自定义身份（填了自己的才用自己的）；与 CLI 同源。
+    let appid = login_app_id();
     let device = DeviceInfo::current();
     let mut sess = match PhoneSession::connect(appid.clone(), proxy.as_deref(), &device) {
         Ok(s) => s,

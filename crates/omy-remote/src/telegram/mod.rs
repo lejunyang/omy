@@ -40,6 +40,7 @@
 //! - `getDialogs` 单页返回量的上限（样本账号只有 4 个对话，测不出）。
 
 pub mod appid;
+pub mod appid_store;
 pub mod auth;
 pub mod connect;
 pub mod device;

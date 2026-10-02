@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Args, Subcommand};
+use omy_remote::placebook::protect_key;
+use omy_remote::telegram::appid_store::{self, ResolveError};
 use omy_remote::telegram::login::CodeShape;
 use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::proxy as tg_proxy;
@@ -231,6 +233,27 @@ fn resolve_login_proxy(arg: Option<&str>) -> Result<Option<String>> {
     }
 }
 
+/// 登录要用的应用身份：从配置解析（填了自己的就用自己的，否则内置）。
+///
+/// 这是「自定义 api_id 真正被登录流程消费」的落点——以前所有连接都硬编码
+/// `AppId::builtin()`，配置里填了也白填。解析时若发现还是旧明文
+/// （`Value::String`），顺手重封成信封完成迁移。
+fn resolve_app(ctx: &Ctx<'_>) -> Result<AppId> {
+    let protector = protect_key();
+    let resolved = appid_store::resolve(&ctx.cfg.remote, protector.as_ref())
+        .map_err(|e| anyhow!("解析应用身份失败：{e}"))?;
+    if resolved.legacy_plaintext {
+        // 旧明文：登录这一次已经用它连上了，把它重封成信封写回，下次即不再是明文。
+        if let Some(env) = appid_store::migrate(&ctx.cfg.remote, protector.as_ref()) {
+            let _ = mutate_config(ctx, |c| {
+                c.remote.telegram_api_hash = Some(env.clone());
+                Ok(())
+            });
+        }
+    }
+    Ok(resolved.app)
+}
+
 // ---- 安全输入 ----
 
 /// 读一个短秘密（验证码 / 二步密码 / tdata 密码 / api_hash）。
@@ -288,7 +311,7 @@ async fn run_login_cycle(
     proxy: &Option<String>,
     pw_src: &PasswordSource,
 ) -> Result<()> {
-    let appid = AppId::builtin();
+    let appid = resolve_app(ctx)?;
     let device = DeviceInfo::current();
 
     let mut sess = QrSession::connect(appid.clone(), proxy.as_deref(), &device)
@@ -440,7 +463,7 @@ async fn run_phone(
     code_src: &PasswordSource,
     pw_src: &PasswordSource,
 ) -> Result<()> {
-    let appid = AppId::builtin();
+    let appid = resolve_app(ctx)?;
     let device = DeviceInfo::current();
     let mut sess = PhoneSession::connect(appid.clone(), proxy.as_deref(), &device)
         .map_err(|e| anyhow!("连接 Telegram 失败：{e}"))?;
@@ -730,7 +753,7 @@ async fn run_tdata_import(
     };
 
     // 2. 先问服务端认不认，成功才落盘（顺序与 GUI 一致：避免把失效 tdata 写成本地位置）。
-    let appid = AppId::builtin();
+    let appid = resolve_app(ctx)?;
     let device = DeviceInfo::current();
     let saved = tdata::to_saved_session(&auth, appid.id());
     let conn = connect::connect_with(&saved, &appid, &device, proxy.as_deref())
@@ -835,24 +858,34 @@ fn proxy_reset(ctx: &Ctx) -> Result<()> {
 // ---- 应用身份（自定义 api_id / api_hash） ----
 
 fn appid_status(ctx: &Ctx) -> Result<()> {
-    let id = ctx.cfg.remote.telegram_api_id;
-    let hash = ctx.cfg.remote.telegram_api_hash.clone();
-    let configured = id.is_some() && hash.is_some();
-    let app = AppId::from_config(id, hash.as_deref()).unwrap_or_else(|_| AppId::builtin());
-    let human = if app.is_builtin() {
-        format!("当前使用内置 api_id={}（未配置自定义应用身份）", app.id())
-    } else {
-        format!("当前使用自定义 api_id={}", app.id())
-    };
-    // 绝不输出 hash：结构化结果里只有「是否配置了自定义」和生效的 id。
-    ctx.out.result(
-        &human,
-        &json!({
-            "builtin": app.is_builtin(),
-            "effective_id": app.id(),
-            "configured": configured,
-        }),
-    );
+    let protector = protect_key();
+    match appid_store::resolve(&ctx.cfg.remote, protector.as_ref()) {
+        Ok(r) => {
+            let human = if r.app.is_builtin() {
+                format!("当前使用内置 api_id={}（未配置自定义应用身份）", r.app.id())
+            } else {
+                format!("当前使用自定义 api_id={}", r.app.id())
+            };
+            // 绝不输出 hash：只有 builtin / effective_id / configured。
+            ctx.out.result(
+                &human,
+                &json!({
+                    "builtin": r.app.is_builtin(),
+                    "effective_id": r.app.id(),
+                    "configured": r.configured,
+                }),
+            );
+        }
+        Err(ResolveError::NoProtector) => {
+            // 配了自定义但解不开：报出 api_id（公开数字），仍不碰 hash。
+            let id = ctx.cfg.remote.telegram_api_id.unwrap_or(AppId::builtin().id());
+            ctx.out.result(
+                &format!("已配置自定义 api_id={id}，但本机凭据库不可用，无法解开 api_hash"),
+                &json!({ "builtin": false, "effective_id": id, "configured": true, "locked": true }),
+            );
+        }
+        Err(e) => return Err(anyhow!("解析应用身份失败：{e}")),
+    }
     Ok(())
 }
 
@@ -864,16 +897,20 @@ fn appid_set(ctx: &Ctx, a: &AppIdSetArgs) -> Result<()> {
     };
     hash_src.validate()?;
     let hash = read_secret(&hash_src, "api_hash（my.telegram.org 申请的 32 位十六进制）", true)?;
-    // 校验身份合法（AppIdError 不含 hash 本体）。
+    // 校验身份形状合法（AppIdError 不含 hash 本体）。
     AppId::custom(a.api_id, &hash).map_err(|e| anyhow!("api_id/api_hash 校验失败：{e}"))?;
+    // 封成信封再写。无保护器时拒绝写明文——绝不退而求其次存明文。
+    let protector = protect_key();
+    let envelope = appid_store::seal(protector.as_ref(), &hash)?
+        .ok_or_else(|| anyhow!("本机没有可用的凭据库，无法安全加密 api_hash（绝不写明文）。请在凭据库可用时重试，或先 app-id-reset 用内置身份"))?;
     mutate_config(ctx, |c| {
         c.remote.telegram_api_id = Some(a.api_id);
-        c.remote.telegram_api_hash = Some(hash.clone());
+        c.remote.telegram_api_hash = Some(envelope.clone());
         Ok(())
     })?;
     drop(hash); // 尽早丢掉明文副本
     ctx.out.result(
-        &format!("已保存自定义 api_id={}", a.api_id),
+        &format!("已加密保存自定义 api_id={}", a.api_id),
         &json!({ "api_id": a.api_id, "configured": true }),
     );
     Ok(())

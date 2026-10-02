@@ -341,10 +341,14 @@ pub struct Remote {
     /// **它是凭据，不是配置项**，所以和 [`SavedPlace::secret`] 一样经
     /// `omy-secret` 加密后存放，不明文躺在配置文件里。
     ///
+    /// 用 [`toml::Value`] 而不是 `String`：新写的是加密信封（表）；历史上
+    /// 早期版本写过明文（字符串），读兼容——`Value::String` 即旧明文，
+    /// 下一次保存/登录时由 `omy_remote::telegram::appid_store` 安全迁移成信封。
+    ///
     /// 两个字段要么都有要么都没有：只填一半时按「没填」处理并报错，
     /// 而不是静默回落到内置值——那会让用户以为自己那对生效了。
     #[serde(default)]
-    pub telegram_api_hash: Option<String>,
+    pub telegram_api_hash: Option<toml::Value>,
 }
 
 /// 一个持久化的远程位置。
