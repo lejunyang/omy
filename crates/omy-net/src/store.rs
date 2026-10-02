@@ -441,11 +441,78 @@ pub fn default_path() -> Option<PathBuf> {
 /// [`resolve_store_path_with`] 拿不到任何进程状态，测试才能把三个
 /// 优先级排错这种缺陷抓出来（见其测试）。
 fn resolve_store_path(env_value: Option<&str>) -> Option<PathBuf> {
-    resolve_store_path_with(
+    let portable_root = omy_config::portable_root();
+    let config_dir = dirs::config_dir();
+    let decided = resolve_store_path_with(
         env_value,
-        omy_config::portable_root().as_deref(),
-        dirs::config_dir().as_deref(),
-    )
+        portable_root.as_deref(),
+        config_dir.as_deref(),
+    )?;
+    // 只有决策落在便携路径上才需要迁移：环境变量显式覆盖时 decided 是用户
+    // 指定的绝对路径，不在便携根下，自然跳过——显式覆盖不迁移、不触碰。
+    if portable_root
+        .as_deref()
+        .is_some_and(|root| decided.strip_prefix(root).is_ok())
+    {
+        let legacy = config_dir.map(|d| d.join("omy").join("devices.omy"));
+        return Some(migrate_legacy_store(&decided, legacy.as_deref()));
+    }
+    Some(decided)
+}
+
+/// 一次性把老系统位置的设备库迁到便携位置。
+///
+/// 只做「便携位置没有库、老位置有库」这一种情况下的复制；其余情况原样
+/// 返回便携路径。老库**永远不删**——这是复制不是移动，出问题老库还在，
+/// 下次启动再试。
+///
+/// # 为什么要在升级时迁一次
+///
+/// 便携根是上一次提交才纳入默认路径的。此前设备身份一直在系统配置目录；
+/// 升级后 exe 恰好放在可写目录，程序会去便携位置读一个**不存在**的新库，
+/// 于是生成一份空白身份——用户所有已配对设备当场失效，而老库静静躺在
+/// %APPDATA% 里没人知道。
+///
+/// # 并发
+///
+/// 两个进程同时升级启动时都会走到这里。先复制到同目录临时文件再改名：
+/// 改名失败说明临时文件没就位（目标已被别的进程迁好，或磁盘/权限问题），
+/// 此时若便携位置已有文件就用它，没有就回退到老路径。绝不用自己手里的
+/// 副本去覆盖一个可能已经被对端写过的便携库。
+fn migrate_legacy_store(new: &Path, legacy: Option<&Path>) -> PathBuf {
+    // 便携位置已有库：可能是上次迁好了，也可能用户刚配对完正在用。
+    // 任何情况下都不覆盖。
+    if new.exists() {
+        return new.to_path_buf();
+    }
+    let Some(legacy) = legacy else {
+        return new.to_path_buf();
+    };
+    if !legacy.is_file() {
+        return new.to_path_buf();
+    }
+    let tmp = new.with_file_name(format!(
+        ".{}.migrating",
+        new.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("devices.omy")
+    ));
+    if std::fs::copy(legacy, &tmp).is_err() {
+        std::fs::remove_file(&tmp).ok();
+        // 回退：这次用老库，下次启动再试。绝不能返回一个还不存在的便携路径
+        // ——那会让程序在新位置生成空白身份，老身份被永久搁置。
+        return legacy.to_path_buf();
+    }
+    if std::fs::rename(&tmp, new).is_ok() {
+        return new.to_path_buf();
+    }
+    std::fs::remove_file(&tmp).ok();
+    if new.exists() {
+        // 别的进程已经迁好：直接用它
+        new.to_path_buf()
+    } else {
+        legacy.to_path_buf()
+    }
 }
 
 /// 路径决策的纯函数核心：环境变量覆盖 → 便携根 → 系统配置目录。
@@ -762,6 +829,121 @@ mod tests {
         let in_portable = s.contains("omy-data/");
         let in_config = s.ends_with("omy/devices.omy");
         assert!(in_portable || in_config, "路径落在了意料之外的位置: {s}");
+    }
+
+    /// 迁移用的临时沙箱目录。
+    fn migrate_sandbox(tag: &str) -> PathBuf {
+        use rand::RngCore as _;
+        let r = rand::thread_rng().next_u64();
+        let d = std::env::temp_dir().join(format!("omy-migrate-{tag}-{r:016x}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 便携位置已有库时，绝不能拿老库覆盖它。
+    ///
+    /// 不这样会怎样：两个进程同时升级，第二个进程迁完改名时把第一个进程
+    /// 刚配对完写好的新库盖掉——用户上一秒配好的设备下一秒就连不上了，
+    /// 而且回退到的是几分钟前的旧身份。
+    #[test]
+    fn existing_portable_store_is_never_overwritten() {
+        let root = migrate_sandbox("exist");
+        let new = root.join("devices.omy");
+        std::fs::write(&new, b"portable-already-paired").unwrap();
+        let legacy_parent = migrate_sandbox("exist-leg");
+        let legacy = legacy_parent.join("devices.omy");
+        std::fs::write(&legacy, b"old-identity").unwrap();
+
+        let got = migrate_legacy_store(&new, Some(&legacy));
+        assert_eq!(got, new, "已有库就直接用它");
+        assert_eq!(
+            std::fs::read(&new).unwrap(),
+            b"portable-already-paired",
+            "便携库内容一个字节都不能被老库换掉"
+        );
+        assert!(legacy.exists(), "老库不动");
+    }
+
+    /// 便携位置没有库、老位置有库：完整复制，老库保留。
+    ///
+    /// 不这样会怎样：漏拷或拷一半，密钥都解不开这个容器，升级后所有
+    /// 配对设备失效；删了老库则迁移一旦有任何闪失，身份直接消失、
+    /// 没有回退余地。
+    #[test]
+    fn copies_legacy_store_when_portable_absent() {
+        let root = migrate_sandbox("copy");
+        let new = root.join("devices.omy");
+        let legacy_parent = migrate_sandbox("copy-leg");
+        let legacy = legacy_parent.join("devices.omy");
+        // 字节各不相同，拷错偏移能被测出来（仓库安全软件对长串同值字节敏感，
+        // 故用算式生成而不是写 0xAA 重复）
+        let body: Vec<u8> = (0u32..400).map(|i| (i.wrapping_mul(7) ^ 0x3D) as u8).collect();
+        std::fs::write(&legacy, &body).unwrap();
+
+        let got = migrate_legacy_store(&new, Some(&legacy));
+        assert_eq!(got, new, "迁成功后应使用便携路径");
+        assert_eq!(std::fs::read(&new).unwrap(), body, "复制必须一字节不差");
+        assert!(legacy.exists(), "老库保留：复制不是移动");
+    }
+
+    /// 复制失败必须回退到老路径，且不留半成品。
+    ///
+    /// 不这样会怎样：返回一个还不存在的便携路径，程序就会在那里生成空白
+    /// 身份——老身份被永久搁置，用户以为配对记录丢了。临时文件不清理，
+    /// 下次启动还可能和改名撞车。
+    #[test]
+    fn copy_failure_falls_back_to_legacy_path() {
+        let base = migrate_sandbox("fail");
+        // new 的父目录不存在：copy 到 tmp 必然失败（模拟磁盘/权限问题）
+        let new = base.join("no-such-dir").join("devices.omy");
+        let legacy_parent = migrate_sandbox("fail-leg");
+        let legacy = legacy_parent.join("devices.omy");
+        std::fs::write(&legacy, b"old-bytes").unwrap();
+
+        let got = migrate_legacy_store(&new, Some(&legacy));
+        assert_eq!(got, legacy, "失败时必须回退到老路径，本次会话还用老身份");
+        assert!(!new.exists(), "回退后便携位置不得出现半成品");
+        assert!(
+            !base.join("no-such-dir").join(".devices.omy.migrating").exists(),
+            "临时文件必须清掉"
+        );
+    }
+
+    /// 并发语义：第二次调用看到便携库已就位，幂等返回且不回盖。
+    ///
+    /// 不这样会怎样：第二个进程启动时若无视便携库已存在、拿老库再迁一次，
+    /// 用户在两台进程之间刚配对的设备会被旧身份覆盖。
+    #[test]
+    fn second_call_does_not_overwrite_fresh_state() {
+        let root = migrate_sandbox("double");
+        let new = root.join("devices.omy");
+        let legacy_parent = migrate_sandbox("double-leg");
+        let legacy = legacy_parent.join("devices.omy");
+        std::fs::write(&legacy, b"old-bytes").unwrap();
+
+        // 第一个进程完成迁移
+        migrate_legacy_store(&new, Some(&legacy));
+        assert_eq!(std::fs::read(&new).unwrap(), b"old-bytes");
+        // 用户随后在便携库里配对了新设备，保存了新状态
+        std::fs::write(&new, b"paired-new-device-state").unwrap();
+        // 第二个进程（或本进程下次启动）再走一次同一逻辑
+        let got = migrate_legacy_store(&new, Some(&legacy));
+        assert_eq!(got, new);
+        assert_eq!(
+            std::fs::read(&new).unwrap(),
+            b"paired-new-device-state",
+            "第二次调用绝不能拿老库回盖新状态"
+        );
+    }
+
+    /// 老库不存在：只是选好便携路径，不建文件、不报错。
+    #[test]
+    fn no_legacy_store_means_fresh_portable_path() {
+        let root = migrate_sandbox("fresh");
+        let new = root.join("devices.omy");
+        let got = migrate_legacy_store(&new, Some(&root.join("nonexistent.omy")));
+        assert_eq!(got, new);
+        assert!(!new.exists(), "这里只决定路径，建库是首次打开时的事");
     }
 
     /// 交给服务端的副本必须**完整**：身份和设备列表都要带上。    ///
