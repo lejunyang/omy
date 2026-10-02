@@ -265,7 +265,7 @@ function measureSearchBar() {
 }
 let searchRO = null;
 /** 文件视图窗口化：网格是多列的，VList/Virtualizer 是单列，所以把 visible 分块成
- *  「每行 N 个」的行数组，每个虚拟条目渲染一行 flex 卡片；这样多列网格也能窗口化、
+ *  「每行 N 个」的行数组，每个虚拟条目渲染一行 CSS Grid；这样多列网格也能窗口化、
  *  DOM 节点数恒定。列数按滚动容器宽度 / 卡片最小宽(122+gap) 估，随窗口宽度变化。 */
 /** 远程文件网格几何常量。必须与 store.ts 的 viewportFillCount 和
  *  本组件 <style> 里的 .grid/.card 覆盖保持同一数值（122 / 10 / 行高 156）；
@@ -1624,7 +1624,7 @@ function rowTitle(f) {
           </div>
         </div>
 
-        <!-- 网格窗口化：多列网格分块成「每行 N 个」，每个虚拟条目渲染一行 flex
+        <!-- 网格窗口化：多列网格分块成「每行 N 个」，每个虚拟条目渲染一行 CSS Grid
              卡片，DOM 节点数恒定。列数按容器宽度估（gridColumns）。 -->
         <WindowList
           v-if="state.view === 'grid'"
@@ -1635,7 +1635,7 @@ function rowTitle(f) {
           @reach-end="() => { if (state.remoteDir && state.hasMoreFiles && !state.loadingMoreFiles) loadMoreFiles(); }"
         >
           <template #default="{ item: row }">
-          <div class="grid gridrow">
+          <div class="grid gridrow" :style="{ '--grid-cols': gridColumns }">
           <template v-for="(f, ci) in row.cells" :key="f ? f.id : 'pad' + ci">
           <div v-if="!f" class="cellpad" aria-hidden="true"></div>
           <div
@@ -1953,20 +1953,17 @@ function rowTitle(f) {
   grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
   gap: 10px;
 }
-/* 窗口化后每个虚拟条目是「一行卡片」：改用 flex 横排，卡片等宽填满。
-   分块时已按容器宽算好每行个数，这里只负责把这一行摆开。 */
+/* 窗口化后每个虚拟条目是「一行卡片」：用明确列数的 CSS Grid 排列。
+   卡片有 padding/border、占位没有；用 flex:1 时两者的外宽不同，会让最后一行
+   的真实卡片比前几行更宽。Grid 的列轨道统一计算，空占位与卡片严格等宽。 */
 .grid.gridrow {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), minmax(0, 1fr));
   gap: 10px;
   padding-block-end: 10px;
 }
-.grid.gridrow > .card {
-  flex: 1 1 0;
-  min-width: 0;
-}
-/* 最后一行不足一整行时，用占位撑住，避免仅有的一两张卡片被拉满整行宽 */
+.grid.gridrow > .card,
 .grid.gridrow > .cellpad {
-  flex: 1 1 0;
   min-width: 0;
 }
 .card {

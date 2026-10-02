@@ -17,6 +17,7 @@
  * - AppShell 替成只渲染默认插槽的壳。
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { defineComponent, h, reactive, computed, nextTick } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
 
@@ -240,6 +241,20 @@ describe('PlaceBrowser 远程位置空态', () => {
     expect(w.emitted('add')).toHaveLength(1);
   });
 });
+describe('PlaceBrowser 文件网格', () => {
+  it('卡片与透明占位共享明确的 CSS Grid 列轨道', () => {
+    // happy-dom 不做布局，不能拿它伪测像素宽度；这里锁定导致本次缺陷的结构契约。
+    // 不这样会怎样：若退回 flex:1，卡片有 padding/border、占位没有，最后一行
+    // 的真实卡片外宽就会再次大于完整行。
+    const source = readFileSync('src/components/PlaceBrowser.vue', 'utf8');
+    expect(source).toContain(`:style="{ '--grid-cols': gridColumns }"`);
+    expect(source).toMatch(/\.grid\.gridrow\s*\{[^}]*display:\s*grid;/s);
+    expect(source).toMatch(/grid-template-columns:\s*repeat\(var\(--grid-cols\),\s*minmax\(0,\s*1fr\)\)/);
+    expect(source).toMatch(/\.grid\.gridrow\s*>\s*\.card,\s*\n\.grid\.gridrow\s*>\s*\.cellpad\s*\{\s*min-width:\s*0;/);
+    expect(source).not.toMatch(/\.grid\.gridrow\s*\{[^}]*display:\s*flex;/s);
+  });
+});
+
 describe('PlaceBrowser 消息时间线', () => {
   it('渲染出全部消息行与日期组标题', async () => {
     const w = mountView();
