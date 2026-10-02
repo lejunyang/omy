@@ -105,6 +105,9 @@ pub struct AddWebdavArgs {
     /// 服务端厂商：generic 或 nextcloud
     #[arg(long, value_name = "NAME", default_value = "generic")]
     pub vendor: String,
+    /// 匿名访问（不存用户名/密码；与任何 --password-* 互斥）
+    #[arg(long)]
+    pub anonymous: bool,
 
     /// 从环境变量读取密码（传变量名，不是值）
     #[arg(long, value_name = "VAR")]
@@ -174,18 +177,29 @@ pub(crate) async fn connect_store(sp: &SavedPlace) -> Result<stores::AnyStore> {
     stores::connect_store(sp).await
 }
 
-/// 把位置列表写回配置。
+/// 重读最新配置，只对 `places` 做本次那一处改动后写回。
 ///
-/// 显式 `--config` 时写回那个文件，否则写默认路径。两者都走
-/// `save_to`/`save` 的「保留未知键」语义，不会抹掉高版本写入的其它设置。
-fn save_places(ctx: &Ctx, places: Vec<SavedPlace>) -> Result<()> {
-    let mut cfg = (*ctx.cfg).clone();
-    cfg.remote.places = places;
+/// **不能**拿启动时的配置快照整体覆盖：本进程启动后 GUI 可能又加了/删了位置，
+/// 整体回写 `remote.places` 会把那段时间里 GUI 的改动整个冲掉（丢失更新）。
+/// 这里每次都先从磁盘重读，再由闭包按 id 做本次操作（增/删/改一条）。
+///
+/// 仍存在「重读 → 写回」之间的极小 TOCTOU 窗口（两个进程同时改）；要彻底排除
+/// 需要跨进程文件锁，本切片先把「启动快照覆盖」这个最大、最常见的丢失更新堵上。
+fn mutate_places<F>(ctx: &Ctx, f: F) -> Result<()>
+where
+    F: FnOnce(&mut Vec<SavedPlace>) -> Result<()>,
+{
+    let mut fresh = match ctx.config_path {
+        Some(p) => Config::load_from(p)
+            .with_context(|| format!("重读配置 {} 失败", p.display()))?,
+        None => Config::load().context("重读配置失败")?,
+    };
+    f(&mut fresh.remote.places)?;
     match ctx.config_path {
-        Some(p) => cfg
+        Some(p) => fresh
             .save_to(p)
             .with_context(|| format!("写回配置 {} 失败", p.display()))?,
-        None => cfg.save().context("写回配置失败")?,
+        None => fresh.save().context("写回配置失败")?,
     }
     Ok(())
 }
@@ -294,17 +308,24 @@ fn show(ctx: &Ctx, a: &ShowArgs) -> Result<()> {
 
 /// `omy remote add-webdav`。
 fn add_webdav(ctx: &Ctx, a: &AddWebdavArgs) -> Result<()> {
-    // 密码绝不走 argv（旁路 L12）：只接受交互隐藏输入 / stdin / 文件 / 环境变量。
+    // 密码绝不走 argv（旁路 L12）。匿名是显式、安全的空凭据路径：
+    // 只有加了 --anonymous 才允许空密码；普通路径仍走 read_password 的非空约束，
+    // 不能因为这里要支持匿名就把全局非空检查放宽（会削弱加密命令）。
     let src = PasswordSource {
         env: a.password_env.clone(),
         file: a.password_file.clone(),
         stdin: a.password_stdin,
     };
-    let password = String::from_utf8(read_password(
-        &src,
-        "WebDAV 密码（留空则匿名访问）",
-        false,
-    )?)?;
+    let has_pw_src = src.env.is_some() || src.file.is_some() || src.stdin;
+    if a.anonymous && has_pw_src {
+        bail!("--anonymous 与 --password-stdin/--password-file/--password-env 互斥：匿名访问不应提供密码");
+    }
+    let password: String = if a.anonymous {
+        // 匿名：不落密码，也不提示交互（非 TTY 也能直接加）
+        String::new()
+    } else {
+        String::from_utf8(read_password(&src, "WebDAV 密码（不加 --anonymous 时必填）", false)?)?
+    };
 
     let vendor = placebook::parse_vendor(&a.vendor);
     let wcfg = omy_remote::webdav::WebDavConfig {
@@ -323,25 +344,27 @@ fn add_webdav(ctx: &Ctx, a: &AddWebdavArgs) -> Result<()> {
     rt.block_on(store.list(""))
         .map_err(|e| anyhow!("连接 WebDAV 失败（未保存位置）: {e}"))?;
 
-    // 分配新 id：避开配置里已有 id，也避开残留的 Telegram session 文件。
-    let existing: std::collections::HashSet<String> =
-        ctx.cfg.remote.places.iter().map(|p| p.id.clone()).collect();
-    let blocked = |id: &str| {
-        omy_remote::telegram::session::session_path_of(id)
-            .map(|p| p.exists())
-            .unwrap_or(false)
-    };
-    let id = placebook::allocate_place_id(&existing, &blocked);
-
+    // id 分配与落盘都在「重读后的最新 places」上做，避免与这期间 GUI 新增的位置撞 id
+    // 或被快照覆盖。
     let key = placebook::protect_key();
-    let saved = placebook::webdav_to_saved(&id, &a.name, store.config(), key.as_ref());
+    let mut assigned_id = String::new();
+    mutate_places(ctx, |places| {
+        let existing: std::collections::HashSet<String> =
+            places.iter().map(|p| p.id.clone()).collect();
+        let blocked = |id: &str| {
+            omy_remote::telegram::session::session_path_of(id)
+                .map(|p| p.exists())
+                .unwrap_or(false)
+        };
+        let id = placebook::allocate_place_id(&existing, &blocked);
+        let saved = placebook::webdav_to_saved(&id, &a.name, store.config(), key.as_ref());
+        places.push(saved);
+        assigned_id = id;
+        Ok(())
+    })?;
 
-    let mut places = ctx.cfg.remote.places.clone();
-    places.push(saved);
-    save_places(ctx, places)?;
-
-    let human = format!("已添加位置 {id}（{}）", a.name);
-    ctx.out.result(&human, &json!({ "id": id, "name": a.name }));
+    let human = format!("已添加位置 {assigned_id}（{}）", a.name);
+    ctx.out.result(&human, &json!({ "id": assigned_id, "name": a.name }));
     Ok(())
 }
 
@@ -354,15 +377,10 @@ fn remove(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     ) {
         bail!("已取消");
     }
-    let places: Vec<SavedPlace> = ctx
-        .cfg
-        .remote
-        .places
-        .iter()
-        .filter(|p| p.id != sp.id)
-        .cloned()
-        .collect();
-    save_places(ctx, places)?;
+    mutate_places(ctx, |places| {
+        places.retain(|p| p.id != sp.id);
+        Ok(())
+    })?;
     let human = format!("已移除位置 {}（{}）", sp.id, sp.name);
     ctx.out.result(&human, &json!({ "removed": sp.id }));
     Ok(())
@@ -371,22 +389,14 @@ fn remove(ctx: &Ctx, a: &NameArgs) -> Result<()> {
 /// `omy remote rename <位置> <新名字>`。
 fn rename(ctx: &Ctx, a: &RenameArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
-    let places: Vec<SavedPlace> = ctx
-        .cfg
-        .remote
-        .places
-        .iter()
-        .map(|p| {
+    mutate_places(ctx, |places| {
+        for p in places.iter_mut() {
             if p.id == sp.id {
-                let mut np = p.clone();
-                np.name = a.name.clone();
-                np
-            } else {
-                p.clone()
+                p.name = a.name.clone();
             }
-        })
-        .collect();
-    save_places(ctx, places)?;
+        }
+        Ok(())
+    })?;
     let human = format!("已把位置 {} 改名为 {}", sp.id, a.name);
     ctx.out.result(&human, &json!({ "id": sp.id, "name": a.name }));
     Ok(())
@@ -457,5 +467,63 @@ mod tests {
         let res = rt.block_on(connect_store(&sp));
         assert!(res.is_err(), "未知类型应当被拒");
         assert!(res.unwrap_err().to_string().contains("some-future-kind"));
+    }
+
+    fn dummy_place(id: &str, name: &str) -> SavedPlace {
+        SavedPlace {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: String::from("webdav"),
+            url: String::from("https://x/"),
+            username: String::new(),
+            vendor: String::new(),
+            writable: true,
+            secret: None,
+            user_id: None,
+        }
+    }
+
+    /// 复现「启动快照整体覆盖」的丢失更新：磁盘上这期间 GUI 加了 p2，
+    /// CLI 用启动快照（只有 p1）整体回写就会把 p2 冲掉。
+    ///
+    /// 不这样会怎样：两个客户端交替写配置，后写的那个把先写的位置静默删掉，
+    /// 用户在 GUI 里看到的位置莫名消失，且没有任何报错。修复要求写前重读磁盘、
+    /// 只按 id 改本次那一条——下面断言 p2 在删除 p1 后仍然存在。
+    #[test]
+    fn mutate_places_does_not_clobber_concurrent_add() {
+        let dir = std::env::temp_dir().join(format!("omy_mutate_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        // 磁盘上已有 p1 + p2（模拟 GUI 已加了 p2）
+        let mut on_disk = Config::default();
+        on_disk.remote.places = vec![dummy_place("p1", "old"), dummy_place("p2", "gui-added")];
+        on_disk.save_to(&path).unwrap();
+
+        // CLI 启动快照只看到 p1（p2 是启动之后 GUI 才加的）
+        let mut stale = Config::default();
+        stale.remote.places = vec![dummy_place("p1", "old")];
+
+        let out = crate::output::Out::new(crate::output::Format::Human, false, 0, true);
+        let ctx = super::Ctx {
+            out: &out,
+            cfg: &stale,
+            assume_yes: true,
+            config_path: Some(path.as_path()),
+        };
+
+        // 删除 p1。若用旧的「快照整体覆盖」，写回的就是 [p1] 删完后的空列表，p2 丢失；
+        // 新实现重读磁盘后只删 p1，p2 应保留。
+        mutate_places(&ctx, |places| {
+            places.retain(|p| p.id != "p1");
+            Ok(())
+        })
+        .unwrap();
+
+        let after = Config::load_from(&path).unwrap();
+        let ids: Vec<&str> = after.remote.places.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["p2"], "GUI 新增的 p2 不能被 CLI 的快照覆盖冲掉: {ids:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

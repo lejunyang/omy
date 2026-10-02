@@ -34,7 +34,7 @@ use serde_json::json;
 
 use crate::password::{PasswordSource, read_password};
 
-use super::{Ctx, find_place, qrterm, rt, save_places};
+use super::{Ctx, find_place, mutate_places, qrterm, rt};
 
 /// Telegram 子命令。
 #[derive(Debug, Subcommand)]
@@ -125,9 +125,6 @@ async fn run_login_cycle(
     let mut sess = QrSession::connect(appid.clone(), proxy.as_deref(), &device)
         .map_err(|e| anyhow!("连接 Telegram 失败：{e}"))?;
 
-    // 记录最后一张码的链接，供 JSON 结果回显。
-    let mut last_url: Option<String> = None;
-
     loop {
         let ev = sess
             .step()
@@ -139,8 +136,10 @@ async fn run_login_cycle(
                 expires_in_secs,
                 refresh_index,
             } => {
+                // 二维码与可复制链接只画/打到 stderr（见 render_token）。
+                // 绝不把 tg://token 带进 stdout 的结构化结果——那是短时票据，
+                // 会被脚本日志原样留存，等于把可扫码的登录链接泄进日志。
                 render_token(ctx, &url, expires_in_secs, refresh_index);
-                last_url = Some(url);
             }
             QrEvent::Migrating { dc } => {
                 ctx.out
@@ -156,7 +155,7 @@ async fn run_login_cycle(
         }
     }
 
-    finish_login(ctx, &sess, &appid, args, last_url).await
+    finish_login(ctx, &sess, &appid, args).await
 }
 
 /// 把一张登录二维码画到 stderr，并始终给出可复制的链接。
@@ -235,7 +234,6 @@ async fn finish_login(
     sess: &QrSession,
     appid: &AppId,
     args: &LoginArgs,
-    last_url: Option<String>,
 ) -> Result<()> {
     // 立刻落盘到 pending。这次登录在服务端已生效，之后任何一步失败都不该让它白费。
     let saved = match session::save(sess.session(), appid, session::PENDING_ACCOUNT) {
@@ -265,45 +263,50 @@ async fn finish_login(
         None => connect::account_label(sess.client()).await,
     };
 
-    // 去重 + 分配 id + 收编。
-    let mut places = ctx.cfg.remote.places.clone();
-    let existing = places
-        .iter()
-        .find(|p| p.kind == "telegram" && p.user_id == user_id)
-        .map(|p| p.id.clone());
-
-    let (id, duplicate) = if let Some(existing_id) = existing {
-        // 这个账号已经加过：把 pending 收编成已有位置，不新建。
-        (existing_id, true)
-    } else {
-        let taken: std::collections::HashSet<String> =
-            places.iter().map(|p| p.id.clone()).collect();
-        let blocked = |id: &str| {
-            session::session_path_of(id)
-                .map(|p| p.exists())
-                .unwrap_or(false)
-        };
-        let new_id = omy_remote::placebook::allocate_place_id(&taken, &blocked);
-        places.push(SavedPlace {
-            id: new_id.clone(),
-            name: label.clone(),
-            kind: String::from("telegram"),
-            // Telegram 位置只记账号身份，连接不存 URL（与 GUI 的 telegram_saved_places 同形）
-            url: String::new(),
-            username: String::new(),
-            vendor: String::new(),
-            writable: true,
-            secret: None,
-            user_id,
-        });
-        (new_id, false)
+    // 去重 + 分配 id + 落盘。放进 mutate_places：它会重读最新配置再改，
+    // 避免「启动时的快照覆盖掉别的进程刚加的位置」。
+    let (id, duplicate) = {
+        let mut chosen: Option<(String, bool)> = None;
+        mutate_places(ctx, |places| {
+            let existing = places
+                .iter()
+                .find(|p| p.kind == "telegram" && p.user_id == user_id)
+                .map(|p| p.id.clone());
+            if let Some(existing_id) = existing {
+                // 这个账号已经加过：把 pending 收编成已有位置，不新建。
+                chosen = Some((existing_id, true));
+                return Ok(());
+            }
+            let taken: std::collections::HashSet<String> =
+                places.iter().map(|p| p.id.clone()).collect();
+            let blocked = |id: &str| {
+                session::session_path_of(id)
+                    .map(|p| p.exists())
+                    .unwrap_or(false)
+            };
+            let new_id = omy_remote::placebook::allocate_place_id(&taken, &blocked);
+            places.push(SavedPlace {
+                id: new_id.clone(),
+                name: label.clone(),
+                kind: String::from("telegram"),
+                // Telegram 位置只记账号身份，连接不存 URL（与 GUI 的 telegram_saved_places 同形）
+                url: String::new(),
+                username: String::new(),
+                vendor: String::new(),
+                writable: true,
+                secret: None,
+                user_id,
+            });
+            chosen = Some((new_id, false));
+            Ok(())
+        })?;
+        chosen.expect("闭包必然给 chosen 赋值")
     };
 
     // 把 pending 那份 session 改名成位置自己的。失败只告警：登录在本次进程里已生效。
     if let Err(e) = session::adopt_pending(&id) {
         ctx.out.warn(&format!("收编登录态失败（不影响本次已登录）：{e}"));
     }
-    save_places(ctx, places)?;
 
     let human = if duplicate {
         format!(
@@ -313,42 +316,46 @@ async fn finish_login(
     } else {
         format!("登录成功，已保存为位置 {id}（{label}）")
     };
-    ctx.out.result(
-        &human,
-        &json!({
-            "id": id,
-            "name": label,
-            "duplicate": duplicate,
-            "user_id": user_id,
-            "session_saved": saved,
-            "login_url": last_url,
-        }),
-    );
+    ctx.out.result(&human, &success_payload(&id, &label, duplicate, user_id, saved));
     Ok(())
+}
+
+/// 登录成功的结构化结果。
+///
+/// **绝不**放 `tg://login?token=…`：那是短时可扫码票据，进了 `--json`
+/// 的 stdout 就会被脚本日志留存。可复制链接只在扫码期间打到 stderr。
+/// 这个函数收成纯函数，单测才能钉死「谁加回 login_url 谁红」。
+#[must_use]
+fn success_payload(
+    id: &str,
+    label: &str,
+    duplicate: bool,
+    user_id: Option<i64>,
+    session_saved: bool,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": label,
+        "duplicate": duplicate,
+        "user_id": user_id,
+        "session_saved": session_saved,
+    })
 }
 
 // ---- logout / detach ----
 
 /// 要求一条 Telegram 位置，否则报错。
-fn require_telegram(ctx: &Ctx, needle: &str) -> Result<(omy_config::SavedPlace, Vec<omy_config::SavedPlace>)> {
+fn require_telegram(ctx: &Ctx, needle: &str) -> Result<omy_config::SavedPlace> {
     let sp = find_place(ctx.cfg, needle)?;
     if sp.kind != "telegram" {
         bail!("位置 {} 不是 Telegram 位置（它是 {:?}）", sp.id, sp.kind);
     }
-    let rest: Vec<_> = ctx
-        .cfg
-        .remote
-        .places
-        .iter()
-        .filter(|p| p.id != sp.id)
-        .cloned()
-        .collect();
-    Ok((sp, rest))
+    Ok(sp)
 }
 
 /// `omy remote telegram logout`：移除位置并销毁登录态。
 fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
-    let (sp, rest) = require_telegram(ctx, &a.place)?;
+    let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
         format!(
             "将登出位置 {}（{}）：删除本机登录态，之后必须重新扫码才能使用。继续？[y/N] ",
@@ -359,7 +366,10 @@ fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     ) {
         bail!("已取消");
     }
-    save_places(ctx, rest)?;
+    mutate_places(ctx, |places| {
+        places.retain(|p| p.id != sp.id);
+        Ok(())
+    })?;
     // 先摘位置再抹 session：与 GUI delete_account 同序，避免中途崩溃留下指向
     // 不存在 session 的位置。
     session::forget(&sp.id)
@@ -373,7 +383,7 @@ fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
 
 /// `omy remote telegram detach`：移除位置，保留登录态。
 fn detach(ctx: &Ctx, a: &NameArgs) -> Result<()> {
-    let (sp, rest) = require_telegram(ctx, &a.place)?;
+    let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
         format!(
             "将把位置 {}（{}）从列表移除，但保留本机登录态（之后可重新加回而不必重扫）。继续？[y/N] ",
@@ -384,7 +394,10 @@ fn detach(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     ) {
         bail!("已取消");
     }
-    save_places(ctx, rest)?;
+    mutate_places(ctx, |places| {
+        places.retain(|p| p.id != sp.id);
+        Ok(())
+    })?;
     ctx.out.result(
         &format!("已从列表移除位置 {}（{}），登录态保留", sp.id, sp.name),
         &json!({ "detached": sp.id }),
@@ -413,6 +426,26 @@ mod tests {
             ..PasswordSource::default()
         };
         assert!(ok.validate().is_ok());
+    }
+
+    /// 成功 JSON 绝不能带登录票据。
+    ///
+    /// 不这样会怎样：`tg://login?token=…` 是短时可扫码票据，一旦进了
+    /// `--json` 的 stdout，就会被 `omy remote telegram login --json | tee …`
+    /// 这类脚本原样写进日志。这条断言钉死结构化结果里既没有 login_url，
+    /// 也不出现 token / tg:// 字样；谁把票据加回来谁红。
+    #[test]
+    fn success_payload_never_leaks_login_token() {
+        let v = success_payload("p1", "我自己", false, Some(42), true);
+        let s = serde_json::to_string(&v).expect("序列化");
+        assert!(
+            !s.contains("login_url") && !s.contains("token") && !s.contains("tg://"),
+            "成功 JSON 不得含登录票据，实际：{s}"
+        );
+        // 业务字段仍在
+        assert_eq!(v["id"], "p1");
+        assert_eq!(v["user_id"], 42);
+        assert_eq!(v["session_saved"], true);
     }
 
     /// require_telegram 必须只放行 Telegram 位置，WebDAV 位置要明确报错。

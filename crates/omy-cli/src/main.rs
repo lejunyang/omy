@@ -97,7 +97,7 @@ enum Command {
     Bench(cmd::bench::Args),
     /// 环境自检
     Doctor(cmd::doctor::Args),
-    /// 远程位置（WebDAV）：注册、浏览、上传下载、缓存管理
+    /// 远程位置（WebDAV / Telegram）：注册、浏览、上传下载、缓存管理
     #[command(subcommand)]
     Remote(cmd::remote::Cmd),
     /// 生成 shell 补全脚本
