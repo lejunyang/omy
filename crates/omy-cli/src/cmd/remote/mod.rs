@@ -23,6 +23,7 @@ pub mod files;
 pub mod qrterm;
 mod stores;
 pub mod telegram;
+pub mod virt;
 
 use std::path::PathBuf;
 
@@ -68,6 +69,9 @@ pub enum Cmd {
     /// Telegram 账号扫码登录与位置管理
     #[command(subcommand)]
     Telegram(telegram::Cmd),
+    /// 虚拟远程位置（本地收藏夹）：位置/文件夹/引用的脚本化管理，不发网络请求
+    #[command(subcommand)]
+    Virtual(virt::Cmd),
     /// 密文块缓存管理
     #[command(subcommand)]
     Cache(cache::Cmd),
@@ -145,6 +149,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Move(a) => files::r#move(ctx, a),
         Cmd::Decrypt(a) => files::decrypt(ctx, a),
         Cmd::Telegram(c) => telegram::run(ctx, c),
+        Cmd::Virtual(c) => virt::run(ctx, c),
         Cmd::Cache(c) => cache::run(ctx, c),
     }
 }

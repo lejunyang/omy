@@ -82,6 +82,15 @@ pub enum Cmd {
     Lock(NameArgs),
     /// 取消位置加密：恢复为机器密钥保护
     Decrypt(PlacePwArgs),
+
+    /// 列出可接收转发的会话（转发目标选择）
+    Targets(TgConnArgs),
+    /// 把同一源对话里的一条或多条消息原生转发到目标会话
+    Forward(ForwardArgs),
+    /// 服务端搜索消息内容
+    Search(SearchArgs),
+    /// 创建一个只含自己的私密超级群（转发归档目标）
+    Group(GroupArgs),
 }
 
 /// `omy remote telegram login`（扫码）。
@@ -172,6 +181,72 @@ pub struct PlaceEncryptArgs {
     /// KDF 档位（默认 moderate）
     #[arg(long, value_name = "档位")]
     pub kdf: Option<String>,
+}
+
+/// 需要联机的 Telegram 操作（targets/forward/search/group）共用连接参数。
+#[derive(Debug, Args)]
+pub struct TgConnArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 位置密码：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+    /// 位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+    /// 位置密码：从标准输入读取
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
+impl TgConnArgs {
+    fn source(&self) -> PasswordSource {
+        PasswordSource {
+            env: self.password_env.clone(),
+            file: self.password_file.clone(),
+            stdin: self.password_stdin,
+        }
+    }
+}
+
+/// `omy remote telegram forward`。
+#[derive(Debug, Args)]
+pub struct ForwardArgs {
+    #[command(flatten)]
+    pub conn: TgConnArgs,
+    /// 目标对话（tg:<chat>，用 `targets` 查）
+    #[arg(long, value_name = "tg:CHAT")]
+    pub target: String,
+    /// 源条目，可重复指定；形如 tg:<chat>:<msg>
+    #[arg(long = "entry", value_name = "tg:CHAT:MSG")]
+    pub entries: Vec<String>,
+    /// 从 JSON 文件读取源条目 id 数组（与 --entry 二选一或并用合并）
+    #[arg(long, value_name = "PATH")]
+    pub entries_json: Option<PathBuf>,
+}
+
+/// `omy remote telegram search`。
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    #[command(flatten)]
+    pub conn: TgConnArgs,
+    /// 搜索关键词
+    pub query: String,
+    /// 限定在某个对话内（tg:<chat>）；缺省为全局
+    #[arg(long, value_name = "tg:CHAT")]
+    pub dir: Option<String>,
+    /// 最多返回条数
+    #[arg(long, default_value = "50", value_name = "N")]
+    pub limit: u32,
+}
+
+/// `omy remote telegram group`。
+#[derive(Debug, Args)]
+pub struct GroupArgs {
+    #[command(flatten)]
+    pub conn: TgConnArgs,
+    /// 私密群标题
+    pub title: String,
 }
 
 impl PlacePwArgs {
@@ -271,6 +346,10 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Unlock(a) => place_unlock(ctx, a),
         Cmd::Lock(a) => place_lock(ctx, a),
         Cmd::Decrypt(a) => place_decrypt(ctx, a),
+        Cmd::Targets(a) => targets(ctx, a),
+        Cmd::Forward(a) => forward(ctx, a),
+        Cmd::Search(a) => search(ctx, a),
+        Cmd::Group(a) => create_group(ctx, a),
     }
 }
 
@@ -1129,6 +1208,154 @@ fn place_decrypt(ctx: &Ctx, a: &PlacePwArgs) -> Result<()> {
     Ok(())
 }
 
+// ---- 联机操作：转发目标 / 转发 / 服务端搜索 / 自建私密群 ----
+//
+// 这些都要真连 Telegram。连接复用文件命令的 connect_store（含现场密码派生 KEK），
+// 不另起一套。底层 forward_targets/forward_messages/create_self_group 与
+// RemoteStore::search 都是 omy-remote 已测好的原语，CLI 只做参数接线与结果打印。
+
+/// 连到位置并取回 TelegramStore。WebDAV 位置直接拒绝——这些是 Telegram 专属操作。
+///
+/// 密码通道未指定时不主动提示：未加密位置用不到密码，加密位置会由 connect 报
+/// `[tg_locked]` 并提示加 `--password-*`。这样脚本里不会因为位置本来就不要密码
+/// 而卡在交互提示上。
+fn connect_tg(
+    ctx: &Ctx,
+    conn: &TgConnArgs,
+) -> Result<(omy_config::SavedPlace, omy_remote::telegram::TelegramStore)> {
+    let sp = require_telegram(ctx, &conn.place)?;
+    let src = conn.source();
+    let pw = if src.is_interactive() {
+        None
+    } else {
+        Some(read_password(&src, "位置密码", false)?)
+    };
+    let rt = rt()?;
+    let store = rt.block_on(super::connect_store(&sp, pw.as_deref()))?;
+    match store {
+        super::stores::AnyStore::Tg(tg) => Ok((sp, tg)),
+        super::stores::AnyStore::Dav(_) => {
+            bail!("位置 {} 是 WebDAV，这些是 Telegram 专属操作", sp.id)
+        }
+    }
+}
+
+/// 解析一个 `tg:<chat>:<msg>` 条目 id，返回 (对话目录 tg:CHAT, 消息号)。
+fn parse_entry(id: &str) -> Result<(String, i32)> {
+    let parts: Vec<&str> = id.split(':').collect();
+    match parts.as_slice() {
+        ["tg", chat, msg] => {
+            let chat: i64 = chat
+                .parse()
+                .map_err(|_| anyhow!("[tg_bad_entry] 条目 {id:?} 的对话段不是整数"))?;
+            let msg: i32 = msg
+                .parse()
+                .map_err(|_| anyhow!("[tg_bad_entry] 条目 {id:?} 的消息段不是整数"))?;
+            Ok((format!("tg:{chat}"), msg))
+        }
+        _ => bail!("[tg_bad_entry] 条目 {id:?} 形如 tg:<对话>:<消息>，例如 tg:123456:789"),
+    }
+}
+
+/// 收集 `--entry` 与 `--entries-json` 给出的源条目，校验全部在同一源对话内。
+fn collect_entries(entries: &[String], json: &Option<PathBuf>) -> Result<(String, Vec<i32>)> {
+    let mut raw: Vec<String> = entries.to_vec();
+    if let Some(path) = json {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("读取条目 JSON {} 失败", path.display()))?;
+        let arr: Vec<String> = serde_json::from_str(&text)
+            .with_context(|| format!("{} 不是字符串数组 JSON", path.display()))?;
+        raw.extend(arr);
+    }
+    if raw.is_empty() {
+        bail!("[tg_no_entries] 没有要转发的条目：用 --entry tg:<对话>:<消息> 或 --entries-json");
+    }
+    let mut source_dir: Option<String> = None;
+    let mut ids = Vec::new();
+    for e in &raw {
+        let (dir, msg) = parse_entry(e)?;
+        match &source_dir {
+            Some(d) if *d != dir => bail!(
+                "[tg_cross_chat] 转发的条目必须来自同一源对话：{} 与 {} 不同",
+                d,
+                dir
+            ),
+            _ => source_dir = Some(dir),
+        }
+        ids.push(msg);
+    }
+    Ok((source_dir.expect("至少一条"), ids))
+}
+
+/// `omy remote telegram targets`。
+fn targets(ctx: &Ctx, a: &TgConnArgs) -> Result<()> {
+    let (_sp, tg) = connect_tg(ctx, a)?;
+    let rt = rt()?;
+    let targets = rt
+        .block_on(tg.forward_targets())
+        .map_err(|e| anyhow!("[tg_targets] 拉取转发目标失败: {e}"))?;
+    let rows: Vec<_> = targets
+        .iter()
+        .map(|t| json!({ "dir_id": t.dir_id, "title": t.title, "kind": t.kind }))
+        .collect();
+    ctx.out.result(
+        &format!("可转发目标 {} 个", rows.len()),
+        &json!({ "targets": rows }),
+    );
+    Ok(())
+}
+
+/// `omy remote telegram forward`。
+fn forward(ctx: &Ctx, a: &ForwardArgs) -> Result<()> {
+    let (_sp, tg) = connect_tg(ctx, &a.conn)?;
+    let (source_dir, ids) = collect_entries(&a.entries, &a.entries_json)?;
+    let rt = rt()?;
+    let n = rt
+        .block_on(tg.forward_messages(&source_dir, &a.target, &ids))
+        .map_err(|e| anyhow!("[tg_forward] 转发失败: {e}"))?;
+    ctx.out.result(
+        &format!("已从 {source_dir} 原生转发 {n} 条消息到 {}", a.target),
+        &json!({ "forwarded": n, "source": source_dir, "target": a.target }),
+    );
+    Ok(())
+}
+
+/// `omy remote telegram search`。
+fn search(ctx: &Ctx, a: &SearchArgs) -> Result<()> {
+    let (_sp, tg) = connect_tg(ctx, &a.conn)?;
+    let dir = a.dir.clone().unwrap_or_default();
+    let rt = rt()?;
+    use omy_remote::RemoteStore as _;
+    let rows = rt
+        .block_on(tg.search(&dir, &a.query, a.limit as usize))
+        .map_err(|e| anyhow!("[tg_search] 搜索失败: {e}"))?;
+    let items: Vec<_> = rows
+        .iter()
+        .map(|e| {
+            json!({ "id": e.id, "name": e.name, "size": e.size, "is_dir": e.is_dir })
+        })
+        .collect();
+    ctx.out.result(
+        &format!("命中 {} 条", items.len()),
+        &json!({ "query": a.query, "dir": dir, "hits": items }),
+    );
+    Ok(())
+}
+
+/// `omy remote telegram group`。
+fn create_group(ctx: &Ctx, a: &GroupArgs) -> Result<()> {
+    let (_sp, tg) = connect_tg(ctx, &a.conn)?;
+    let rt = rt()?;
+    let target = rt
+        .block_on(tg.create_self_group(&a.title))
+        .map_err(|e| anyhow!("[tg_group] 创建私密群失败: {e}"))?;
+    ctx.out.result(
+        &format!("已创建私密群 {}（{}）", target.title, target.dir_id),
+        &json!({ "dir_id": target.dir_id, "title": target.title, "kind": target.kind }),
+    );
+    Ok(())
+}
+
 fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
@@ -1288,5 +1515,41 @@ mod tests {
         assert!(!s.contains("password"), "成功 JSON 泄露密码字段: {s}");
         assert!(!s.contains("password"), "成功 JSON 泄露密码: {s}");
         assert!(s.contains("p1"));
+    }
+
+    /// 条目 id 解析：合法形拆出 (对话目录, 消息号)，非法形给稳定错码。
+    #[test]
+    fn entry_id_parsing() {
+        let (dir, msg) = parse_entry("tg:123456:789").unwrap();
+        assert_eq!(dir, "tg:123456");
+        assert_eq!(msg, 789);
+
+        for bad in ["", "tg", "tg:abc:1", "tg:1:2:3", "123456:789", "tg::"] {
+            let e = parse_entry(bad).unwrap_err().to_string();
+            assert!(e.contains("[tg_bad_entry]"), "{bad:?} -> {e}");
+        }
+    }
+
+    /// 收集条目：--entry 与 JSON 文件合并、去重前先校验同对话。
+    #[test]
+    fn collect_entries_same_chat_only() {
+        // 全在同一对话：返回源目录与消息号
+        let (dir, ids) = collect_entries(
+            &["tg:100:1".into(), "tg:100:3".into(), "tg:100:2".into()],
+            &None,
+        )
+        .unwrap();
+        assert_eq!(dir, "tg:100");
+        assert_eq!(ids, vec![1, 3, 2]);
+
+        // 跨对话必须拒绝——原生转发要求同源
+        let e = collect_entries(&["tg:100:1".into(), "tg:200:9".into()], &None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("[tg_cross_chat]"), "{e}");
+
+        // 空输入必须拒绝
+        let e = collect_entries(&[], &None).unwrap_err().to_string();
+        assert!(e.contains("[tg_no_entries]"), "{e}");
     }
 }

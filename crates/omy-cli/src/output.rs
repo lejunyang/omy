@@ -195,6 +195,27 @@ pub fn report_error(out: &Out, err: &anyhow::Error) -> i32 {
     };
     let exit_i32 = exit as i32;
 
+    // 虚拟收藏命令的结构化错误：与 omy_core::Error 平行的另一组稳定码，
+    // 脚本按 error.code 匹配。
+    if let Some(v) = err.chain().find_map(|e| e.downcast_ref::<crate::cmd::remote::virt::VErr>()) {
+        if out.is_json() {
+            let v = json!({
+                "error": {
+                    "code": v.code,
+                    "exit_code": v.exit,
+                    "message": v.message,
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        } else {
+            eprintln!("错误: {}", v.message);
+            if let Some(hint) = hint_for(v.code) {
+                eprintln!("\n{hint}");
+            }
+        }
+        return v.exit;
+    }
+
     if out.is_json() {
         let v = json!({
             "error": {
