@@ -441,12 +441,14 @@ pub fn telegram_api_id_save(api_id: i32, api_hash: String) -> CmdResult<()> {
     AppId::from_config(Some(api_id), Some(&api_hash))
         .map_err(|e| CmdError::with("tg_bad_api_id", detail(&e.to_string())))?;
 
-    let mut c = omy_config::Config::load()
-        .map_err(|e| CmdError::with("config_read_failed", detail(&e.to_string())))?;
-    c.remote.telegram_api_id = Some(api_id);
-    c.remote.telegram_api_hash = Some(api_hash);
-    c.save()
-        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
+    // 放进共享跨进程锁的读-改-写里：锁内重读磁盘最新配置再写回，
+    // 不拿早先 load 的快照整体覆盖。
+    omy_config::Config::update(|fresh| {
+        fresh.remote.telegram_api_id = Some(api_id);
+        fresh.remote.telegram_api_hash = Some(api_hash);
+        Ok::<(), omy_config::Error>(())
+    })
+    .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
     Ok(())
 }
 
@@ -469,17 +471,19 @@ pub fn telegram_api_id_reset() -> CmdResult<()> {
     //
     // 所以这里显式把键从文件里删掉。不去改 merge_into 的语义：那会波及
     // 所有配置项，风险远大于收益。
+    //
+    // 删键是「Config 结构体表达不了的写」，走原始 TOML 表的锁内读写
+    // （`Config::update_toml_at`）：同把跨进程锁、同个超时，与其他配置写
+    // 入口串行，不绕过锁直接写文件。
     let path = omy_config::config_path().ok_or_else(|| CmdError::code("config_no_path"))?;
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut table = text.parse::<toml::Table>().unwrap_or_default();
-    if let Some(toml::Value::Table(remote)) = table.get_mut("remote") {
-        remote.remove("telegram_api_id");
-        remote.remove("telegram_api_hash");
-    }
-    let out = toml::to_string_pretty(&table)
-        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
-    omy_core::fsatomic::write_atomic(&path, out.as_bytes())
-        .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
+    omy_config::Config::update_toml_at(&path, |table| {
+        if let Some(toml::Value::Table(remote)) = table.get_mut("remote") {
+            remote.remove("telegram_api_id");
+            remote.remove("telegram_api_hash");
+        }
+        Ok::<(), omy_config::Error>(())
+    })
+    .map_err(|e| CmdError::with("config_write_failed", detail(&e.to_string())))?;
     Ok(())
 }
 

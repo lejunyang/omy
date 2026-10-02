@@ -21,5 +21,19 @@ toml = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
 
+# 跨进程配置锁用 OS 建议锁（flock / LockFileEx），需要薄 FFI 绑定。
+# windows-sys 版本与 omy-secret 用的 windows 0.61 拉进树的那份对齐，
+# 不额外新增依赖重量。
+[target.'cfg(windows)'.dependencies]
+# Win32_System_IO 是 LockFileEx/UnlockFileEx 的 cfg 门，OVERLAPPED 也在那里。
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 serde_json = { workspace = true }

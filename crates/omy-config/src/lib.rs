@@ -21,9 +21,11 @@
 //! 见 [`save`]。这是本模块最容易被忽略、但后果最实际的一条。
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod lock;
 mod paths;
 #[cfg(target_os = "android")]
 pub use paths::set_android_dirs;
@@ -58,6 +60,23 @@ pub enum Error {
     /// 找不到可用的配置目录。
     #[error("无法确定配置文件位置")]
     NoPath,
+    /// 跨进程配置锁获取失败（锁文件打不开）。
+    #[error("配置锁 {path}: {source}")]
+    LockAcquire {
+        /// 锁文件路径。
+        path: PathBuf,
+        /// 底层错误。
+        #[source]
+        source: std::io::Error,
+    },
+    /// 等待跨进程配置锁超时。
+    #[error("等待配置锁 {path} 超时（{waited:?}）：另一进程持锁过久")]
+    LockTimeout {
+        /// 锁文件路径。
+        path: PathBuf,
+        /// 等了多久仍未拿到。
+        waited: Duration,
+    },
 }
 
 /// 结果别名。
@@ -511,6 +530,117 @@ impl Config {
             .map_err(|e| Error::Io { path: path.clone(), op: "读取", source: e })?;
         parse(&text, &path)
     }
+
+    /// 在默认配置路径上，跨进程互斥地执行「锁内重读最新磁盘 → 闭包修改 → 原子写回」。
+    ///
+    /// # 为什么所有写入口都要走这里
+    ///
+    /// 配置写是读-改-写：先读磁盘上的最新内容，改内存里那一处，再整体写回。
+    /// GUI 常驻、CLI 短命，两个进程可能同时做这件事。谁都不犯错，只要没有
+    /// 互斥，就会出现「两边都读到 [p1]，CLI 加 p2 写回，GUI 又把手里的
+    /// [p1] 写回」——p2 被静默冲掉。这就是 `remote.places` 这类数组的丢失更新。
+    ///
+    /// 本方法把整条读-改-写放进同一把跨进程锁（见 [`lock` 模块](mod@lock)）：
+    ///
+    /// 1. 获取锁（阻塞但有超时，见 [`DEFAULT_ACQUIRE_TIMEOUT`](lock::DEFAULT_ACQUIRE_TIMEOUT)）；
+    /// 2. **锁内重读**磁盘最新内容（而不是用调用方更早拿到的快照）；
+    /// 3. 交给闭包修改这份最新配置；
+    /// 4. **锁内**经 [`save_to`](Self::save_to) 原子写回（tmp + rename，
+    ///    且保留本版本不认识的键）；
+    /// 5. Drop 释放锁；进程崩溃时内核自动释放，不留残留锁。
+    ///
+    /// 闭包**不要**再调用别的 `update`/`save`——同进程重入会自己等自己。
+    /// 闭包也必须是纯内存修改：持锁期间做网络/密钥库 I/O 会把别的写者挡在门外。
+    ///
+    /// # 与 [`save`](Self::save) 的区别
+    ///
+    /// `save` 把调用方手里那份配置整体写回，不管磁盘这期间被别人改了什么——
+    /// 它只能保「写不半截」，保不了「不被别人覆盖」。凡是「先读再改」的入口
+    /// （CLI `mutate_places`、GUI 各设置写口）都应改成这里，而不是 `save`。
+    ///
+    /// # Errors
+    ///
+    /// 无法定位路径时返回 [`Error::NoPath`]；拿不到锁（超时/锁文件不可写）、
+    /// 读盘失败、闭包返回错误、或写回失败时，按 `E: From<Error>` 转换后返回。
+    /// 闭包自身的错误原样透传。
+    pub fn update<F, T, E>(f: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&mut Self) -> std::result::Result<T, E>,
+        E: From<Error>,
+    {
+        let path = config_path().ok_or(Error::NoPath)?;
+        Self::update_at(&path, f)
+    }
+
+    /// 在指定路径上执行跨进程互斥的读-改-写。语义同 [`update`](Self::update)，
+    /// 只是路径显式——供 `--config` 指定了文件的 CLI 使用。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`update`](Self::update)。
+    pub fn update_at<F, T, E>(path: &Path, f: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&mut Self) -> std::result::Result<T, E>,
+        E: From<Error>,
+    {
+        let _guard = acquire_lock(path)?;
+
+        // 锁内重读最新磁盘内容：闭包改的是这份，而不是调用方更早的快照。
+        let mut fresh = match std::fs::read_to_string(path) {
+            Ok(text) => parse(&text, path)?.config,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => {
+                return Err(Error::Io { path: path.to_path_buf(), op: "读取", source: e }.into());
+            }
+        };
+
+        let out = f(&mut fresh)?;
+        fresh.save_to(path)?;
+        Ok(out)
+    }
+
+    /// 跨进程锁内对**原始 TOML 表**做读-改-写。
+    ///
+    /// 用于 `Config` 结构体表达不了的写：把一个 `Option` 字段对应的键整个删掉
+    /// ——设成 `None` 序列化后不产生键，合并写入删不掉旧值（GUI 的「恢复内置
+    /// Telegram api_id」正是这种）。闭包拿到磁盘上的整份 TOML 表，改完原子写回。
+    /// 锁、超时、崩溃释放语义与 [`update_at`] 完全一致，只是操作对象是原始表。
+    ///
+    /// # Errors
+    ///
+    /// 拿不到锁、读盘/解析/序列化失败、闭包错误或写回失败时按 `E: From<Error>`
+    /// 转换后返回。
+    pub fn update_toml_at<F, E>(path: &Path, f: F) -> std::result::Result<(), E>
+    where
+        F: FnOnce(&mut toml::Table) -> std::result::Result<(), E>,
+        E: From<Error>,
+    {
+        let _guard = acquire_lock(path)?;
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let mut table = text.parse::<toml::Table>().unwrap_or_default();
+        f(&mut table)?;
+        // 先归一成 Error（toml 错误已由 thiserror 的 #[from] 覆盖），
+        // 再由 ? 按 E: From<Error> 转换——不能直接 ? toml::ser::Error，
+        // 因为 E 只承诺 From<Error>，不承诺 From<toml::ser::Error>。
+        let out = toml::to_string_pretty(&table).map_err(Error::from)?;
+        omy_core::fsatomic::write_atomic(path, out.as_bytes()).map_err(|e| Error::Io {
+            path: path.to_path_buf(),
+            op: "写入",
+            source: std::io::Error::other(e.to_string()),
+        })?;
+        Ok(())
+    }
+}
+
+/// 拿到配置文件的跨进程互斥锁，把锁获取错误归一成 [`Error`]。
+///
+/// 两个锁内写入口（[`Config::update_at`] 走结构体、[`Config::update_toml_at`]
+/// 走原始表）共用这里，保证超时与崩溃语义只有一处定义。
+fn acquire_lock(path: &Path) -> Result<lock::FileLock> {
+    lock::FileLock::acquire(path, lock::DEFAULT_ACQUIRE_TIMEOUT).map_err(|e| match e {
+        lock::AcquireError::Io { path, source } => Error::LockAcquire { path, source },
+        lock::AcquireError::Timeout { path, waited } => Error::LockTimeout { path, waited },
+    })
 }
 
 /// 解析文本并找出未知键。
@@ -722,5 +852,130 @@ mod tests {
         let ui = dst.get("ui").and_then(toml::Value::as_table).expect("ui 表");
         assert!(ui.contains_key("keep_me"), "同组里的其它键不能被整表替换掉");
         assert_eq!(ui.get("language").and_then(toml::Value::as_str), Some("zh-CN"));
+    }
+
+    /// 测试用：造一个只带 id 的 WebDAV 位置，其余字段走空默认。
+    fn place_with_id(id: &str) -> SavedPlace {
+        SavedPlace {
+            id: String::from(id),
+            name: String::new(),
+            kind: String::from("webdav"),
+            url: String::new(),
+            username: String::new(),
+            vendor: String::new(),
+            writable: true,
+            secret: None,
+            user_id: None,
+        }
+    }
+
+    /// 锁必须真的串行：持锁期间第二个获取要超时，释放后立刻能拿到。
+    ///
+    /// 不这样会怎样：把锁写成空操作（比如 LockFileEx 调用被误删），两个进程
+    /// 同时进临界区，数组丢失更新照样发生，而下面的并发测试却可能因为窗口太窄
+    /// 偶发通过。这个测试专门钉死「锁是真锁」，不依赖并发窗口。
+    #[test]
+    fn lock_serializes_across_handles() {
+        let p = tmp("lockserial");
+        Config::default().save_to(&p).expect("写初始配置");
+
+        // 第一把锁拿到后刻意不释放。
+        let g1 = lock::FileLock::acquire(&p, lock::DEFAULT_ACQUIRE_TIMEOUT).expect("第一把锁");
+        // 第二个句柄拿同一文件：200ms 内必然拿不到 → 超时。
+        let second = lock::FileLock::acquire(&p, std::time::Duration::from_millis(200));
+        match second {
+            Err(lock::AcquireError::Timeout { .. }) => {}
+            Ok(_) => panic!("持锁期间第二把锁不应拿到"),
+            Err(lock::AcquireError::Io { source, .. }) => {
+                panic!("第二把锁应超时而非 IO 错误：{source}")
+            }
+        }
+        drop(g1);
+        // 释放后再拿应该成功——Drop 解锁生效。
+        let g2 = lock::FileLock::acquire(&p, std::time::Duration::from_secs(1))
+            .expect("释放后应能拿到锁");
+        drop(g2);
+
+        std::fs::remove_dir_all(p.parent().expect("父目录")).ok();
+    }
+
+    /// 并发读-改-写必须不丢数组元素：N 个线程各追加 K 个位置，最终一个都不能少。
+    ///
+    /// 这正是 CLI `remote add-webdav` 与 GUI 保存配置并发时的真实形态：两边都
+    /// 「读整份配置 → 往 remote.places 追加 → 整份写回」。没有跨进程锁时，后写者
+    /// 用自己读到的旧数组整体覆盖，先写者追加的元素静默丢失。
+    ///
+    /// 不这样会怎样：把 update_at 里的锁去掉，这个测试会因为 places 数量少于
+    /// N*K 而失败——它就是为抓这个回归而写的。每个 id 唯一再校验一次，排除两个
+    /// 线程撞上同一个 id 造成的假绿。
+    #[test]
+    fn concurrent_update_at_keeps_every_appended_place() {
+        let p = tmp("conc");
+        Config::default().save_to(&p).expect("写初始配置");
+
+        const THREADS: usize = 12;
+        const PER: usize = 10;
+
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for t in 0..THREADS {
+                let p = p.clone();
+                handles.push(s.spawn(move || {
+                    for k in 0..PER {
+                        Config::update_at(&p, |c| {
+                            c.remote.places.push(place_with_id(&format!("place-{t}-{k}")));
+                            Ok::<_, Error>(())
+                        })
+                        .expect("update_at 不应失败");
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().expect("线程不应 panic");
+            }
+        });
+
+        let loaded = Config::load_from(&p).expect("最终应能加载");
+        assert_eq!(
+            loaded.remote.places.len(),
+            THREADS * PER,
+            "并发追加丢了位置：跨进程锁没把读-改-写串行化"
+        );
+        let mut ids: Vec<&str> = loaded.remote.places.iter().map(|x| x.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), THREADS * PER, "每个 id 应唯一且齐全");
+
+        std::fs::remove_dir_all(p.parent().expect("父目录")).ok();
+    }
+
+    /// update_at 必须在锁内重读磁盘最新内容：进锁前别人加的位置不能被我的
+    /// 写回覆盖掉。
+    ///
+    /// 不这样会怎样：update_at 若直接拿调用方早先 load 的快照改，等于把读-改-写
+    /// 又拆成两步，锁只锁住了「写」、没锁住「读」，数组丢失更新照旧。
+    #[test]
+    fn update_at_sees_fresh_disk_inside_lock() {
+        let p = tmp("fresh");
+        Config::default().save_to(&p).expect("写初始配置");
+        // 外部先加一个位置，模拟另一进程在「我们 load 之后」写盘。
+        {
+            let mut c = Config::load_from(&p).expect("加载");
+            c.remote.places.push(place_with_id("external"));
+            c.save_to(&p).expect("写外部位置");
+        }
+        // 走 update_at：它必须先重读，external 应被保留，不能被这次写回冲掉。
+        Config::update_at(&p, |c| {
+            c.remote.places.push(place_with_id("mine"));
+            Ok::<_, Error>(())
+        })
+        .expect("update_at");
+
+        let loaded = Config::load_from(&p).expect("加载");
+        let ids: Vec<&str> = loaded.remote.places.iter().map(|x| x.id.as_str()).collect();
+        assert!(ids.contains(&"external"), "锁内必须重读，不能用旧快照冲掉别人刚加的位置");
+        assert!(ids.contains(&"mine"));
+
+        std::fs::remove_dir_all(p.parent().expect("父目录")).ok();
     }
 }

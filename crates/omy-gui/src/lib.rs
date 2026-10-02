@@ -501,15 +501,18 @@ fn restore_saved_places(
     place_registry: &Arc<places::PlaceRegistry>,
     vaults: &Arc<vault_reg::VaultRegistry>,
 ) {
-    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
-    let Ok(mut cfg) = omy_config::Config::load() else {
-        return;
-    };
-    if settings::clear_telegram_place_urls(&mut cfg)
-        && let Err(e) = cfg.save()
-    {
+    // 迁移旧 Telegram 位置遗留的代理 url：放进共享跨进程锁的读-改-写里，
+    // 在磁盘最新配置上改这一处，不整体覆盖。启动时跑一次。
+    if let Err(e) = omy_config::Config::update(|fresh| {
+        settings::clear_telegram_place_urls(fresh);
+        Ok::<(), omy_config::Error>(())
+    }) {
         eprintln!("[omy] 清理旧 Telegram 位置代理失败：{e}");
     }
+    // 配置读不出来不算错误（首次运行就没有配置），静默用空列表。
+    let Ok(cfg) = omy_config::Config::load() else {
+        return;
+    };
     let (n, need_login) = place_registry.restore(&cfg.remote);
     if n > 0 {
         eprintln!("[omy] 已恢复 {n} 个远程位置，其中 {need_login} 个需要重新登录");

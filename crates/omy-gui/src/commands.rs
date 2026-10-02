@@ -60,6 +60,16 @@ impl CmdError {
     }
 }
 
+impl From<omy_config::Error> for CmdError {
+    /// 配置跨进程写（`Config::update`/`update_at`）内部的锁/读写错误统一归到
+    /// `config_write_failed`。这些错误都发生在「正在写配置」这条路径上：
+    /// 等锁超时、锁文件不可写、读盘或序列化失败。读失败按写失败报是可接受的
+    /// 简化——它们极罕见，且都附带 detail 供排查。
+    fn from(e: omy_config::Error) -> Self {
+        CmdError::with("config_write_failed", serde_json::json!({ "detail": e.to_string() }))
+    }
+}
+
 /// 命令结果。
 pub(crate) type CmdResult<T> = Result<T, CmdError>;
 

@@ -177,29 +177,24 @@ pub(crate) async fn connect_store(sp: &SavedPlace) -> Result<stores::AnyStore> {
     stores::connect_store(sp).await
 }
 
-/// 重读最新配置，只对 `places` 做本次那一处改动后写回。
+/// 跨进程互斥地重读最新配置，只对 `places` 做本次那一处改动后写回。
 ///
 /// **不能**拿启动时的配置快照整体覆盖：本进程启动后 GUI 可能又加了/删了位置，
 /// 整体回写 `remote.places` 会把那段时间里 GUI 的改动整个冲掉（丢失更新）。
-/// 这里每次都先从磁盘重读，再由闭包按 id 做本次操作（增/删/改一条）。
 ///
-/// 仍存在「重读 → 写回」之间的极小 TOCTOU 窗口（两个进程同时改）；要彻底排除
-/// 需要跨进程文件锁，本切片先把「启动快照覆盖」这个最大、最常见的丢失更新堵上。
+/// 整条「读最新 → 改 → 写回」现在都在共享的跨进程锁里完成
+/// （[`Config::update`]/[`Config::update_at`]）：锁内重读磁盘最新内容，闭包按 id
+/// 改本次那一条，锁内原子写回。早先残留的「重读 → 写回」TOCTOU 窗口（两个
+/// 进程卡进同一次读里）由此被锁彻底关闭——这正是数组（`remote.places`）丢失
+/// 更新的根因。
 fn mutate_places<F>(ctx: &Ctx, f: F) -> Result<()>
 where
     F: FnOnce(&mut Vec<SavedPlace>) -> Result<()>,
 {
-    let mut fresh = match ctx.config_path {
-        Some(p) => Config::load_from(p)
-            .with_context(|| format!("重读配置 {} 失败", p.display()))?,
-        None => Config::load().context("重读配置失败")?,
-    };
-    f(&mut fresh.remote.places)?;
     match ctx.config_path {
-        Some(p) => fresh
-            .save_to(p)
+        Some(p) => Config::update_at(p, |fresh| f(&mut fresh.remote.places))
             .with_context(|| format!("写回配置 {} 失败", p.display()))?,
-        None => fresh.save().context("写回配置失败")?,
+        None => Config::update(|fresh| f(&mut fresh.remote.places)).context("写回配置失败")?,
     }
     Ok(())
 }

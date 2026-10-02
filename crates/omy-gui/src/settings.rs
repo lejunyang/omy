@@ -70,6 +70,15 @@ pub(crate) fn clear_telegram_place_urls(config: &mut omy_config::Config) -> bool
 /// Telegram 代理是全局策略：保存时清除每个 Telegram 位置遗留的 `url`，并在
 /// 策略变化后断开现有长连接。下一次业务操作会按新策略自动重连。
 ///
+/// # 为什么要在锁内重读、而不是把前端快照整份写回
+///
+/// 设置页拿到的是「打开设置那一刻」的整份配置。直接整份写回的话，这期间
+/// CLI（`remote add-webdav`）刚加的位置会被前端快照里那份旧 `remote.places`
+/// 静默冲掉——这正是 `remote.places` 数组的丢失更新。所以这里进共享跨进程锁
+/// 后**重读磁盘最新配置**，只覆盖设置页管得了的标量组；位置数组、Telegram
+/// 自定义 `api_id`、密码管理器关联这三项由各自的入口维护，一律保留磁盘上的
+/// 最新值，不被前端快照回退。
+///
 /// # Errors
 ///
 /// 代理模式/地址无效或配置写盘失败时返回结构化错误。
@@ -80,8 +89,7 @@ pub fn config_set(
     place_files: tauri::State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
     place_containers: tauri::State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
 ) -> CmdResult<()> {
-    let old = omy_config::Config::load()
-        .map_err(|e| to_cmd_err("config_read_failed", &e))?;
+    // 代理校验在进锁前做：错误码独立，且不占着锁。
     match config.remote.telegram_proxy_mode.as_str() {
         "system" => config.remote.telegram_proxy.clear(),
         "manual" => {
@@ -93,9 +101,27 @@ pub fn config_set(
         _ => return Err(CmdError::code("tg_bad_proxy_mode")),
     }
     clear_telegram_place_urls(&mut config);
+
+    // 判断代理策略是否变化（只读，锁外读一次即可）。变化后要断开现有长连接。
+    let old = omy_config::Config::load()
+        .map_err(|e| to_cmd_err("config_read_failed", &e))?;
     let changed = old.remote.telegram_proxy_mode != config.remote.telegram_proxy_mode
         || old.remote.telegram_proxy != config.remote.telegram_proxy;
-    config.save().map_err(|e| to_cmd_err("config_write_failed", &e))?;
+
+    // 锁内重读磁盘最新配置，再覆盖设置页管得了的组；保留三项别的入口拥有的子树。
+    omy_config::Config::update(|fresh| {
+        let disk_places = fresh.remote.places.clone();
+        let disk_api_id = fresh.remote.telegram_api_id;
+        let disk_api_hash = fresh.remote.telegram_api_hash.clone();
+        let disk_associations = fresh.password_managers.keepassxc.associations.clone();
+        *fresh = config.clone();
+        fresh.remote.places = disk_places;
+        fresh.remote.telegram_api_id = disk_api_id;
+        fresh.remote.telegram_api_hash = disk_api_hash;
+        fresh.password_managers.keepassxc.associations = disk_associations;
+        Ok::<(), omy_config::Error>(())
+    })?;
+
     if changed {
         places.disconnect_all_telegram();
         // 已打开文件的 RemoteSource 持有建连时的 store。只断注册表连接不清句柄，

@@ -543,9 +543,14 @@ impl PlaceRegistry {
             Self::assemble_saved_places(&m, &o, key.as_ref())
         };
 
-        let mut cfg = omy_config::Config::load().map_err(|e| e.to_string())?;
-        cfg.remote.places = saved;
-        cfg.save().map_err(|e| e.to_string())
+        // 位置注册表是 GUI 进程内位置的权威视图；写它时进共享跨进程锁，
+        // 让这次「读-改-写」与 CLI `mutate_places`、`config_set` 串行，
+        // 不会出现两个进程各读一份再各自整体回写、互相冲掉数组。
+        omy_config::Config::update(|fresh| {
+            fresh.remote.places = saved.clone();
+            Ok::<(), omy_config::Error>(())
+        })
+        .map_err(|e| e.to_string())
     }
 
     /// 把注册表里的全部位置组装成可持久化的记录。**纯逻辑，不碰磁盘。**

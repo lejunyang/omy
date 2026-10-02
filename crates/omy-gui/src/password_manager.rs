@@ -474,19 +474,22 @@ fn save_association(association: &Association) -> CmdResult<()> {
         .store(&secret_id, &key)
         .map_err(|_| CmdError::code("password_manager_keyring_failed"))?;
 
-    let mut cfg = omy_config::Config::load().map_err(|_| CmdError::code("config_read_failed"))?;
-    cfg.password_managers
-        .keepassxc
-        .associations
-        .retain(|a| a.database_hash != association.database_hash);
-    cfg.password_managers
-        .keepassxc
-        .associations
-        .push(omy_config::KeePassXcAssociation {
+    // 关联列表的增删放进共享跨进程锁的读-改-写里：在磁盘最新配置上改这一处，
+    // 不拿早先 load 的快照整体覆盖（否则会冲掉这期间 CLI 加的位置等数组改动）。
+    let result = omy_config::Config::update(|fresh| {
+        fresh
+            .password_managers
+            .keepassxc
+            .associations
+            .retain(|a| a.database_hash != association.database_hash);
+        fresh.password_managers.keepassxc.associations.push(omy_config::KeePassXcAssociation {
             database_hash: association.database_hash.clone(),
             id: association.id.clone(),
         });
-    if cfg.save().is_err() {
+        Ok::<(), omy_config::Error>(())
+    });
+    if result.is_err() {
+        // 元数据没落盘时把系统凭据库恢复成原值：直接 delete 会把原本可用的关联也破坏掉。
         if let Some(previous) = previous {
             let _ = protector.store(&secret_id, &previous);
         } else {
@@ -505,13 +508,15 @@ fn forget_association(database_hash: &str) -> CmdResult<()> {
     protector
         .delete(&association_secret_id(database_hash))
         .map_err(|_| CmdError::code("password_manager_keyring_failed"))?;
-    let mut cfg = omy_config::Config::load().map_err(|_| CmdError::code("config_read_failed"))?;
-    cfg.password_managers
-        .keepassxc
-        .associations
-        .retain(|a| a.database_hash != database_hash);
-    cfg.save()
-        .map_err(|_| CmdError::code("config_write_failed"))
+    omy_config::Config::update(|fresh| {
+        fresh
+            .password_managers
+            .keepassxc
+            .associations
+            .retain(|a| a.database_hash != database_hash);
+        Ok::<(), omy_config::Error>(())
+    })
+    .map_err(|_| CmdError::code("config_write_failed"))
 }
 
 #[cfg(not(target_os = "android"))]
