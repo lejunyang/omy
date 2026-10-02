@@ -147,16 +147,23 @@ impl RemoteStore for AnyStore {
 
 /// 从一条配置记录连接出一个可用的驱动。
 ///
+/// 打开位置对应的存储驱动。
+///
+/// `password` 仅 Telegram per-place 加密位置需要：本进程现场输入的位置密码会在
+/// [`connect_with_password`] 里派成 KEK，与机器回退 KEK 一起试槽。未加密（默认）
+/// 位置传 `None` 即可——机器回退就能开。
+///
 /// WebDAV 不发网络请求（构造即得，探活由调用方决定要不要列一次根目录）；
 /// Telegram 必须真的连上去——它是长连接，断开就没有任何文件操作可做。
 ///
 /// # Errors
 ///
-/// 类型不认识、WebDAV 地址非法、或 Telegram 连不上 / 没有登录态时返回。
-pub(crate) async fn connect_store(sp: &SavedPlace) -> Result<AnyStore> {
+/// 类型不认识、WebDAV 地址非法、或 Telegram 连不上 / 没有登录态 / 位置锁着
+/// （缺位置密码）时返回。
+pub(crate) async fn connect_store(sp: &SavedPlace, password: Option<&[u8]>) -> Result<AnyStore> {
     match sp.kind.as_str() {
         "webdav" => connect_webdav(sp),
-        "telegram" => connect_telegram(sp).await,
+        "telegram" => connect_telegram(sp, password).await,
         other => bail!("位置 {} 是不支持的类型 {other:?}", sp.id),
     }
 }
@@ -184,18 +191,48 @@ fn connect_webdav(sp: &SavedPlace) -> Result<AnyStore> {
 ///
 /// 代理默认取系统代理（与 GUI 首次探测同口径）；CLI 不在本切片里给文件命令
 /// 加 `--proxy`，需要时可先 `telegram login --proxy`。
-async fn connect_telegram(sp: &SavedPlace) -> Result<AnyStore> {
+///
+/// `password` 是本进程现场拿到的位置密码（per-place 加密位置才需要）。
+/// 它与机器回退 KEK 一起在 [`connect_with_password`] 里拼成钥匙集合——这正是
+/// 「CLI 能用当前进程解锁的 KEK 打开 per-place 加密 session」的落点：CLI 是
+/// 一次性进程、没有 GUI 那样的长期会话，KEK 全靠本次现场密码现派。
+async fn connect_telegram(sp: &SavedPlace, password: Option<&[u8]>) -> Result<AnyStore> {
     use omy_remote::telegram::{AppId, DeviceInfo, connect};
 
     let app = AppId::builtin();
     let device = DeviceInfo::current();
     let proxy = omy_remote::telegram::proxy::detect_system_proxy().map(|p| p.as_str().to_owned());
 
-    let conn = connect::connect_saved(&app, &device, proxy.as_deref(), &sp.id)
+    let conn = connect::connect_with_password(&app, &device, proxy.as_deref(), &sp.id, password)
         .await
-        .map_err(|e| anyhow!("连接 Telegram 位置 {} 失败：{e}", sp.id))?;
+        .map_err(|e| map_connect_err(&sp.id, e))?;
     Ok(AnyStore::Tg(TelegramStore::from_connection(
         conn.client,
         conn.runner,
     )))
+}
+
+/// 把连接错误翻成对用户可操作、脚本可匹配的信息。
+///
+/// 稳定错误码用方括号常量前缀（与 `tg_tdata_*` 同款），脚本可按 `[tg_...]` 匹配。
+fn map_connect_err(id: &str, e: omy_remote::telegram::connect::ConnectError) -> anyhow::Error {
+    use omy_remote::telegram::connect::ConnectError;
+    match e {
+        // 位置被 per-place 加密锁着、又没给对密码：明确提示用密码通道，
+        // 而不是含糊的「解不开登录态」把人引去重新扫码。
+        ConnectError::Locked => anyhow!(
+            "[tg_locked] 位置 {id} 已加密但当前密码解不开它。\n\
+             \n  请通过密码通道提供该位置密码：\n\
+             \n    --password-stdin        从管道读取\
+             \n    --password-file <路径>  从文件读取\
+             \n    --password-env <变量名> 从环境变量读取"
+        ),
+        ConnectError::NoSession => anyhow!(
+            "[tg_no_session] 位置 {id} 没有可用的 Telegram 登录态，请先扫码登录（omy remote telegram login {id}）"
+        ),
+        ConnectError::Unauthorized => {
+            anyhow!("[tg_sign_in] 位置 {id} 的登录态已失效，请重新登录（omy remote telegram login {id}）")
+        }
+        other => anyhow!("[tg_connect] 连接 Telegram 位置 {id} 失败：{other}"),
+    }
 }

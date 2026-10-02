@@ -14,6 +14,7 @@ use std::sync::Arc;
 use grammers_client::Client;
 use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::storages::MemorySession;
+use omy_core::crypto::Kek;
 
 use super::appid::AppId;
 use super::device::DeviceInfo;
@@ -153,6 +154,57 @@ pub async fn connect_saved_with_keks(
         session::LoadOutcome::Absent => return Err(ConnectError::NoSession),
     };
     connect_with(&saved, app, device, proxy).await
+}
+
+/// 用「本进程能拿到的全部钥匙」连一个位置：机器回退 KEK + 现场密码派生出的 KEK。
+///
+/// # 为什么单独这一层
+///
+/// GUI 与 CLI 连一个 per-place 加密位置时，手里的钥匙来源不同，但汇到一起之后
+/// 的动作完全一样：拼出 `&[Kek]` → [`connect_saved_with_keks`]。GUI 的钥匙来自
+/// 长期会话（`place_keys::unlock_keks`），CLI 是一次性进程、没有长期会话，钥匙
+/// 只能来自本次现场输入的位置密码。把「机器回退 + 现场密码派生」这步收成一处，
+/// CLI 不必复制 GUI 的拼钥匙逻辑，两边将来对钥匙构成的改动也只改这里。
+///
+/// # 钥匙构成（顺序无关，逐把试槽）
+///
+/// 1. **机器回退 KEK**：本机凭据库那把随机密钥。它能开旧的未加密位置（裸信封），
+///    也让「无库回退」建的位置免密自动开。
+/// 2. **现场密码派生的 KEK**（`password` 给了才加）：用位置密码槽里的 KDF 材料
+///    重派生。派生前先用 [`session::place_password_kek`] 确认真能开槽——错密码
+///    也会派生出一把（错的）KEK，直接塞进去会得到一句含糊的「登录态解不开」，
+///    而不是明确的「密码错」。
+///
+/// `password` 给了但位置根本不是密码槽加密时（`Ok(None)`）：忽略它，只用机器
+/// 回退——那位置本来就不要密码。
+///
+/// # Errors
+///
+/// 密码开不了这个位置返回 [`ConnectError::Locked`]（脚本据此提示输对密码，
+/// 而不是引导重新扫码）；其余同 [`connect_saved_with_keks`]。
+pub async fn connect_with_password(
+    app: &AppId,
+    device: &DeviceInfo,
+    proxy: Option<&str>,
+    account: &str,
+    password: Option<&[u8]>,
+) -> Result<Connection, ConnectError> {
+    let mut keks: Vec<Kek> = Vec::new();
+    if let Some(mk) = session::machine_fallback_kek() {
+        keks.push(mk);
+    }
+    if let Some(pw) = password {
+        match session::place_password_kek(account, pw) {
+            // 对密码：把它派生出的 KEK 加进本进程钥匙集合
+            Ok(Some((kek, _salt))) => keks.push(kek),
+            // 不是密码槽加密的位置：现场密码用不上，机器回退即可
+            Ok(None) => {}
+            // 密码开不了槽：明确报「锁着/密码错」，而不是含糊的解不开
+            Err(SessionError::Undecryptable) => return Err(ConnectError::Locked),
+            Err(e) => return Err(ConnectError::Session(e)),
+        }
+    }
+    connect_saved_with_keks(app, device, proxy, account, &keks).await
 }
 
 /// 用一份**给定的**登录态连上去（不读磁盘）。

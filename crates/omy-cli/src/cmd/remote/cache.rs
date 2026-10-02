@@ -138,7 +138,7 @@ fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
     let cache = open_cache(ctx)?;
     let rt = rt()?;
     let store = Arc::new(
-        rt.block_on(connect_store(&sp))
+        rt.block_on(connect_store(&sp, None))
             .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?,
     );
 

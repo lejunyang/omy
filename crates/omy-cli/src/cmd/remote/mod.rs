@@ -185,8 +185,14 @@ fn find_place(cfg: &Config, needle: &str) -> Result<SavedPlace> {
 ///
 /// WebDAV 不发网络（构造即得）；Telegram 必须真的连上去，所以是异步的。
 /// 统一返回 [`stores::AnyStore`]，文件命令不必区分两种驱动。
-pub(crate) async fn connect_store(sp: &SavedPlace) -> Result<stores::AnyStore> {
-    stores::connect_store(sp).await
+///
+/// `password` 是本进程现场拿到的位置密码（仅 per-place 加密的 Telegram 位置需要，
+/// 未加密位置传 `None`）。
+pub(crate) async fn connect_store(
+    sp: &SavedPlace,
+    password: Option<&[u8]>,
+) -> Result<stores::AnyStore> {
+    stores::connect_store(sp, password).await
 }
 
 /// 跨进程互斥地重读最新配置，只对 `places` 做本次那一处改动后写回。
@@ -471,7 +477,7 @@ mod tests {
             user_id: None,
         };
         let rt = rt().expect("可建 runtime");
-        let res = rt.block_on(connect_store(&sp));
+        let res = rt.block_on(connect_store(&sp, None));
         assert!(res.is_err(), "未知类型应当被拒");
         assert!(res.unwrap_err().to_string().contains("some-future-kind"));
     }

@@ -42,6 +42,7 @@ use omy_remote::telegram::{
 };
 use serde_json::json;
 
+use crate::cmd::KdfProfile;
 use crate::password::{PasswordSource, read_password};
 
 use super::{Ctx, find_place, mutate_places, qrterm, rt};
@@ -72,6 +73,15 @@ pub enum Cmd {
     AppIdSet(AppIdSetArgs),
     /// 恢复使用内置应用身份
     AppIdReset,
+
+    /// 给位置加密：用现场密码独立保护该位置的登录态（与普通文件加密同款）
+    Encrypt(PlaceEncryptArgs),
+    /// 用现场密码验证能否解锁一个加密位置（脚本可据此判断密码对错）
+    Unlock(PlacePwArgs),
+    /// 确认位置处于锁定态（CLI 无长期会话，位置每次访问都需密码）
+    Lock(NameArgs),
+    /// 取消位置加密：恢复为机器密钥保护
+    Decrypt(PlacePwArgs),
 }
 
 /// `omy remote telegram login`（扫码）。
@@ -134,6 +144,45 @@ pub struct PhoneLoginArgs {
 pub struct NameArgs {
     /// 位置 id（如 p1）或显示名
     pub place: String,
+}
+
+/// 位置密码通道（unlock/decrypt 共用）。
+///
+/// 与登录二步密码同款：密码只走 env/file/stdin 三通道互斥，绝不进 argv。
+#[derive(Debug, Args)]
+pub struct PlacePwArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 位置密码：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+    /// 位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+    /// 位置密码：从标准输入读取
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
+/// `omy remote telegram encrypt <位置>`。
+#[derive(Debug, Args)]
+pub struct PlaceEncryptArgs {
+    #[command(flatten)]
+    pub pw: PlacePwArgs,
+    /// KDF 档位（默认 moderate）
+    #[arg(long, value_name = "档位")]
+    pub kdf: Option<String>,
+}
+
+impl PlacePwArgs {
+    /// 转成通用密码来源。
+    fn source(&self) -> PasswordSource {
+        PasswordSource {
+            env: self.password_env.clone(),
+            file: self.password_file.clone(),
+            stdin: self.password_stdin,
+        }
+    }
 }
 
 /// `omy remote telegram tdata …`。
@@ -218,6 +267,10 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::AppIdStatus => appid_status(ctx),
         Cmd::AppIdSet(a) => appid_set(ctx, a),
         Cmd::AppIdReset => appid_reset(ctx),
+        Cmd::Encrypt(a) => place_encrypt(ctx, a),
+        Cmd::Unlock(a) => place_unlock(ctx, a),
+        Cmd::Lock(a) => place_lock(ctx, a),
+        Cmd::Decrypt(a) => place_decrypt(ctx, a),
     }
 }
 
@@ -966,6 +1019,116 @@ fn require_telegram(ctx: &Ctx, needle: &str) -> Result<omy_config::SavedPlace> {
     Ok(sp)
 }
 
+// ---- 位置独立加密 / 解锁 / 锁定 / 取消加密 ----
+//
+// 这些都是对落盘的登录态信封做变换，**不需要连网**，也不需要本进程持有 KEK
+// 长会话——CLI 是一次性进程。真正的加/解密原语在 [`session`]（已被单测钉死），
+// 这里只做「终端外壳」：收密码、把 SessionError 翻成脚本可匹配的稳定错误码、
+// 打印结果。GUI 的对应 Tauri 命令也是同一批原语的壳，不复制其编排。
+
+/// 把位置操作的底层错误翻成稳定错误码（方括号前缀，与 `tg_tdata_*` 同款）。
+///
+/// 分类依据来自 [`session`] 原语的返回约定：`Undecryptable` 一律是「密码开不了」，
+/// `NoProtector` 是「本机无凭据库、拒绝落明文」。两边共用这套判断，避免 CLI 与
+/// GUI 对同一个错给出不同提示。
+fn map_place_err(id: &str, op: &str, e: session::SessionError) -> anyhow::Error {
+    use session::SessionError;
+    match e {
+        SessionError::Undecryptable => anyhow!(
+            "[tg_unlock_wrong] 位置 {id} 密码错误，或当前会话里没有能解开它的密钥"
+        ),
+        SessionError::NoProtector => anyhow!(
+            "[tg_no_protector] 本机没有可用凭据库，拒绝把登录态落为明文（{op} 中止）"
+        ),
+        other => anyhow!("[tg_place_{op}] 位置 {id} 操作失败：{other}"),
+    }
+}
+
+/// `omy remote telegram encrypt <位置>`。
+fn place_encrypt(ctx: &Ctx, a: &PlaceEncryptArgs) -> Result<()> {
+    let sp = require_telegram(ctx, &a.pw.place)?;
+    // confirm=true：创建密码要重复输入防打错（env/file/stdin 通道下 read_password
+    // 自动跳过确认——你已经在通道里给过一次了）。
+    let pw = read_password(&a.pw.source(), "设置位置密码", true)?;
+    let app = resolve_app(ctx)?;
+    let profile = KdfProfile::from_name(a.kdf.as_deref().unwrap_or("moderate"))?;
+    match session::encrypt_place_with_password(&app, &sp.id, &pw, profile.params(), &[]) {
+        Ok(true) => {
+            ctx.out.result(
+                &format!("已用位置密码加密 {}（{}），下次访问需提供该密码", sp.id, sp.name),
+                &json!({ "encrypted": sp.id, "kdf": profile.name() }),
+            );
+        }
+        // Ok(false) = Absent：这个位置还没登录态，无可加密
+        Ok(false) => bail!(
+            "[tg_no_session] 位置 {} 还没有可用登录态，先 omy remote telegram login {}",
+            sp.id,
+            sp.id
+        ),
+        Err(e) => return Err(map_place_err(&sp.id, "encrypt", e)),
+    }
+    Ok(())
+}
+
+/// `omy remote telegram unlock <位置>`：验证密码能否解开（脚本可判断对错）。
+///
+/// CLI 没有 GUI 那样的长期会话，所以这里不「记住」KEK——本进程验证完就结束。
+/// 真正打开加密 session 靠文件命令里传 `--password-*`，在
+/// [`connect_with_password`] 里现派 KEK。
+fn place_unlock(ctx: &Ctx, a: &PlacePwArgs) -> Result<()> {
+    let sp = require_telegram(ctx, &a.place)?;
+    let pw = read_password(&a.source(), "位置密码", false)?;
+    let app = resolve_app(ctx)?;
+    match session::unlock_place_with_password(&app, &sp.id, &pw, &[]) {
+        Ok(Some(_)) => {
+            ctx.out.result(
+                &format!("密码正确：位置 {}（{}）可解锁", sp.id, sp.name),
+                &json!({ "unlocked": sp.id }),
+            );
+        }
+        Ok(None) => bail!("[tg_not_encrypted] 位置 {} 并未加密，无需解锁", sp.id),
+        Err(e) => return Err(map_place_err(&sp.id, "unlock", e)),
+    }
+    Ok(())
+}
+
+/// `my remote telegram lock <位置>`：确认位置处于锁定态。
+///
+/// CLI 是一次性进程、从不跨命令保留 KEK，所以位置在两条命令之间天然就是锁着的——
+/// 这个命令不改盘，只确认「它确实是加密位置」，给脚本一个明确的状态断言。
+fn place_lock(ctx: &Ctx, a: &NameArgs) -> Result<()> {
+    let sp = require_telegram(ctx, &a.place)?;
+    match session::is_encrypted(&sp.id) {
+        Ok(true) => {
+            ctx.out.result(
+                &format!("位置 {}（{}）已加密并处于锁定态：每次访问都需通过密码通道提供位置密码", sp.id, sp.name),
+                &json!({ "locked": sp.id, "encrypted": true }),
+            );
+        }
+        Ok(false) => bail!("[tg_not_encrypted] 位置 {} 并未加密，没有可锁定的", sp.id),
+        Err(e) => return Err(map_place_err(&sp.id, "lock", e)),
+    }
+    Ok(())
+}
+
+/// `omy remote telegram decrypt <位置>`：取消位置加密。
+fn place_decrypt(ctx: &Ctx, a: &PlacePwArgs) -> Result<()> {
+    let sp = require_telegram(ctx, &a.place)?;
+    let pw = read_password(&a.source(), "位置密码", false)?;
+    let app = resolve_app(ctx)?;
+    match session::decrypt_place_with_password(&app, &sp.id, &pw) {
+        Ok(true) => {
+            ctx.out.result(
+                &format!("已取消位置 {}（{}）的加密，恢复为机器密钥保护", sp.id, sp.name),
+                &json!({ "decrypted": sp.id }),
+            );
+        }
+        Ok(false) => bail!("[tg_not_encrypted] 位置 {} 并未加密", sp.id),
+        Err(e) => return Err(map_place_err(&sp.id, "decrypt", e)),
+    }
+    Ok(())
+}
+
 fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
@@ -1080,5 +1243,50 @@ mod tests {
         assert!(s.starts_with("[tg_tdata_not_found]"));
         let s = tdata_error(tdata::TdataError::NeedPasscode).to_string();
         assert!(s.starts_with("[tg_tdata_need_passcode]"));
+    }
+
+    /// 位置操作错误码稳定：密码错/无凭据库 两类必须区分开，脚本才能分别提示。
+    #[test]
+    fn place_error_codes_are_stable() {
+        use session::SessionError;
+        let s = map_place_err("p1", "unlock", SessionError::Undecryptable).to_string();
+        assert!(s.starts_with("[tg_unlock_wrong]"), "实际：{s}");
+        let s = map_place_err("p1", "encrypt", SessionError::NoProtector).to_string();
+        assert!(s.starts_with("[tg_no_protector]"), "实际：{s}");
+        // 其它错带上操作名，便于定位
+        let s = map_place_err("p1", "decrypt", SessionError::Malformed).to_string();
+        assert!(s.starts_with("[tg_place_decrypt]"), "实际：{s}");
+    }
+
+    /// 位置密码三通道与登录二步密码共用互斥约定，绝不进 argv。
+    #[test]
+    fn place_pw_source_is_same_lockdown() {
+        let a = PlacePwArgs {
+            place: "p1".into(),
+            password_env: Some("TG_PLACE_PW".into()),
+            password_file: None,
+            password_stdin: false,
+        };
+        let src = a.source();
+        assert!(src.validate().is_ok());
+        assert_eq!(src.env.as_deref(), Some("TG_PLACE_PW"));
+        // 两个通道同时给必须拒绝——静默取一会让用户以为用的是另一个
+        let bad = PlacePwArgs {
+            place: "p1".into(),
+            password_env: Some("A".into()),
+            password_file: None,
+            password_stdin: true,
+        };
+        assert!(bad.source().validate().is_err());
+    }
+
+    /// encrypt 成功 JSON 里绝不回显密码（只回位置 id 与 KDF 档位）。
+    #[test]
+    fn encrypt_success_payload_has_no_secret() {
+        let v = json!({ "encrypted": "p1", "kdf": "moderate" });
+        let s = serde_json::to_string(&v).unwrap();
+        assert!(!s.contains("password"), "成功 JSON 泄露密码字段: {s}");
+        assert!(!s.contains("password"), "成功 JSON 泄露密码: {s}");
+        assert!(s.contains("p1"));
     }
 }

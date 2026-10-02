@@ -146,7 +146,7 @@ pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
 
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp))
+        .block_on(connect_store(&sp, None))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let entries = rt
         .block_on(store.list(&dir))
@@ -294,7 +294,7 @@ pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
 
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp))
+        .block_on(connect_store(&sp, None))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let caps = rt.block_on(store.effective_capabilities(&dir))?;
     omy_remote::require_capability("write", caps.write)
@@ -368,7 +368,7 @@ pub fn download(ctx: &Ctx, a: &DownloadArgs) -> Result<()> {
 
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp))
+        .block_on(connect_store(&sp, None))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let total = rt
         .block_on(entry_by_path(&store, &id))?
@@ -428,10 +428,10 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
 
     let rt = rt()?;
     let src = rt
-        .block_on(connect_store(&src_sp))
+        .block_on(connect_store(&src_sp, None))
         .map_err(|e| anyhow!("连接源位置 {} 失败: {e}", src_sp.id))?;
     let dst = rt
-        .block_on(connect_store(&dst_sp))
+        .block_on(connect_store(&dst_sp, None))
         .map_err(|e| anyhow!("连接目标位置 {} 失败: {e}", dst_sp.id))?;
     if !dst.capabilities().any_write() {
         bail!("目标位置 {} 是只读的，不能复制过去", dst_sp.id);
@@ -532,7 +532,7 @@ fn connect_with_caps(
     let sp = find_place(ctx.cfg, place)?;
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp))
+        .block_on(connect_store(&sp, None))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let caps = rt
         .block_on(store.effective_capabilities(dir))
@@ -639,7 +639,7 @@ pub fn decrypt(ctx: &Ctx, a: &DecryptArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp))
+        .block_on(connect_store(&sp, None))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
 
     let entry = rt.block_on(entry_by_path(&store, &id))?;
