@@ -20,17 +20,20 @@
 
 pub mod cache;
 pub mod files;
+pub mod qrterm;
+mod stores;
+pub mod telegram;
 
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use omy_config::{Config, SavedPlace};
-use omy_remote::webdav::WebDavStore;
 use omy_remote::{placebook, RemoteStore};
 use serde_json::{Value, json};
 
 use crate::password::{PasswordSource, read_password};
+use omy_remote::webdav::WebDavStore;
 use super::Ctx;
 
 /// 远程位置子命令。
@@ -54,6 +57,9 @@ pub enum Cmd {
     Download(files::DownloadArgs),
     /// 在两个位置之间复制远程文件
     Copy(files::CopyArgs),
+    /// Telegram 账号扫码登录与位置管理
+    #[command(subcommand)]
+    Telegram(telegram::Cmd),
     /// 密文块缓存管理
     #[command(subcommand)]
     Cache(cache::Cmd),
@@ -123,6 +129,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Upload(a) => files::upload(ctx, a),
         Cmd::Download(a) => files::download(ctx, a),
         Cmd::Copy(a) => files::copy(ctx, a),
+        Cmd::Telegram(c) => telegram::run(ctx, c),
         Cmd::Cache(c) => cache::run(ctx, c),
     }
 }
@@ -159,33 +166,12 @@ fn find_place(cfg: &Config, needle: &str) -> Result<SavedPlace> {
     }
 }
 
-/// 从一条配置记录构造可用的 WebDAV 客户端。
+/// 从一条配置记录连接出可用的驱动。
 ///
-/// 本阶段 CLI 只支持 WebDAV；遇到 Telegram 记录明确报错。密码解不开
-/// （换过机器、凭据库不可用）也报错——没有密码的 WebDAV 基本连不上，
-/// 与其让第一次浏览才 401，不如在这里就说清楚。
-fn build_store(sp: &SavedPlace) -> Result<WebDavStore> {
-    if sp.kind != "webdav" {
-        bail!(
-            "位置 {} 是 {:?} 类型，本阶段 CLI 仅支持 WebDAV",
-            sp.id,
-            sp.kind
-        );
-    }
-    let key = placebook::protect_key();
-    let Some((wcfg, need_login)) = placebook::saved_to_webdav(sp, key.as_ref()) else {
-        bail!("位置 {} 不是 WebDAV 记录", sp.id);
-    };
-    if need_login {
-        bail!(
-            "位置 {} 的密码无法从本机凭据库解开（换过机器或凭据库不可用），请重新添加",
-            sp.id
-        );
-    }
-    if wcfg.base_url.is_empty() {
-        bail!("位置 {} 缺少 URL", sp.id);
-    }
-    WebDavStore::new(wcfg).map_err(|e| anyhow!("构造 WebDAV 客户端失败: {e}"))
+/// WebDAV 不发网络（构造即得）；Telegram 必须真的连上去，所以是异步的。
+/// 统一返回 [`stores::AnyStore`]，文件命令不必区分两种驱动。
+pub(crate) async fn connect_store(sp: &SavedPlace) -> Result<stores::AnyStore> {
+    stores::connect_store(sp).await
 }
 
 /// 把位置列表写回配置。
@@ -449,16 +435,17 @@ mod tests {
         assert!(find_place(&cfg, "p99").is_err());
     }
 
-    /// 非 webdav 记录在 build_store 处明确报错。
+    /// 非 webdav / 非 telegram 的未知类型记录要明确报错，而不是静默造出半截位置。
     ///
-    /// 不这样会怎样：遇到 Telegram 记录静默跳过或构造出半截位置，
-    /// 用户以为连上了其实没连，错误要到更后面才冒出来。
+    /// 不这样会怎样：遇到不认识的 kind 静默跳过，用户以为连上了其实没连，
+    /// 错误要到更后面才冒出来。这里只断言「未知类型被拒」这条纯校验分支——
+    /// 真正连网由 stores::connect_store 在 runtime 里做，单测不碰网络。
     #[test]
-    fn non_webdav_record_errors() {
+    fn unknown_kind_is_rejected_locally() {
         let sp = SavedPlace {
             id: String::from("p1"),
-            name: String::from("tg"),
-            kind: String::from("telegram"),
+            name: String::from("x"),
+            kind: String::from("some-future-kind"),
             url: String::new(),
             username: String::new(),
             vendor: String::new(),
@@ -466,6 +453,9 @@ mod tests {
             secret: None,
             user_id: None,
         };
-        assert!(build_store(&sp).is_err());
+        let rt = rt().expect("可建 runtime");
+        let res = rt.block_on(connect_store(&sp));
+        assert!(res.is_err(), "未知类型应当被拒");
+        assert!(res.unwrap_err().to_string().contains("some-future-kind"));
     }
 }

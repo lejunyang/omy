@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Args;
-use omy_remote::webdav::WebDavStore;
 use omy_remote::RemoteStore;
 use serde_json::json;
 
-use super::{Ctx, abs, build_store, find_place, parent_name, rt};
+use super::{Ctx, abs, connect_store, find_place, parent_name, rt};
+use super::stores::AnyStore;
 use crate::output::human_bytes;
 
 /// 一次读取的分块大小。下载/跨位置复制按这个粒度边读边写，
@@ -65,10 +65,12 @@ pub struct CopyArgs {
 /// `omy remote ls`。
 pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
-    let store = build_store(&sp)?;
     let dir = a.path.as_deref().map(abs).unwrap_or_default();
 
     let rt = rt()?;
+    let store = rt
+        .block_on(connect_store(&sp))
+        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let entries = rt
         .block_on(store.list(&dir))
         .map_err(|e| anyhow!("列目录失败: {e}"))?;
@@ -102,10 +104,6 @@ pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
 /// `omy remote upload`。
 pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
-    let store = build_store(&sp)?;
-    if !store.capabilities().any_write() {
-        bail!("位置 {} 是只读的，不能上传", sp.id);
-    }
 
     let meta = std::fs::metadata(&a.local)
         .with_context(|| format!("读取本地文件 {} 失败", a.local.display()))?;
@@ -119,6 +117,12 @@ pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
     let dir = if dir == "/" { String::new() } else { dir };
 
     let rt = rt()?;
+    let store = rt
+        .block_on(connect_store(&sp))
+        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+    if !store.capabilities().any_write() {
+        bail!("位置 {} 是只读的，不能上传", sp.id);
+    }
     let reader = rt.block_on(async {
         let f = tokio::fs::File::open(&a.local).await?;
         Ok::<_, std::io::Error>(Box::new(f) as Box<dyn tokio::io::AsyncRead + Unpin + Send>)
@@ -140,7 +144,7 @@ pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
 /// 必须先知道总大小：WebDAV 的 `read_range` 在 offset 越过文件尾时返回
 /// `416 Range Not Satisfiable` 错误，而不是空响应。若靠「读到空就停」循环，
 /// 最后一次必然发越界 Range 而崩——这正是端到端测试抓到的真缺陷。
-async fn entry_by_path(store: &WebDavStore, path: &str) -> Result<omy_remote::Entry> {
+async fn entry_by_path(store: &AnyStore, path: &str) -> Result<omy_remote::Entry> {
     let (parent, name) = parent_name(path);
     let entries = store
         .list(&parent)
@@ -155,10 +159,12 @@ async fn entry_by_path(store: &WebDavStore, path: &str) -> Result<omy_remote::En
 /// `omy remote download`：分块流式写本地。
 pub fn download(ctx: &Ctx, a: &DownloadArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
-    let store = build_store(&sp)?;
     let id = abs(&a.remote);
 
     let rt = rt()?;
+    let store = rt
+        .block_on(connect_store(&sp))
+        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
     let total = rt
         .block_on(entry_by_path(&store, &id))?
         .size
@@ -210,8 +216,14 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
 
     let src_sp = find_place(ctx.cfg, &src_place)?;
     let dst_sp = find_place(ctx.cfg, &dst_place)?;
-    let src = build_store(&src_sp)?;
-    let dst = build_store(&dst_sp)?;
+
+    let rt = rt()?;
+    let src = rt
+        .block_on(connect_store(&src_sp))
+        .map_err(|e| anyhow!("连接源位置 {} 失败: {e}", src_sp.id))?;
+    let dst = rt
+        .block_on(connect_store(&dst_sp))
+        .map_err(|e| anyhow!("连接目标位置 {} 失败: {e}", dst_sp.id))?;
     if !dst.capabilities().any_write() {
         bail!("目标位置 {} 是只读的，不能复制过去", dst_sp.id);
     }
@@ -219,7 +231,6 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
     let src_id = abs(&src_path);
     let (dst_dir, dst_name) = parent_name(&dst_path);
 
-    let rt = rt()?;
     // 整段读源文件。跨位置复制是「原样搬运」，不解密也不重加密。
     // 按已知大小分块，避免读越界 Range 触发 416。
     let total = rt

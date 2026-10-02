@@ -20,7 +20,7 @@ use omy_remote::source::RemoteSource;
 use omy_remote::RemoteStore;
 use serde_json::json;
 
-use super::{Ctx, abs, build_store, cache_root, find_place, parent_name, rt};
+use super::{Ctx, abs, cache_root, connect_store, find_place, parent_name, rt};
 use crate::output::human_bytes;
 
 /// 缓存子命令。
@@ -135,9 +135,12 @@ fn clear(ctx: &Ctx) -> Result<()> {
 /// `pin=true` 做 pin（先全量拉取再永久保留），否则做 unpin。
 fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
-    let store = Arc::new(build_store(&sp)?);
     let cache = open_cache(ctx)?;
     let rt = rt()?;
+    let store = Arc::new(
+        rt.block_on(connect_store(&sp))
+            .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?,
+    );
 
     let id = abs(&a.path);
     // 列出父目录拿到文件大小（远端不发 HEAD，list 顺带给）
