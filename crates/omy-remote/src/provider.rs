@@ -30,7 +30,7 @@
 //! 漏掉第 1 处编译器会报错（`match` 不穷尽），漏掉第 2、3 处不会——所以那两处
 //! 各自的注释里也标了这条。
 
-use crate::store::{Entry, RemoteStore};
+use crate::store::{Entry, RemoteStore, UploadMediaHint};
 use tokio::io::AsyncRead;
 use crate::telegram::TelegramStore;
 use crate::webdav::WebDavStore;
@@ -163,6 +163,13 @@ impl RemoteStore for PlaceStore {
         }
     }
 
+    async fn upload_media_hint(&self, id: &str) -> Result<Option<UploadMediaHint>> {
+        match self {
+            Self::WebDav(s) => s.upload_media_hint(id).await,
+            Self::Telegram(s) => s.upload_media_hint(id).await,
+        }
+    }
+
     async fn write(&self, dir_id: &str, name: &str, data: &[u8]) -> Result<Entry> {
         match self {
             Self::WebDav(s) => s.write(dir_id, name, data).await,
@@ -180,6 +187,20 @@ impl RemoteStore for PlaceStore {
         match self {
             Self::WebDav(s) => s.write_stream(dir_id, name, size, reader).await,
             Self::Telegram(s) => s.write_stream(dir_id, name, size, reader).await,
+        }
+    }
+
+    async fn write_stream_with_hint(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+        hint: Option<&UploadMediaHint>,
+    ) -> Result<Entry> {
+        match self {
+            Self::WebDav(s) => s.write_stream_with_hint(dir_id, name, size, reader, hint).await,
+            Self::Telegram(s) => s.write_stream_with_hint(dir_id, name, size, reader, hint).await,
         }
     }
 

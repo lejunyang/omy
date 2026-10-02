@@ -24,7 +24,7 @@ pub mod webdav;
 pub use caps::Capabilities;
 pub use provider::PlaceStore;
 pub use source::RemoteSource;
-pub use store::{Entry, RemoteStore};
+pub use store::{Entry, RemoteStore, UploadMediaHint};
 pub use transfer::{TaskState, TransferKind, TransferManager};
 
 /// 远程操作错误。

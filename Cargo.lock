@@ -3676,6 +3676,7 @@ dependencies = [
  "hyper-util",
  "image",
  "md-5",
+ "mime_guess",
  "omy-config",
  "omy-core",
  "omy-secret",

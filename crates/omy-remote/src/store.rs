@@ -13,6 +13,38 @@ use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::{Capabilities, Result};
 
+/// 从一个远程位置重新上传到另一个位置时，可保留的媒体语义。
+///
+/// 这是源驱动从真实远端元数据中解析出的提示，不由文件扩展名猜测。目标驱动若
+/// 不支持对应语义可忽略它并按普通文件写入；`.omy` 与普通文档不会产生提示，
+/// 因而始终保持逐字节的文件附件路径。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadMediaHint {
+    /// Telegram 照片。重新发送时仍作为照片，服务端可能按照片规则再次压缩。
+    Photo,
+    /// Telegram 视频 document 的必要属性。
+    Video {
+        round_message: bool,
+        supports_streaming: bool,
+        nosound: bool,
+        duration_millis: u64,
+        width: i32,
+        height: i32,
+        mime_type: String,
+    },
+    /// Telegram 音频 document 的必要属性。
+    Audio {
+        voice: bool,
+        duration_secs: u64,
+        title: Option<String>,
+        performer: Option<String>,
+        waveform: Option<Vec<u8>>,
+        mime_type: String,
+    },
+    /// Telegram GIF/动画 document。
+    Animated { mime_type: String },
+}
+
 /// 远程位置里的一个条目。
 ///
 /// 只有远程真实存在的元信息，不含任何需要解密才能得到的内容——
@@ -165,6 +197,15 @@ pub trait RemoteStore: Send + Sync {
         None
     }
 
+    /// 查询一个源条目在“下载后重新上传”时应保留的媒体语义。
+    ///
+    /// 默认没有额外语义。Telegram 会从原消息的 document attributes 解析，
+    /// 避免仅凭扩展名猜视频/音频/GIF。
+    async fn upload_media_hint(&self, id: &str) -> Result<Option<UploadMediaHint>> {
+        let _ = id;
+        Ok(None)
+    }
+
     /// 上传一个文件。
     ///
     /// # Errors
@@ -201,6 +242,21 @@ pub trait RemoteStore: Send + Sync {
             )));
         }
         self.write(dir_id, name, &data).await
+    }
+
+    /// 带可选媒体语义上传字节流。
+    ///
+    /// 默认忽略提示并走普通流式写入；只有能表达媒体语义的目标驱动需要覆盖。
+    async fn write_stream_with_hint(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+        hint: Option<&UploadMediaHint>,
+    ) -> Result<Entry> {
+        let _ = hint;
+        self.write_stream(dir_id, name, size, reader).await
     }
 
     /// 删除。

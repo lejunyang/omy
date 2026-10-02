@@ -40,6 +40,9 @@ blake2 = { workspace = true }
 percent-encoding = "2.3"
 # 添加位置时就校验地址，而不是等第一次浏览才报错
 url = "2.5"
+# Telegram 重新上传普通文件时沿用 grammers 的 MIME 推断规则；虽然 client 已
+# 间接依赖它，但产品代码直接调用就必须显式声明，避免依赖树变化后失效。
+mime_guess = "2.0"
 
 # Telegram 驱动。版本与「为什么钉 glass_pumpkin」写在根 Cargo.toml，
 # 这里只引用 workspace 声明——两处各自写版本迟早漂移。

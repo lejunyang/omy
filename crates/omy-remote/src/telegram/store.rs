@@ -47,7 +47,7 @@ use grammers_client::{tl, Client, InvocationError};
 use grammers_session::types::PeerRef;
 use tokio::io::AsyncRead;
 
-use crate::store::{Entry, RemoteStore};
+use crate::store::{Entry, RemoteStore, UploadMediaHint};
 use crate::{Capabilities, Error, Result};
 
 /// 分片下载的单片大小。**已由实测钉死，不要凭文档改。**
@@ -708,6 +708,191 @@ fn media_tab_of(m: &Media) -> MediaTab {
         // 贴纸等其它可下载媒体没有专门的栏，落文档栏（仍可下载打开）。
         _ => MediaTab::File,
     }
+}
+
+/// 从 Telegram 原消息提取重新上传时必须保留的媒体属性。
+///
+/// 不按扩展名推断：视频、音乐、GIF 与普通文件在 Telegram 中都是 Document，
+/// 只有 attributes 才是服务端实际使用的分类依据。动画优先于 Video——Telegram
+/// 的 GIF 常同时带 Animated 与 Video；若先返回 Video，复制后就会变成普通视频。
+fn upload_media_hint_of(m: &Media) -> Option<UploadMediaHint> {
+    match m {
+        Media::Photo(_) => Some(UploadMediaHint::Photo),
+        Media::Document(d) => {
+            let tl::enums::Document::Document(doc) = d.raw.document.as_ref()? else {
+                return None;
+            };
+            let mime_type = doc.mime_type.clone();
+            if doc
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, tl::enums::DocumentAttribute::Animated))
+            {
+                return Some(UploadMediaHint::Animated { mime_type });
+            }
+            for attr in &doc.attributes {
+                match attr {
+                    tl::enums::DocumentAttribute::Video(video) => {
+                        return Some(UploadMediaHint::Video {
+                            round_message: video.round_message,
+                            supports_streaming: video.supports_streaming,
+                            nosound: video.nosound,
+                            duration_millis: (video.duration.max(0.0) * 1000.0).round() as u64,
+                            width: video.w,
+                            height: video.h,
+                            mime_type,
+                        });
+                    }
+                    tl::enums::DocumentAttribute::Audio(audio) => {
+                        return Some(UploadMediaHint::Audio {
+                            voice: audio.voice,
+                            duration_secs: u64::try_from(audio.duration.max(0)).unwrap_or(0),
+                            title: audio.title.clone(),
+                            performer: audio.performer.clone(),
+                            waveform: audio.waveform.clone(),
+                            mime_type,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 按源消息的媒体语义构造 Telegram 底层输入媒体。
+///
+/// 单独收敛成纯函数，既让产品发送路径只有这一处判断，也让测试能直接检查
+/// `force_file` 与 document attributes——否则“视频又变成文件附件”只能到真机才发现。
+fn upload_input_media(
+    file: tl::enums::InputFile,
+    hint: Option<&UploadMediaHint>,
+) -> tl::enums::InputMedia {
+    let file_name = match &file {
+        tl::enums::InputFile::File(file) => file.name.clone(),
+        tl::enums::InputFile::Big(file) => file.name.clone(),
+        tl::enums::InputFile::StoryDocument(_) => String::new(),
+    };
+    match hint {
+        Some(UploadMediaHint::Photo) => tl::types::InputMediaUploadedPhoto {
+            spoiler: false,
+            file,
+            stickers: None,
+            ttl_seconds: None,
+            live_photo: false,
+            video: None,
+        }
+        .into(),
+        Some(UploadMediaHint::Video {
+            round_message,
+            supports_streaming,
+            nosound,
+            duration_millis,
+            width,
+            height,
+            mime_type,
+        }) => tl::types::InputMediaUploadedDocument {
+            nosound_video: *nosound,
+            force_file: false,
+            spoiler: false,
+            file,
+            thumb: None,
+            mime_type: mime_type.clone(),
+            attributes: vec![
+                tl::types::DocumentAttributeFilename { file_name }.into(),
+                tl::types::DocumentAttributeVideo {
+                    round_message: *round_message,
+                    supports_streaming: *supports_streaming,
+                    nosound: *nosound,
+                    duration: *duration_millis as f64 / 1000.0,
+                    w: *width,
+                    h: *height,
+                    preload_prefix_size: None,
+                    video_start_ts: None,
+                    video_codec: None,
+                }
+                .into(),
+            ],
+            stickers: None,
+            ttl_seconds: None,
+            video_cover: None,
+            video_timestamp: None,
+        }
+        .into(),
+        Some(UploadMediaHint::Audio {
+            voice,
+            duration_secs,
+            title,
+            performer,
+            waveform,
+            mime_type,
+        }) => tl::types::InputMediaUploadedDocument {
+            nosound_video: false,
+            force_file: false,
+            spoiler: false,
+            file,
+            thumb: None,
+            mime_type: mime_type.clone(),
+            attributes: vec![
+                tl::types::DocumentAttributeFilename { file_name }.into(),
+                tl::types::DocumentAttributeAudio {
+                    voice: *voice,
+                    duration: i32::try_from(*duration_secs).unwrap_or(i32::MAX),
+                    title: title.clone(),
+                    performer: performer.clone(),
+                    waveform: waveform.clone(),
+                }
+                .into(),
+            ],
+            stickers: None,
+            ttl_seconds: None,
+            video_cover: None,
+            video_timestamp: None,
+        }
+        .into(),
+        Some(UploadMediaHint::Animated { mime_type }) => {
+            tl::types::InputMediaUploadedDocument {
+                nosound_video: false,
+                force_file: false,
+                spoiler: false,
+                file,
+                thumb: None,
+                mime_type: mime_type.clone(),
+                attributes: vec![
+                    tl::types::DocumentAttributeFilename { file_name }.into(),
+                    tl::enums::DocumentAttribute::Animated,
+                ],
+                stickers: None,
+                ttl_seconds: None,
+                video_cover: None,
+                video_timestamp: None,
+            }
+            .into()
+        }
+        None => tl::types::InputMediaUploadedDocument {
+            nosound_video: false,
+            force_file: true,
+            spoiler: false,
+            file,
+            thumb: None,
+            mime_type: mime_guess::from_path(&file_name)
+                .first()
+                .map_or_else(|| String::from("application/octet-stream"), |m| m.essence_str().to_string()),
+            attributes: vec![tl::types::DocumentAttributeFilename { file_name }.into()],
+            stickers: None,
+            ttl_seconds: None,
+            video_cover: None,
+            video_timestamp: None,
+        }
+        .into(),
+    }
+}
+
+/// 按源消息的媒体语义构造 Telegram 输入消息。
+fn upload_message(uploaded: grammers_client::media::Uploaded, hint: Option<&UploadMediaHint>) -> InputMessage {
+    InputMessage::new().media(upload_input_media(uploaded.raw, hint))
 }
 
 fn embedded_thumb(m: &Media) -> Option<Vec<u8>> {
@@ -2198,6 +2383,20 @@ impl RemoteStore for TelegramStore {
         Ok(out)
     }
 
+    async fn upload_media_hint(&self, id: &str) -> Result<Option<UploadMediaHint>> {
+        let id = TelegramId::decode(id)?;
+        let client = self.client()?;
+        let peer = self.peer_ref(id.chat).await?;
+        let messages = client
+            .get_messages_by_id(peer, &[id.message])
+            .await
+            .map_err(|e| map_rpc(&e))?;
+        let Some(message) = messages.into_iter().flatten().next() else {
+            return Err(Error::NotFound(id.encode()));
+        };
+        Ok(message.media().as_ref().and_then(upload_media_hint_of))
+    }
+
     /// 上传一个文件到某个对话。
     ///
     /// # 一定要「作为文件发送」，不能作为照片或视频
@@ -2228,7 +2427,18 @@ impl RemoteStore for TelegramStore {
         dir_id: &str,
         name: &str,
         size: u64,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+    ) -> Result<Entry> {
+        self.write_stream_with_hint(dir_id, name, size, reader, None).await
+    }
+
+    async fn write_stream_with_hint(
+        &self,
+        dir_id: &str,
+        name: &str,
+        size: u64,
         mut reader: Box<dyn AsyncRead + Unpin + Send>,
+        hint: Option<&UploadMediaHint>,
     ) -> Result<Entry> {
         let client = self.client()?;
         let chat = Conversation::parse_dir_id(dir_id)?;
@@ -2251,7 +2461,7 @@ impl RemoteStore for TelegramStore {
             .map_err(|e| Error::Network(e.to_string()))?;
 
         let msg = client
-            .send_message(peer, InputMessage::new().file(uploaded))
+            .send_message(peer, upload_message(uploaded, hint))
             .await
             .map_err(|e| map_rpc(&e))?;
 
@@ -2283,7 +2493,15 @@ impl RemoteStore for TelegramStore {
             etag: None,
             // 刚上传完的文件，服务端还没回缩略图；下次列目录时会有
             thumb: None,
-            media_tab: None,
+            // 按实际发送的媒体提示回填分栏；普通上传仍是文件附件。
+            media_tab: match hint {
+                Some(UploadMediaHint::Photo | UploadMediaHint::Video { .. }) => {
+                    Some(MediaTab::Media.key())
+                }
+                Some(UploadMediaHint::Audio { .. }) => Some(MediaTab::Audio.key()),
+                Some(UploadMediaHint::Animated { .. }) => Some(MediaTab::Gif.key()),
+                None => Some(MediaTab::File.key()),
+            },
         })
     }
 
@@ -3246,6 +3464,98 @@ mod tests {
         assert!(matches!(MediaTab::Link.filter(), F::InputMessagesFilterUrl));
         assert!(matches!(MediaTab::Audio.filter(), F::InputMessagesFilterMusic));
         assert!(matches!(MediaTab::Gif.filter(), F::InputMessagesFilterGif));
+    }
+
+    /// 远程复制到 Telegram 时必须把源媒体属性带回去，而不是一律 force_file。
+    ///
+    /// 不这样会怎样：媒体栏里的视频经“上传至”后会落到文件栏，官方客户端也只把
+    /// 它显示成附件。普通 `.omy` 又必须保持 force_file，避免误走媒体处理路径。
+    #[test]
+    fn upload_media_hint_controls_telegram_document_attributes() {
+        fn input(name: &str) -> tl::enums::InputFile {
+            tl::types::InputFileBig {
+                id: 7,
+                parts: 3,
+                name: String::from(name),
+            }
+            .into()
+        }
+
+        let plain = upload_input_media(input("archive.omy"), None);
+        let tl::enums::InputMedia::UploadedDocument(plain) = plain else {
+            panic!("普通文件必须作为 uploaded document 发送");
+        };
+        assert!(plain.force_file, "普通文件必须 force_file，否则加密内容可能被媒体处理");
+        assert!(
+            plain
+                .attributes
+                .iter()
+                .all(|attr| !matches!(attr, tl::enums::DocumentAttribute::Video(_))),
+            "普通文件不能带视频属性"
+        );
+
+        let video = UploadMediaHint::Video {
+            round_message: false,
+            supports_streaming: true,
+            nosound: false,
+            duration_millis: 12_345,
+            width: 1920,
+            height: 1080,
+            mime_type: String::from("video/mp4"),
+        };
+        let tl::enums::InputMedia::UploadedDocument(video_doc) =
+            upload_input_media(input("clip.mp4"), Some(&video))
+        else {
+            panic!("视频必须作为 uploaded document 发送");
+        };
+        assert!(!video_doc.force_file, "视频不能 force_file，否则会显示为普通附件");
+        let video_attr = video_doc.attributes.iter().find_map(|attr| match attr {
+            tl::enums::DocumentAttribute::Video(value) => Some(value),
+            _ => None,
+        });
+        let video_attr = video_attr.expect("视频必须带 Video 属性");
+        assert!(video_attr.supports_streaming, "源视频的流式播放标志必须保留");
+        assert_eq!((video_attr.w, video_attr.h), (1920, 1080));
+        assert!((video_attr.duration - 12.345).abs() < f64::EPSILON);
+
+        let audio = UploadMediaHint::Audio {
+            voice: false,
+            duration_secs: 81,
+            title: Some(String::from("标题")),
+            performer: Some(String::from("作者")),
+            waveform: None,
+            mime_type: String::from("audio/mpeg"),
+        };
+        let tl::enums::InputMedia::UploadedDocument(audio_doc) =
+            upload_input_media(input("song.mp3"), Some(&audio))
+        else {
+            panic!("音频必须作为 uploaded document 发送");
+        };
+        assert!(!audio_doc.force_file, "音频不能 force_file，否则会落入文件栏");
+        assert!(
+            audio_doc
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, tl::enums::DocumentAttribute::Audio(_))),
+            "音频必须带 Audio 属性"
+        );
+
+        let animated = UploadMediaHint::Animated {
+            mime_type: String::from("video/mp4"),
+        };
+        let tl::enums::InputMedia::UploadedDocument(gif_doc) =
+            upload_input_media(input("loop.mp4"), Some(&animated))
+        else {
+            panic!("GIF 必须作为 uploaded document 发送");
+        };
+        assert!(!gif_doc.force_file, "GIF 不能 force_file，否则会落入文件栏");
+        assert!(
+            gif_doc
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, tl::enums::DocumentAttribute::Animated)),
+            "GIF 必须带 Animated 属性"
+        );
     }
 
     /// 未知/缺省栏标识回落到文件栏，且只有链接栏走 collect_links。

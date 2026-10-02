@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use omy_remote::{Capabilities, Error as RemoteError, RemoteStore};
+use omy_remote::{Capabilities, Error as RemoteError, RemoteStore, UploadMediaHint};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::commands::{CmdError, CmdResult, Shared};
@@ -39,6 +39,10 @@ pub struct RemoteCopyRequest {
     pub target_dir: String,
     pub target_name: String,
     pub mode: CopyMode,
+    /// 首次发起任务时从源端真实元数据解析，重试沿用，避免永久缓存已齐全时仍因
+    /// 源消息暂时不可达而无法上传；前端请求不接受也不持久化此字段。
+    #[serde(skip)]
+    media_hint: Option<UploadMediaHint>,
 }
 
 /// 目标端按能力选择的提交策略。
@@ -94,7 +98,7 @@ pub async fn remote_copy(
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<Transfers>>,
     retries: tauri::State<'_, Arc<CopyRetryStore>>,
-    req: RemoteCopyRequest,
+    mut req: RemoteCopyRequest,
 ) -> CmdResult<u64> {
     let keks = crate::place_keys::unlock_keks(&state);
     crate::telegram_cmds::ensure_connected(&reg, &req.source.place_id, &keks).await?;
@@ -102,6 +106,19 @@ pub async fn remote_copy(
         crate::telegram_cmds::ensure_connected(&reg, &req.target_place_id, &keks).await?;
     }
     validate_request(&reg, &req).await?;
+    let target = reg
+        .get(&req.target_place_id)
+        .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    if target.store.kind() == "telegram" {
+        let source = reg
+            .get(&req.source.place_id)
+            .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+        req.media_hint = source
+            .store
+            .upload_media_hint(&req.source.path)
+            .await
+            .map_err(remote_cmd_error)?;
+    }
 
     let source_name = req
         .source
@@ -221,6 +238,8 @@ async fn execute_copy(
         return Err(String::from("remote_readonly"));
     }
 
+    let media_hint = req.media_hint.clone();
+
     let cache_snapshot = match req.mode {
         CopyMode::PermanentCache => cache.snapshot(),
         CopyMode::Memory => None,
@@ -284,7 +303,13 @@ async fn execute_copy(
 
     let upload_result = target
         .store
-        .write_stream(&req.target_dir, &upload_name, total, Box::new(reader))
+        .write_stream_with_hint(
+            &req.target_dir,
+            &upload_name,
+            total,
+            Box::new(reader),
+            media_hint.as_ref(),
+        )
         .await;
     let producer_result = producer
         .await
