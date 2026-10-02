@@ -33,7 +33,10 @@ use omy_remote::telegram::qr::{encode_matrix, QrMatrix};
 use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
 use omy_remote::telegram::store::{FORWARD_PROTECTED, TelegramStore};
-use omy_remote::telegram::{connect, proxy, session as tgsession, tdata, ForwardTarget};
+use omy_remote::telegram::{
+    connect, proxy, resolve_app, resolve_proxy, session as tgsession, tdata, AppIdChoice,
+    ContextError, ForwardTarget,
+};
 use omy_remote::telegram::proxy::ConnCheck;
 use omy_remote::Error as RemoteError;
 
@@ -227,30 +230,48 @@ pub type SharedLogin = Arc<LoginTask>;
 ///
 /// `system` 每次调用都重新读取操作系统代理，因此端口变化会在下次建连时生效；
 /// `manual` 使用全局固定地址。位置对象和位置配置都不参与代理选择。
-fn resolve_proxy(
+/// 把共享代理解析错误翻成前端可分支的稳定码。
+fn cmd_proxy_err(e: ContextError) -> CmdError {
+    match e {
+        ContextError::BadProxyMode(_) => CmdError::code("tg_bad_proxy_mode"),
+        ContextError::Proxy(pe) => CmdError::with("tg_bad_proxy", detail(&pe.to_string())),
+        ContextError::Config(ce) => CmdError::with("config_read_failed", detail(&ce.to_string())),
+        // 代理解析路径不会走到应用身份错误
+        ContextError::AppId(ae) => CmdError::with("config_read_failed", detail(&ae.to_string())),
+    }
+}
+
+/// 解析当前全局 Telegram 代理策略。
+///
+/// `system` 每次调用都重新读取操作系统代理，因此端口变化会在下次建连时生效；
+/// `manual` 使用全局固定地址。位置对象和位置配置都不参与代理选择。
+///
+/// 逻辑与 CLI 同源（`omy_remote::telegram::resolve_proxy_with_system`）；这里把
+/// 已探测到的系统代理值作为参数传入，便于单测钉住三态矩阵。仅测试用。
+#[cfg(test)]
+fn resolve_proxy_with_values(
     mode: &str,
     manual: &str,
     system: Option<String>,
 ) -> CmdResult<Option<String>> {
-    let raw = match mode {
-        "system" => system,
-        "manual" => Some(String::from(manual)),
-        _ => return Err(CmdError::code("tg_bad_proxy_mode")),
+    use omy_remote::telegram::resolve_proxy_with_system;
+    let system = system.and_then(|s| proxy::normalize(&s).ok().flatten());
+    let remote = omy_config::Remote {
+        telegram_proxy_mode: String::from(mode),
+        telegram_proxy: String::from(manual),
+        ..Default::default()
     };
-    match proxy::normalize(raw.as_deref().unwrap_or_default()) {
-        Ok(value) => Ok(value.map(|p| p.as_str().to_string())),
-        Err(e) => Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
-    }
+    resolve_proxy_with_system(&remote, None, system)
+        .map(|p| p.map(|u| u.as_str().to_string()))
+        .map_err(cmd_proxy_err)
 }
 
 fn global_proxy() -> CmdResult<Option<String>> {
     let cfg = omy_config::Config::load()
         .map_err(|e| CmdError::with("config_read_failed", detail(&e.to_string())))?;
-    resolve_proxy(
-        &cfg.remote.telegram_proxy_mode,
-        &cfg.remote.telegram_proxy,
-        proxy::detect_system_proxy().map(|p| p.as_str().to_string()),
-    )
+    resolve_proxy(&cfg.remote, None)
+        .map(|p| p.map(|u| u.as_str().to_string()))
+        .map_err(cmd_proxy_err)
 }
 
 /// 返回当前全局 Telegram 代理的实际值，供登录页展示。
@@ -422,12 +443,19 @@ pub fn telegram_api_id_reset() -> CmdResult<()> {
 /// 与 CLI 同源（`appid_store::resolve`）。解不开信封时回落内置——连不上比
 /// 「用错身份」更糟；此时 status 会显示「填过但没读出来」，不会无声无息。
 fn login_app_id() -> AppId {
-    // 与 CLI resolve_app 同源：共享「解析 + 锁内迁移」。GUI 单独登录也会在
-    // Config 跨进程锁里把旧明文 api_hash 重封成信封（以前只 CLI 做，GUI
-    // 这里只 resolve 不写回，旧明文永远留在配置里）。无保护器时保留明文不动。
-    // 解不开信封/读不到配置时回落内置——连不上比用错身份更糟。
-    match omy_remote::telegram::appid_store::resolve_and_migrate() {
-        Ok(r) => r.app,
+    config_app_id()
+}
+
+/// 按配置解析建连用的应用身份（填了自定义就用自定义，否则内置）。
+///
+/// 登录、重连、打开/加解已落盘 session 共用这一处——必须与当初落盘时的 api_id
+/// 同源，否则 `SessionIdentity.check` 会拒用旧 session（换了 api_id 却拿旧 key
+/// 建连，会以难解释的方式失败）。走 `resolve_app(FromConfig)`：在配置跨进程锁里
+/// 把旧明文 api_hash 重封成信封。解不开信封/读不到配置时回落内置——连不上比
+/// 用错身份更糟；此时 status 会显示「填过但没读出来」，不会无声无息。
+fn config_app_id() -> AppId {
+    match resolve_app(AppIdChoice::FromConfig, None) {
+        Ok(app) => app,
         Err(_) => AppId::builtin(),
     }
 }
@@ -451,7 +479,9 @@ pub fn telegram_can_persist() -> bool {
 #[tauri::command]
 #[must_use]
 pub fn telegram_has_session(place_id: String) -> bool {
-    let app = AppId::builtin();
+    // 必须用配置同源的 api_id 去 load：落盘 session 记着建连时的 api_id，
+    // 拿内置 2040 去开一个自定义身份登录的 session 会直接 SessionMismatch。
+    let app = config_app_id();
     matches!(tgsession::load(&app, &place_id), Ok(Some(s)) if tgsession::has_auth_key(&s))
 }
 
@@ -631,7 +661,10 @@ pub async fn telegram_tdata_import(
 
     let proxy = global_proxy()?;
 
-    let app = AppId::builtin();
+    // tdata 的 auth key 出身于 Telegram Desktop（api_id 2040）：必须无视配置里的
+    // 自定义身份、强制内置，否则那份 key 是在 2040 下协商的，配别的 id 建连会以
+    // 难解释的方式失败。代理仍走 global_proxy() 与其它入口同源。
+    let app = resolve_app(AppIdChoice::Builtin, None).unwrap_or_else(|_| AppId::builtin());
     let device = DeviceInfo::current();
     let saved = tdata::to_saved_session(&auth, app.id());
 
@@ -779,7 +812,8 @@ pub async fn telegram_place_connect(
 ) -> CmdResult<RegisterOutcome> {
     let proxy = global_proxy()?;
 
-    let app = AppId::builtin();
+    // 收编 pending 落盘的 session：必须用与登录同源的 api_id，否则 SessionMismatch。
+    let app = config_app_id();
     let device = DeviceInfo::current();
     // 扫码那条路把 session 落在 PENDING_ACCOUNT 下（那时还没有位置 id），
     // 所以这里从它读回来
@@ -952,7 +986,7 @@ pub fn telegram_place_encrypt(
     // 会话里真实已解锁的 KEK 作**额外槽**——机器密钥被有意排除（session_keks 不含它），
     // 这样"输过的 omy 密码不用再输"，但加密的钥匙是用户现场输的这个密码。
     let session_keks = crate::place_keys::session_keks(&state);
-    let app = AppId::builtin();
+    let app = config_app_id();
     tgsession::encrypt_place_with_password(&app, &place_id, password.as_bytes(), params, &session_keks)
         .map_err(|e| CmdError::with("tg_encrypt_failed", detail(&e.to_string())))?;
     // 加密刚落盘，pw_kdf 已可读出：登记进全局 vault 表，让这个位置密码与
@@ -990,7 +1024,7 @@ pub fn telegram_place_decrypt(
     place_id: String,
 ) -> CmdResult<bool> {
     let keks = crate::place_keys::unlock_keks(&state);
-    let app = AppId::builtin();
+    let app = config_app_id();
     tgsession::decrypt_place(&app, &place_id, &keks)
         .map_err(|e| CmdError::with("tg_decrypt_failed", detail(&e.to_string())))
 }
@@ -1018,7 +1052,7 @@ pub fn telegram_place_unlock(
         return Err(CmdError::code("tg_unlock_empty_pw"));
     }
     let session_keks = crate::place_keys::session_keks(&state);
-    let app = AppId::builtin();
+    let app = config_app_id();
     // 先验证密码能解出 session（也确认它确实是加密格式）
     match tgsession::unlock_place_with_password(&app, &place_id, password.as_bytes(), &session_keks) {
         Ok(Some(_)) => {}
@@ -1068,7 +1102,7 @@ pub fn telegram_place_decrypt_pw(place_id: String, password: String) -> CmdResul
     if password.is_empty() {
         return Err(CmdError::code("tg_unlock_empty_pw"));
     }
-    let app = AppId::builtin();
+    let app = config_app_id();
     match tgsession::decrypt_place_with_password(&app, &place_id, password.as_bytes()) {
         Ok(changed) => Ok(changed),
         Err(tgsession::SessionError::Undecryptable) => Err(CmdError::code("tg_decrypt_wrong")),
@@ -1102,7 +1136,8 @@ pub async fn ensure_connected(
     }
     // 每次建连都解析全局策略。自动模式会重新读取当前系统代理，因此端口变化
     // 不需要修改任何 Telegram 位置；已有连接使用的代理不同则在这里换新。
-    let app = AppId::builtin();
+    // api_id 必须与当初登录落盘时同源，否则 SessionMismatch 拒用旧 session。
+    let app = config_app_id();
     let device = DeviceInfo::current();
     // **按这个位置自己的 session 重连。** 多账号下这一步不能含糊：
     // 读错文件的表现是用户点开 A 账号却看到 B 账号的对话列表，
@@ -2059,7 +2094,7 @@ mod tests {
     #[test]
     fn global_proxy_strategy_uses_only_selected_source() {
         assert_eq!(
-            resolve_proxy(
+            resolve_proxy_with_values(
                 "system",
                 "socks5://127.0.0.1:7897",
                 Some(String::from("socks5://127.0.0.1:6480")),
@@ -2071,7 +2106,7 @@ mod tests {
             "自动模式必须使用当前系统代理，不能混入历史手动地址"
         );
         assert_eq!(
-            resolve_proxy(
+            resolve_proxy_with_values(
                 "manual",
                 "http://127.0.0.1:7897",
                 Some(String::from("socks5://127.0.0.1:6480")),
@@ -2083,7 +2118,7 @@ mod tests {
             "手动模式必须忽略系统代理，并按 Telegram 支持的 scheme 归一化"
         );
         assert_eq!(
-            resolve_proxy("system", "ignored", None).ok().flatten(),
+            resolve_proxy_with_values("system", "ignored", None).ok().flatten(),
             None,
             "系统未启用代理时自动模式应直连"
         );
@@ -2092,12 +2127,12 @@ mod tests {
     #[test]
     fn invalid_global_proxy_strategy_is_rejected() {
         assert_eq!(
-            resolve_proxy("legacy", "", None).err().map(|e| e.code),
+            resolve_proxy_with_values("legacy", "", None).err().map(|e| e.code),
             Some(String::from("tg_bad_proxy_mode")),
             "未知模式不能静默回落，否则损坏的配置会表现成随机直连"
         );
         assert_eq!(
-            resolve_proxy("manual", "socks5://", None).err().map(|e| e.code),
+            resolve_proxy_with_values("manual", "socks5://", None).err().map(|e| e.code),
             Some(String::from("tg_bad_proxy")),
             "手动模式的无效地址必须在建连前明确报错"
         );
