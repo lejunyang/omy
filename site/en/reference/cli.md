@@ -328,7 +328,9 @@ omy remote <COMMAND>
 
 Remote locations share the **same configuration** (`remote.places`) as the GUI: a location added on the CLI is recognized by the GUI and vice versa. Location ids look like `p1`, `p2`…; `<location>` below accepts either an id or a display name — a name that matches more than one location errors out and asks you to use the id.
 
-Exit codes: 2 for usage errors, and 1 for every other remote failure (so scripts can tell "bad invocation" from "ran but failed").
+Exit codes: 2 for usage errors; **3 for a wrong password on an encrypted Telegram place** (`TG_PLACE_WRONG_PASSWORD`); and 1 for every other remote failure (so scripts can tell "bad invocation" from "ran but failed"). Connection-stage failures expose a structured `TG_*` code in `--json` error.code — see [Exit codes › Remote and virtual](./exit-codes#exit-codes-for-remote-and-virtual-commands).
+
+**Once you pass `--config <PATH>`, the app identity (api_id / api_hash) and proxy used to establish a Telegram connection are both resolved from that same file**, never falling back to the default config — otherwise the place list comes from `--config` while the session is opened with the default config's api_id, and the server rejects it because the session envelope is bound to a different api_id.
 
 ### Location management
 
@@ -368,13 +370,15 @@ Unless you pass `--anonymous`, the password is **required** (interactive hidden 
 
 These write operations take `--force`: by default they **refuse to overwrite** an existing same-name target — add it to confirm. `upload` overwrites an existing remote file, `download` / `decrypt` overwrite an existing local file, `copy` overwrites an existing target remote file. For `delete`, `--force` skips the "permanent delete" confirm.
 
+**`ls` / `upload` / `download` / `mkdir` / `delete` / `move` / `cache pin` / `cache unpin` all share one set of `--password-stdin` / `--password-file <PATH>` / `--password-env <VAR>`.** That is the **place session password**, not a `.omy` file password, and it is **only actually needed for a per-place-encrypted Telegram place whose local machine key cannot auto-unlock it**: WebDAV places never need it (their password is unwrapped by the local credential-store envelope); an unencrypted Telegram place does not; an encrypted place the machine key can already open does not either. When it is not needed, the command **neither prompts nor consumes stdin** — piping `--password-stdin` at an unencrypted place will not swallow the input a later stage of your pipeline needs. If it *is* needed but no channel was given and you are not on a TTY, you get `TG_PLACE_PASSWORD_REQUIRED` (exit 1).
+
 Real behavior worth knowing:
 
 - **`upload` takes a file or a whole directory.** A local file uploads that file; a local directory recurses the whole tree, mirroring it under `<remote-dir>/<dir-name>/…`. A directory upload is **not transactional** — one file failing does not roll back its already-uploaded siblings; the command records `files_ok` / `files_failed` per item and exits non-zero if any failed, saying so explicitly.
 - **Commit is an atomic temp-then-rename.** When the target supports rename/delete, the upload writes a random temp name and MOVEs it into place on success, cleaning up the temp object precisely on failure; targets without rename write the final name directly and clean up best-effort, surfacing any residual risk in the error. `upload` / `copy` / `decrypt` all share this commit logic.
-- `copy` copies the **raw bytes (ciphertext)** — both ends need no shared password. The transfer is **bounded and streamed** (a 64 KiB backpressured pipe, only a block or two in memory), so large files do not get aggregated into memory.
+- `copy` copies the **raw bytes (ciphertext)**, so the two ends need not share the same **file** password. The transfer is **bounded and streamed** (a 64 KiB backpressured pipe, only a block or two in memory), so large files do not get aggregated into memory. But each end can itself be an encrypted Telegram place, so the password channel is split per side: the source uses `--source-password-stdin` / `--source-password-file` / `--source-password-env`, the destination `--dest-password-*`; each is **only needed when that end is an encrypted Telegram place the machine key cannot auto-unlock**. **Both ends reading stdin is rejected**: a single stdin stream can be read only once, so when *both* ends genuinely need a password and you picked `--source-password-stdin` / `--dest-password-stdin` for both, the command errors out — switch one end to `--*-file` / `--*-env`. (When only one end needs a password, the other end's stray stdin flag is never read and is harmless.)
 - `move` is currently a **same-directory rename** (distinct from `remote rename <location> <new-name>`, which changes the local display name). Cross-directory move is limited by the store abstraction and is rejected before any request.
-- `decrypt` handles a **single `.omy` file** only: remote directories and encrypted folders (containers) are refused. It reads only the header and then decrypts chunk-by-chunk on the fly, never landing the whole ciphertext first; the filename comes from inside the header and is sanitized, and the local output directory is created if missing. The file password comes via `--password-*` or an interactive prompt.
+- `decrypt` handles a **single `.omy` file** only: remote directories and encrypted folders (containers) are refused. It reads only the header and then decrypts chunk-by-chunk on the fly, never landing the whole ciphertext first; the filename comes from inside the header and is sanitized, and the local output directory is created if missing. There are **two distinct passwords — don't mix them**: `--password-stdin` / `--password-file` / `--password-env` are the **`.omy` file's own password**, while `--place-password-stdin` / `--place-password-file` / `--place-password-env` unlock the **encrypted Telegram place session**. The latter is not needed when the place is unencrypted.
 - A remote path containing `..` segments is rejected before any request is sent, to prevent climbing out of the intended directory; relative paths are normalized to a leading `/`.
 - A read-only destination is rejected before any request is sent.
 
@@ -418,6 +422,10 @@ omy remote telegram <COMMAND>
 
 `phone` adds `--phone <number>` (international format, e.g. `+861…`; may be omitted interactively) and a code channel `--code-env` / `--code-file` / `--code-stdin`. `tdata import` adds `--name`, `--proxy`, and the tdata local passcode `--passcode-stdin` / `--passcode-file` / `--passcode-env`.
 
+**Every connection entry shares one connection context.** QR `login`, `phone`, `tdata import`, and every later reconnect / open-session all resolve the same api_id / api_hash and proxy from the same config (`--proxy <URL>` is a one-shot override for that single login). The reason: a saved session records the api_id it was created under inside its envelope and checks it on load, so the api_id used to open/reconnect must be the same one used to log in — otherwise changing the config trips `SessionMismatch` (the old session can't be reused; log in once again).
+
+**tdata is the one boundary to this same-source rule.** The auth key inside desktop `tdata` was negotiated under Telegram Desktop's own api_id (the built-in **2040**), so `tdata import` **ignores any custom app identity in your config and forces the built-in 2040** — connecting under a different id fails in confusing ways. **The proxy still shares the other entries' source**; this boundary pins only the api_id.
+
 The QR code is printed to **stderr**: half-block Unicode in a real terminal, falling back to plain ASCII when piped/redirected (non-TTY), and a copyable `tg://login?token=...` link is **always** printed so you can open it elsewhere on your phone. The code refreshes automatically when it expires. The two-step password never appears on the command line; in a non-interactive (piped) run a wrong password fails after a single attempt instead of waiting on the pipe.
 
 ::: warning The successful `--json` result carries no login ticket
@@ -448,6 +456,8 @@ This is a **global** policy shared by every account and every login / browse / f
 
 A custom `api_hash` is sealed by the OS credential-store master key before being written; with no usable credential store the CLI **refuses to write plaintext** and makes you use the built-in identity. A config where an older version stored the `api_hash` as plaintext is automatically re-sealed into an envelope inside the config cross-process lock on next read (with no credential store it is left as-is rather than dropped).
 
+The `api_hash` is a credential and **never leaks through any output**: it never reaches argv, `app-id-status` / `remote show` and their `--json` report only the public api_id and "built-in / custom", and errors like `SessionMismatch` carry just the two api_id numbers, never the hash. The connection-context type even skips deriving `Debug`, so a hand-written debug print reports only the public id and whether a proxy is set.
+
 #### Per-place encryption (offline)
 
 These only transform the on-disk session envelope; they **do not touch the network**:
@@ -460,6 +470,8 @@ These only transform the on-disk session envelope; they **do not touch the netwo
 | `decrypt <location>` | Remove per-place encryption, back to machine-key protection |
 
 The place password always goes via `--password-stdin` / `--password-file` / `--password-env`. The CLI has no long-lived session like the GUI: `unlock` only answers "is the password right?" — the process exits and the key in memory is gone, so the next access must supply the password again via a file command's `--password-*`. `lock` only confirms it is an encrypted location; an unencrypted one errors with `[tg_not_encrypted]` instead of pretending to be locked. Errors are stable bracket-prefixed strings (`[tg_unlock_wrong]` wrong password / `[tg_no_protector]` no credential store, refusing plaintext / `[tg_no_session]` no session yet), all with exit code 1 — scripts should match the prefix, not the exit code.
+
+Keep the two Telegram error vocabularies apart: these **offline** commands (and `targets` / `forward` / `search` / `group`) print a `[tg_*]` bracket string in the message with exit code always 1; **connection-stage** failures (when `ls` / `upload` / `download` / `copy` / `decrypt` etc. dial an encrypted Telegram place) use the structured `TG_*` codes that land in `--json` error.code, with a wrong password at exit 3.
 
 #### Online operations (require a real Telegram connection)
 

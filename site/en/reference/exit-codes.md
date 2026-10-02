@@ -45,13 +45,29 @@ So **the exit code of `verify` is not a reliable way to test whether a password 
 |---|---|---|
 | Usage error on `remote` / `remote telegram` / `remote virtual` | 2 | from clap |
 | General remote failure (unreachable, read/write error, `telegram check` down) | 1 | lets scripts tell it apart from "bad invocation" (2) |
+| Wrong password for an encrypted Telegram place | **3** | `TG_PLACE_WRONG_PASSWORD` |
 | Wrong `remote virtual` password | **3** | `VIRTUAL_WRONG_PASSWORD` |
 | An interactive confirm on `remote virtual place remove` answered "no" | 8 | same as file commands |
 | Other `remote virtual` failure | 1 | see the `VIRTUAL_*` structured codes below |
 
 `remote virtual` errors are structured: `--json` puts a code in `error.code` such as `VIRTUAL_LOCKED` (encrypted place, no password supplied), `VIRTUAL_WRONG_PASSWORD` (wrong password = 3), `VIRTUAL_NOT_ENCRYPTED`, `VIRTUAL_NO_SUCH_PLACE` — match that, not the localized message.
 
-Telegram place operations (`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`) always exit 1 on error and are distinguished by a stable bracket prefix in the message: `[tg_unlock_wrong]` wrong password, `[tg_no_protector]` no credential store, refusing plaintext, `[tg_not_encrypted]` place not encrypted, `[tg_no_session]` no session yet, `[tg_cross_chat]` forward entries from different chats. Match the prefix, not the exit code.
+When connecting to a remote place fails (`ls` / `upload` / `download` / `copy` / `decrypt` / `cache pin` and friends), `--json` puts a structured `TG_*` code in `error.code`:
+
+| `error.code` | Exit code | Meaning |
+|---|---|---|
+| `TG_PLACE_WRONG_PASSWORD` | **3** | A place password was supplied but cannot unlock the encrypted Telegram place |
+| `TG_PLACE_PASSWORD_REQUIRED` | 1 | Encrypted place, auto-unlock by the machine key failed, and there is no TTY nor password channel (scripts: use `--password-*`) |
+| `TG_PLACE_LOCKED` | 1 | Place is encrypted and stayed locked (no password given); prompts for a password channel |
+| `TG_NO_SESSION` | 1 | No usable Telegram session for this place; run `telegram login` first |
+| `TG_SESSION_EXPIRED` | 1 | Session is unauthorized / expired; log in again |
+| `TG_CONNECT_NO_PROXY` | 1 | Direct connection failed and no proxy is configured |
+| `TG_SESSION_UNREADABLE` | 1 | The session file could not be read |
+| `TG_CONNECT_FAILED` | 1 | Any other connection failure |
+
+WebDAV places never produce these: they need no on-the-spot place password.
+
+Telegram **offline** place operations (`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`) always exit 1 on error and are distinguished by a stable bracket prefix in the message: `[tg_unlock_wrong]` wrong password, `[tg_no_protector]` no credential store, refusing plaintext, `[tg_not_encrypted]` place not encrypted, `[tg_no_session]` no session yet, `[tg_cross_chat]` forward entries from different chats. Match the prefix, not the exit code. This is a separate vocabulary from the `TG_*` table above: those offline ops print a human-readable bracket prefix when they transform the on-disk session envelope, whereas the `TG_*` codes are machine-readable, land in `--json` error.code, and fire when a real connection is being established.
 
 ## Using them in scripts
 
