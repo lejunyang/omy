@@ -25,11 +25,13 @@ mod stores;
 pub mod telegram;
 pub mod virt;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use omy_config::{Config, SavedPlace};
+use omy_remote::telegram::session;
 use omy_remote::{placebook, RemoteStore};
 use serde_json::{Value, json};
 
@@ -193,12 +195,146 @@ fn find_place(cfg: &Config, needle: &str) -> Result<SavedPlace> {
 ///
 /// `password` 是本进程现场拿到的位置密码（仅 per-place 加密的 Telegram 位置需要，
 /// 未加密位置传 `None`）。
+///
+/// `config_path` 是 CLI `--config` 显式指定的配置文件路径。Telegram 建连要用的
+/// 应用身份（api_id/api_hash）与代理都从这个**同一文件**解析——绝不能退回默认配置，
+/// 否则位置清单来自 `--config` 文件、登录态却拿默认配置里的 api_id 去连，
+/// 服务端因 session 信封绑定的是另一个 api_id 而拒绝。
 pub(crate) async fn connect_store(
     sp: &SavedPlace,
     password: Option<&[u8]>,
+    config_path: Option<&std::path::Path>,
 ) -> Result<stores::AnyStore> {
-    stores::connect_store(sp, password).await
+    stores::connect_store(sp, password, config_path).await
 }
+
+// ---- 位置密码的统一安全通道 ----
+
+/// 位置密码安全通道（flatten 到单位置文件命令：ls/upload/download/mkdir/delete/move/cache pin|unpin）。
+///
+/// 三条通道互斥，复用 [`PasswordSource`] 校验。**绝不出现 `--password <明文>`**
+/// （在 main.rs 就被拦）。注意这是「位置 session 密码」，与 `.omy` 文件密码是两码事。
+#[derive(Debug, Args, Default, Clone)]
+pub struct PlacePasswordArgs {
+    /// 位置密码（仅 per-place 加密的 Telegram 位置需要）：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+    /// 位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+    /// 位置密码：从标准输入读取
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
+impl PlacePasswordArgs {
+    /// 转成底层读取通道。
+    pub fn source(&self) -> PasswordSource {
+        PasswordSource {
+            env: self.password_env.clone(),
+            file: self.password_file.clone(),
+            stdin: self.password_stdin,
+        }
+    }
+}
+
+/// 这个位置本次连接是否真的需要现场密码。
+///
+/// 判定顺序（与 `telegram status` 同口径）：
+/// - WebDAV → 永远 false（密码由本机凭据库信封解开，与现场输入无关）。
+/// - Telegram 未加密 → false。
+/// - Telegram 已加密但本机机器 KEK 能开 → false（用户无感，不提示）。
+/// - 已加密且机器 KEK 开不了 → true（才需要隐藏交互或 `--password-*`）。
+pub(crate) fn place_needs_password(sp: &SavedPlace) -> Result<bool> {
+    if sp.kind != "telegram" {
+        return Ok(false);
+    }
+    if !session::is_encrypted(&sp.id)? {
+        return Ok(false);
+    }
+    let machine: Vec<_> = session::machine_fallback_kek().into_iter().collect();
+    Ok(!session::place_unlocked_with_keks(&sp.id, &machine)?)
+}
+
+/// 解析一个位置本次连接要用的现场密码（单位置命令用这个）。
+///
+/// 关键：先探测「到底要不要密码」。不需要时直接 `Ok(None)`——**不提示、也不消费
+/// stdin**（否则对未加密位置误读 stdin 会吃掉后面真正要用 stdin 的东西）。
+pub(crate) fn resolve_place_password(
+    sp: &SavedPlace,
+    pw: &PlacePasswordArgs,
+) -> Result<Option<Vec<u8>>> {
+    let needs = place_needs_password(sp)?;
+    resolve_place_password_if(sp, pw, needs)
+}
+
+/// `resolve_place_password` 的内部版：调用方已自己算过 `needs`（copy 要两端一起算）。
+pub(crate) fn resolve_place_password_if(
+    sp: &SavedPlace,
+    pw: &PlacePasswordArgs,
+    needs: bool,
+) -> Result<Option<Vec<u8>>> {
+    if !needs {
+        return Ok(None);
+    }
+    let src = pw.source();
+    src.validate()?;
+    // 走到这里 = 这个位置真的要密码。
+    // 显式通道（env/file/stdin）：read_password 自己负责非 TTY 报错与错误提示。
+    if !src.is_interactive() {
+        return Ok(Some(read_password(
+            &src,
+            &format!("位置 {} 密码", sp.id),
+            false,
+        )?));
+    }
+    // 无通道：有 TTY 就隐藏提示读；非 TTY 立即结构化报错，绝不挂起等 stdin。
+    if !std::io::stdin().is_terminal() {
+        return Err(RemoteConnErr::place_password_required(sp.id.clone()).into());
+    }
+    let raw = rpassword::prompt_password(format!("位置 {} 密码: ", sp.id))?;
+    if raw.is_empty() {
+        bail!("密码不能为空");
+    }
+    Ok(Some(raw.into_bytes()))
+}
+
+/// remote 连接阶段的结构化错误：机器可读 `code` + 退出码，`--json` 下原样输出。
+///
+/// 与 `virt::VErr` 同型：业务层返回它，经 `anyhow!(e)` 装箱后 `report_error` 仍能
+/// 在错误链里下钻到它，于是 `--json error.code` 不再退化成 `GENERAL_ERROR`。
+#[derive(Debug)]
+pub(crate) struct RemoteConnErr {
+    pub(crate) code: &'static str,
+    pub(crate) exit: i32,
+    pub(crate) message: String,
+}
+
+impl RemoteConnErr {
+    fn new(code: &'static str, exit: i32, message: impl Into<String>) -> Self {
+        Self { code, exit, message: message.into() }
+    }
+
+    /// 非 TTY、加密位置、又没给密码通道。
+    fn place_password_required(id: String) -> Self {
+        Self::new(
+            "TG_PLACE_PASSWORD_REQUIRED",
+            1,
+            format!(
+                "位置 {id} 已加密且本机自动解锁失败，但当前没有可交互终端，也未提供密码通道。\n\
+                 \n  脚本场景请用 --password-stdin / --password-file <路径> / --password-env <变量名> 之一"
+            ),
+        )
+    }
+}
+
+impl std::fmt::Display for RemoteConnErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for RemoteConnErr {}
 
 /// 跨进程互斥地重读最新配置，只对 `places` 做本次那一处改动后写回。
 ///
@@ -482,7 +618,7 @@ mod tests {
             user_id: None,
         };
         let rt = rt().expect("可建 runtime");
-        let res = rt.block_on(connect_store(&sp, None));
+        let res = rt.block_on(connect_store(&sp, None, None));
         assert!(res.is_err(), "未知类型应当被拒");
         assert!(res.unwrap_err().to_string().contains("some-future-kind"));
     }
@@ -543,5 +679,41 @@ mod tests {
         assert_eq!(ids, vec!["p2"], "GUI 新增的 p2 不能被 CLI 的快照覆盖冲掉: {ids:?}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// WebDAV 位置永远不需要现场密码（密码由本机凭据库信封解）。
+    ///
+    /// 不这样会怎样：对 WebDAV 位置误判成「需要密码」，脚本里没给 --password-*
+    /// 就被非 TTY 报错挡住——而 WebDAV 压根不该碰密码。
+    #[test]
+    fn webdav_place_never_needs_password() {
+        let sp = dummy_place("p1", "nas");
+        assert!(!place_needs_password(&sp).unwrap(), "WebDAV 不应需要位置密码");
+    }
+
+    /// 不需要密码的位置：解析器返回 None，且**不消费 stdin**。
+    ///
+    /// 不这样会怎样：即使位置是 WebDAV/未加密，解析器仍去读 stdin，把后面命令真正
+    /// 要用的输入吃掉。这里没给任何 stdin 输入、又是非 TTY 环境——若它真去读 stdin，
+    /// read_password 会在「非 TTY 无通道」处报错；返回 Ok(None) 即证明它提前短路了。
+    #[test]
+    fn unencrypted_place_resolver_touches_nothing() {
+        let sp = dummy_place("p1", "nas");
+        let pw_args = PlacePasswordArgs {
+            password_env: None,
+            password_file: None,
+            password_stdin: true, // 故意标 stdin：不需要密码时也不该读它
+        };
+        let got = resolve_place_password(&sp, &pw_args).unwrap();
+        assert!(got.is_none(), "WebDAV 不应产出任何密码");
+    }
+
+    /// RemoteConnErr 的结构化 code/exit 字段稳定，供 --json 下钻。
+    #[test]
+    fn remote_conn_err_fields_are_stable() {
+        let e = RemoteConnErr::place_password_required("p1".to_string());
+        assert_eq!(e.code, "TG_PLACE_PASSWORD_REQUIRED");
+        assert_eq!(e.exit, 1);
+        assert!(e.message.contains("p1"));
     }
 }

@@ -216,6 +216,29 @@ pub fn report_error(out: &Out, err: &anyhow::Error) -> i32 {
         return v.exit;
     }
 
+    // remote 连接阶段的结构化错误（TG_PLACE_LOCKED / TG_NO_SESSION /
+    // TG_PLACE_WRONG_PASSWORD 等）：与 VErr 平行，--json 下原样输出 code/exit。
+    // 以前这些错误是带 [tg_xxx] 的 anyhow 字符串，下钻不到，error.code 退化成
+    // GENERAL_ERROR——脚本想按 code 区分「密码错」和「没登录态」就做不到。
+    if let Some(e) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<crate::cmd::remote::RemoteConnErr>())
+    {
+        if out.is_json() {
+            let v = json!({
+                "error": {
+                    "code": e.code,
+                    "exit_code": e.exit,
+                    "message": e.message,
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        } else {
+            eprintln!("错误: {}", e.message);
+        }
+        return e.exit;
+    }
+
     if out.is_json() {
         let v = json!({
             "error": {

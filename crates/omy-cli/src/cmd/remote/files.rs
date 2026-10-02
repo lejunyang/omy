@@ -8,7 +8,10 @@ use omy_remote::RemoteStore;
 use serde_json::json;
 use tokio::io::AsyncRead;
 
-use super::{Ctx, abs, connect_store, find_place, parent_name, rt};
+use super::{
+    Ctx, PlacePasswordArgs, abs, connect_store, find_place, parent_name, place_needs_password,
+    resolve_place_password, resolve_place_password_if, rt,
+};
 use super::stores::AnyStore;
 use crate::output::human_bytes;
 
@@ -29,6 +32,9 @@ pub struct LsArgs {
     pub place: String,
     /// 远程目录路径，默认根目录
     pub path: Option<String>,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote upload <位置> <本地路径> <远程目录>`。
@@ -45,6 +51,9 @@ pub struct UploadArgs {
     /// 允许覆盖已存在的远程同名文件
     #[arg(long)]
     pub force: bool,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote download <位置> <远程文件> <本地路径>`。
@@ -61,6 +70,9 @@ pub struct DownloadArgs {
     /// 允许覆盖已存在的本地文件
     #[arg(long)]
     pub force: bool,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote copy <源位置>:<源文件> <目标位置>:<目标路径>`。
@@ -75,6 +87,24 @@ pub struct CopyArgs {
     /// 允许覆盖已存在的目标远程文件
     #[arg(long)]
     pub force: bool,
+    /// 源位置密码：从环境变量读取（传变量名；仅源端是加密 Telegram 位置时需要）
+    #[arg(long, value_name = "VAR")]
+    pub source_password_env: Option<String>,
+    /// 源位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub source_password_file: Option<PathBuf>,
+    /// 源位置密码：从标准输入读取
+    #[arg(long)]
+    pub source_password_stdin: bool,
+    /// 目标位置密码：从环境变量读取（传变量名；仅目标端是加密 Telegram 位置时需要）
+    #[arg(long, value_name = "VAR")]
+    pub dest_password_env: Option<String>,
+    /// 目标位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub dest_password_file: Option<PathBuf>,
+    /// 目标位置密码：从标准输入读取
+    #[arg(long)]
+    pub dest_password_stdin: bool,
 }
 
 /// `omy remote mkdir <位置> <远程目录>`。
@@ -85,6 +115,9 @@ pub struct MkdirArgs {
     /// 远程目录路径（如 /backup/2026），缺失的中间层级会一并创建
     #[arg(value_name = "远程目录")]
     pub path: String,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote delete <位置> <远程路径>`。
@@ -98,6 +131,9 @@ pub struct DeleteArgs {
     /// 跳过确认（删除不可恢复）
     #[arg(long)]
     pub force: bool,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote move <位置> <源路径> <目标路径>`。
@@ -111,6 +147,9 @@ pub struct MoveArgs {
     /// 目标远程路径（与源同目录时即改名；跨目录暂不支持）
     #[arg(value_name = "目标路径")]
     pub dest: String,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// `omy remote decrypt <位置> <远程.omy> <本地目录>`。
@@ -136,6 +175,16 @@ pub struct DecryptArgs {
     /// 从标准输入读取密码
     #[arg(long)]
     pub password_stdin: bool,
+    /// 位置密码（解锁加密的 Telegram 位置 session）：从环境变量读取（传变量名）。
+    /// 注意与上面的 `--password-*` 区分：那是 `.omy` 文件本身的密码。
+    #[arg(long, value_name = "VAR")]
+    pub place_password_env: Option<String>,
+    /// 位置密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub place_password_file: Option<PathBuf>,
+    /// 位置密码：从标准输入读取
+    #[arg(long)]
+    pub place_password_stdin: bool,
 }
 
 /// `omy remote ls`。
@@ -144,10 +193,11 @@ pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
     let dir = a.path.as_deref().map(abs).unwrap_or_default();
     ensure_safe_remote(&dir)?;
 
+    let pw = resolve_place_password(&sp, &a.pw)?;
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp, None))
-        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+        .block_on(connect_store(&sp, pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接位置 {} 失败", sp.id))?;
     let entries = rt
         .block_on(store.list(&dir))
         .map_err(|e| anyhow!("列目录失败: {e}"))?;
@@ -293,9 +343,10 @@ pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
     let dir = if dir == "/" { String::new() } else { dir };
 
     let rt = rt()?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
     let store = rt
-        .block_on(connect_store(&sp, None))
-        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+        .block_on(connect_store(&sp, pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接位置 {} 失败", sp.id))?;
     let caps = rt.block_on(store.effective_capabilities(&dir))?;
     omy_remote::require_capability("write", caps.write)
         .map_err(|e| anyhow!(e.to_string()))?;
@@ -367,9 +418,10 @@ pub fn download(ctx: &Ctx, a: &DownloadArgs) -> Result<()> {
     }
 
     let rt = rt()?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
     let store = rt
-        .block_on(connect_store(&sp, None))
-        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+        .block_on(connect_store(&sp, pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接位置 {} 失败", sp.id))?;
     let total = rt
         .block_on(entry_by_path(&store, &id))?
         .size
@@ -426,13 +478,40 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
     let src_sp = find_place(ctx.cfg, &src_place)?;
     let dst_sp = find_place(ctx.cfg, &dst_place)?;
 
+    // 把平铺的 --source-password-* / --dest-password-* 收进两个独立通道。
+    let src_pw_args = PlacePasswordArgs {
+        password_env: a.source_password_env.clone(),
+        password_file: a.source_password_file.clone(),
+        password_stdin: a.source_password_stdin,
+    };
+    let dst_pw_args = PlacePasswordArgs {
+        password_env: a.dest_password_env.clone(),
+        password_file: a.dest_password_file.clone(),
+        password_stdin: a.dest_password_stdin,
+    };
+
+    // 先探两端「到底要不要密码」。不需要的那端即使标了 stdin 也不读，避免误吞 stdin。
+    let src_need = place_needs_password(&src_sp)?;
+    let dst_need = place_needs_password(&dst_sp)?;
+    // 双 stdin 冲突：只有两端都真的需要密码、且都选 stdin 才拒绝——
+    // 一条 stdin 流只能读一次；只有一端需要时另一端的 stdin 标志无害（根本不读）。
+    if src_need && dst_need && a.source_password_stdin && a.dest_password_stdin {
+        bail!(
+            "源与目标都需要位置密码，且都指定了 --source-password-stdin/--dest-password-stdin：\
+             一条 stdin 只能读一次。请把其中一端改用 --source-password-file/--source-password-env\
+             或 --dest-password-file/--dest-password-env"
+        );
+    }
+    let src_pw = resolve_place_password_if(&src_sp, &src_pw_args, src_need)?;
+    let dst_pw = resolve_place_password_if(&dst_sp, &dst_pw_args, dst_need)?;
+
     let rt = rt()?;
     let src = rt
-        .block_on(connect_store(&src_sp, None))
-        .map_err(|e| anyhow!("连接源位置 {} 失败: {e}", src_sp.id))?;
+        .block_on(connect_store(&src_sp, src_pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接源位置 {} 失败", src_sp.id))?;
     let dst = rt
-        .block_on(connect_store(&dst_sp, None))
-        .map_err(|e| anyhow!("连接目标位置 {} 失败: {e}", dst_sp.id))?;
+        .block_on(connect_store(&dst_sp, dst_pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接目标位置 {} 失败", dst_sp.id))?;
     if !dst.capabilities().any_write() {
         bail!("目标位置 {} 是只读的，不能复制过去", dst_sp.id);
     }
@@ -528,12 +607,13 @@ fn connect_with_caps(
     ctx: &Ctx,
     place: &str,
     dir: &str,
+    pw: Option<&[u8]>,
 ) -> Result<(tokio::runtime::Runtime, AnyStore, omy_remote::Capabilities)> {
     let sp = find_place(ctx.cfg, place)?;
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp, None))
-        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+        .block_on(connect_store(&sp, pw, ctx.config_path))
+        .with_context(|| format!("连接位置 {} 失败", sp.id))?;
     let caps = rt
         .block_on(store.effective_capabilities(dir))
         .map_err(|e| anyhow!("查询位置能力失败: {e}"))?;
@@ -546,7 +626,9 @@ pub fn mkdir(ctx: &Ctx, a: &MkdirArgs) -> Result<()> {
     ensure_safe_remote(&path)?;
     let dir = if path == "/" { String::new() } else { path.clone() };
 
-    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &dir)?;
+    let sp = find_place(ctx.cfg, &a.place)?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
+    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &dir, pw.as_deref())?;
     omy_remote::require_capability("create_dir", caps.create_dir)
         .map_err(|e| anyhow!(e.to_string()))?;
 
@@ -566,7 +648,9 @@ pub fn delete(ctx: &Ctx, a: &DeleteArgs) -> Result<()> {
     ensure_safe_remote(&path)?;
     let (parent, _name) = parent_name(&path);
 
-    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &parent)?;
+    let sp = find_place(ctx.cfg, &a.place)?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
+    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &parent, pw.as_deref())?;
     omy_remote::require_capability("delete", caps.delete)
         .map_err(|e| anyhow!(e.to_string()))?;
 
@@ -610,7 +694,10 @@ pub fn r#move(ctx: &Ctx, a: &MoveArgs) -> Result<()> {
         bail!("源与目标同名，无需移动");
     }
 
-    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &src_parent)?;
+    let sp = find_place(ctx.cfg, &a.place)?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
+    let (rt, store, caps) =
+        connect_with_caps(ctx, &a.place, &src_parent, pw.as_deref())?;
     omy_remote::require_capability("rename", caps.rename)
         .map_err(|e| anyhow!(e.to_string()))?;
 
@@ -637,10 +724,17 @@ pub fn decrypt(ctx: &Ctx, a: &DecryptArgs) -> Result<()> {
         .with_context(|| format!("创建本地目录 {} 失败", a.dest_dir.display()))?;
 
     let sp = find_place(ctx.cfg, &a.place)?;
+    // 位置密码（解锁加密 Telegram session）与 .omy 文件密码是两码事。
+    let place_pw_args = PlacePasswordArgs {
+        password_env: a.place_password_env.clone(),
+        password_file: a.place_password_file.clone(),
+        password_stdin: a.place_password_stdin,
+    };
+    let pw = resolve_place_password(&sp, &place_pw_args)?;
     let rt = rt()?;
     let store = rt
-        .block_on(connect_store(&sp, None))
-        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+        .block_on(connect_store(&sp, pw.as_deref(), ctx.config_path))
+        .with_context(|| format!("连接位置 {} 失败", sp.id))?;
 
     let entry = rt.block_on(entry_by_path(&store, &id))?;
     if entry.is_dir {

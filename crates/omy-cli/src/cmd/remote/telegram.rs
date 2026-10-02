@@ -1275,7 +1275,8 @@ fn connect_tg(
         Some(read_password(&src, "位置密码", false)?)
     };
     let rt = rt()?;
-    let store = rt.block_on(super::connect_store(&sp, pw.as_deref()))?;
+    let store = rt
+        .block_on(super::connect_store(&sp, pw.as_deref(), ctx.config_path))?;
     match store {
         super::stores::AnyStore::Tg(tg) => Ok((sp, tg)),
         super::stores::AnyStore::Dav(_) => {

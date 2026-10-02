@@ -20,7 +20,10 @@ use omy_remote::source::RemoteSource;
 use omy_remote::RemoteStore;
 use serde_json::json;
 
-use super::{Ctx, abs, cache_root, connect_store, find_place, parent_name, rt};
+use super::{
+    Ctx, PlacePasswordArgs, abs, cache_root, connect_store, find_place, parent_name,
+    resolve_place_password, rt,
+};
 use crate::output::human_bytes;
 
 /// 缓存子命令。
@@ -44,6 +47,9 @@ pub struct PinArgs {
     /// 远程文件路径（WebDAV 路径，如 /backup/a.omy）
     #[arg(value_name = "远程文件")]
     pub path: String,
+    /// 位置密码通道（仅 per-place 加密的 Telegram 位置需要）
+    #[command(flatten)]
+    pub pw: PlacePasswordArgs,
 }
 
 /// 打开当前配置对应的缓存。
@@ -136,10 +142,11 @@ fn clear(ctx: &Ctx) -> Result<()> {
 fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
     let cache = open_cache(ctx)?;
+    let pw = resolve_place_password(&sp, &a.pw)?;
     let rt = rt()?;
     let store = Arc::new(
-        rt.block_on(connect_store(&sp, None))
-            .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?,
+        rt.block_on(connect_store(&sp, pw.as_deref(), ctx.config_path))
+            .with_context(|| format!("连接位置 {} 失败", sp.id))?,
     );
 
     let id = abs(&a.path);

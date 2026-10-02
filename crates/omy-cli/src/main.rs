@@ -288,6 +288,88 @@ mod tests {
         );
     }
 
+    /// 单位置文件命令必须真的挂上位置密码三通道（--password-stdin/file/env），
+    /// copy 必须挂上前缀化的 --source-password-*/--dest-password-*，
+    /// decrypt 必须挂上 --place-password-*（与文件密码 --password-* 区分）。
+    ///
+    /// 不这样会怎样：加密的 Telegram 位置在脚本里打不开，而 help 里看不到任何
+    /// 输入密码的口子，功能等于不存在；copy 两端若共用同名 --password-* 会歧义。
+    #[test]
+    fn remote_file_commands_expose_place_password_flags() {
+        use clap::CommandFactory;
+        let mut root = Cli::command();
+        let remote = root.find_subcommand_mut("remote").expect("remote 存在");
+
+        // 单位置命令：--password-stdin / --password-file / --password-env 都可达。
+        for sub in ["ls", "upload", "download", "mkdir", "delete", "move"] {
+            let cmd = remote.find_subcommand_mut(sub).expect("remote 文件子命令存在");
+            let help = cmd.render_help().to_string();
+            assert!(help.contains("--password-stdin"), "{sub} help 缺 --password-stdin:\n{help}");
+            assert!(help.contains("--password-file"), "{sub} help 缺 --password-file");
+            assert!(help.contains("--password-env"), "{sub} help 缺 --password-env");
+            assert!(
+                !help.contains("--password "),
+                "{sub} 不应出现明文 --password <值>"
+            );
+        }
+        // copy：两端独立、前缀无歧义，且不能出现裸 --password-stdin。
+        let copy = remote
+            .find_subcommand_mut("copy")
+            .expect("remote copy 存在")
+            .render_help()
+            .to_string();
+        assert!(copy.contains("--source-password-stdin"), "copy 缺 --source-password-stdin:\n{copy}");
+        assert!(copy.contains("--source-password-file"));
+        assert!(copy.contains("--source-password-env"));
+        assert!(copy.contains("--dest-password-stdin"), "copy 缺 --dest-password-stdin");
+        assert!(copy.contains("--dest-password-file"));
+        assert!(copy.contains("--dest-password-env"));
+        assert!(
+            !copy.contains("--password-stdin\n") && !copy.contains("--password-file"),
+            "copy 不应出现无前缀的 --password-file/stdin:\n{copy}"
+        );
+
+        // decrypt：位置密码用 --place-password-*，与文件密码 --password-* 并存不冲突。
+        let decrypt = remote
+            .find_subcommand_mut("decrypt")
+            .expect("remote decrypt 存在")
+            .render_help()
+            .to_string();
+        assert!(decrypt.contains("--place-password-stdin"), "decrypt 缺 --place-password-stdin:\n{decrypt}");
+        assert!(decrypt.contains("--place-password-file"));
+        assert!(decrypt.contains("--place-password-env"));
+        assert!(decrypt.contains("--password-stdin"), "decrypt 仍应保留文件密码通道 --password-stdin");
+
+        // cache pin/unpin 也要位置密码通道。
+        let cache = remote.find_subcommand_mut("cache").expect("cache 存在");
+        let pin = cache
+            .find_subcommand_mut("pin")
+            .expect("cache pin 存在")
+            .render_help()
+            .to_string();
+        assert!(pin.contains("--password-stdin"), "cache pin 缺 --password-stdin:\n{pin}");
+    }
+
+    /// copy 的双端密码标志必须能被 clap 解析成独立字段。
+    #[test]
+    fn copy_parses_source_and_dest_password_channels() {
+        let c = Cli::try_parse_from([
+            "omy", "remote", "copy", "p1:/a.omy", "p2:/b.omy",
+            "--source-password-env", "SRC_PW",
+            "--dest-password-file", "dst.txt",
+        ])
+        .unwrap();
+        let ok = match &c.command {
+            Command::Remote(cmd::remote::Cmd::Copy(a)) => {
+                a.source_password_env.as_deref() == Some("SRC_PW")
+                    && a.dest_password_file.as_ref().is_some_and(|p| p.ends_with("dst.txt"))
+                    && !a.source_password_stdin
+            }
+            _ => false,
+        };
+        assert!(ok, "copy 应解析出独立的源/目标密码字段");
+    }
+
     #[test]
     fn subcommand_required() {
         assert!(Cli::try_parse_from(["omy"]).is_err());

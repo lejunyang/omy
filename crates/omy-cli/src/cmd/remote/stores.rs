@@ -160,10 +160,18 @@ impl RemoteStore for AnyStore {
 ///
 /// 类型不认识、WebDAV 地址非法、或 Telegram 连不上 / 没有登录态 / 位置锁着
 /// （缺位置密码）时返回。
-pub(crate) async fn connect_store(sp: &SavedPlace, password: Option<&[u8]>) -> Result<AnyStore> {
+/// 打开一个位置的存储。`password` 是 Telegram 位置的 per-place 密码（可选；
+/// WebDAV 不用）。`config_path` 是 CLI `--config` 指定的配置文件，Telegram 建连的
+/// 应用身份与代理都从它解析（见 [`connect_telegram`]），不退回默认配置。
+pub(crate) async fn connect_store(
+    sp: &SavedPlace,
+    password: Option<&[u8]>,
+    config_path: Option<&std::path::Path>,
+) -> Result<AnyStore> {
     match sp.kind.as_str() {
         "webdav" => connect_webdav(sp),
-        "telegram" => connect_telegram(sp, password).await,
+        // Telegram 位置需要联网：先确认本机能拿到登录态，拿不到就提前报错。
+        "telegram" => connect_telegram(sp, password, config_path).await,
         other => bail!("位置 {} 是不支持的类型 {other:?}", sp.id),
     }
 }
@@ -189,50 +197,91 @@ fn connect_webdav(sp: &SavedPlace) -> Result<AnyStore> {
 
 /// 用已保存的 Telegram 登录态连上去。
 ///
-/// 代理默认取系统代理（与 GUI 首次探测同口径）；CLI 不在本切片里给文件命令
-/// 加 `--proxy`，需要时可先 `telegram login --proxy`。
+/// `config_path` 是 CLI `--config` 指定的文件：建连用的应用身份（api_id/api_hash）
+/// 与代理都从它解析（`load_at`），而不是退回默认配置——位置清单来自 `--config`
+/// 文件，登录态信封绑的也是这份 api_id，两者必须同源。
 ///
 /// `password` 是本进程现场拿到的位置密码（per-place 加密位置才需要）。
 /// 它与机器回退 KEK 一起在 [`connect_with_password`] 里拼成钥匙集合——这正是
 /// 「CLI 能用当前进程解锁的 KEK 打开 per-place 加密 session」的落点：CLI 是
 /// 一次性进程、没有 GUI 那样的长期会话，KEK 全靠本次现场密码现派。
-async fn connect_telegram(sp: &SavedPlace, password: Option<&[u8]>) -> Result<AnyStore> {
+async fn connect_telegram(
+    sp: &SavedPlace,
+    password: Option<&[u8]>,
+    config_path: Option<&std::path::Path>,
+) -> Result<AnyStore> {
     use omy_remote::telegram::{AppIdChoice, TelegramConnectionContext, connect};
 
-    // 与登录/重连同源：按配置解析实际 api_id 与代理。以前这里硬编码内置 2040 +
-    // 系统代理——自定义 api_id 登录的 session 在此会 SessionMismatch，配置里的
-    // manual 代理也被绕过。
-    let ctx = TelegramConnectionContext::load(AppIdChoice::FromConfig, None)?;
+    // 与登录/重连同源：从 --config 指定文件解析实际 api_id 与代理（load_at）。
+    // 以前这里 load(.., None) 退回默认配置——自定义 api_id 登录的 session 会
+    // SessionMismatch，配置里的 manual 代理也被绕过。
+    let ctx = TelegramConnectionContext::load_at(config_path, AppIdChoice::FromConfig, None)?;
     let conn = connect::connect_with_password(ctx.app(), ctx.device(), ctx.proxy(), &sp.id, password)
         .await
-        .map_err(|e| map_connect_err(&sp.id, e))?;
+        .map_err(|e| map_connect_err(&sp.id, password.is_some(), e))?;
     Ok(AnyStore::Tg(TelegramStore::from_connection(
         conn.client,
         conn.runner,
     )))
 }
 
-/// 把连接错误翻成对用户可操作、脚本可匹配的信息。
+/// 把连接错误翻成**结构化**错误（机器可读 code + 退出码），`--json` 下原样输出。
 ///
-/// 稳定错误码用方括号常量前缀（与 `tg_tdata_*` 同款），脚本可按 `[tg_...]` 匹配。
-fn map_connect_err(id: &str, e: omy_remote::telegram::connect::ConnectError) -> anyhow::Error {
+/// 以前这里返回带 `[tg_xxx]` 的 anyhow 字符串，但 report_error 下钻不到字符串里的
+/// 结构化码，`--json error.code` 会退化成 GENERAL_ERROR。现在返回 [`RemoteConnErr`]，
+/// 经 `anyhow!(e)` 装箱后仍能在错误链里被下钻到。
+fn map_connect_err(
+    id: &str,
+    password_supplied: bool,
+    e: omy_remote::telegram::connect::ConnectError,
+) -> super::RemoteConnErr {
     use omy_remote::telegram::connect::ConnectError;
+    use super::RemoteConnErr;
     match e {
-        // 位置被 per-place 加密锁着、又没给对密码：明确提示用密码通道，
-        // 而不是含糊的「解不开登录态」把人引去重新扫码。
-        ConnectError::Locked => anyhow!(
-            "[tg_locked] 位置 {id} 已加密但当前密码解不开它。\n\
-             \n  请通过密码通道提供该位置密码：\n\
-             \n    --password-stdin        从管道读取\
-             \n    --password-file <路径>  从文件读取\
-             \n    --password-env <变量名> 从环境变量读取"
-        ),
-        ConnectError::NoSession => anyhow!(
-            "[tg_no_session] 位置 {id} 没有可用的 Telegram 登录态，请先扫码登录（omy remote telegram login {id}）"
-        ),
-        ConnectError::Unauthorized => {
-            anyhow!("[tg_sign_in] 位置 {id} 的登录态已失效，请重新登录（omy remote telegram login {id}）")
+        // 位置被 per-place 加密锁着、又没解开它：分两种。
+        // - 用户给过密码还解不开 → 密码错（退出 3，与文件密码错同口径）；
+        // - 没给密码 → 锁定态，提示用密码通道，而不是含糊地引去重新扫码。
+        ConnectError::Locked => {
+            if password_supplied {
+                RemoteConnErr::new("TG_PLACE_WRONG_PASSWORD", 3, format!("位置 {id} 密码不正确"))
+            } else {
+                RemoteConnErr::new(
+                    "TG_PLACE_LOCKED",
+                    1,
+                    format!(
+                        "位置 {id} 已加密但当前密码解不开它。\n\
+                         \n  请通过密码通道提供该位置密码：\n\
+                         \n    --password-stdin        从管道读取\
+                         \n    --password-file <路径>  从文件读取\
+                         \n    --password-env <变量名> 从环境变量读取"
+                    ),
+                )
+            }
         }
-        other => anyhow!("[tg_connect] 连接 Telegram 位置 {id} 失败：{other}"),
+        ConnectError::NoSession => RemoteConnErr::new(
+            "TG_NO_SESSION",
+            1,
+            format!("位置 {id} 没有可用的 Telegram 登录态，请先扫码登录（omy remote telegram login {id}）"),
+        ),
+        ConnectError::Unauthorized => RemoteConnErr::new(
+            "TG_SESSION_EXPIRED",
+            1,
+            format!("位置 {id} 的登录态已失效，请重新登录（omy remote telegram login {id}）"),
+        ),
+        ConnectError::ConnectNoProxy(d) => RemoteConnErr::new(
+            "TG_CONNECT_NO_PROXY",
+            1,
+            format!("直连 Telegram 失败且未配置代理（检查网络或在 config 里配 manual 代理）：{d}"),
+        ),
+        ConnectError::Session(d) => RemoteConnErr::new(
+            "TG_SESSION_UNREADABLE",
+            1,
+            format!("位置 {id} 的登录态读取失败：{d}"),
+        ),
+        ConnectError::Connect(d) => RemoteConnErr::new(
+            "TG_CONNECT_FAILED",
+            1,
+            format!("连接 Telegram 位置 {id} 失败：{d}"),
+        ),
     }
 }
