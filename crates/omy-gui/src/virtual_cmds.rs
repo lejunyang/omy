@@ -308,6 +308,7 @@ fn crypto_err(e: crate::virtual_place::VirtualCryptoError) -> CmdError {
         E::WrongPassword => CmdError::code("virtual_wrong_password"),
         E::NoSuchPlace => CmdError::code("virtual_no_such_place"),
         E::Already => CmdError::code("virtual_already"),
+        E::NotEncrypted => CmdError::code("virtual_not_encrypted"),
         E::Other(d) => CmdError::with("virtual_encrypt_failed", serde_json::Value::String(d)),
     }
 }

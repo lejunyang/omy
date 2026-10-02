@@ -21,6 +21,7 @@ pub mod source;
 pub mod store;
 pub mod telegram;
 pub mod transfer;
+pub mod virtuals;
 pub mod webdav;
 
 pub use caps::Capabilities;

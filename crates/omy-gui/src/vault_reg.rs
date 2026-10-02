@@ -24,24 +24,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// 一个 vault 的派生材料（与 [`crate::virtual_place::VaultMaterial`] 同形状，
-/// 这里独立定义，避免本模块反向依赖虚拟位置模块）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct VaultMaterial {
-    pub salt: [u8; 16],
-    pub m_kib: u32,
-    pub t: u32,
-    pub p: u32,
-}
-
-impl VaultMaterial {
-    /// salt 的十六进制，作去重/持久化键。复用 `commands::hex_of`，避免同一
-    /// 编码逻辑出现两份实现。
-    #[must_use]
-    pub fn salt_hex(&self) -> String {
-        crate::commands::hex_of(&self.salt)
-    }
-}
+/// 一个 vault 的派生材料（salt + Argon2 参数）。
+///
+/// 定义在 [`omy_remote::virtuals`]，GUI 与虚拟位置业务共用同一份；这里 re-export
+/// 是为了让既有 `crate::vault_reg::VaultMaterial` 路径继续可用。
+pub use omy_remote::virtuals::VaultMaterial;
 
 /// 全局 vault 登记表。键为 salt 十六进制（值里也含 salt，键只用于去重）。
 pub struct VaultRegistry {
