@@ -52,7 +52,7 @@ pub enum Cmd {
     Rename(RenameArgs),
     /// 列出远程目录内容
     Ls(files::LsArgs),
-    /// 上传本地文件到远程目录
+    /// 上传本地文件或整个目录到远程目录
     Upload(files::UploadArgs),
     /// 下载远程文件到本地
     Download(files::DownloadArgs),

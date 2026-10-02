@@ -31,13 +31,13 @@ pub struct LsArgs {
     pub path: Option<String>,
 }
 
-/// `omy remote upload <位置> <本地文件> <远程目录>`。
+/// `omy remote upload <位置> <本地路径> <远程目录>`。
 #[derive(Debug, Args)]
 pub struct UploadArgs {
     /// 位置 id（如 p1）或显示名
     pub place: String,
-    /// 本地文件路径
-    #[arg(value_name = "本地文件")]
+    /// 本地路径（文件则上传该文件；目录则递归上传整棵树）
+    #[arg(value_name = "本地路径")]
     pub local: PathBuf,
     /// 远程目标目录（WebDAV 路径，如 / 或 /backup）
     #[arg(value_name = "远程目录")]

@@ -245,6 +245,49 @@ mod tests {
         assert!(Cli::try_parse_from(["omy", "-q", "-v", "info", "a.omy"]).is_err());
     }
 
+    /// `remote upload` 的 help 必须诚实宣称「文件或目录」语义。
+    ///
+    /// 不这样会怎样：clap 把 value_name 写成「本地文件」、about 写成「上传本地文件」，
+    /// 用户照 help 以为只能传单文件；而实现里 `cmd/remote/files.rs` 已对 `meta.is_dir()`
+    /// 走了递归上传。help 与实现不一致是加密工具里最容易被忽视的一类——
+    /// 用户不知道能传目录，功能等于不存在。这个测试直接渲染 help 字符串并断言
+    /// value_name 与描述都含目录语义，而不是只断言解析成功。
+    #[test]
+    fn upload_help_advertises_directory_input() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let upload = cmd
+            .find_subcommand_mut("remote")
+            .expect("remote 子命令存在")
+            .find_subcommand_mut("upload")
+            .expect("remote upload 子命令存在");
+        let help = upload.render_help().to_string();
+
+        // usage 里第二个位置参数的 value_name 必须是「本地路径」而非「本地文件」。
+        // 若有人把 value_name 改回「本地文件」，这条立刻红。
+        assert!(
+            help.contains("<本地路径>"),
+            "usage 应展示 <本地路径>（与文档站 cli.md 对齐），实际 help：\n{help}"
+        );
+        assert!(
+            !help.contains("<本地文件>"),
+            "value_name 不应再写死成「本地文件」，实际：\n{help}"
+        );
+
+        // about 首行必须提到目录，不能只说「上传本地文件」。
+        let first_line = help.lines().next().unwrap_or("");
+        assert!(
+            first_line.contains("目录"),
+            "help 首行 about 应包含目录语义，实际首行：{first_line:?}"
+        );
+
+        // 位置参数的描述必须让用户知道目录会递归上传。
+        assert!(
+            help.contains("目录则递归上传") || help.contains("递归"),
+            "参数描述应说明目录会递归上传，实际 help：\n{help}"
+        );
+    }
+
     #[test]
     fn subcommand_required() {
         assert!(Cli::try_parse_from(["omy"]).is_err());
