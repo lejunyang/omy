@@ -91,6 +91,8 @@ pub enum Cmd {
     Search(SearchArgs),
     /// 创建一个只含自己的私密超级群（转发归档目标）
     Group(GroupArgs),
+    /// 查看 Telegram 位置的本地会话状态（不联网）
+    Status(StatusArgs),
 }
 
 /// `omy remote telegram login`（扫码）。
@@ -249,6 +251,13 @@ pub struct GroupArgs {
     pub title: String,
 }
 
+/// `omy remote telegram status`。
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    /// 只看这一个位置（id 或显示名）；缺省列出全部 Telegram 位置
+    pub place: Option<String>,
+}
+
 impl PlacePwArgs {
     /// 转成通用密码来源。
     fn source(&self) -> PasswordSource {
@@ -350,6 +359,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Forward(a) => forward(ctx, a),
         Cmd::Search(a) => search(ctx, a),
         Cmd::Group(a) => create_group(ctx, a),
+        Cmd::Status(a) => status(ctx, a),
     }
 }
 
@@ -1353,6 +1363,50 @@ fn create_group(ctx: &Ctx, a: &GroupArgs) -> Result<()> {
         &format!("已创建私密群 {}（{}）", target.title, target.dir_id),
         &json!({ "dir_id": target.dir_id, "title": target.title, "kind": target.kind }),
     );
+    Ok(())
+}
+
+/// `omy remote telegram status`：本地会话状态，**不联网**。
+///
+/// 给脚本一个不依赖网络/账号的健康检查：位置是否已登录、是否 per-place 加密、
+/// 本机机器密钥能否直接打开（决定要不要在文件命令里补 `--password-*`）。
+/// 真要验证「连不连得上服务端」仍走一次实际命令（ls），那一段要联网，不在此。
+fn status(ctx: &Ctx, a: &StatusArgs) -> Result<()> {
+    let machine: Vec<_> = session::machine_fallback_kek().into_iter().collect();
+    let mut rows = Vec::new();
+    for sp in &ctx.cfg.remote.places {
+        if sp.kind != "telegram" {
+            continue;
+        }
+        if let Some(want) = &a.place
+            && sp.id != *want && sp.name != *want
+        {
+            continue;
+        }
+        let encrypted = session::is_encrypted(&sp.id).unwrap_or(false);
+        let machine_open = session::place_unlocked_with_keks(&sp.id, &machine).unwrap_or(false);
+        rows.push(json!({
+            "id": sp.id,
+            "name": sp.name,
+            "encrypted": encrypted,
+            "machine_open": machine_open,
+            // 加密但机器开不了 → 访问必须补 --password-*
+            "needs_password": encrypted && !machine_open,
+        }));
+    }
+    if rows.is_empty() {
+        bail!("[tg_no_place] 没有匹配的 Telegram 位置（用 `omy remote list` 查看）");
+    }
+    let human = rows
+        .iter()
+        .map(|r| {
+            let enc = if r["encrypted"].as_bool() == Some(true) { "加密" } else { "未加密" };
+            let open = if r["machine_open"].as_bool() == Some(true) { "机器可开" } else { "需密码" };
+            format!("{}（{}）：{enc}，{open}", r["id"], r["name"])
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ctx.out.result(&human, &json!({ "places": rows }));
     Ok(())
 }
 
