@@ -37,6 +37,22 @@ title: 退出码
 所以**用 `verify` 的退出码判断密码对不对是不可靠的**。要区分这两种情况，用 `decrypt --verify-only`，它在密码错时返回 3。
 :::
 
+## 远程与虚拟命令的退出码
+
+`remote` 下的命令复用这套码，但有自己的细分：
+
+| 情况 | 退出码 | 说明 |
+|---|---|---|
+| `remote` / `remote telegram` / `remote virtual` 用法错 | 2 | clap 报 |
+| 远程一般失败（连不上、读写失败、`telegram check` 不通） | 1 | 与「用法错 2」可据此区分 |
+| `remote virtual` 密码错 | **3** | `VIRTUAL_WRONG_PASSWORD` |
+| `remote virtual place remove` 等交互确认选否 | 8 | 与文件命令一致 |
+| `remote virtual` 其余失败 | 1 | `VIRTUAL_*` 结构化码见下 |
+
+`remote virtual` 的错误是结构化的：`--json` 的 `error.code` 形如 `VIRTUAL_LOCKED`（加密位置没给密码）、`VIRTUAL_WRONG_PASSWORD`（密码错 = 3）、`VIRTUAL_NOT_ENCRYPTED`、`VIRTUAL_NO_SUCH_PLACE` 等，脚本应匹配它而不是中文文案。
+
+Telegram 位置类操作（`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`）的错误退出码恒为 1，靠消息里带方括号的稳定前缀区分：`[tg_unlock_wrong]` 密码错、`[tg_no_protector]` 无凭据库拒绝落明文、`[tg_not_encrypted]` 位置没加密、`[tg_no_session]` 还没登录态、`[tg_cross_chat]` 转发条目不在同一对话。脚本匹配前缀，不要匹配退出码。
+
 ## 在脚本里用
 
 ```bash

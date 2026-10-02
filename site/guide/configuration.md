@@ -77,6 +77,7 @@ GUI 的「设置」写的就是这个文件，命令行与图形界面读同一�
 
 - **保存时会保留 omy 不认识的键。** 这样在新旧版本之间切换不会互相抹掉对方写入的设置。
 - **保存会丢失注释。** 手写配置文件时加的注释，在图形界面里保存一次之后就没有了。
+- **GUI 与 CLI 并发写不会互相冲掉。** 位置的增删改（`remote.places`）与 Telegram `api_hash` 的写回都在同一把跨进程配置锁内完成「读最新磁盘 → 改本次那一处 → 原子写回」，而不是拿启动时的快照整体覆盖——否则 CLI 刚加的位置会被常驻 GUI 的旧快照写回时静默删掉。锁是 OS 建议锁（配置文件旁的 `config.toml.lock`，进程崩溃随句柄自动释放，无残留锁文件），拿不到锁 5 秒超时即报错；读路径不加锁，临时文件 + 改名让读者要么看到旧文件要么看到新文件，不会读到半截。
 
 ## 优先级
 
@@ -188,6 +189,8 @@ scan_omy_only = true
 | `remote.cache_wifi_only` | `false` | 仅 Wi-Fi 下缓存（移动端，暂未生效）|
 | `remote.scan_concurrency` | `8` | 远程扫描并发请求数，1–32（仅 GUI）|
 | `remote.places` | `[]` | 已保存的远程位置，GUI 与 CLI `remote` 命令共同维护；密码在其中以加密信封形式保存 |
+| `remote.telegram_api_id` | 无 | 自定义 Telegram api_id（整数）；留空用内置身份（GUI 与 CLI `telegram app-id-*` 共用） |
+| `remote.telegram_api_hash` | 无 | 自定义 api_hash，以系统凭据库封成的加密信封保存；旧版本写成的明文会在跨进程锁内自动重封，无凭据库时拒绝写明文 |
 | `remote.scan_omy_only` | `true` | 远程扫描是否只看 `.omy`（仅 GUI）|
 
 ::: warning original_action 改成 trash 或 delete 要想清楚

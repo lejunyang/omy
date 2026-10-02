@@ -258,27 +258,33 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 |---|---|---|
 | WebDAV location: add (with liveness probe) / list / show / rename / remove | ✅ | ✅ |
 | Telegram: QR-code login (terminal QR) | ✅ | ✅ |
+| Telegram: phone-number `phone`, import desktop `tdata` | ✅ | ✅ (wired, not tested against a real account) |
 | Telegram: detach (keep session) vs logout (destroy session) | ✅ | ✅ |
-| List directory, upload a single file, download, cross-location ciphertext copy | ✅ | ✅ |
+| Telegram: global proxy proxy-*, pre-login `check`, local `status` | ✅ | ✅ (`check` probes live) |
+| Telegram: custom app identity app-id-* (encrypted envelope) | ✅ | ✅ |
+| Telegram: per-place encrypt / unlock / lock / decrypt (offline) | ✅ | ✅ (offline) |
+| Telegram: forward targets / forward, server-side search, self-archive group | ✅ | ✅ (wired, not tested against a real account) |
+| List directory `ls`, download `download`, cross-location ciphertext `copy` | ✅ | ✅ |
+| Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
+| `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |
+| Remote single-file `decrypt` streamed down-and-decrypt to local | ✅ | ✅ |
 | Ciphertext cache: status / clear / pin / unpin | ✅ | ✅ |
-| Preview / stream video & images, incremental scan, thumbnails | ✅ | ❌ out of CLI scope |
-| Decrypt-to-local (streamed, resumable via cache) | ✅ | ❌ (`remote download` fetches ciphertext, it does not decrypt) |
-| Directory upload, resumable transfer, transfer manager page | ✅ | ❌ (one file at a time; `copy` is bounded streaming but does not resume on failure) |
-| Telegram: phone-number login, import desktop `tdata`, forwarding, server-side search, channel message view | ✅ | ❌ |
-| Virtual remote locations (favorites) | ✅ | ❌ |
-| Delete / rename / create remote folders | ❌ | ❌ (not built on either side yet) |
+| Virtual locations (favorites) place / folder / ref / encrypt / lock / unlock | ✅ | ✅ (offline) |
+| Preview / stream video & images, incremental scan, thumbnails | ✅ | N/A (GUI-only) |
+| Transfer manager page, resuming a failed transfer | ✅ | N/A (CLI is a short-lived process) |
+| Broadcast-channel message view, sponsored-message stance, in-place preview/source-jump from a reference | ✅ (read-only) | N/A (GUI event stream / interaction) |
 
 A few CLI-specific constraints:
 
-- **Passwords never hit the command line**: both the WebDAV password and the Telegram two-step password only come from interactive hidden input / `--password-stdin` / `--password-file` / `--password-env`; there is no `--password`. Anonymous WebDAV needs an explicit `--anonymous` (mutually exclusive with any password channel) — it is no longer "leave the password blank".
-- **Overwriting needs an explicit `--force`**: `upload` / `download` / `copy` refuse to overwrite an existing same-name target by default; add `--force` to confirm.
+- **Passwords never hit the command line**: the WebDAV password, the Telegram two-step password, the per-place password, the virtual-favorites password, and the custom `api_hash` all come only from interactive hidden input / `--password-stdin` / `--password-file` / `--password-env` (or their `--code-*` / `--passcode-*` / `--hash-*` equivalents); there is no `--password`. Anonymous WebDAV needs an explicit `--anonymous` (mutually exclusive with any password channel) — it is no longer "leave the password blank".
+- **Overwriting needs an explicit `--force`**: `upload` / `download` / `copy` / `decrypt` refuse to overwrite an existing same-name target by default; add `--force` to confirm. For `delete`, `--force` skips the "permanent delete" confirm.
 - **Remote paths can't escape**: any `..` segment in a remote path is rejected before a request is sent.
 - **The QR code goes to stderr and never into `--json`**: half-block Unicode in a real terminal, falling back to plain ASCII when piped/redirected (non-TTY), with a copyable `tg://` link always printed — but that short-lived login ticket goes to **stderr only, never into the structured stdout**, so `--json | tee …` can't persist it into a log. In a non-interactive run a wrong two-step password fails after a single attempt.
-- **Proxy**: Telegram connections auto-detect the system proxy; `telegram login` takes an explicit `--proxy`, and later file operations reuse the system proxy detected at login.
-- **Exit codes**: 2 for usage errors, 1 for every other remote failure, so scripts can tell them apart.
+- **The proxy is global**: `telegram proxy-set` (manual `--url` vs follow-system `--system`, mutually exclusive) applies to every account; the `--proxy` on `login` / `phone` / `tdata import` is a one-off per-login override. `proxy-status` shows what is currently in effect; `proxy-reset` returns to following the system proxy.
+- **Exit codes**: 2 for usage errors, 1 for every other remote failure, 3 for a wrong virtual-favorites password, 8 on cancel, and `telegram check` also exits 1 when unreachable. Telegram place errors are `[tg_*]` message prefixes (always exit 1) — match the prefix, not the code.
 
-::: warning The online QR-login leg is not end-to-end tested headless
-The QR rendering, two-step password channels, session adoption, and de-duplication are pinned by unit tests, but actually reaching Telegram's data centers to complete a scan cannot be exercised headless — that leg is wired correctly and reports failures honestly, rather than being claimed as tested. File-operation networking is covered end-to-end against a local dav-server for WebDAV.
+::: warning The real-account online leg is not end-to-end tested headless
+The QR rendering, two-step password channels, session adoption, and de-duplication are pinned by unit tests, and `mkdir` / `delete` / `move` / `decrypt`, recursive `upload`, cross-location `copy`, and virtual favorites (including encryption and reference edits) are covered end-to-end against a local dav-server. But actually reaching Telegram's data centers and completing a real-account scan / code / tdata import / forward / server-side search cannot be exercised headless, and is **not claimed as verified** — that leg is wired correctly and reports failures honestly.
 :::
 
 ## How passwords are stored
@@ -413,7 +419,7 @@ chats.
 
 ## Current limitations (first iteration)
 
-- New folder and rename/delete are not available yet (encrypted upload is). Decrypting an encrypted folder (container) from remote to local is not supported yet either.
+- The GUI's generic entry for new folder / rename / delete is not available yet (encrypted upload is); the CLI's `remote mkdir` / `move` / `delete` are available. Decrypting an encrypted folder (container) from remote to local is not supported yet — `remote decrypt` handles single files only.
 - No private cloud drivers beyond WebDAV and Telegram yet.
 - No "unlock with fingerprint / face" tier for credential protection yet.
 

@@ -77,6 +77,7 @@ Two things worth knowing:
 
 - **Saving preserves keys omy does not recognise.** Switching between an older and a newer version will not make them wipe each other's settings.
 - **Saving loses comments.** Any comments you wrote by hand are gone after the GUI saves once.
+- **Concurrent GUI + CLI writes don't clobber each other.** Adding/removing/editing locations (`remote.places`) and writing back the Telegram `api_hash` all happen inside one cross-process config lock: "read the latest on-disk copy → change only this one entry → write back atomically", instead of writing back a stale startup snapshot (which would silently delete a location the resident GUI had just added). The lock is an OS advisory lock on a sibling `config.toml.lock` (released with the handle when a process crashes, no leftover lock file); it times out after 5 s. Read paths take no lock — a temp-file-plus-rename means a reader sees either the old or the new file, never a half one.
 
 ## Precedence
 
@@ -188,6 +189,8 @@ scan_omy_only = true
 | `remote.cache_wifi_only` | `false` | Cache on Wi-Fi only (mobile; not yet active) |
 | `remote.scan_concurrency` | `8` | Concurrent requests when scanning, 1–32 (GUI only) |
 | `remote.places` | `[]` | Saved remote locations, maintained jointly by the GUI and the `remote` CLI; passwords are stored there as encrypted envelopes |
+| `remote.telegram_api_id` | none | Custom Telegram api_id (integer); blank uses the built-in identity (shared by GUI and the `telegram app-id-*` CLI) |
+| `remote.telegram_api_hash` | none | Custom api_hash, sealed by the OS credential store into an encrypted envelope; a plaintext value written by an older version is automatically re-sealed inside the cross-process lock, and plaintext is refused when no credential store is available |
 | `remote.scan_omy_only` | `true` | Whether remote scanning only looks at `.omy` (GUI only) |
 
 ::: warning Think before setting original_action to trash or delete

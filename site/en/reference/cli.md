@@ -358,16 +358,23 @@ Unless you pass `--anonymous`, the password is **required** (interactive hidden 
 | Subcommand | Purpose |
 |---|---|
 | `ls <location> [path]` | List a remote directory; defaults to root |
-| `upload <location> <local-file> <remote-dir>` | Upload a single local file to a remote directory (streamed) |
-| `download <location> <remote-file> <local-path>` | Download to local in 1 MiB chunks, streamed to disk |
-| `copy <src-loc>:<file> <dst-loc>:<path>` | Copy a remote file verbatim between two locations |
+| `upload <location> <local-path> <remote-dir>` | Upload a local file; if `<local-path>` is a **directory, recurse the whole tree** (see below) |
+| `download <location> <remote-file> <local-path>` | Download **ciphertext** to local in 1 MiB chunks, streamed to disk (no decryption) |
+| `copy <src-loc>:<file> <dst-loc>:<path>` | Copy a remote file verbatim (ciphertext bytes) between two locations |
+| `mkdir <location> <remote-dir>` | Create a remote directory, creating missing parents |
+| `delete <location> <remote-path>` | Delete a remote file or directory (directories recurse; irreversible; confirm by default, `--force` skips it) |
+| `move <location> <src> <dst>` | Rename/move within the same directory; cross-directory move is not supported and errors out |
+| `decrypt <location> <remote.omy> <local-dir>` | Stream a single remote `.omy` down-and-decrypt into a local directory |
 
-All three write operations take `--force`: by default they **refuse to overwrite** an existing same-name target — add it to confirm. `upload` overwrites an existing remote file, `download` overwrites an existing local file, `copy` overwrites an existing target remote file.
+These write operations take `--force`: by default they **refuse to overwrite** an existing same-name target — add it to confirm. `upload` overwrites an existing remote file, `download` / `decrypt` overwrite an existing local file, `copy` overwrites an existing target remote file. For `delete`, `--force` skips the "permanent delete" confirm.
 
 Real behavior worth knowing:
 
-- `upload` sends **one single file** at a time; it does not upload a whole directory.
-- `copy` copies the **raw bytes (ciphertext)** — both ends need no shared password. The transfer is **bounded and streamed** (backpressured chunks, only a block or two in memory at a time), so large files do not get aggregated into memory.
+- **`upload` takes a file or a whole directory.** A local file uploads that file; a local directory recurses the whole tree, mirroring it under `<remote-dir>/<dir-name>/…`. A directory upload is **not transactional** — one file failing does not roll back its already-uploaded siblings; the command records `files_ok` / `files_failed` per item and exits non-zero if any failed, saying so explicitly.
+- **Commit is an atomic temp-then-rename.** When the target supports rename/delete, the upload writes a random temp name and MOVEs it into place on success, cleaning up the temp object precisely on failure; targets without rename write the final name directly and clean up best-effort, surfacing any residual risk in the error. `upload` / `copy` / `decrypt` all share this commit logic.
+- `copy` copies the **raw bytes (ciphertext)** — both ends need no shared password. The transfer is **bounded and streamed** (a 64 KiB backpressured pipe, only a block or two in memory), so large files do not get aggregated into memory.
+- `move` is currently a **same-directory rename** (distinct from `remote rename <location> <new-name>`, which changes the local display name). Cross-directory move is limited by the store abstraction and is rejected before any request.
+- `decrypt` handles a **single `.omy` file** only: remote directories and encrypted folders (containers) are refused. It reads only the header and then decrypts chunk-by-chunk on the fly, never landing the whole ciphertext first; the filename comes from inside the header and is sanitized, and the local output directory is created if missing. The file password comes via `--password-*` or an interactive prompt.
 - A remote path containing `..` segments is rejected before any request is sent, to prevent climbing out of the intended directory; relative paths are normalized to a leading `/`.
 - A read-only destination is rejected before any request is sent.
 
@@ -388,11 +395,18 @@ The cache directory and limit use the same keys as the GUI (`remote.cache_dir` /
 omy remote telegram <COMMAND>
 ```
 
+#### Login and session
+
 | Subcommand | Purpose |
 |---|---|
 | `login` | QR-code log in to a Telegram account and save it as a location |
-| `logout <location>` | Remove the location **and destroy** the local session (must re-scan to use again) |
-| `detach <location>` | Remove from the list but **keep** the local session (can be re-added without re-scanning) |
+| `phone` | Phone number + code + two-step-password login |
+| `logout <location>` | Remove the location **and destroy** the local session (must log in again to use it) |
+| `detach <location>` | Remove from the list but **keep** the local session (can be re-added without logging in again) |
+| `tdata probe` | Probe common local tdata locations (read-only) |
+| `tdata check <dir>` | Check whether a directory looks like tdata (structure only, no decryption) |
+| `tdata import <dir>` | Import a session from desktop tdata: ask the server first, adopt only on success |
+| `status [location]` | Show local session status for Telegram locations (**offline**) |
 
 `login` options:
 
@@ -402,6 +416,8 @@ omy remote telegram <COMMAND>
 | `--proxy <URL>` | Proxy, e.g. `socks5://127.0.0.1:7897`; defaults to auto-detecting the system proxy |
 | `--password-stdin` / `--password-file <PATH>` / `--password-env <VAR>` | Two-step password source, pick one |
 
+`phone` adds `--phone <number>` (international format, e.g. `+861…`; may be omitted interactively) and a code channel `--code-env` / `--code-file` / `--code-stdin`. `tdata import` adds `--name`, `--proxy`, and the tdata local passcode `--passcode-stdin` / `--passcode-file` / `--passcode-env`.
+
 The QR code is printed to **stderr**: half-block Unicode in a real terminal, falling back to plain ASCII when piped/redirected (non-TTY), and a copyable `tg://login?token=...` link is **always** printed so you can open it elsewhere on your phone. The code refreshes automatically when it expires. The two-step password never appears on the command line; in a non-interactive (piped) run a wrong password fails after a single attempt instead of waiting on the pipe.
 
 ::: warning The successful `--json` result carries no login ticket
@@ -410,9 +426,81 @@ That `tg://login?token=...` line is a short-lived scannable ticket; it goes to *
 
 After a successful login the account is de-duplicated by `user_id`: logging in again for the same account adopts the existing location instead of creating a new one. Once saved, `ls` / `upload` / `download` / `copy` / `cache` work on the Telegram location too (each conversation is a directory).
 
-::: warning Telegram capabilities the CLI does not cover yet
-The CLI covers QR login plus basic file operations. The GUI's phone-number login, importing desktop `tdata`, message forwarding, server-side search, broadcast-channel message view, and virtual favorite locations have **no CLI equivalent**; deleting, renaming, or creating remote folders is not offered on either side. See the coverage table at the end of [Remote locations](../guide/remote-locations).
+#### Proxy and connectivity
+
+| Subcommand | Purpose |
+|---|---|
+| `proxy-status` | Show the currently effective global Telegram proxy |
+| `proxy-set --url <URL>` | Set a manual global proxy (`http://` or `host:port` is normalized to SOCKS5) |
+| `proxy-set --system` | Follow the system proxy instead (mutually exclusive with `--url`) |
+| `proxy-reset` | Go back to following the system proxy |
+| `check` | Pre-login connectivity self-check: TCP to Telegram's primary DC via the configured proxy only; **exit code 1 when unreachable** |
+
+This is a **global** policy shared by every account and every login / browse / forward — the same store as the GUI's "Settings › Telegram proxy".
+
+#### App identity (api_id)
+
+| Subcommand | Purpose |
+|---|---|
+| `app-id-status` | Show the current app identity (built-in or custom api_id) |
+| `app-id-set --api-id <ID> --hash-*` | Save a custom api_id / api_hash; `api_hash` comes via an env/file/stdin channel and is **sealed into an encrypted envelope**, never argv |
+| `app-id-reset` | Go back to the built-in app identity |
+
+A custom `api_hash` is sealed by the OS credential-store master key before being written; with no usable credential store the CLI **refuses to write plaintext** and makes you use the built-in identity. A config where an older version stored the `api_hash` as plaintext is automatically re-sealed into an envelope inside the config cross-process lock on next read (with no credential store it is left as-is rather than dropped).
+
+#### Per-place encryption (offline)
+
+These only transform the on-disk session envelope; they **do not touch the network**:
+
+| Subcommand | Purpose |
+|---|---|
+| `encrypt <location>` | Independently encrypt this location's session with an interactive password (KDF default `moderate`, `--kdf` to override) |
+| `unlock <location>` | Verify the interactive password can unlock it (one-shot process; verification only, not persisted) |
+| `lock <location>` | Confirm the location is encrypted and locked (CLI has no long-lived session; touches no disk) |
+| `decrypt <location>` | Remove per-place encryption, back to machine-key protection |
+
+The place password always goes via `--password-stdin` / `--password-file` / `--password-env`. The CLI has no long-lived session like the GUI: `unlock` only answers "is the password right?" — the process exits and the key in memory is gone, so the next access must supply the password again via a file command's `--password-*`. `lock` only confirms it is an encrypted location; an unencrypted one errors with `[tg_not_encrypted]` instead of pretending to be locked. Errors are stable bracket-prefixed strings (`[tg_unlock_wrong]` wrong password / `[tg_no_protector]` no credential store, refusing plaintext / `[tg_no_session]` no session yet), all with exit code 1 — scripts should match the prefix, not the exit code.
+
+#### Online operations (require a real Telegram connection)
+
+| Subcommand | Purpose |
+|---|---|
+| `targets <location>` | List the conversations you can forward to |
+| `forward <location> --target tg:CHAT --entry tg:CHAT:MSG…` | natively forward one or more messages from one source chat to a target |
+| `search <location> <QUERY>` | Server-side message search (`--dir tg:CHAT` to scope to one chat, global by default; `--limit N` default 50) |
+| `group <location> <TITLE>` | Create a private supergroup containing only yourself (a forwarding archive target) |
+
+These require a real Telegram connection; an encrypted location must be unlocked on the spot via `--password-*`. Forward sources can be given repeatably as `--entry tg:<chat>:<msg>`, or read as an id array from `--entries-json <file>` (may be combined); **all entries must come from the same source chat**, else `[tg_cross_chat]`.
+
+::: warning The real-account login / forward / search leg is not end-to-end tested headless
+The wiring of `phone` / `tdata import` / `targets` / `forward` / `search` / `group` and their failure reporting is done, and the offline parts (place-envelope encryption, proxy config, connectivity self-check, virtual favorites) are pinned by unit tests plus WebDAV end-to-end against a local dav-server. But actually reaching Telegram's data centers and completing a real-account scan / code / forward / search cannot be done headless, and is **not claimed as verified**. See the coverage table at the end of [Remote locations](../guide/remote-locations).
 :::
+
+### Virtual remote locations (favorites)
+
+```
+omy remote virtual <COMMAND>
+```
+
+A virtual location does not connect to any server; it only stores local **references** to real remote files (a favorites folder). This whole tree makes **no network requests** and shares the same model and on-disk format as the GUI.
+
+| Subcommand | Purpose |
+|---|---|
+| `place create <name>` / `list` / `show <location>` / `rename <location> <name>` / `remove <location>` | Manage virtual locations (`remove` deletes the location and its favorites, never the real remote files) |
+| `folder add <location> <name>` / `rename <location> <folder-id> <name>` / `remove <location> <folder-id>` | Virtual folders (`remove` takes the whole subtree of references); use `--root` for the root or `--folder <id>` for a parent |
+| `ref add <location>` | Favorite a real remote file: `--source-place <p…>` / `--dir-id` / `--file-id` / `--name` (`--folder` picks the destination folder) |
+| `ref remove <location> <ref>` / `move <location> <ref>` / `copy <from-location> --ref-id <ref> --to-place <location>` | Organize references (`remove` never touches the real file; `move` stays in one place, `copy` may cross places and mints new ref ids) |
+| `ref list <location>` | Recursively list every reference under a place / folder |
+| `ref browse <location>` | Single-level browse: immediate subfolders and references |
+| `encrypt <location>` / `unlock <location>` / `lock <location>` / `decrypt <location>` | Independently encrypt / verify password / confirm locked / remove encryption |
+
+Virtual location ids look like `v1`, `v2`. **One-shot process semantics:** every CLI command reloads config and favorites fresh, so an encrypted virtual location starts locked. Read/modify commands therefore all take the same `--password-*`; without a password you get `VIRTUAL_LOCKED`.
+
+- `unlock` only **verifies the password**: success is not persisted or written to disk; the next access still needs the password once the process exits.
+- `lock` is an honest confirmation: between one-shot CLI processes an encrypted location is locked by nature, so it touches no disk; an unencrypted location errors with `VIRTUAL_NOT_ENCRYPTED` instead of falsely reporting "locked".
+- `encrypt` encrypts the whole favorites tree with an independent password; `decrypt` unlocks it and writes back plaintext favorites.
+- Exit codes: 0 success, 2 usage error, **3 on wrong virtual password** (`VIRTUAL_WRONG_PASSWORD`), 8 on cancel, 1 for other virtual failures. The machine-readable code is in `--json` as `error.code` (a `VIRTUAL_*` prefix) — match that.
+- References store a **stable identifier** of the source (Telegram `user_id`, or WebDAV url+account); if the source location is removed and re-added, references re-bind. No operation touches the real remote files.
 
 ## bench
 

@@ -261,27 +261,33 @@ Telegram 对话里的文件和消息都可以原生转发：
 |---|---|---|
 | WebDAV 位置：添加（带连通性探活）/ 列表 / 详情 / 重命名 / 移除 | ✅ | ✅ |
 | Telegram：扫码登录（终端二维码） | ✅ | ✅ |
+| Telegram：手机号 `phone`、导入桌面端 `tdata` | ✅ | ✅（接线完成，未对真号实测） |
 | Telegram：移除位置时保留 / 销毁登录态（detach / logout） | ✅ | ✅ |
-| 列目录、上传单个文件、下载、跨位置复制密文 | ✅ | ✅ |
+| Telegram：全局代理 proxy-*、登录前 `check` 自检、本地 `status` | ✅ | ✅（`check` 联网探活） |
+| Telegram：自定义应用身份 app-id-*（信封加密） | ✅ | ✅ |
+| Telegram：位置独立加密 encrypt / unlock / lock / decrypt（离线） | ✅ | ✅（离线） |
+| Telegram：转发 targets / forward、服务端 search、自建归档 group | ✅ | ✅（接线完成，未对真号实测） |
+| 列目录 `ls`、下载 `download`、跨位置复制 `copy` 密文 | ✅ | ✅ |
+| 上传：单文件 `upload`、递归目录 `upload`（非事务） | ✅ | ✅ |
+| `mkdir` / `delete`（递归）/ `move`（同目录改名） | 尚未提供 | ✅ |
+| 远程单文件 `decrypt` 流式解密到本地 | ✅ | ✅ |
 | 密文缓存：状态 / 清空 / 永久保留（pin）/ 取消（unpin） | ✅ | ✅ |
-| 预览 / 点播视频图片、边扫边出、缩略图 | ✅ | ❌ 非 CLI 目标 |
-| 解密到本地（流式、可续传缓存） | ✅ | ❌（`remote download` 下的是密文，不解密） |
-| 上传目录、断点续传、传输管理页 | ✅ | ❌（一次一个文件；`copy` 为有界流式、但失败不续传） |
-| Telegram：手机号登录、导入桌面端 `tdata`、转发、服务端搜索、频道消息视图 | ✅ | ❌ |
-| 虚拟远程位置（收藏夹） | ✅ | ❌ |
-| 远程文件删除 / 改名 / 新建目录 | ❌ | ❌（两端都还没做） |
+| 虚拟位置（收藏夹）place / folder / ref / encrypt / lock / unlock | ✅ | ✅（离线） |
+| 预览 / 点播视频图片、边扫边出、缩略图 | ✅ | N/A（GUI 独有） |
+| 传输管理页、整任务失败后的断点续传 | ✅ | N/A（CLI 短命进程） |
+| 广播频道消息视图、赞助消息取舍、双击引用原地预览 / 定位来源 | ✅（只读） | N/A（GUI 事件流 / 交互） |
 
 几条 CLI 特有的真实约束：
 
-- **密码绝不进 argv**：WebDAV 密码与 Telegram 两步验证都只走交互隐藏输入 / `--password-stdin` / `--password-file` / `--password-env`，没有 `--password`。匿名 WebDAV 要显式 `--anonymous`（与任何密码通道互斥），不再靠「密码留空」。
-- **覆盖要显式 `--force`**：`upload` / `download` / `copy` 默认拒绝覆盖同名目标，确认覆盖才加 `--force`。
+- **密码绝不进 argv**：WebDAV 密码、Telegram 两步验证、位置密码、虚拟收藏密码、自定义 `api_hash` 都只走交互隐藏输入 / `--password-stdin` / `--password-file` / `--password-env`（或各自的 `--code-*` / `--passcode-*` / `--hash-*`），没有 `--password`。匿名 WebDAV 要显式 `--anonymous`（与任何密码通道互斥），不再靠「密码留空」。
+- **覆盖要显式 `--force`**：`upload` / `download` / `copy` / `decrypt` 默认拒绝覆盖同名目标，确认覆盖才加 `--force`；`delete` 的 `--force` 是跳过「永久删除」确认。
 - **远程路径禁越权**：路径里的 `..` 段会在发请求前被拒。
 - **二维码在 stderr，且不进 `--json`**：真终端用半角块渲染，管道 / 重定向（非 TTY）时回落纯 ASCII，并始终打印可复制的 `tg://` 链接；但这行短时登录票据**只打 stderr，不进结构化 stdout**，避免被 `--json | tee` 之类写进日志。非交互下两步密码错了只试一次就退出。
-- **代理**：Telegram 连接默认自动探测系统代理；`telegram login` 可显式 `--proxy`，后续文件命令复用登录时探测到的系统代理。
-- **退出码**：用法错 2，其余远程失败统一 1，便于脚本区分。
+- **代理是全局的**：`telegram proxy-set` 设的全局策略（`--url` 手动 / `--system` 跟随系统，互斥）对所有账号生效；`login` / `phone` / `tdata import` 的 `--proxy` 只是该次登录的一次性覆盖。`proxy-status` 看当前生效值，`proxy-reset` 回到跟随系统。
+- **退出码**：用法错 2；远程其余失败统一 1；虚拟收藏密码错 3、取消确认 8；`telegram check` 不通也是 1。Telegram 位置类错误是 `[tg_*]` 消息前缀（退出码恒 1），脚本按前缀匹配而不是退出码。
 
-::: warning 扫码联网段未在无头环境端到端实测
-`telegram login` 的二维码渲染、两步密码通道、登录态收编与去重都有单测钉死；但真正连 Telegram 数据中心完成扫码这一段，无头环境无法代替人扫码，只做了正确接线与失败如实报错。文件操作的联网行为以对着本地 dav-server 的 WebDAV 端到端为准。
+::: warning 对着真号的联网段未在无头环境端到端实测
+`telegram login` 的二维码渲染、两步密码通道、登录态收编与去重有单测钉死；`mkdir` / `delete` / `move` / `decrypt`、递归 `upload`、跨位置 `copy` 与虚拟收藏（含加解密、引用增删改）都有对着本地 dav-server 的 WebDAV 端到端测试兜底。但真正连 Telegram 数据中心、用真人账号完成扫码 / 收验证码 / tdata 导入 / 转发 / 服务端搜索这一段，无头环境代替不了人操作，**没有当成已验证**——只做了正确接线与失败如实报错。
 :::
 
 ## 密码怎么保存
@@ -386,7 +392,7 @@ Linux 上必须有实现了 Secret Service 的服务（装了桌面环境通常�
 
 ## 当前限制（首期）
 
-- 新建文件夹、改名 / 删除尚未提供（加密后上传已经可用）；加密文件夹（容器）暂不支持远程解密到本地。
+- 图形界面里新建文件夹、改名 / 删除的通用入口尚未提供（加密后上传已经可用）；命令行 `remote mkdir` / `move` / `delete` 已可用。加密文件夹（容器）暂不支持远程解密到本地——`remote decrypt` 只解单文件。
 - 暂未接入 WebDAV 与 Telegram 之外的私有网盘驱动。
 - 暂不支持「用指纹 / 面容解锁」这一档凭据保护。
 

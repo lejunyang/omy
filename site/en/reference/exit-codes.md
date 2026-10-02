@@ -37,6 +37,22 @@ The following comes from actual runs. Note that `verify` and `decrypt` return **
 So **the exit code of `verify` is not a reliable way to test whether a password is correct**. Use `decrypt --verify-only`, which returns 3 for a wrong password.
 :::
 
+## Exit codes for remote and virtual commands
+
+`remote` subcommands reuse these codes, with their own breakdown:
+
+| Situation | Exit code | Notes |
+|---|---|---|
+| Usage error on `remote` / `remote telegram` / `remote virtual` | 2 | from clap |
+| General remote failure (unreachable, read/write error, `telegram check` down) | 1 | lets scripts tell it apart from "bad invocation" (2) |
+| Wrong `remote virtual` password | **3** | `VIRTUAL_WRONG_PASSWORD` |
+| An interactive confirm on `remote virtual place remove` answered "no" | 8 | same as file commands |
+| Other `remote virtual` failure | 1 | see the `VIRTUAL_*` structured codes below |
+
+`remote virtual` errors are structured: `--json` puts a code in `error.code` such as `VIRTUAL_LOCKED` (encrypted place, no password supplied), `VIRTUAL_WRONG_PASSWORD` (wrong password = 3), `VIRTUAL_NOT_ENCRYPTED`, `VIRTUAL_NO_SUCH_PLACE` — match that, not the localized message.
+
+Telegram place operations (`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`) always exit 1 on error and are distinguished by a stable bracket prefix in the message: `[tg_unlock_wrong]` wrong password, `[tg_no_protector]` no credential store, refusing plaintext, `[tg_not_encrypted]` place not encrypted, `[tg_no_session]` no session yet, `[tg_cross_chat]` forward entries from different chats. Match the prefix, not the exit code.
+
 ## Using them in scripts
 
 ```bash
