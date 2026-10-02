@@ -165,12 +165,11 @@ async function checkConn() {
  * 所以这里拿到的已经是可用形式。 */
 async function useSystemProxy() {
   try {
-    const p = await api.telegramSuggestProxy();
-    if (p) {
-      proxyUrl.value = p;
-      proxyAuto.value = true;
-      await checkConn();
-    }
+    const p = await api.telegramSystemProxy();
+    proxyUrl.value = p || '';
+    proxyAuto.value = !!p;
+    conn.value = null;
+    if (p) await checkConn();
   } catch {
     // 读不到就维持原样，不打断用户
   }

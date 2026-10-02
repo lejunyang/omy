@@ -241,16 +241,35 @@ pub type SharedLogin = Arc<LoginTask>;
 /// 1. **已有 Telegram 位置的代理**——用户已经用它连通过一次，最可信；
 /// 2. **系统代理**——大概率是同一个混合端口，但也可能是个纯 HTTP 端口；
 /// 3. 都没有就返回空，由用户自己填。
+fn preferred_proxy(existing: Option<String>, system: Option<String>) -> String {
+    existing.or(system).unwrap_or_default()
+}
+
+/// 给代理输入框提供自动推荐值。
+///
+/// 自动推荐可以优先复用已有 Telegram 位置验证过的代理；这与用户主动点击
+/// “读取系统代理”不同，后者必须绕过已有位置，只读取此刻的系统设置。
 #[tauri::command]
 #[must_use]
 pub fn telegram_suggest_proxy(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
 ) -> String {
-    // 已有位置优先：它是被验证过能用的那一个
-    if let Some(p) = reg.telegram_proxy() {
-        return p;
-    }
-    proxy::detect_system_proxy().map(|p| p.as_str().to_string()).unwrap_or_default()
+    preferred_proxy(
+        reg.telegram_proxy(),
+        proxy::detect_system_proxy().map(|p| p.as_str().to_string()),
+    )
+}
+
+/// 只读取当前系统代理，不复用任何已有 Telegram 位置保存的代理。
+///
+/// 这个命令专供“读取系统代理”按钮使用。若复用 [`telegram_suggest_proxy`]，
+/// 按钮可能返回旧位置里的历史端口，界面却声称它来自系统设置。
+#[tauri::command]
+#[must_use]
+pub fn telegram_system_proxy() -> String {
+    proxy::detect_system_proxy()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default()
 }
 
 /// 连通性自检的结果。
@@ -2107,6 +2126,35 @@ mod tests {
             } => Some((code.clone(), *wait_secs)),
             _ => None,
         }
+    }
+
+    #[test]
+    fn automatic_proxy_suggestion_prefers_an_existing_working_proxy() {
+        assert_eq!(
+            preferred_proxy(
+                Some(String::from("socks5://127.0.0.1:7897")),
+                Some(String::from("socks5://127.0.0.1:6480")),
+            ),
+            "socks5://127.0.0.1:7897",
+            "自动推荐仍应优先复用已经验证过的 Telegram 位置代理"
+        );
+        assert_eq!(
+            preferred_proxy(None, Some(String::from("socks5://127.0.0.1:6480"))),
+            "socks5://127.0.0.1:6480",
+            "没有历史代理时才回落到系统代理"
+        );
+    }
+
+    #[test]
+    fn system_proxy_command_never_uses_an_existing_place_proxy() {
+        let expected = proxy::detect_system_proxy()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            telegram_system_proxy(),
+            expected,
+            "“读取系统代理”必须只返回当前系统设置，不能混入已有位置的历史端口"
+        );
     }
 
     /// 每种失败都要映射到**各自**的错误码，不能共用。

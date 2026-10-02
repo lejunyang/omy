@@ -350,6 +350,7 @@ pub fn run() {
             place_cmds::remote_cache_unpin_by_key,
             telegram_cmds::telegram_can_persist,
             telegram_cmds::telegram_suggest_proxy,
+            telegram_cmds::telegram_system_proxy,
             telegram_cmds::telegram_check_connection,
             telegram_cmds::telegram_api_id_status,
             telegram_cmds::telegram_api_id_save,

@@ -144,7 +144,7 @@ The key is the password you set. It shares the **same session key pool** as ordi
 **Once encrypted**, the location shows as encrypted (with a lock badge). On a cold start, before you type the password, it shows as **locked** — you can see its name but can't enter, with a prompt to unlock first; after you enter the correct password you're in and it connects automatically. The name stays visible while locked. **Locations that are not encrypted are unaffected** and open directly.
 
 ::: tip Most networks need a proxy
-Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. The proxy is saved along with the location.
+Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. When the sign-in screen opens, omy first suggests a proxy already proven by an existing Telegram location and falls back to the system proxy only when none exists. Clicking **Read system proxy** explicitly reads the current system setting and never reuses a port saved by an old location. The proxy is saved along with the location.
 :::
 
 omy reports itself **honestly as omy** in Telegram's list of active sessions rather than impersonating an official client, so you can always recognise it there and revoke it.

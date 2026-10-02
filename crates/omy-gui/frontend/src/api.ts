@@ -726,6 +726,9 @@ export const remoteDirProtected = (placeId: any, dir: any): Promise<any> => invo
  * 全局代理」并不等于 omy 能直连，而这一点用户没有理由知道。 */
 export const telegramSuggestProxy = (): Promise<any> => invoke('telegram_suggest_proxy');
 
+/** 只读取此刻的系统代理；不复用已有 Telegram 位置保存的历史代理。 */
+export const telegramSystemProxy = (): Promise<any> => invoke('telegram_system_proxy');
+
 /** 这份登录态可用吗（判的是 auth key 在不在，不是文件在不在）。
  *
  * 多账号之后 session 按账号分别存放，所以必须指明问的是哪一份——
