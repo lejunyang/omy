@@ -14,6 +14,8 @@ authors.workspace = true
 # 「all dependencies must have a version requirement specified」，
 # 发布流水线会在打包阶段失败。
 omy-core = { path = "../omy-core", version = "0.0.1" }
+# 便携根判定（exe 旁 omy-data，实测可写才采用）只此一份，设备库默认路径复用它
+omy-config = { path = "../omy-config", version = "0.0.1" }
 
 # Noise Protocol：IK 模式，1-RTT 且提供前向保密
 snow = "0.10"
@@ -37,7 +39,7 @@ sha2 = { workspace = true }
 # 配对时加密交换静态公钥。明文发不影响安全性，但会让被动观察者
 # 记录"这两台设备配过对"，长期积累可画出设备关系图
 chacha20poly1305 = { workspace = true }
-# 默认存储路径（用户配置目录）
+# 设备库默认路径的最后一级回落：系统配置目录
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

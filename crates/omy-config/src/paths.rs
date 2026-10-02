@@ -156,13 +156,20 @@ pub fn log_dir() -> Option<PathBuf> {
 ///
 /// 移动端直接返回 `None`：那里没有便携这个概念，应用目录也不可写。
 #[cfg(any(target_os = "android", target_os = "ios"))]
-fn portable_root() -> Option<PathBuf> {
+#[must_use]
+pub fn portable_root() -> Option<PathBuf> {
     None
 }
 
-/// 可执行文件旁的数据目录，仅在**确认可写**时返回。
+/// 可执行文件旁的数据目录（`<exe目录>/omy-data`），仅在**实测可写**时返回。
+///
+/// 各消费者（配置、缓存、数据、日志，以及 omy-net 的设备库）都从这里
+/// 拿便携根，再各自 `join` 自己的文件名——exe 定位与可写性探测这套判定
+/// 逻辑只此一份。谁另写一遍，迟早出现「配置在 A、设备库在 B」这种
+/// 两个目录各写一半状态的分裂。
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn portable_root() -> Option<PathBuf> {
+#[must_use]
+pub fn portable_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let root = dir.join(PORTABLE_DIR);

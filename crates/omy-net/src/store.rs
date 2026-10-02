@@ -404,8 +404,12 @@ impl Store {
 
 /// 默认的存储路径。
 ///
-/// 优先读环境变量 `OMY_DEVICE_STORE`，否则用用户配置目录下的
-/// `omy/devices.omy`。
+/// 优先级从高到低：
+///
+/// 1. 环境变量 `OMY_DEVICE_STORE` 显式指定的路径；
+/// 2. 便携模式：与配置文件同根，放在可执行文件旁的 `omy-data` 下
+///    （该目录由 omy-config 实测可写后才会采用）；
+/// 3. 系统配置目录下的 `omy/devices.omy`。
 ///
 /// # 为什么要有环境变量这条路
 ///
@@ -420,7 +424,8 @@ impl Store {
 /// - **便携模式**：把设备库放在 U 盘上随身带
 /// - **多身份**：同一台机器上用不同身份连不同的设备组
 ///
-/// 环境变量是这三者共同的、最小的解法。
+/// 环境变量是这三者共同的、最小的解法。它优先级最高：便携根只是
+/// 「没说放哪」时的默认，显式指定必须压过默认。
 #[must_use]
 pub fn default_path() -> Option<PathBuf> {
     resolve_store_path(std::env::var("OMY_DEVICE_STORE").ok().as_deref())
@@ -431,14 +436,40 @@ pub fn default_path() -> Option<PathBuf> {
 /// 抽成纯函数是为了可测：读进程环境变量的版本没法在
 /// `unsafe_code = "forbid"` 的 crate 里测（`set_var` 是 unsafe），
 /// 而且依赖进程全局状态的测试在并行执行下本就不可靠。
+///
+/// 便携根与系统配置目录也在这里注入，而不是直接写进决策核心：
+/// [`resolve_store_path_with`] 拿不到任何进程状态，测试才能把三个
+/// 优先级排错这种缺陷抓出来（见其测试）。
 fn resolve_store_path(env_value: Option<&str>) -> Option<PathBuf> {
+    resolve_store_path_with(
+        env_value,
+        omy_config::portable_root().as_deref(),
+        dirs::config_dir().as_deref(),
+    )
+}
+
+/// 路径决策的纯函数核心：环境变量覆盖 → 便携根 → 系统配置目录。
+///
+/// `portable_root` 传 `None` 表示 exe 旁目录不可写（或移动端），
+/// `config_dir` 传 `None` 表示系统也给不出配置目录。
+fn resolve_store_path_with(
+    env_value: Option<&str>,
+    portable_root: Option<&Path>,
+    config_dir: Option<&Path>,
+) -> Option<PathBuf> {
     // 空白值当没设：误设成空串时若照单全收，设备库会写到当前工作目录，
     // 位置随启动方式漂移，用户根本找不到自己的身份文件
-    //
     if let Some(p) = env_value.filter(|p| !p.trim().is_empty()) {
         return Some(PathBuf::from(p));
     }
-    dirs::config_dir().map(|d| d.join("omy").join("devices.omy"))
+    // 便携模式：设备库与 config.toml 同根（exe 旁 omy-data）。
+    // portable_root 只在实测可写时才返回 Some，这里不必重复探测。
+    // 文件名放根下而不是 data/ 子目录：非便携态它与 config.toml 本就
+    // 同在 omy/ 一级，便携态保持这层镜像。
+    if let Some(root) = portable_root {
+        return Some(root.join("devices.omy"));
+    }
+    config_dir.map(|d| d.join("omy").join("devices.omy"))
 }
 
 /// 当前 Unix 秒。
@@ -636,14 +667,101 @@ mod tests {
         }
     }
 
-    /// 没有环境变量时，路径落在用户配置目录下。
+    /// 显式环境变量必须压过便携根。
+    ///
+    /// 不这样会怎样：便携根只是「没说放哪」时的默认。用户设
+    /// `OMY_DEVICE_STORE` 想把身份指到 U 盘（多身份 / 便携随身），
+    /// 若便携根反过来赢，程序仍写到 exe 旁的 omy-data，U 盘里那份
+    /// 身份根本用不上，机器上还平白多出一份新身份。
     #[test]
-    fn default_path_lands_in_config_dir() {
-        if let Some(path) = resolve_store_path(None) {
-            assert!(path.ends_with("devices.omy"), "实得 {}", path.display());
-            let s = path.to_string_lossy();
-            assert!(s.contains("omy"), "应在 omy 子目录下：{s}");
+    fn explicit_env_beats_portable_root() {
+        let got = resolve_store_path_with(
+            Some("/tmp/usb/my-devices.omy"),
+            Some(Path::new("/exe/dir/omy-data")),
+            Some(Path::new("/home/u/.config")),
+        );
+        assert_eq!(
+            got,
+            Some(PathBuf::from("/tmp/usb/my-devices.omy")),
+            "显式指定的路径必须被原样采用"
+        );
+    }
+
+    /// 空白环境变量要被忽略，且**落到便携根**而不是继续掉到配置目录。
+    ///
+    /// 不这样会怎样：照单全收空白值，设备库会写到进程当前工作目录，
+    /// 位置随启动方式漂移；忽略后若错误地跳过便携根，便携用户的设备库
+    /// 就会散到系统目录里——U 盘拷走的文件夹里反而没有身份。
+    #[test]
+    fn blank_env_falls_through_to_portable_root() {
+        for blank in ["", "   ", "\t"] {
+            let got = resolve_store_path_with(
+                Some(blank),
+                Some(Path::new("/exe/dir/omy-data")),
+                Some(Path::new("/home/u/.config")),
+            );
+            assert_eq!(
+                got,
+                Some(Path::new("/exe/dir/omy-data").join("devices.omy")),
+                "{blank:?} 应被当作没设，并采用便携根"
+            );
         }
+    }
+
+    /// 没有显式覆盖时，便携根要压过系统配置目录——这是便携模式的全部意义。
+    ///
+    /// 不这样会怎样：设备库仍写到 %APPDATA%，用户把 exe 连同加密文件拷到
+    /// U 盘后，配对记录留在原机器上；在新机器上首次启动又生成一份新身份，
+    /// 已经配对过的设备全部连不上。
+    #[test]
+    fn portable_root_beats_config_dir_without_override() {
+        let got = resolve_store_path_with(
+            None,
+            Some(Path::new("/exe/dir/omy-data")),
+            Some(Path::new("/home/u/.config")),
+        );
+        assert_eq!(
+            got,
+            Some(Path::new("/exe/dir/omy-data").join("devices.omy"))
+        );
+    }
+
+    /// exe 旁目录不可写（装在 Program Files）时，必须回落到系统配置目录，
+    /// 且形状是 `omy/devices.omy` 而不是直接散在配置目录根部。
+    ///
+    /// 不这样会怎样：漏掉 `join("omy")`，设备库会和用户其他几十个应用的
+    /// 配置平铺在一起，想备份或清理时根本找不到它；换成系统数据目录则会
+    /// 挪动老用户设备库的位置，升级后所有配对记录「凭空消失」。
+    /// 两个根都给不出时如实返回 `None`，绝不退化成当前目录。
+    #[test]
+    fn fallback_lands_under_config_dir_omy() {
+        let got = resolve_store_path_with(None, None, Some(Path::new("/home/u/.config")));
+        assert_eq!(
+            got,
+            Some(Path::new("/home/u/.config").join("omy").join("devices.omy"))
+        );
+        assert_eq!(
+            resolve_store_path_with(None, None, None),
+            None,
+            "两边都不可用时返回 None，而不是写到当前目录"
+        );
+    }
+
+    /// 生产装配：[`default_path`] 把真实环境接到决策核心上，结果必须落在
+    /// 三级之一里（便携根 omy-data 下，或系统配置目录的 omy/ 下）。
+    ///
+    /// 纯函数测试锁住了优先级与形状，这条只防「装配时接错了参数」——
+    /// 比如把便携根错接到配置目录上，决策逻辑本身一行没改，行为却全变了。
+    #[test]
+    fn default_path_wires_to_one_of_the_three_tiers() {
+        let Some(path) = default_path() else {
+            return; // 极受限环境，跳过
+        };
+        assert!(path.ends_with("devices.omy"), "实得 {}", path.display());
+        let s = path.to_string_lossy().replace('\\', "/");
+        let in_portable = s.contains("omy-data/");
+        let in_config = s.ends_with("omy/devices.omy");
+        assert!(in_portable || in_config, "路径落在了意料之外的位置: {s}");
     }
 
     /// 交给服务端的副本必须**完整**：身份和设备列表都要带上。    ///
@@ -858,12 +976,5 @@ mod tests {
         assert_eq!(s.device_name(), "新名字");
         assert!(s.set_device_name("").is_err());
         assert_eq!(s.device_name(), "新名字", "失败时不应改动");
-    }
-
-    #[test]
-    fn default_path_ends_correctly() {
-        if let Some(p) = default_path() {
-            assert!(p.ends_with("omy/devices.omy") || p.ends_with("omy\\devices.omy"));
-        }
     }
 }

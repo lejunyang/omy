@@ -3632,6 +3632,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "mdns-sd",
+ "omy-config",
  "omy-core",
  "rand 0.8.8",
  "serde",

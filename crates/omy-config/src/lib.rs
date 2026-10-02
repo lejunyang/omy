@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 mod paths;
 #[cfg(target_os = "android")]
 pub use paths::set_android_dirs;
-pub use paths::{cache_dir, config_path, data_dir, is_portable, log_dir};
+pub use paths::{cache_dir, config_path, data_dir, is_portable, log_dir, portable_root};
 
 /// 配置读写错误。
 #[derive(Debug, thiserror::Error)]
