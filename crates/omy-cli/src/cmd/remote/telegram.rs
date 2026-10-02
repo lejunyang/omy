@@ -1,34 +1,42 @@
-//! Telegram 远程位置命令：扫码登录、登出、从列表移除。
+//! Telegram 远程位置命令：扫码/手机号登录、tdata 导入、代理与应用身份设置。
 //!
 //! # 与 GUI 共用什么
 //!
 //! 本模块**不复刻** GUI 的登录编排，而是直接复用 [`omy_remote::telegram`] 里
-//! 已经测好的业务原语：[`QrSession`] 状态机、[`session`] 的落盘/收编/抹除、
-//! [`connect`] 的取账号信息。CLI 只做「终端外壳」——把二维码画到 stderr、
-//! 把二步密码接到既有密码通道、把结果写进同一份 [`omy_config::SavedPlace`]。
+//! 已经测好的业务原语：[`QrSession`]/[`PhoneSession`] 状态机、[`session`] 的
+//! 落盘/收编/抹除、[`connect`] 的取账号信息、[`register::fold_into_places`] 的
+//! 「pending → 位置」去重分配。CLI 只做「终端外壳」——把二维码画到 stderr、
+//! 把验证码/二步密码/api_hash 接到安全输入通道、把结果写进同一份
+//! [`omy_config::SavedPlace`]。
 //!
-//! # 登录态从 pending 收编到位置 id
+//! # 秘密绝不进 argv / JSON / 日志
 //!
-//! 扫码成功那一刻还没有位置 id，session 先落在
-//! [`session::PENDING_ACCOUNT`] 名下（与 GUI 同一路径）；拿到服务端 user id、
-//! 去重、分配到 `pN` 之后，再用 [`session::adopt_pending`] 改名过去。**绝不**
-//! 在登录前先编一个 id——那会让 id 有两个来源，迟早对不上。
+//! 验证码、二步密码、tdata 本地密码、api_hash 一律走
+//! [`PasswordSource`]（env / file / stdin 三通道互斥），不存在 `--code 123456`
+//! 这类明文参数。成功 JSON 里也不放任何秘密（见 `success_payload`）。
+//!
+//! # 非交互缺输入立即失败，不挂起
+//!
+//! `read_password` 在非 TTY 且无通道时直接报错；本模块另加「验证码与二步密码
+//! 不能同时走 stdin」的互斥（一条 stdin 流只能读一次）。
 //!
 //! # 网络边界
 //!
-//! 真正的扫码要连 Telegram 数据中心。本切片不假装做过网络实测：纯逻辑
-//! （二维码渲染、密码通道、pending 收编、去重、id 分配）都在单测里钉死，
-//! 联网部分只做正确接线，并在失败时如实报错。
+//! 真正的联网（扫码、手机号、tdata 导入都要连 Telegram 数据中心）不假装做过
+//! 实测：纯逻辑（二维码渲染、密码通道、pending 收编、去重、id 分配、参数互斥）
+//! 都在单测里钉死，联网部分只做正确接线，并在失败时如实报错。
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Args, Subcommand};
-use omy_config::SavedPlace;
+use omy_remote::telegram::login::CodeShape;
+use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
+use omy_remote::telegram::proxy as tg_proxy;
 use omy_remote::telegram::{
-    AppId, DeviceInfo, QrError, QrEvent, QrSession, encode_matrix, connect, normalize_proxy,
-    session,
+    AppId, DeviceInfo, QrError, QrEvent, QrSession, connect, encode_matrix, normalize_proxy,
+    register, session, tdata,
 };
 use serde_json::json;
 
@@ -41,13 +49,30 @@ use super::{Ctx, find_place, mutate_places, qrterm, rt};
 pub enum Cmd {
     /// 扫码登录一个 Telegram 账号，并保存为一个远程位置
     Login(LoginArgs),
-    /// 登出：移除位置并**销毁**本机登录态（之后要用须重新扫码）
+    /// 手机号 + 验证码 + 两步密码登录一个 Telegram 账号
+    Phone(PhoneLoginArgs),
+    /// 登出：移除位置并**销毁**本机登录态（之后要用须重新登录）
     Logout(NameArgs),
-    /// 从列表移除位置，但保留本机登录态（之后可重新加回而不必重扫）
+    /// 从列表移除位置，但保留本机登录态（之后可重新加回而不必重登）
     Detach(NameArgs),
+    /// 从 Telegram Desktop 的 tdata 目录导入登录态
+    #[command(subcommand)]
+    Tdata(TdataCmd),
+    /// 查看 Telegram 全局代理当前生效情况
+    ProxyStatus,
+    /// 设置 Telegram 全局代理（--url 手动 / --system 跟随系统）
+    ProxySet(ProxySetArgs),
+    /// 恢复为跟随系统代理
+    ProxyReset,
+    /// 查看当前应用身份（内置或自定义 api_id）
+    AppIdStatus,
+    /// 保存自定义 api_id / api_hash（api_hash 经安全通道输入，不进命令行）
+    AppIdSet(AppIdSetArgs),
+    /// 恢复使用内置应用身份
+    AppIdReset,
 }
 
-/// `omy remote telegram login`。
+/// `omy remote telegram login`（扫码）。
 #[derive(Debug, Args)]
 pub struct LoginArgs {
     /// 给这个位置起个名字（默认取服务端昵称）
@@ -68,6 +93,40 @@ pub struct LoginArgs {
     pub password_stdin: bool,
 }
 
+/// `omy remote telegram phone`（手机号登录）。
+#[derive(Debug, Args)]
+pub struct PhoneLoginArgs {
+    /// 手机号（国际格式，如 +8613800000000）；交互模式下可省略，到时提示输入
+    #[arg(long, value_name = "号码")]
+    pub phone: Option<String>,
+    /// 给这个位置起个名字（默认取服务端昵称）
+    #[arg(long, value_name = "名字")]
+    pub name: Option<String>,
+    /// 代理地址，如 socks5://127.0.0.1:7897（默认自动探测系统代理）
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
+
+    /// 验证码：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub code_env: Option<String>,
+    /// 验证码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub code_file: Option<PathBuf>,
+    /// 验证码：从标准输入读取
+    #[arg(long)]
+    pub code_stdin: bool,
+
+    /// 二步验证密码：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+    /// 二步验证密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+    /// 二步验证密码：从标准输入读取
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
 /// `logout` / `detach` 的位置参数。
 #[derive(Debug, Args)]
 pub struct NameArgs {
@@ -75,32 +134,142 @@ pub struct NameArgs {
     pub place: String,
 }
 
+/// `omy remote telegram tdata …`。
+#[derive(Debug, Subcommand)]
+pub enum TdataCmd {
+    /// 探测本机常见的 tdata 位置（只读目录，不检查/不操作 Telegram Desktop 进程）
+    Probe {
+        /// 额外扫描一个 Telegram Desktop 安装目录
+        #[arg(long, value_name = "DIR")]
+        install_dir: Option<PathBuf>,
+    },
+    /// 检查一个目录是否像 tdata（只看结构，不解密）
+    Check {
+        /// tdata 目录
+        path: PathBuf,
+    },
+    /// 从 tdata 导入登录态：先问服务端认不认，成功才收编成位置
+    Import(TdataImportArgs),
+}
+
+/// `tdata import`。
+#[derive(Debug, Args)]
+pub struct TdataImportArgs {
+    /// tdata 目录
+    pub path: PathBuf,
+    /// 位置名（默认取服务端昵称）
+    #[arg(long, value_name = "名字")]
+    pub name: Option<String>,
+    /// 代理地址（默认探测系统代理）
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
+    /// tdata 本地密码：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub passcode_env: Option<String>,
+    /// tdata 本地密码：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub passcode_file: Option<PathBuf>,
+    /// tdata 本地密码：从标准输入读取
+    #[arg(long)]
+    pub passcode_stdin: bool,
+}
+
+/// `proxy-set`。
+#[derive(Debug, Args)]
+pub struct ProxySetArgs {
+    /// 手动代理地址，如 socks5://127.0.0.1:7897（http://、host:port 会自动归一）
+    #[arg(long, value_name = "URL", conflicts_with = "system")]
+    pub url: Option<String>,
+    /// 改为跟随系统代理
+    #[arg(long, conflicts_with = "url")]
+    pub system: bool,
+}
+
+/// `appid-set`。
+#[derive(Debug, Args)]
+pub struct AppIdSetArgs {
+    /// my.telegram.org 申请的 api_id（整数）
+    #[arg(long, value_name = "ID")]
+    pub api_id: i32,
+    /// api_hash：从环境变量读取（传变量名，不是值）
+    #[arg(long, value_name = "VAR")]
+    pub hash_env: Option<String>,
+    /// api_hash：从文件读取首行
+    #[arg(long, value_name = "PATH")]
+    pub hash_file: Option<PathBuf>,
+    /// api_hash：从标准输入读取
+    #[arg(long)]
+    pub hash_stdin: bool,
+}
+
 /// 分发。
 pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
     match cmd {
         Cmd::Login(a) => login(ctx, a),
+        Cmd::Phone(a) => phone(ctx, a),
         Cmd::Logout(a) => logout(ctx, a),
         Cmd::Detach(a) => detach(ctx, a),
+        Cmd::Tdata(c) => tdata(ctx, c),
+        Cmd::ProxyStatus => proxy_status(ctx),
+        Cmd::ProxySet(a) => proxy_set(ctx, a),
+        Cmd::ProxyReset => proxy_reset(ctx),
+        Cmd::AppIdStatus => appid_status(ctx),
+        Cmd::AppIdSet(a) => appid_set(ctx, a),
+        Cmd::AppIdReset => appid_reset(ctx),
     }
 }
 
-// ---- login ----
+// ---- 代理解析（登录命令共用） ----
+
+/// 登录用代理：显式 `--proxy` 优先并归一化，否则探测系统代理。
+fn resolve_login_proxy(arg: Option<&str>) -> Result<Option<String>> {
+    match arg {
+        Some(raw) => Ok(normalize_proxy(raw)?
+            .map(|p| p.as_str().to_string())
+            .filter(|p| !p.is_empty())),
+        None => Ok(tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string())),
+    }
+}
+
+// ---- 安全输入 ----
+
+/// 读一个短秘密（验证码 / 二步密码 / tdata 密码 / api_hash）。
+///
+/// 通道来源（env/file/stdin）走 `read_password`：它在非 TTY 且无通道时**直接
+/// 报错而不是挂起**。交互 TTY 时：`hidden=true` 不回显（二步密码），
+/// `hidden=false` 回显（验证码要核对位数）。
+fn read_secret(src: &PasswordSource, prompt: &str, hidden: bool) -> Result<String> {
+    if !src.is_interactive() {
+        let raw = read_password(src, prompt, false)?;
+        return String::from_utf8(raw).context("输入不是合法 UTF-8");
+    }
+    use std::io::Write as _;
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "没有可交互终端，无法提示输入。脚本场景请用 \
+             --code-env/--code-file/--code-stdin 或 --password-env/--password-file/--password-stdin 显式提供"
+        );
+    }
+    let raw = if hidden {
+        rpassword::prompt_password(format!("{prompt}: "))?
+    } else {
+        eprint!("{prompt}: ");
+        std::io::stderr().flush()?;
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s)?;
+        s
+    };
+    let v = raw.trim().to_string();
+    if v.is_empty() {
+        bail!("输入不能为空");
+    }
+    Ok(v)
+}
+
+// ---- QR 登录 ----
 
 fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    // 代理：显式 --proxy 优先，否则探测系统代理。归一化交给共享的
-    // normalize_proxy（grammers 只认 socks5://），不在此另写一套。
-    let proxy: Option<String> = match &args.proxy {
-        Some(raw) => Some(
-            normalize_proxy(raw)?
-                .map(|p| p.as_str().to_owned())
-                .unwrap_or_default(),
-        ),
-        None => omy_remote::telegram::proxy::detect_system_proxy().map(|p| p.as_str().to_owned()),
-    };
-    // 显式传了空字符串（"无代理"）的情况：normalize 返回 Ok(None)，上面
-    // 我们给了 Some(空串)，这里清掉。
-    let proxy = proxy.filter(|p| !p.is_empty());
-
+    let proxy = resolve_login_proxy(args.proxy.as_deref())?;
     let pw_src = PasswordSource {
         env: args.password_env.clone(),
         file: args.password_file.clone(),
@@ -112,7 +281,7 @@ fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     rt.block_on(run_login_cycle(ctx, args, &proxy, &pw_src))
 }
 
-/// 真正的异步登录循环。单独成函数便于把「建 runtime」与「跑流程」分开。
+/// 真正的异步扫码循环。单独成函数便于把「建 runtime」与「跑流程」分开。
 async fn run_login_cycle(
     ctx: &Ctx<'_>,
     args: &LoginArgs,
@@ -136,32 +305,45 @@ async fn run_login_cycle(
                 expires_in_secs,
                 refresh_index,
             } => {
-                // 二维码与可复制链接只画/打到 stderr（见 render_token）。
-                // 绝不把 tg://token 带进 stdout 的结构化结果——那是短时票据，
-                // 会被脚本日志原样留存，等于把可扫码的登录链接泄进日志。
+                // 二维码与可复制链接只画/打到 stderr。绝不把 tg://token 带进
+                // stdout 的结构化结果——那是短时票据，会被脚本日志原样留存。
                 render_token(ctx, &url, expires_in_secs, refresh_index);
             }
             QrEvent::Migrating { dc } => {
-                ctx.out
-                    .info(&format!("正在切换到 Telegram 数据中心 DC{dc}…"));
+                ctx.out.info(&format!("正在切换到 Telegram 数据中心 DC{dc}…"));
             }
             QrEvent::NeedPassword { hint } => {
-                // 二步验证。非交互且没给通道 → read_password 直接报错，绝不挂起。
                 ask_password_loop(ctx, &mut sess, hint.as_deref(), pw_src).await?;
-                // 密码过了就是登录成功
                 break;
             }
             QrEvent::LoggedIn => break,
         }
     }
 
-    finish_login(ctx, &sess, &appid, args).await
+    // 落盘 pending → 自证 → 收编成位置（与手机号登录共用尾部）。
+    let saved = match session::save(sess.session(), &appid, session::PENDING_ACCOUNT) {
+        Ok(_) => true,
+        Err(session::SessionError::NoProtector) => {
+            ctx.out.warn(
+                "这台机器没有可用的凭据库，Telegram 登录态不会保存（本次仍可使用，但下次需重新扫码）",
+            );
+            false
+        }
+        Err(e) => bail!("保存 Telegram 登录态失败：{e}"),
+    };
+    let authorized = sess
+        .is_authorized()
+        .await
+        .map_err(|e| anyhow!("确认登录态失败：{e}"))?;
+    let user_id = connect::account_user_id(sess.client()).await;
+    let label = match &args.name {
+        Some(n) => n.clone(),
+        None => connect::account_label(sess.client()).await,
+    };
+    register_and_report(ctx, user_id, label, saved, authorized)
 }
 
 /// 把一张登录二维码画到 stderr，并始终给出可复制的链接。
-///
-/// 画不出图也不致命：下面那行 `tg://` 链接才是兜底——用户可以在手机上
-/// 用别的方式打开，或贴到支持 tg:// 的地方。
 fn render_token(ctx: &Ctx, url: &str, expires_in_secs: u32, refresh_index: u32) {
     let is_tty = std::io::stderr().is_terminal();
     match encode_matrix(url) {
@@ -170,25 +352,18 @@ fn render_token(ctx: &Ctx, url: &str, expires_in_secs: u32, refresh_index: u32) 
             let art = qrterm::render(&matrix, mode);
             eprintln!("{art}");
         }
-        Err(e) => {
-            ctx.out.warn(&format!("二维码渲染失败（{e}），改用链接方式："));
-        }
+        Err(e) => ctx.out.warn(&format!("二维码渲染失败（{e}），改用链接方式：")),
     }
     eprintln!("用已登录 Telegram 的设备扫上面的码；或手动打开：");
     eprintln!("  {url}");
     if refresh_index == 0 {
         eprintln!("（{} 秒内有效，过期会自动刷新）", expires_in_secs);
     } else {
-        eprintln!(
-            "（二维码已自动刷新第 {refresh_index} 次，{expires_in_secs} 秒后再次过期）"
-        );
+        eprintln!("（二维码已自动刷新第 {refresh_index} 次，{expires_in_secs} 秒后再次过期）");
     }
 }
 
-/// 二步验证子步：反复要密码直到通过或放弃。
-///
-/// 非交互通道（env/file/stdin）只读一次：密码错了就报错退出，不能对着一段
-/// 管道数据反复问——那会永远等不到第二次输入而挂起。交互式（TTY）才循环重输。
+/// 二步验证子步：反复要密码直到通过或放弃。非交互通道只读一次。
 async fn ask_password_loop(
     ctx: &Ctx<'_>,
     sess: &mut QrSession,
@@ -200,20 +375,12 @@ async fn ask_password_loop(
             Some(h) if !h.is_empty() => format!("（提示：{h}）"),
             _ => String::new(),
         };
-        // read_password 在非 TTY 且无通道时直接报错，正是「非交互缺输入必须失败
-        // 而非挂起」这条要求的落点。它是同步阻塞读 stdin，在多线程 runtime 的
-        // 一个 worker 上阻塞可以接受（CLI 是短进程）。
-        let raw = read_password(
-            pw_src,
-            &format!("两步验证密码{hint_note}"),
-            false,
-        )?;
+        let raw = read_password(pw_src, &format!("两步验证密码{hint_note}"), false)?;
         let pw = String::from_utf8(raw).context("二步验证密码不是合法 UTF-8")?;
 
         match sess.submit_password(&pw).await {
             Ok(_) => return Ok(()),
             Err(QrError::WrongPassword) => {
-                // 只有交互式才能重问；非交互通道再问也读不到第二份。
                 if pw_src.is_interactive() && std::io::stdin().is_terminal() {
                     ctx.out.warn("两步验证密码不正确，请重试");
                     continue;
@@ -228,82 +395,215 @@ async fn ask_password_loop(
     }
 }
 
-/// 登录成功收尾：落盘 pending → 自证 → 收编成位置。
-async fn finish_login(
+// ---- 手机号登录 ----
+
+fn phone(ctx: &Ctx, a: &PhoneLoginArgs) -> Result<()> {
+    let proxy = resolve_login_proxy(a.proxy.as_deref())?;
+    let code_src = PasswordSource {
+        env: a.code_env.clone(),
+        file: a.code_file.clone(),
+        stdin: a.code_stdin,
+    };
+    let pw_src = PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    validate_phone_channels(&code_src, &pw_src)?;
+
+    let rt = rt()?;
+    rt.block_on(run_phone(ctx, a, &proxy, &code_src, &pw_src))
+}
+
+/// 验证码与二步密码两通道的互斥检查（单测钉死）。
+///
+/// 各通道内部的三选一互斥由 `PasswordSource::validate` 保证；这里补跨字段
+/// 的那条：**验证码与二步密码不能同时走 stdin**。一条 stdin 流只能读到第一次，
+/// 第二次必然 EOF——两个秘密都走它，第二个一定拿空值失败。
+fn validate_phone_channels(code: &PasswordSource, pw: &PasswordSource) -> Result<()> {
+    code.validate()?;
+    pw.validate()?;
+    if code.stdin && pw.stdin {
+        bail!(
+            "验证码与二步密码不能同时从标准输入读取：一条 stdin 流只能读一次。\
+             请用 --code-env/--code-file 提供验证码，二步密码再走 --password-stdin"
+        );
+    }
+    Ok(())
+}
+
+/// 真正的异步手机号登录流程。
+async fn run_phone(
     ctx: &Ctx<'_>,
-    sess: &QrSession,
-    appid: &AppId,
-    args: &LoginArgs,
+    a: &PhoneLoginArgs,
+    proxy: &Option<String>,
+    code_src: &PasswordSource,
+    pw_src: &PasswordSource,
 ) -> Result<()> {
-    // 立刻落盘到 pending。这次登录在服务端已生效，之后任何一步失败都不该让它白费。
-    let saved = match session::save(sess.session(), appid, session::PENDING_ACCOUNT) {
+    let appid = AppId::builtin();
+    let device = DeviceInfo::current();
+    let mut sess = PhoneSession::connect(appid.clone(), proxy.as_deref(), &device)
+        .map_err(|e| anyhow!("连接 Telegram 失败：{e}"))?;
+
+    let phone = match &a.phone {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => prompt_phone()?,
+    };
+
+    match sess.send_code(&phone).await {
+        Ok(PhoneEvent::LoggedIn) => {}
+        Ok(PhoneEvent::NeedPassword { hint }) => {
+            submit_twofactor(ctx, &mut sess, pw_src, hint.as_deref()).await?;
+        }
+        Ok(PhoneEvent::CodeSent { shape }) => {
+            report_code_sent(ctx, &shape);
+            loop {
+                let code = read_secret(code_src, "验证码", false)?;
+                match sess.submit_code(&code).await {
+                    Ok(PhoneEvent::LoggedIn) => break,
+                    Ok(PhoneEvent::NeedPassword { hint }) => {
+                        submit_twofactor(ctx, &mut sess, pw_src, hint.as_deref()).await?;
+                        break;
+                    }
+                    Ok(PhoneEvent::CodeSent { .. }) => {
+                        unreachable!("submit_code 不返回 CodeSent")
+                    }
+                    Err(e) => handle_submit_code_err(ctx, e, code_src)?,
+                }
+            }
+        }
+        Err(e) => return Err(anyhow!("发送验证码失败：{e}")),
+    }
+
+    // 收尾与扫码同一条路径。
+    let saved = match session::save(sess.session(), &appid, session::PENDING_ACCOUNT) {
         Ok(_) => true,
         Err(session::SessionError::NoProtector) => {
             ctx.out.warn(
-                "这台机器没有可用的凭据库，Telegram 登录态不会保存（本次仍可使用，但下次需重新扫码）",
+                "这台机器没有可用的凭据库，Telegram 登录态不会保存（本次仍可使用，但下次需重新登录）",
             );
             false
         }
         Err(e) => bail!("保存 Telegram 登录态失败：{e}"),
     };
-
-    // 自证：服务端真的认这份登录态。
     let authorized = sess
         .is_authorized()
         .await
         .map_err(|e| anyhow!("确认登录态失败：{e}"))?;
-    if !authorized {
-        bail!("服务端未确认本次登录（登录态未生效）");
-    }
-
     let user_id = connect::account_user_id(sess.client()).await;
-    // 名字：命令行指定优先，否则取服务端昵称，再不行回落到 Telegram。
-    let label = match &args.name {
+    let label = match &a.name {
         Some(n) => n.clone(),
         None => connect::account_label(sess.client()).await,
     };
+    register_and_report(ctx, user_id, label, saved, authorized)
+}
 
-    // 去重 + 分配 id + 落盘。放进 mutate_places：它会重读最新配置再改，
-    // 避免「启动时的快照覆盖掉别的进程刚加的位置」。
+/// 交互模式下提示输入手机号；非交互且没给 `--phone` 立即报错，不挂起。
+fn prompt_phone() -> Result<String> {
+    use std::io::Write as _;
+    if !std::io::stdin().is_terminal() {
+        bail!("非交互模式必须用 --phone 指定手机号");
+    }
+    eprint!("手机号（国际格式，如 +8613800000000）: ");
+    std::io::stderr().flush()?;
+    let mut s = String::new();
+    std::io::stdin().read_line(&mut s)?;
+    let p = s.trim().to_string();
+    if p.is_empty() {
+        bail!("手机号不能为空");
+    }
+    Ok(p)
+}
+
+/// 验证码发到哪里：必须如实说「发到其他已登录客户端」，用户才不会白等短信。
+fn report_code_sent(ctx: &Ctx, shape: &CodeShape) {
+    use omy_remote::telegram::login::CodeDelivery;
+    let where_to = match shape.via {
+        CodeDelivery::App => "已发到你**其他已登录的 Telegram 客户端**（应用内），去那里查看",
+        CodeDelivery::Sms => "已通过短信发送",
+        CodeDelivery::Call => "将通过语音电话播报",
+        CodeDelivery::FlashCall => "来电号码的后几位即验证码",
+        CodeDelivery::Unknown => "已发送（服务端未说明方式）",
+    };
+    ctx.out.info(&format!(
+        "验证码已发送（{} 位）：{}",
+        shape.length, where_to
+    ));
+}
+
+/// 提交验证码的错误处理：错码在交互 TTY 下重问，非交互立即失败。
+fn handle_submit_code_err(ctx: &Ctx, e: QrError, code_src: &PasswordSource) -> Result<()> {
+    if is_wrong_code(&e) {
+        if code_src.is_interactive() && std::io::stdin().is_terminal() {
+            ctx.out.warn("验证码不正确或已过期，请重新输入");
+            return Ok(()); // 继续循环
+        }
+        bail!(
+            "验证码不正确或已过期。非交互模式无法重试，请核对后重跑 \
+             （验证码经 --code-stdin / --code-file / --code-env 提供）"
+        );
+    }
+    Err(anyhow!("提交验证码失败：{e}"))
+}
+
+/// PHONE_CODE_INVALID / PHONE_CODE_EXPIRED 视为「错码，可重试」。
+fn is_wrong_code(e: &QrError) -> bool {
+    matches!(e, QrError::Invocation(s) if s.starts_with("PHONE_CODE_INVALID") || s.starts_with("PHONE_CODE_EXPIRED"))
+}
+
+/// 二步密码子步：反复要密码直到通过或放弃。
+async fn submit_twofactor(
+    ctx: &Ctx<'_>,
+    sess: &mut PhoneSession,
+    pw_src: &PasswordSource,
+    hint: Option<&str>,
+) -> Result<()> {
+    loop {
+        let note = match hint {
+            Some(h) if !h.is_empty() => format!("（提示：{h}）"),
+            _ => String::new(),
+        };
+        let pw = read_secret(pw_src, &format!("两步验证密码{note}"), true)?;
+        match sess.submit_password(&pw).await {
+            Ok(PhoneEvent::LoggedIn) | Ok(PhoneEvent::NeedPassword { .. }) => return Ok(()),
+            Ok(PhoneEvent::CodeSent { .. }) => unreachable!("submit_password 不返回 CodeSent"),
+            Err(QrError::WrongPassword) => {
+                if pw_src.is_interactive() && std::io::stdin().is_terminal() {
+                    ctx.out.warn("两步验证密码不正确，请重试");
+                    continue;
+                }
+                bail!("两步验证密码不正确。非交互模式无法重试，请核对后重跑");
+            }
+            Err(e) => return Err(anyhow!("两步验证失败：{e}")),
+        }
+    }
+}
+
+// ---- 登录成功的共用收尾（QR 与手机号共用） ----
+
+/// 去重/分配 id → 落配置（跨进程锁内重读最新）→ 收编 pending → 报告。
+///
+/// 纯配置编排，不碰 grammers 类型；网络侧（拿到 user_id/label、落 pending）
+/// 由各登录路径在外面做完。这一段是 CLI 与 GUI「pending → 位置」共用的业务。
+fn register_and_report(
+    ctx: &Ctx<'_>,
+    user_id: Option<i64>,
+    label: String,
+    session_saved: bool,
+    authorized: bool,
+) -> Result<()> {
+    if !authorized {
+        bail!("服务端未确认本次登录（登录态未生效）");
+    }
     let (id, duplicate) = {
         let mut chosen: Option<(String, bool)> = None;
         mutate_places(ctx, |places| {
-            let existing = places
-                .iter()
-                .find(|p| p.kind == "telegram" && p.user_id == user_id)
-                .map(|p| p.id.clone());
-            if let Some(existing_id) = existing {
-                // 这个账号已经加过：把 pending 收编成已有位置，不新建。
-                chosen = Some((existing_id, true));
-                return Ok(());
-            }
-            let taken: std::collections::HashSet<String> =
-                places.iter().map(|p| p.id.clone()).collect();
-            let blocked = |id: &str| {
-                session::session_path_of(id)
-                    .map(|p| p.exists())
-                    .unwrap_or(false)
-            };
-            let new_id = omy_remote::placebook::allocate_place_id(&taken, &blocked);
-            places.push(SavedPlace {
-                id: new_id.clone(),
-                name: label.clone(),
-                kind: String::from("telegram"),
-                // Telegram 位置只记账号身份，连接不存 URL（与 GUI 的 telegram_saved_places 同形）
-                url: String::new(),
-                username: String::new(),
-                vendor: String::new(),
-                writable: true,
-                secret: None,
-                user_id,
-            });
-            chosen = Some((new_id, false));
+            chosen = Some(register::fold_into_places(places, user_id, &label));
             Ok(())
         })?;
         chosen.expect("闭包必然给 chosen 赋值")
     };
 
-    // 把 pending 那份 session 改名成位置自己的。失败只告警：登录在本次进程里已生效。
     if let Err(e) = session::adopt_pending(&id) {
         ctx.out.warn(&format!("收编登录态失败（不影响本次已登录）：{e}"));
     }
@@ -316,15 +616,11 @@ async fn finish_login(
     } else {
         format!("登录成功，已保存为位置 {id}（{label}）")
     };
-    ctx.out.result(&human, &success_payload(&id, &label, duplicate, user_id, saved));
+    ctx.out.result(&human, &success_payload(&id, &label, duplicate, user_id, session_saved));
     Ok(())
 }
 
-/// 登录成功的结构化结果。
-///
-/// **绝不**放 `tg://login?token=…`：那是短时可扫码票据，进了 `--json`
-/// 的 stdout 就会被脚本日志留存。可复制链接只在扫码期间打到 stderr。
-/// 这个函数收成纯函数，单测才能钉死「谁加回 login_url 谁红」。
+/// 登录成功的结构化结果。**绝不**放任何秘密（验证码、二步密码、tg:// 票据）。
 #[must_use]
 fn success_payload(
     id: &str,
@@ -342,6 +638,286 @@ fn success_payload(
     })
 }
 
+// ---- tdata 导入 ----
+
+fn tdata(ctx: &Ctx, cmd: &TdataCmd) -> Result<()> {
+    match cmd {
+        TdataCmd::Probe { install_dir } => tdata_probe(ctx, install_dir),
+        TdataCmd::Check { path } => tdata_check(ctx, path),
+        TdataCmd::Import(a) => tdata_import(ctx, a),
+    }
+}
+
+/// 列出本机常见的 tdata 位置。只读目录结构，不探测/不操作 Telegram Desktop 进程。
+fn tdata_probe(ctx: &Ctx, install_dir: &Option<PathBuf>) -> Result<()> {
+    let mut candidates: Vec<serde_json::Value> = Vec::new();
+    for p in tdata::common_locations() {
+        candidates.push(json!({
+            "path": p.to_string_lossy().into_owned(),
+            "looks_like": tdata::looks_like_tdata(&p),
+        }));
+    }
+    if let Some(dir) = install_dir {
+        for p in tdata::scan_install_dir(dir) {
+            candidates.push(json!({
+                "path": p.to_string_lossy().into_owned(),
+                "looks_like": true,
+            }));
+        }
+    }
+    let human = if candidates.is_empty() {
+        "未找到 tdata 候选目录。便携版 tdata 跟 exe 走，请用 --install-dir 指定安装目录，或 import 直接给路径。".to_string()
+    } else {
+        format!("找到 {} 个 tdata 候选", candidates.len())
+    };
+    ctx.out.result(&human, &json!({ "candidates": candidates }));
+    Ok(())
+}
+
+fn tdata_check(ctx: &Ctx, path: &Path) -> Result<()> {
+    let ok = tdata::looks_like_tdata(path);
+    let human = if ok {
+        format!("{} 看起来像 tdata（含 key_data）", path.display())
+    } else {
+        format!("{} 不像 tdata（需要含 key_data 的 Telegram Desktop tdata 目录）", path.display())
+    };
+    ctx.out.result(&human, &json!({
+        "path": path.to_string_lossy().into_owned(),
+        "looks_like": ok,
+    }));
+    Ok(())
+}
+
+fn tdata_import(ctx: &Ctx, a: &TdataImportArgs) -> Result<()> {
+    let pass_src = PasswordSource {
+        env: a.passcode_env.clone(),
+        file: a.passcode_file.clone(),
+        stdin: a.passcode_stdin,
+    };
+    pass_src.validate()?;
+    let proxy = resolve_login_proxy(a.proxy.as_deref())?;
+    let rt = rt()?;
+    rt.block_on(run_tdata_import(ctx, a, &proxy, &pass_src))
+}
+
+/// tdata 错误映射出稳定码，脚本可按子串匹配（与 GUI 的 tdata_code 对齐）。
+fn tdata_error(e: tdata::TdataError) -> anyhow::Error {
+    let code = match &e {
+        tdata::TdataError::NeedPasscode => "tg_tdata_need_passcode",
+        tdata::TdataError::WrongPasscode => "tg_tdata_wrong_passcode",
+        tdata::TdataError::NotTdata | tdata::TdataError::NoKeyData => "tg_tdata_not_found",
+        tdata::TdataError::NoAccount => "tg_tdata_no_account",
+        tdata::TdataError::Corrupt(_) | tdata::TdataError::Unsupported(_) => "tg_tdata_unsupported",
+        tdata::TdataError::Io(_) => "tg_tdata_io",
+    };
+    anyhow!("[{code}] {e}")
+}
+
+async fn run_tdata_import(
+    ctx: &Ctx<'_>,
+    a: &TdataImportArgs,
+    proxy: &Option<String>,
+    pass_src: &PasswordSource,
+) -> Result<()> {
+    // 1. 解析（纯本地，不碰网络）。先试空密码；NeedPasscode 时再经安全通道要。
+    let auth = match tdata::read_tdata(&a.path, "") {
+        Ok(auth) => auth,
+        Err(tdata::TdataError::NeedPasscode) => {
+            let pass = read_secret(pass_src, "tdata 本地密码", true)?;
+            tdata::read_tdata(&a.path, &pass).map_err(tdata_error)?
+        }
+        Err(e) => return Err(tdata_error(e)),
+    };
+
+    // 2. 先问服务端认不认，成功才落盘（顺序与 GUI 一致：避免把失效 tdata 写成本地位置）。
+    let appid = AppId::builtin();
+    let device = DeviceInfo::current();
+    let saved = tdata::to_saved_session(&auth, appid.id());
+    let conn = connect::connect_with(&saved, &appid, &device, proxy.as_deref())
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    let user_id = connect::account_user_id(&conn.client).await;
+    let label = match &a.name {
+        Some(n) => n.clone(),
+        None => connect::account_label(&conn.client).await,
+    };
+    drop(conn);
+
+    // 3. 去重 + 分配 id。
+    let (id, duplicate) = {
+        let mut chosen: Option<(String, bool)> = None;
+        mutate_places(ctx, |places| {
+            chosen = Some(register::fold_into_places(places, user_id, &label));
+            Ok(())
+        })?;
+        chosen.expect("闭包必然给 chosen 赋值")
+    };
+
+    // 4. 落 session 到该 id（独立副本，与 Telegram Desktop 再无关系）。
+    let saved_ok = match session::save_current(&saved, &id) {
+        Ok(_) => true,
+        Err(session::SessionError::NoProtector) => {
+            ctx.out.warn("这台机器没有可用的凭据库，导入的登录态不会保存");
+            false
+        }
+        Err(e) => bail!("保存登录态失败：{e}"),
+    };
+
+    let human = if duplicate {
+        format!("导入成功：tdata 对应账号已关联到已有位置 {id}")
+    } else {
+        format!("导入成功，已保存为位置 {id}（{label}）")
+    };
+    ctx.out.result(&human, &success_payload(&id, &label, duplicate, user_id, saved_ok));
+    Ok(())
+}
+
+// ---- 代理设置 ----
+
+fn proxy_status(ctx: &Ctx) -> Result<()> {
+    let mode = ctx.cfg.remote.telegram_proxy_mode.clone();
+    let manual = ctx.cfg.remote.telegram_proxy.clone();
+    let system = tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string());
+    let effective: Option<String> = match mode.as_str() {
+        "system" => system.clone(),
+        "manual" => tg_proxy::normalize(&manual)?.map(|p| p.as_str().to_string()),
+        other => bail!("配置里的代理模式非法：{other:?}（应为 system 或 manual）"),
+    };
+    let human = match &effective {
+        Some(u) => format!("Telegram 代理当前生效：{u}（模式 {mode}）"),
+        None => format!("Telegram 当前无代理（模式 {mode}）"),
+    };
+    ctx.out.result(
+        &human,
+        &json!({
+            "mode": mode,
+            "manual_configured": manual,
+            "system_detected": system,
+            "effective": effective,
+        }),
+    );
+    Ok(())
+}
+
+fn proxy_set(ctx: &Ctx, a: &ProxySetArgs) -> Result<()> {
+    match (a.url.as_deref(), a.system) {
+        (Some(url), false) => {
+            let norm = tg_proxy::normalize(url)?; // 校验格式
+            let addr = norm.map(|p| p.as_str().to_string()).unwrap_or_default();
+            mutate_config(ctx, |c| {
+                c.remote.telegram_proxy_mode = String::from("manual");
+                c.remote.telegram_proxy = addr;
+                Ok(())
+            })?;
+        }
+        (None, true) => {
+            mutate_config(ctx, |c| {
+                c.remote.telegram_proxy_mode = String::from("system");
+                c.remote.telegram_proxy = String::new();
+                Ok(())
+            })?;
+        }
+        (None, false) => bail!("proxy-set 必须给 --url 或 --system"),
+        (Some(_), true) => bail!("--url 与 --system 互斥"),
+    }
+    proxy_status(ctx)
+}
+
+fn proxy_reset(ctx: &Ctx) -> Result<()> {
+    mutate_config(ctx, |c| {
+        c.remote.telegram_proxy_mode = String::from("system");
+        c.remote.telegram_proxy = String::new();
+        Ok(())
+    })?;
+    proxy_status(ctx)
+}
+
+// ---- 应用身份（自定义 api_id / api_hash） ----
+
+fn appid_status(ctx: &Ctx) -> Result<()> {
+    let id = ctx.cfg.remote.telegram_api_id;
+    let hash = ctx.cfg.remote.telegram_api_hash.clone();
+    let configured = id.is_some() && hash.is_some();
+    let app = AppId::from_config(id, hash.as_deref()).unwrap_or_else(|_| AppId::builtin());
+    let human = if app.is_builtin() {
+        format!("当前使用内置 api_id={}（未配置自定义应用身份）", app.id())
+    } else {
+        format!("当前使用自定义 api_id={}", app.id())
+    };
+    // 绝不输出 hash：结构化结果里只有「是否配置了自定义」和生效的 id。
+    ctx.out.result(
+        &human,
+        &json!({
+            "builtin": app.is_builtin(),
+            "effective_id": app.id(),
+            "configured": configured,
+        }),
+    );
+    Ok(())
+}
+
+fn appid_set(ctx: &Ctx, a: &AppIdSetArgs) -> Result<()> {
+    let hash_src = PasswordSource {
+        env: a.hash_env.clone(),
+        file: a.hash_file.clone(),
+        stdin: a.hash_stdin,
+    };
+    hash_src.validate()?;
+    let hash = read_secret(&hash_src, "api_hash（my.telegram.org 申请的 32 位十六进制）", true)?;
+    // 校验身份合法（AppIdError 不含 hash 本体）。
+    AppId::custom(a.api_id, &hash).map_err(|e| anyhow!("api_id/api_hash 校验失败：{e}"))?;
+    mutate_config(ctx, |c| {
+        c.remote.telegram_api_id = Some(a.api_id);
+        c.remote.telegram_api_hash = Some(hash.clone());
+        Ok(())
+    })?;
+    drop(hash); // 尽早丢掉明文副本
+    ctx.out.result(
+        &format!("已保存自定义 api_id={}", a.api_id),
+        &json!({ "api_id": a.api_id, "configured": true }),
+    );
+    Ok(())
+}
+
+fn appid_reset(ctx: &Ctx) -> Result<()> {
+    let path = config_target_path(ctx)?;
+    // 用原始 TOML 写：Option 字段设 None 不会把键删掉，而「恢复内置」必须真的
+    // 移除这两个键，否则下次读取仍是旧自定义身份。
+    omy_config::Config::update_toml_at(&path, |table| {
+        if let Some(toml::Value::Table(remote)) = table.get_mut("remote") {
+            remote.remove("telegram_api_id");
+            remote.remove("telegram_api_hash");
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .with_context(|| format!("写回配置 {} 失败", path.display()))?;
+    ctx.out.result(
+        "已恢复内置应用身份",
+        &json!({ "builtin": true, "configured": false }),
+    );
+    Ok(())
+}
+
+// ---- 配置写回（跨进程锁） ----
+
+fn config_target_path(ctx: &Ctx) -> Result<PathBuf> {
+    match ctx.config_path {
+        Some(p) => Ok(p.to_path_buf()),
+        None => omy_config::config_path()
+            .ok_or_else(|| anyhow!("无法确定配置文件位置")),
+    }
+}
+
+/// 在共享跨进程锁内读-改-写整份配置（与 GUI 的 update_at 同一把锁）。
+fn mutate_config<F>(ctx: &Ctx, f: F) -> Result<()>
+where
+    F: FnOnce(&mut omy_config::Config) -> Result<()>,
+{
+    let path = config_target_path(ctx)?;
+    omy_config::Config::update_at(&path, |c| f(c))
+        .with_context(|| format!("写回配置 {} 失败", path.display()))
+}
+
 // ---- logout / detach ----
 
 /// 要求一条 Telegram 位置，否则报错。
@@ -353,12 +929,11 @@ fn require_telegram(ctx: &Ctx, needle: &str) -> Result<omy_config::SavedPlace> {
     Ok(sp)
 }
 
-/// `omy remote telegram logout`：移除位置并销毁登录态。
 fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
         format!(
-            "将登出位置 {}（{}）：删除本机登录态，之后必须重新扫码才能使用。继续？[y/N] ",
+            "将登出位置 {}（{}）：删除本机登录态，之后必须重新登录才能使用。继续？[y/N] ",
             sp.id, sp.name
         )
         .as_str(),
@@ -370,8 +945,6 @@ fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
         places.retain(|p| p.id != sp.id);
         Ok(())
     })?;
-    // 先摘位置再抹 session：与 GUI delete_account 同序，避免中途崩溃留下指向
-    // 不存在 session 的位置。
     session::forget(&sp.id)
         .map_err(|e| anyhow!("已移除位置，但销毁登录态失败：{e}"))?;
     ctx.out.result(
@@ -381,12 +954,11 @@ fn logout(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     Ok(())
 }
 
-/// `omy remote telegram detach`：移除位置，保留登录态。
 fn detach(ctx: &Ctx, a: &NameArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     if !ctx.out.confirm(
         format!(
-            "将把位置 {}（{}）从列表移除，但保留本机登录态（之后可重新加回而不必重扫）。继续？[y/N] ",
+            "将把位置 {}（{}）从列表移除，但保留本机登录态（之后可重新加回而不必重登）。继续？[y/N] ",
             sp.id, sp.name
         )
         .as_str(),
@@ -410,9 +982,6 @@ mod tests {
     use super::*;
 
     /// 二步密码通道与登录密码用同一套互斥约定，且绝不接受 argv。
-    ///
-    /// 不这样会怎样：登录命令另写一套参数校验，某一天和 WebDAV 的约定漂移，
-    /// 用户能用 `--password-stdin` 又用 `--password-env` 时静默只取一个。
     #[test]
     fn twofactor_source_reuses_shared_mutual_exclusion() {
         let both = PasswordSource {
@@ -428,12 +997,23 @@ mod tests {
         assert!(ok.validate().is_ok());
     }
 
-    /// 成功 JSON 绝不能带登录票据。
+    /// 验证码与二步密码不能同时走 stdin：一条 stdin 流只能读一次。
     ///
-    /// 不这样会怎样：`tg://login?token=…` 是短时可扫码票据，一旦进了
-    /// `--json` 的 stdout，就会被 `omy remote telegram login --json | tee …`
-    /// 这类脚本原样写进日志。这条断言钉死结构化结果里既没有 login_url，
-    /// 也不出现 token / tg:// 字样；谁把票据加回来谁红。
+    /// 不这样会怎样：脚本把两个秘密都从管道喂，第二次 read_to_string 必然 EOF，
+    /// 二步密码拿到空值，报一句莫名其妙的「两步密码不正确」。
+    #[test]
+    fn code_and_password_cannot_both_use_stdin() {
+        let code = PasswordSource { stdin: true, ..PasswordSource::default() };
+        let pw = PasswordSource { stdin: true, ..PasswordSource::default() };
+        assert!(validate_phone_channels(&code, &pw).is_err());
+
+        // code 走 env、password 走 stdin：允许（两个独立通道，不抢同一条流）。
+        let code = PasswordSource { env: Some("TG_CODE".into()), ..PasswordSource::default() };
+        let pw = PasswordSource { stdin: true, ..PasswordSource::default() };
+        assert!(validate_phone_channels(&code, &pw).is_ok());
+    }
+
+    /// 成功 JSON 绝不能带登录票据或任何秘密。
     #[test]
     fn success_payload_never_leaks_login_token() {
         let v = success_payload("p1", "我自己", false, Some(42), true);
@@ -442,76 +1022,26 @@ mod tests {
             !s.contains("login_url") && !s.contains("token") && !s.contains("tg://"),
             "成功 JSON 不得含登录票据，实际：{s}"
         );
-        // 业务字段仍在
         assert_eq!(v["id"], "p1");
         assert_eq!(v["user_id"], 42);
         assert_eq!(v["session_saved"], true);
     }
 
-    /// require_telegram 必须只放行 Telegram 位置，WebDAV 位置要明确报错。
-    ///
-    /// 不这样会怎样：对一个 WebDAV 位置跑 `telegram logout`，静默把它从列表
-    /// 删掉却不删任何 telegram session，用户以为登出了其实没动。
+    /// 错码判定：只认 PHONE_CODE_INVALID / EXPIRED，其它 RPC 错误不算「可重试」。
     #[test]
-    fn require_telegram_rejects_webdav() {
-        use omy_config::Config;
-        let mut cfg = Config::default();
-        cfg.remote.places = vec![SavedPlace {
-            id: String::from("p1"),
-            name: String::from("dav"),
-            kind: String::from("webdav"),
-            url: String::from("https://dav/"),
-            username: String::new(),
-            vendor: String::new(),
-            writable: true,
-            secret: None,
-            user_id: None,
-        }];
-        // 这里只验证「非 telegram 被拒」的分支，不真正连库。
-        let sp = find_place(&cfg, "p1").expect("应找到");
-        assert_ne!(sp.kind, "telegram");
+    fn wrong_code_detection_only_matches_code_errors() {
+        assert!(is_wrong_code(&QrError::Invocation("PHONE_CODE_INVALID (420)".into())));
+        assert!(is_wrong_code(&QrError::Invocation("PHONE_CODE_EXPIRED (0)".into())));
+        assert!(!is_wrong_code(&QrError::WrongPassword));
+        assert!(!is_wrong_code(&QrError::Invocation("PHONE_NUMBER_INVALID (400)".into())));
     }
 
-    /// 去重判定：同一 user_id 的 Telegram 位置视为同一个账号。
-    ///
-    /// 不这样会怎样：扫码登录已经加过的账号时，不去重就再建一个位置，
-    /// 两个位置指向同一份登录态，改一个另一个不一致。
+    /// tdata 错误稳定码映射：脚本可按 [tg_tdata_*] 子串分支。
     #[test]
-    fn dedupe_matches_on_user_id() {
-        let places = vec![
-            SavedPlace {
-                id: String::from("p1"),
-                name: String::from("A"),
-                kind: String::from("telegram"),
-                url: String::new(),
-                username: String::new(),
-                vendor: String::new(),
-                writable: true,
-                secret: None,
-                user_id: Some(42),
-            },
-            SavedPlace {
-                id: String::from("p2"),
-                name: String::from("B"),
-                kind: String::from("telegram"),
-                url: String::new(),
-                username: String::new(),
-                vendor: String::new(),
-                writable: true,
-                secret: None,
-                user_id: Some(7),
-            },
-        ];
-        let hit = places
-            .iter()
-            .find(|p| p.kind == "telegram" && p.user_id == Some(42))
-            .map(|p| p.id.clone());
-        assert_eq!(hit.as_deref(), Some("p1"));
-        // 新账号 user_id=99 不应命中任何已有位置
-        let miss = places
-            .iter()
-            .find(|p| p.kind == "telegram" && p.user_id == Some(99))
-            .map(|p| p.id.clone());
-        assert!(miss.is_none());
+    fn tdata_error_codes_are_stable() {
+        let s = tdata_error(tdata::TdataError::NotTdata).to_string();
+        assert!(s.starts_with("[tg_tdata_not_found]"));
+        let s = tdata_error(tdata::TdataError::NeedPasscode).to_string();
+        assert!(s.starts_with("[tg_tdata_need_passcode]"));
     }
 }

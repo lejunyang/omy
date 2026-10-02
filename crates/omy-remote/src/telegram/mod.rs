@@ -49,6 +49,7 @@ pub mod place_secret;
 pub mod proxy;
 pub mod qr;
 pub mod qrlogin;
+pub mod register;
 pub mod session;
 pub mod store;
 pub mod tdata;
