@@ -51,6 +51,25 @@ const cacheUsage = ref({ used: 0, limit: 0, root: '', pinned_used: 0, pinned_fil
 const clearing = ref(false);
 /** 自动模式下当前从操作系统探测到的实际代理；空表示系统代理未启用。 */
 const telegramSystemProxy = ref('');
+const telegramProxyChecking = ref(false);
+const telegramProxyCheck = ref<any>(null);
+
+async function checkTelegramProxy() {
+  if (!cfg.value || telegramProxyChecking.value) return;
+  telegramProxyChecking.value = true;
+  telegramProxyCheck.value = null;
+  error.value = '';
+  try {
+    // 检查的必须是将要生效的全局策略，先保存再调用统一的后端自检；
+    // 不额外传一份前端临时代理，否则登录与业务连接又会出现第二套来源。
+    await api.configSet(cfg.value);
+    telegramProxyCheck.value = await api.telegramCheckConnection();
+  } catch (e) {
+    error.value = i18n.te(api.errCode(e), i18n.t('settings.telegram_proxy_check_failed'));
+  } finally {
+    telegramProxyChecking.value = false;
+  }
+}
 
 /** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
 const loadedCount = ref(0);
@@ -600,6 +619,14 @@ async function openLogDir() {
           </div>
 
           <div class="mgh">{{ i18n.t('settings.remote') }}</div>
+          <button class="mrow" type="button" data-sp="telegram_proxy_mobile" @click="goMobile('remote')">
+            <span class="mri" aria-hidden="true">↗</span>
+            <span class="mrt">{{ i18n.t('settings.telegram_proxy') }}</span>
+            <span class="mrv">{{ cfg.remote.telegram_proxy_mode === 'manual'
+              ? i18n.t('settings.telegram_proxy_manual')
+              : i18n.t('settings.telegram_proxy_system') }}</span>
+            <span class="mra" aria-hidden="true">›</span>
+          </button>
           <button class="mrow" type="button" data-sp="remote" @click="goMobile('remote')">
             <span class="mri" aria-hidden="true">☁️</span>
             <span class="mrt">{{ i18n.t('settings.connected_places') }}</span>
@@ -687,10 +714,10 @@ async function openLogDir() {
 
           <!-- 远程位置 -->
           <template v-else-if="(isMobile ? mobilePane : pane) === 'remote'">
-            <div class="row">
+            <div class="row proxy-row">
               <label class="lb">{{ i18n.t('settings.telegram_proxy') }}</label>
-              <div class="fld">
-                <select data-sf="telegram_proxy_mode" v-model="cfg.remote.telegram_proxy_mode">
+              <div class="fld proxy-settings">
+                <select data-sf="telegram_proxy_mode" v-model="cfg.remote.telegram_proxy_mode" @change="telegramProxyCheck = null">
                   <option value="system">{{ i18n.t('settings.telegram_proxy_system') }}</option>
                   <option value="manual">{{ i18n.t('settings.telegram_proxy_manual') }}</option>
                 </select>
@@ -701,9 +728,30 @@ async function openLogDir() {
                   type="text"
                   placeholder="socks5://127.0.0.1:7897"
                   spellcheck="false"
+                  @input="telegramProxyCheck = null"
+                  @keydown.enter.prevent="checkTelegramProxy"
                 />
-                <div v-else class="desc" data-sf="telegram_system_proxy">
+                <div v-else class="proxy-current" data-sf="telegram_system_proxy">
                   {{ telegramSystemProxy || i18n.t('settings.telegram_proxy_none') }}
+                </div>
+                <div class="proxy-actions">
+                  <button
+                    class="btn small"
+                    type="button"
+                    data-sf="telegram_proxy_check"
+                    :disabled="telegramProxyChecking || (cfg.remote.telegram_proxy_mode === 'manual' && !cfg.remote.telegram_proxy.trim())"
+                    @click="checkTelegramProxy"
+                  >
+                    {{ telegramProxyChecking ? i18n.t('settings.telegram_proxy_checking') : i18n.t('settings.telegram_proxy_check') }}
+                  </button>
+                  <span
+                    v-if="telegramProxyCheck"
+                    class="proxy-check-result"
+                    :class="{ ok: telegramProxyCheck.status === 'ok', bad: telegramProxyCheck.status !== 'ok' }"
+                    data-sf="telegram_proxy_result"
+                  >
+                    {{ i18n.t(`settings.telegram_proxy_result_${telegramProxyCheck.status}`) }}
+                  </span>
                 </div>
                 <div class="desc">{{ i18n.t('settings.telegram_proxy_desc') }}</div>
               </div>
@@ -1341,6 +1389,44 @@ async function openLogDir() {
   flex: 1;
   min-width: 180px;
 }
+.proxy-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.proxy-settings > select,
+.proxy-settings > input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.proxy-current {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--bg3);
+  color: var(--fg2);
+  overflow-wrap: anywhere;
+}
+.proxy-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.proxy-actions .btn.small {
+  margin-top: 0;
+}
+.proxy-check-result {
+  font-size: 12px;
+}
+.proxy-check-result.ok { color: var(--ok); }
+.proxy-check-result.bad { color: var(--danger); }
 /* 说明文字与控件左缘对齐，不额外缩进——缩进后会比控件右移一截，
    看起来像是属于别的项 */
 .desc {
@@ -1537,6 +1623,20 @@ async function openLogDir() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+@media (max-width: 768px) {
+  .proxy-row {
+    display: block;
+  }
+  .proxy-row .lb {
+    display: block;
+    width: auto;
+    padding-top: 0;
+    margin-bottom: 8px;
+  }
+  .proxy-settings {
+    width: 100%;
+  }
 }
 .mra {
   color: var(--fg2);

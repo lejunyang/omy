@@ -5,6 +5,7 @@ import { ref } from 'vue';
 const h = vi.hoisted(() => ({
   configSet: vi.fn(),
   systemProxy: vi.fn(),
+  checkConnection: vi.fn(),
 }));
 
 const makeConfig = () => ({
@@ -31,6 +32,7 @@ vi.mock('../api', () => ({
   configGet: vi.fn(async () => makeConfig()),
   configPaths: vi.fn(async () => ({ config: '', cache: '', data: '', log: '', portable: false })),
   telegramSystemProxy: h.systemProxy,
+  telegramCheckConnection: h.checkConnection,
   deviceKeyStatus: vi.fn(async () => ({ available: false, enrolled: false })),
   remoteCacheUsage: vi.fn(async () => ({ used: 0, limit: 0, root: '', pinned_used: 0, pinned_files: 0 })),
   credentialCount: vi.fn(async () => 0),
@@ -50,7 +52,13 @@ vi.mock('../i18n', () => ({
   formatSize: (n: number) => String(n),
 }));
 
-vi.mock('../viewport', () => ({ isMobile: ref(false) }));
+vi.mock('../viewport', () => {
+  const isMobile = ref(false);
+  return {
+    isMobile,
+    setTestMobile: (value: boolean) => { isMobile.value = value; },
+  };
+});
 vi.mock('../mobile-platform', () => ({
   isAndroid: false,
   registerMobileBack: vi.fn(() => () => {}),
@@ -63,10 +71,17 @@ vi.mock('../store', () => ({
 }));
 
 import SettingsDialog from './SettingsDialog.vue';
+import { isMobile } from '../viewport';
+
+function setTestMobile(value: boolean) {
+  (isMobile as unknown as { value: boolean }).value = value;
+}
 
 beforeEach(() => {
+  setTestMobile(false);
   h.configSet.mockReset().mockResolvedValue(undefined);
   h.systemProxy.mockReset().mockResolvedValue('socks5://127.0.0.1:6480');
+  h.checkConnection.mockReset().mockResolvedValue({ status: 'ok', elapsed_ms: 1, via_proxy: true });
 });
 
 describe('SettingsDialog Telegram 全局代理', () => {
@@ -80,15 +95,36 @@ describe('SettingsDialog Telegram 全局代理', () => {
 
     await wrapper.find('[data-sf="telegram_proxy_mode"]').setValue('manual');
     await wrapper.find('[data-sf="telegram_proxy"]').setValue('http://127.0.0.1:7897');
-    await wrapper.find('[data-si="close"]').trigger('click');
+    await wrapper.find('[data-sf="telegram_proxy_check"]').trigger('click');
     await flushPromises();
 
     expect(h.configSet).toHaveBeenCalledTimes(1);
+    expect(h.checkConnection).toHaveBeenCalledWith();
+    expect(wrapper.find('[data-sf="telegram_proxy_result"]').text()).toBe('settings.telegram_proxy_result_ok');
+
+    await wrapper.find('[data-si="close"]').trigger('click');
+    await flushPromises();
+
+    expect(h.configSet).toHaveBeenCalledTimes(2);
     const saved = h.configSet.mock.calls[0][0];
     expect(saved.remote.telegram_proxy_mode).toBe('manual');
     expect(saved.remote.telegram_proxy).toBe('http://127.0.0.1:7897');
     expect(saved.remote.places).toEqual([]);
 
+    wrapper.unmount();
+  });
+
+  it('移动端首页有独立代理入口并能进入共用设置页', async () => {
+    setTestMobile(true);
+    const wrapper = mount(SettingsDialog);
+    await flushPromises();
+
+    const proxyEntry = wrapper.find('[data-sp="telegram_proxy_mobile"]');
+    expect(proxyEntry.exists()).toBe(true);
+    await proxyEntry.trigger('click');
+
+    expect(wrapper.find('[data-sf="telegram_proxy_mode"]').exists()).toBe(true);
+    expect(wrapper.find('[data-sf="telegram_system_proxy"]').text()).toBe('socks5://127.0.0.1:6480');
     wrapper.unmount();
   });
 });
