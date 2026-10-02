@@ -25,8 +25,9 @@ pub mod webdav;
 
 pub use caps::Capabilities;
 pub use ops::{
-    CommitError, DecryptLocalOutcome, cleanup_remote, commit_upload, decrypt_stream_to_local,
-    ensure_safe_remote, fetch_header, header_cache_key,
+    CommitError, DecryptLocalOutcome, DecryptStreamRequest, cleanup_remote, commit_upload,
+    decrypt_stream_to_local, ensure_remote_dir, ensure_safe_remote, fetch_header, header_cache_key,
+    require_capability,
 };
 pub use placebook::{
     allocate_place_id, open_password, parse_vendor, protect_key, seal_password, seq_of,

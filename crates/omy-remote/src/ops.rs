@@ -14,7 +14,7 @@
 //! 走岔——而 AGENTS.md 的「同一逻辑不允许两处实现」正是要拦这个。本模块把编排
 //! 收成一份，driver 之上的所有调用都走这里。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -311,6 +311,41 @@ pub async fn fetch_header<S: RemoteStore + ?Sized>(
     Ok(buf)
 }
 
+/// 确保远程目录存在（`mkdir -p` 语义），逐级创建缺失的中间目录。
+///
+/// WebDAV 的 MKCOL 一次只建一层、且父目录必须已存在；要建 `/a/b/c` 就得
+/// `/a` → `/a/b` → `/a/b/c` 依次 MKCOL。已存在的层级跳过，不报错。
+///
+/// # Errors
+///
+/// 列目录/建目录失败、或位置不支持建目录时返回。路径里含 `..` 的调用方应
+/// 事先用 [`ensure_safe_remote`] 挡住。
+pub async fn ensure_remote_dir<S: RemoteStore + ?Sized>(
+    store: &S,
+    path: &str,
+) -> Result<()> {
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return Ok(());
+    }
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut current = String::new();
+    for seg in segments {
+        let parent = current.clone();
+        current = if current.is_empty() {
+            format!("/{seg}")
+        } else {
+            format!("{current}/{seg}")
+        };
+        let listed = store.list(&parent).await?;
+        if listed.iter().any(|e| e.is_dir && e.name == seg) {
+            continue;
+        }
+        store.create_dir(&parent, seg).await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 远程密文流式解密到本地
 // ---------------------------------------------------------------------------
@@ -327,6 +362,34 @@ pub struct DecryptLocalOutcome {
     pub name: String,
     /// 写出的明文字节数。
     pub bytes: u64,
+}
+
+/// [`decrypt_stream_to_local`] 的入参。字段较多，收成结构避免「12 个位置参数」。
+pub struct DecryptStreamRequest<S> {
+    /// 远程存储（`Arc` 持有，跨阻塞线程移动）。
+    pub store: Arc<S>,
+    /// 位置 id（缓存命名空间）。
+    pub place_id: String,
+    /// 远程条目 id。
+    pub id: String,
+    /// 远程密文总字节数。
+    pub total_ct_size: u64,
+    /// 已取到的完整文件头。
+    pub header: Vec<u8>,
+    /// 可解锁该文件的 KEK。
+    pub keks: Vec<Kek>,
+    /// 密文块缓存（可空）。
+    pub cache: Option<BlockCache>,
+    /// 本地目标目录。
+    pub dest_dir: PathBuf,
+    /// 已清洗的明文文件名。
+    pub safe_name: String,
+    /// 明文字节数（来自头部 plaintext_size）。
+    pub plaintext_size: u64,
+    /// 是否允许覆盖本地已存在文件。
+    pub force: bool,
+    /// 当前 runtime 的 Handle（供 RemoteSource 在阻塞线程里 block_on）。
+    pub rt: tokio::runtime::Handle,
 }
 
 /// 把远程 .omy **流式解密到本地目录**。
@@ -346,33 +409,34 @@ pub struct DecryptLocalOutcome {
 ///
 /// 写出失败、解密流不完整、并发覆盖冲突时返回。
 pub async fn decrypt_stream_to_local<S>(
-    store: Arc<S>,
-    place_id: &str,
-    id: &str,
-    total_ct_size: u64,
-    header: Vec<u8>,
-    keks: Vec<Kek>,
-    cache: Option<BlockCache>,
-    dest_dir: &Path,
-    safe_name: &str,
-    plaintext_size: u64,
-    force: bool,
-    rt: tokio::runtime::Handle,
+    req: DecryptStreamRequest<S>,
 ) -> Result<DecryptLocalOutcome>
 where
     S: RemoteStore + 'static,
 {
-    let final_path = dest_dir.join(safe_name);
+    let DecryptStreamRequest {
+        store,
+        place_id,
+        id,
+        total_ct_size,
+        header,
+        keks,
+        cache,
+        dest_dir,
+        safe_name,
+        plaintext_size,
+        force,
+        rt,
+    } = req;
+
+    let final_path = dest_dir.join(&safe_name);
     if !force && final_path.exists() {
         return Err(Error::Conflict);
     }
     let part_path = dest_dir.join(format!("{safe_name}.part"));
 
     let store2 = Arc::clone(&store);
-    let place_id2 = place_id.to_owned();
-    let id2 = id.to_owned();
     let header2 = header.clone();
-    let safe_name_owned = safe_name.to_owned();
     let part_cleanup = part_path.clone();
     let final_check = final_path.clone();
 
@@ -381,8 +445,8 @@ where
     let join = tokio::task::spawn_blocking(move || -> Result<DecryptLocalOutcome> {
         let source = RemoteSource::new(
             store2,
-            place_id2,
-            id2,
+            &place_id,
+            &id,
             &header2,
             total_ct_size,
             cache,
@@ -418,7 +482,7 @@ where
         std::fs::rename(&part_path, &final_check).map_err(Error::Io)?;
         Ok(DecryptLocalOutcome {
             saved_path: final_check,
-            name: safe_name_owned,
+            name: safe_name,
             bytes: done,
         })
     })

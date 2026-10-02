@@ -57,6 +57,12 @@ pub enum Cmd {
     Download(files::DownloadArgs),
     /// 在两个位置之间复制远程文件
     Copy(files::CopyArgs),
+    /// 创建远程目录（缺失的中间层级一并创建）
+    Mkdir(files::MkdirArgs),
+    /// 删除远程文件或目录（不可恢复）
+    Delete(files::DeleteArgs),
+    /// 移动/重命名远程条目（同目录内改名）
+    Move(files::MoveArgs),
     /// Telegram 账号扫码登录与位置管理
     #[command(subcommand)]
     Telegram(telegram::Cmd),
@@ -132,6 +138,9 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Upload(a) => files::upload(ctx, a),
         Cmd::Download(a) => files::download(ctx, a),
         Cmd::Copy(a) => files::copy(ctx, a),
+        Cmd::Mkdir(a) => files::mkdir(ctx, a),
+        Cmd::Delete(a) => files::delete(ctx, a),
+        Cmd::Move(a) => files::r#move(ctx, a),
         Cmd::Telegram(c) => telegram::run(ctx, c),
         Cmd::Cache(c) => cache::run(ctx, c),
     }

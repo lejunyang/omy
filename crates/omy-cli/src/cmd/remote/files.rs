@@ -11,6 +11,11 @@ use super::{Ctx, abs, connect_store, find_place, parent_name, rt};
 use super::stores::AnyStore;
 use crate::output::human_bytes;
 
+/// 远程路径安全校验：拒绝 `..` 段。实现收在 `omy_remote::ops`，GUI/CLI 同一份。
+fn ensure_safe_remote(path: &str) -> Result<()> {
+    omy_remote::ensure_safe_remote(path).map_err(|e| anyhow!(e.to_string()))
+}
+
 /// 一次读取的分块大小。下载/跨位置复制按这个粒度边读边写，
 /// 而不是把整文件读进内存——虽然本切片复制仍会聚合到目标后一次写出，
 /// 但下载到本地是流式的。
@@ -71,15 +76,40 @@ pub struct CopyArgs {
     pub force: bool,
 }
 
-/// 远程路径里禁止出现 `..` 段。
-///
-/// WebDAV 服务端未必做路径规范化，放任用户传 `/backup/../其它` 可能越级写到
-/// 预料之外的目录；这类「路径穿越」必须在客户端这一层直接拒绝。
-fn ensure_safe_remote(path: &str) -> Result<()> {
-    if path.split('/').any(|seg| seg == "..") {
-        bail!("远程路径不得包含 '..'：{path}");
-    }
-    Ok(())
+/// `omy remote mkdir <位置> <远程目录>`。
+#[derive(Debug, Args)]
+pub struct MkdirArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 远程目录路径（如 /backup/2026），缺失的中间层级会一并创建
+    #[arg(value_name = "远程目录")]
+    pub path: String,
+}
+
+/// `omy remote delete <位置> <远程路径>`。
+#[derive(Debug, Args)]
+pub struct DeleteArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 远程文件或目录路径（目录会递归删除）
+    #[arg(value_name = "远程路径")]
+    pub path: String,
+    /// 跳过确认（删除不可恢复）
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// `omy remote move <位置> <源路径> <目标路径>`。
+#[derive(Debug, Args)]
+pub struct MoveArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 源远程路径
+    #[arg(value_name = "源路径")]
+    pub source: String,
+    /// 目标远程路径（与源同目录时即改名；跨目录暂不支持）
+    #[arg(value_name = "目标路径")]
+    pub dest: String,
 }
 
 /// `omy remote ls`。
@@ -334,6 +364,111 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
     ctx.out.result(
         &format!("已复制 {} → {}（{}）", src_id_for_report, entry.id, human_bytes(total)),
         &json!({ "from": src_id_for_report, "to": entry.id, "bytes": total }),
+    );
+    Ok(())
+}
+
+/// 连到位置并取该目录的「有效能力」。
+///
+/// 必须按目录级有效能力做门禁，而不是位置级上界：只读对话、不可写的目录
+/// 必须在这里就被拦住，而不是把请求发出去再被服务端拒。
+fn connect_with_caps(
+    ctx: &Ctx,
+    place: &str,
+    dir: &str,
+) -> Result<(tokio::runtime::Runtime, AnyStore, omy_remote::Capabilities)> {
+    let sp = find_place(ctx.cfg, place)?;
+    let rt = rt()?;
+    let store = rt
+        .block_on(connect_store(&sp))
+        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+    let caps = rt
+        .block_on(store.effective_capabilities(dir))
+        .map_err(|e| anyhow!("查询位置能力失败: {e}"))?;
+    Ok((rt, store, caps))
+}
+
+/// `omy remote mkdir`：递归建远程目录（缺失的中间层级一并创建）。
+pub fn mkdir(ctx: &Ctx, a: &MkdirArgs) -> Result<()> {
+    let path = abs(&a.path);
+    ensure_safe_remote(&path)?;
+    let dir = if path == "/" { String::new() } else { path.clone() };
+
+    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &dir)?;
+    omy_remote::require_capability("create_dir", caps.create_dir)
+        .map_err(|e| anyhow!(e.to_string()))?;
+
+    rt.block_on(omy_remote::ensure_remote_dir(&store, &path))
+        .map_err(|e| anyhow!("建远程目录失败: {e}"))?;
+
+    ctx.out.result(
+        &format!("已创建远程目录 {path}"),
+        &json!({ "path": path }),
+    );
+    Ok(())
+}
+
+/// `omy remote delete`：删除远程文件或目录（目录递归删除，不可恢复）。
+pub fn delete(ctx: &Ctx, a: &DeleteArgs) -> Result<()> {
+    let path = abs(&a.path);
+    ensure_safe_remote(&path)?;
+    let (parent, _name) = parent_name(&path);
+
+    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &parent)?;
+    omy_remote::require_capability("delete", caps.delete)
+        .map_err(|e| anyhow!(e.to_string()))?;
+
+    // 先解析出条目 id（delete 按 id 操作），不存在直接报错而不是默默「成功」。
+    let entry = rt.block_on(entry_by_path(&store, &path))?;
+
+    if !a.force && !ctx.out.confirm(
+        format!("将永久删除远程 {}（不可恢复）。继续？[y/N] ", path).as_str(),
+        ctx.assume_yes,
+    ) {
+        bail!("已取消");
+    }
+
+    rt.block_on(store.delete(&entry.id))
+        .map_err(|e| anyhow!("删除失败: {e}"))?;
+
+    ctx.out.result(
+        &format!("已删除远程 {path}"),
+        &json!({ "deleted": path }),
+    );
+    Ok(())
+}
+
+/// `omy remote move`：把远程条目改名（同目录内移动）。
+///
+/// 叫 move 而不是 rename，是为了和 `remote rename <位置> <新名字>`（改的是
+/// 本地显示名）区分开。跨目录移动受限于当前 store 抽象只暴露同目录 rename，
+/// 暂不支持，会明确报错。
+pub fn r#move(ctx: &Ctx, a: &MoveArgs) -> Result<()> {
+    let src = abs(&a.source);
+    ensure_safe_remote(&src)?;
+    let dst = abs(&a.dest);
+    ensure_safe_remote(&dst)?;
+    let (src_parent, src_name) = parent_name(&src);
+    let (dst_parent, dst_name) = parent_name(&dst);
+
+    if src_parent != dst_parent {
+        bail!("跨目录移动暂不支持：源 {src:?} 与目标 {dst:?} 不在同一目录");
+    }
+    if src_name == dst_name {
+        bail!("源与目标同名，无需移动");
+    }
+
+    let (rt, store, caps) = connect_with_caps(ctx, &a.place, &src_parent)?;
+    omy_remote::require_capability("rename", caps.rename)
+        .map_err(|e| anyhow!(e.to_string()))?;
+
+    let entry = rt.block_on(entry_by_path(&store, &src))?;
+    rt.block_on(store.rename(&entry.id, &dst_name))
+        .map_err(|e| anyhow!("移动失败: {e}"))?;
+
+    ctx.out.result(
+        &format!("已移动 {} → {}", src, dst),
+        &json!({ "from": src, "to": dst }),
     );
     Ok(())
 }
