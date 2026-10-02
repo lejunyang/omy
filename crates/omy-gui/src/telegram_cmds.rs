@@ -422,11 +422,11 @@ pub fn telegram_api_id_reset() -> CmdResult<()> {
 /// 与 CLI 同源（`appid_store::resolve`）。解不开信封时回落内置——连不上比
 /// 「用错身份」更糟；此时 status 会显示「填过但没读出来」，不会无声无息。
 fn login_app_id() -> AppId {
-    let Ok(c) = omy_config::Config::load() else {
-        return AppId::builtin();
-    };
-    let protector = omy_remote::placebook::protect_key();
-    match omy_remote::telegram::appid_store::resolve(&c.remote, protector.as_ref()) {
+    // 与 CLI resolve_app 同源：共享「解析 + 锁内迁移」。GUI 单独登录也会在
+    // Config 跨进程锁里把旧明文 api_hash 重封成信封（以前只 CLI 做，GUI
+    // 这里只 resolve 不写回，旧明文永远留在配置里）。无保护器时保留明文不动。
+    // 解不开信封/读不到配置时回落内置——连不上比用错身份更糟。
+    match omy_remote::telegram::appid_store::resolve_and_migrate() {
         Ok(r) => r.app,
         Err(_) => AppId::builtin(),
     }

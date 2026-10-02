@@ -132,6 +132,58 @@ pub fn migrate(remote: &Remote, protector: Option<&ProtectKey>) -> Option<Value>
     }
 }
 
+/// 读配置、解析身份，并**在跨进程锁内**把旧明文 api_hash 迁移成信封。
+///
+/// GUI 与 CLI 登录都走这一条：以前 CLI 自己做迁移、GUI 只 resolve 不重封，
+/// 于是 GUI 单独登录时旧明文永远留在配置里。收进共享函数后两端行为一致。
+///
+/// # 迁移的安全性
+///
+/// - 在 [`Config::update`]/[`Config::update_at`] 的跨进程锁内**重读磁盘最新**再改，
+///   不会拿旧快照覆盖别人刚写的位置或代理；
+/// - 只有「当前是旧明文」时才写；已是信封则不动；
+/// - **无保护器时 `migrate` 返回 `None`，不覆盖、不丢失旧明文**——这次照常用
+///   明文解析出的身份登录，等凭据库可用时再迁移。
+pub fn resolve_and_migrate() -> Result<ResolvedApp, LoadError> {
+    omy_config::Config::update(migrate_in_place)
+}
+
+/// 同 [`resolve_and_migrate`]，但配置路径显式（CLI `--config` 指定文件时用）。
+pub fn resolve_and_migrate_at(path: &std::path::Path) -> Result<ResolvedApp, LoadError> {
+    omy_config::Config::update_at(path, migrate_in_place)
+}
+
+/// 闭包内逻辑：锁里拿到最新 `Config`，解析身份，需要时把明文重封成信封。
+///
+/// 单独成函数便于注入保护器做测试（无保护器路径）。
+fn migrate_in_place(cfg: &mut omy_config::Config) -> Result<ResolvedApp, LoadError> {
+    let protector = crate::placebook::protect_key();
+    migrate_in_place_with(cfg, protector.as_ref())
+}
+
+/// [`migrate_in_place`] 的可注入保护器版本。
+fn migrate_in_place_with(
+    cfg: &mut omy_config::Config,
+    protector: Option<&ProtectKey>,
+) -> Result<ResolvedApp, LoadError> {
+    let resolved = resolve(&cfg.remote, protector)?;
+    if resolved.legacy_plaintext
+        && let Some(env) = migrate(&cfg.remote, protector)
+    {
+        cfg.remote.telegram_api_hash = Some(env);
+    }
+    Ok(resolved)
+}
+
+/// 锁内读-改-写可能遇到的错误。
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error(transparent)]
+    Config(#[from] omy_config::Error),
+    #[error(transparent)]
+    Resolve(#[from] ResolveError),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +285,73 @@ mod tests {
         let s = serde_json::to_string(&v).unwrap();
         assert!(!s.contains(plain), "status JSON 不得含 api_hash：{s}");
         assert_eq!(v["effective_id"], 777);
+    }
+
+    // ---- 锁内迁移（GUI 与 CLI 共用的那条）----
+
+    fn cfg_with_plaintext() -> omy_config::Config {
+        let mut c = omy_config::Config::default();
+        c.remote.telegram_api_id = Some(777);
+        c.remote.telegram_api_hash = Some(Value::String("0123456789abcdef0123456789abcdef".into()));
+        c
+    }
+
+    /// 旧明文在共享「解析+迁移」后被重封成信封表——GUI 单独登录也会触发。
+    ///
+    /// 不这样会怎样：CLI 自己迁移、GUI 只 resolve 不写回，GUI 用户的旧明文
+    /// 永远留在配置文件里，等于这次修复只覆盖了一半入口。
+    #[test]
+    fn legacy_plaintext_is_resealed_in_place() {
+        let key = omy_secret::random_key();
+        let mut cfg = cfg_with_plaintext();
+        let got = migrate_in_place_with(&mut cfg, Some(&key)).unwrap();
+        assert_eq!(got.app.id(), 777, "解析出的身份必须是自定义 id");
+        assert!(!got.app.is_builtin());
+        match &cfg.remote.telegram_api_hash {
+            Some(Value::Table(_)) => {}
+            other => panic!("迁移后应是信封表，实际：{other:?}"),
+        }
+    }
+
+    /// 迁移前后解析出的身份不变（重封只是换存储形态，不是换身份）。
+    #[test]
+    fn identity_unchanged_by_migration() {
+        let key = omy_secret::random_key();
+        let mut cfg = cfg_with_plaintext();
+        let before = resolve(&cfg.remote, None).unwrap();
+        migrate_in_place_with(&mut cfg, Some(&key)).unwrap();
+        let after = resolve(&cfg.remote, Some(&key)).unwrap();
+        assert_eq!(before.app.id(), after.app.id(), "迁移不应改变 api_id");
+        assert_eq!(after.app.id(), 777);
+        assert_eq!(after.app.hash(), "0123456789abcdef0123456789abcdef");
+    }
+
+    /// 无保护器时不覆盖/不丢失旧明文：解析仍成功，配置里仍是原来的字符串。
+    ///
+    /// 不这样会怎样：拿不到凭据库就把字段清空或写错，用户那对自定义身份直接丢了，
+    /// 下次连内置都不连，最难排查。
+    #[test]
+    fn no_protector_preserves_plaintext() {
+        let mut cfg = cfg_with_plaintext();
+        // 无保护器：迁移不发生，但用明文本身仍能解析出身份
+        let got = migrate_in_place_with(&mut cfg, None).unwrap();
+        assert_eq!(got.app.id(), 777, "无保护器也该用明文身份登录");
+        match &cfg.remote.telegram_api_hash {
+            Some(Value::String(s)) => assert_eq!(s, "0123456789abcdef0123456789abcdef"),
+            other => panic!("无保护器时不得改写旧明文，实际：{other:?}"),
+        }
+    }
+
+    /// 已经是信封的，迁移不再动它（幂等）。
+    #[test]
+    fn already_envelope_is_untouched() {
+        let key = omy_secret::random_key();
+        let stored = seal(Some(&key), "0123456789abcdef0123456789abcdef").unwrap().unwrap();
+        let mut cfg = omy_config::Config::default();
+        cfg.remote.telegram_api_id = Some(777);
+        cfg.remote.telegram_api_hash = Some(stored);
+        let before = cfg.remote.telegram_api_hash.clone();
+        migrate_in_place_with(&mut cfg, Some(&key)).unwrap();
+        assert_eq!(before, cfg.remote.telegram_api_hash, "已是信封则不重写");
     }
 }

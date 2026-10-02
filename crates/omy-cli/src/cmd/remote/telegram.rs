@@ -388,18 +388,14 @@ fn resolve_login_proxy(arg: Option<&str>) -> Result<Option<String>> {
 /// `AppId::builtin()`，配置里填了也白填。解析时若发现还是旧明文
 /// （`Value::String`），顺手重封成信封完成迁移。
 fn resolve_app(ctx: &Ctx<'_>) -> Result<AppId> {
-    let protector = protect_key();
-    let resolved = appid_store::resolve(&ctx.cfg.remote, protector.as_ref())
-        .map_err(|e| anyhow!("解析应用身份失败：{e}"))?;
-    if resolved.legacy_plaintext {
-        // 旧明文：登录这一次已经用它连上了，把它重封成信封写回，下次即不再是明文。
-        if let Some(env) = appid_store::migrate(&ctx.cfg.remote, protector.as_ref()) {
-            let _ = mutate_config(ctx, |c| {
-                c.remote.telegram_api_hash = Some(env.clone());
-                Ok(())
-            });
-        }
+    // 与 GUI login_app_id 同源：共享「解析 + 锁内迁移」。旧明文在 Config 跨进程
+    // 锁里重读磁盘最新后重封成信封；无保护器则保留明文不动，不丢身份。
+    // --config 指定了路径就用显式路径，否则走默认配置。
+    let resolved = match ctx.config_path {
+        Some(p) => appid_store::resolve_and_migrate_at(p),
+        None => appid_store::resolve_and_migrate(),
     }
+    .map_err(|e| anyhow!("解析应用身份失败：{e}"))?;
     Ok(resolved.app)
 }
 
