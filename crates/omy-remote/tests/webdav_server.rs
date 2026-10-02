@@ -35,6 +35,10 @@ use omy_remote::cache::BlockCache;
 use omy_remote::source::RemoteSource;
 use omy_remote::store::RemoteStore;
 use omy_remote::webdav::{Vendor, WebDavConfig, WebDavStore};
+use omy_remote::{
+    DecryptStreamRequest, commit_upload, decrypt_stream_to_local, ensure_remote_dir,
+    ensure_safe_remote,
+};
 use omy_remote::Error as RemoteError;
 use tokio::net::TcpListener;
 
@@ -743,4 +747,154 @@ async fn cli_style_stream_upload_chunked_download_and_copy() {
 
     srv_a.shutdown().await;
     srv_b.shutdown().await;
+}
+
+/// `ensure_remote_dir`：逐级补建中间目录，且已存在时幂等不报错。
+///
+/// 不这样会怎样：WebDAV MKCOL 一次只建一层、父目录必须已存在。直接对 `/a/b/c`
+/// 发 MKCOL 会被服务端 409 拒；客户端若不逐级建，递归上传就建不出嵌套目录。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_remote_dir_creates_nested_and_is_idempotent() {
+    let root = unique_dir("ensure_dir");
+    let srv = spawn_server(root.clone(), None).await;
+    let store = store_for(&srv.base_url(), "", "", true);
+
+    ensure_remote_dir(&store, "/a/b/c").await.expect("逐级建 a/b/c");
+    for p in [root.join("a"), root.join("a").join("b"), root.join("a").join("b").join("c")] {
+        assert!(p.is_dir(), "远程应出现 {}", p.display());
+    }
+    // 再建一次：已存在的层级跳过，不能报「目录已存在」
+    ensure_remote_dir(&store, "/a/b/c").await.expect("幂等重建");
+    ensure_remote_dir(&store, "/a/b/d").await.expect("补建同级 d");
+    assert!(root.join("a").join("b").join("d").is_dir(), "应补建 d");
+
+    srv.shutdown().await;
+}
+
+/// `commit_upload`：WebDAV 同时支持 write+rename+delete 时，先写临时名再 MOVE
+/// 成最终名——磁盘上最终名存在，且不留任何 `.omy-upload-*` 临时残留。
+///
+/// 不这样会怎样：直接写到最终名、中途失败会留下一个顶着最终名的半截文件，
+/// 用户下次以为传好了；临时名方案让失败只污染一个会被删掉的临时对象。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_upload_temp_name_then_renames_without_residue() {
+    let root = unique_dir("commit");
+    let srv = spawn_server(root.clone(), None).await;
+    let store = store_for(&srv.base_url(), "", "", true);
+    let caps = store.capabilities();
+    assert!(caps.write && caps.rename && caps.delete, "本用例需要走临时名分支");
+
+    let payload = b"committed-bytes".to_vec();
+    let reader = Box::new(std::io::Cursor::new(payload.clone()))
+        as Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+    let entry = commit_upload(&store, caps, "", "final.omy", payload.len() as u64, reader, None)
+        .await
+        .expect("commit_upload");
+    assert_eq!(entry.name, "final.omy");
+
+    // 最终名落盘且内容一致
+    let on_disk = std::fs::read(root.join("final.omy")).expect("读回");
+    assert_eq!(on_disk, payload);
+
+    // 根目录列表里不应残留任何临时名
+    let listed = store.list("").await.expect("列根");
+    let temps: Vec<&str> = listed
+        .iter()
+        .map(|e| e.name.as_str())
+        .filter(|n| n.starts_with(".omy-upload-"))
+        .collect();
+    assert!(temps.is_empty(), "临时名应被 MOVE 掉，残留: {temps:?}");
+
+    srv.shutdown().await;
+}
+
+/// `ensure_safe_remote`：路径里的 `..` 必须在发请求前拒绝（路径穿越防护）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ensure_safe_remote_rejects_dotdot() {
+    assert!(ensure_safe_remote("/ok/path").is_ok());
+    assert!(ensure_safe_remote("/a/../b").is_err(), "含 .. 必须拒绝");
+    assert!(ensure_safe_remote("/a/b/..").is_err());
+    assert!(ensure_safe_remote("..").is_err());
+}
+
+/// `decrypt_stream_to_local` 端到端：远程 .omy 边下边解，明文逐字节落本地目录，
+/// 且本地不留 `.part`。
+///
+/// 不这样会怎样：早先 GUI 在 `place_cmds.rs` 里写了一份「.part + 改名 + 失败清理」，
+/// CLI 若再写一遍，清理/二次检查迟早走岔。这里对着真服务器跑一遍共享核心，证明
+/// 它解出来的明文与原始逐字节一致。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn decrypt_stream_to_local_roundtrip() {
+    let plain: Vec<u8> = (0..(256 * 1024 + 777)).map(|i| (i % 251) as u8).collect();
+    let (omy_bytes, kek) = make_omy(&plain, b"dec-pw", Some("note.txt"));
+
+    let remote_root = unique_dir("dec_remote");
+    let out_dir = unique_dir("dec_out");
+    let srv = spawn_server(remote_root.clone(), None).await;
+    let store = Arc::new(store_for(&srv.base_url(), "", "", true));
+
+    // 先把 .omy 放到远程
+    store.write("", "note.omy", &omy_bytes).await.expect("上传密文");
+    let entry = find_entry(&store, "", "note.omy").await;
+    let size = entry.size.expect("content-length");
+
+    // open 一次拿文件名与明文大小（与 CLI/GUI 调用方同路径）
+    let opened = omy_core::file::open(&omy_bytes, std::slice::from_ref(&kek)).expect("open 探针");
+    let safe = omy_core::unpack::sanitize_filename(&opened.filename().expect("文件名"));
+    let plaintext_size = opened.header.plaintext_size;
+
+    let outcome = decrypt_stream_to_local(DecryptStreamRequest {
+        store: Arc::clone(&store),
+        place_id: "e2e".into(),
+        id: entry.id.clone(),
+        total_ct_size: size,
+        header: omy_bytes.clone(),
+        keks: vec![kek],
+        cache: None,
+        dest_dir: out_dir.clone(),
+        safe_name: safe.clone(),
+        plaintext_size,
+        force: false,
+        rt: tokio::runtime::Handle::current(),
+    })
+    .await
+    .expect("流式解密到本地");
+
+    assert_eq!(outcome.name, "note.txt");
+    let got = std::fs::read(&outcome.saved_path).expect("读回本地明文");
+    assert_eq!(got, plain, "解出的明文必须逐字节一致");
+    assert_eq!(outcome.bytes, plain.len() as u64);
+    // 不应留 .part
+    assert!(
+        !out_dir.join("note.txt.part").exists(),
+        "成功后不应残留 .part"
+    );
+
+    // 再解一次、不 force：本地已存在应报 Conflict（覆盖守卫）
+    let second = decrypt_stream_to_local(DecryptStreamRequest {
+        store,
+        place_id: "e2e".into(),
+        id: entry.id,
+        total_ct_size: size,
+        header: omy_bytes,
+        keks: vec![opened_kek_unused()],
+        cache: None,
+        dest_dir: out_dir,
+        safe_name: safe,
+        plaintext_size,
+        force: false,
+        rt: tokio::runtime::Handle::current(),
+    })
+    .await;
+    assert!(matches!(second, Err(RemoteError::Conflict)), "不 force 二次解应冲突");
+
+    srv.shutdown().await;
+}
+
+/// 占位：二次解需要一个 KEK，但第一个已 move 进闭包。这里只是为了让 Conflict
+/// 分支不依赖密码正确性——冲突发生在写本地之前的存在性检查，根本不会用到 KEK。
+fn opened_kek_unused() -> omy_core::crypto::Kek {
+    let salt = [0u8; 16];
+    omy_core::crypto::Kek::from_password(b"x", &salt, omy_core::crypto::Argon2Params::TEST_WEAK)
+        .expect("派生占位 KEK")
 }
