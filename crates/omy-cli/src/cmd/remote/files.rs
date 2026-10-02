@@ -1,11 +1,12 @@
 //! 远程文件操作：浏览、上传、下载、跨位置复制。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Args;
 use omy_remote::RemoteStore;
 use serde_json::json;
+use tokio::io::AsyncRead;
 
 use super::{Ctx, abs, connect_store, find_place, parent_name, rt};
 use super::stores::AnyStore;
@@ -177,18 +178,116 @@ pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
     Ok(())
 }
 
-/// `omy remote upload`。
+/// 拼接远程目录与名字（与 WebDAV 驱动 join 同语义）。
+fn remote_join(parent: &str, name: &str) -> String {
+    let p = parent.trim_end_matches('/');
+    if p.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{p}/{name}")
+    }
+}
+
+/// 把单个本地文件提交到远程目录。
+///
+/// 走共享 [`omy_remote::commit_upload`]：能改名的位置先写临时名再 MOVE，
+/// 失败精确清理；不支持改名的位置直写，失败尽力删、残留风险由 CommitError 带出。
+async fn upload_one(
+    store: &AnyStore,
+    remote_dir: &str,
+    local: &Path,
+    name: &str,
+    size: u64,
+    force: bool,
+) -> Result<()> {
+    if !force {
+        let exists = store
+            .list(remote_dir)
+            .await?
+            .iter()
+            .any(|e: &omy_remote::Entry| !e.is_dir && e.name == name);
+        if exists {
+            bail!("远程已存在同名文件 {name:?}；确认覆盖请加 --force");
+        }
+    }
+    let caps = store.effective_capabilities(remote_dir).await?;
+    let f = tokio::fs::File::open(local)
+        .await
+        .with_context(|| format!("打开本地文件 {} 失败", local.display()))?;
+    let reader = Box::new(f) as Box<dyn AsyncRead + Unpin + Send>;
+    omy_remote::commit_upload(store, caps, remote_dir, name, size, reader, None)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    Ok(())
+}
+
+/// 递归上传一个本地目录：先建远程镜像目录，再逐文件提交。
+///
+/// # 目录整体不是事务
+///
+/// 一个文件失败不会回滚已上传的兄弟文件——远程没有跨目录的事务语义。这里只
+/// 逐项记录成功/失败，最后汇总，并明确告知「部分成功」，而不是假装整目录原子。
+async fn upload_recursive(
+    store: &AnyStore,
+    remote_parent: &str,
+    local_dir: &Path,
+    force: bool,
+) -> Result<serde_json::Value> {
+    let name = local_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("upload"));
+    let remote_root = remote_join(remote_parent, &name);
+    omy_remote::ensure_remote_dir(store, &remote_root)
+        .await
+        .map_err(|e| anyhow!("创建远程目录 {remote_root} 失败: {e}"))?;
+
+    let mut items = Vec::new();
+    let mut n_ok = 0u64;
+    let mut n_fail = 0u64;
+    let mut n_bytes = 0u64;
+
+    let mut rd = tokio::fs::read_dir(local_dir)
+        .await
+        .with_context(|| format!("读本地目录 {} 失败", local_dir.display()))?;
+    while let Some(ent) = rd.next_entry().await? {
+        let path = ent.path();
+        let meta = ent.metadata().await?;
+        if meta.is_dir() {
+            let sub = Box::pin(upload_recursive(store, &remote_root, &path, force)).await?;
+            items.push(sub);
+        } else if meta.is_file() {
+            let fname = ent.file_name().to_string_lossy().into_owned();
+            match upload_one(store, &remote_root, &path, &fname, meta.len(), force).await {
+                Ok(()) => {
+                    n_ok += 1;
+                    n_bytes += meta.len();
+                    items.push(json!({ "name": fname, "ok": true, "bytes": meta.len() }));
+                }
+                Err(e) => {
+                    n_fail += 1;
+                    items.push(json!({ "name": fname, "ok": false, "error": e.to_string() }));
+                }
+            }
+        }
+    }
+
+    Ok(json!({
+        "dir": remote_root,
+        "ok": n_fail == 0,
+        "files_ok": n_ok,
+        "files_failed": n_fail,
+        "bytes": n_bytes,
+        "items": items,
+    }))
+}
+
+/// `omy remote upload`：上传本地文件（或整个目录）到远程目录。
 pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
 
     let meta = std::fs::metadata(&a.local)
-        .with_context(|| format!("读取本地文件 {} 失败", a.local.display()))?;
-    let size = meta.len();
-    let name = a
-        .local
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| String::from("upload.bin"));
+        .with_context(|| format!("读取本地路径 {} 失败", a.local.display()))?;
     let dir = abs(&a.remote_dir);
     ensure_safe_remote(&dir)?;
     let dir = if dir == "/" { String::new() } else { dir };
@@ -197,33 +296,44 @@ pub fn upload(ctx: &Ctx, a: &UploadArgs) -> Result<()> {
     let store = rt
         .block_on(connect_store(&sp))
         .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
-    if !store.capabilities().any_write() {
-        bail!("位置 {} 是只读的，不能上传", sp.id);
-    }
+    let caps = rt.block_on(store.effective_capabilities(&dir))?;
+    omy_remote::require_capability("write", caps.write)
+        .map_err(|e| anyhow!(e.to_string()))?;
 
-    // 覆盖守卫：同名文件已存在时必须显式 --force，避免静默覆盖已有远程文件。
-    if !a.force {
-        let exists = rt
-            .block_on(store.list(&dir))?
-            .iter()
-            .any(|e: &omy_remote::Entry| e.name == name);
-        if exists {
-            bail!("远程已存在同名文件 {name:?}；确认覆盖请加 --force");
+    if meta.is_dir() {
+        let report = rt.block_on(upload_recursive(&store, &dir, &a.local, a.force))?;
+        let num = |k: &str| report.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        let failed = num("files_failed");
+        let ok = num("files_ok");
+        let bytes = num("bytes");
+        if failed > 0 {
+            ctx.out.warn(&format!(
+                "目录上传非事务：成功 {ok} 个、失败 {failed} 个（共 {}），已上传的不会回滚",
+                human_bytes(bytes)
+            ));
+        } else {
+            ctx.out.result(
+                &format!("已上传目录 {} → {}（{ok} 个文件，{}）", a.local.display(), dir, human_bytes(bytes)),
+                &report,
+            );
         }
+        if failed > 0 {
+            bail!("有 {failed} 个文件上传失败，详见上方逐项结果");
+        }
+        return Ok(());
     }
 
-    let reader = rt.block_on(async {
-        let f = tokio::fs::File::open(&a.local).await?;
-        Ok::<_, std::io::Error>(Box::new(f) as Box<dyn tokio::io::AsyncRead + Unpin + Send>)
-    }).with_context(|| format!("打开本地文件 {} 失败", a.local.display()))?;
-
-    let entry = rt
-        .block_on(store.write_stream(&dir, &name, size, reader))
-        .map_err(|e| anyhow!("上传失败: {e}"))?;
+    let size = meta.len();
+    let name = a
+        .local
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("upload.bin"));
+    rt.block_on(upload_one(&store, &dir, &a.local, &name, size, a.force))?;
 
     ctx.out.result(
-        &format!("已上传 {} → {}{}", a.local.display(), entry.id, if entry.is_dir { "（目录?）" } else { "" }),
-        &json!({ "remote": entry.id, "size": size }),
+        &format!("已上传 {} → {}/{name}", a.local.display(), if dir.is_empty() { "/" } else { &dir }),
+        &json!({ "remote": remote_join(&dir, &name), "size": size }),
     );
     Ok(())
 }
@@ -352,6 +462,11 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
         }
     }
 
+    // 目标目录级有效能力：决定走临时名+rename 还是直写。
+    let dst_caps = rt
+        .block_on(dst.effective_capabilities(&dst_dir))
+        .map_err(|e| anyhow!("查询目标位置能力失败: {e}"))?;
+
     // 有界流式：管道缓冲 64 KiB，上传消费得慢时读端会自然背压。
     // dst 与目标路径 move 进 spawn 的上传任务（spawn 要求 'static），
     // src/src_id 留在外层块做读循环；src_id 留一份给结束后的结果打印。
@@ -362,7 +477,22 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
     let entry = rt.block_on(async move {
         let (pipe_read, mut pipe_write) = tokio::io::duplex(64 * 1024);
         let upload = tokio::spawn(async move {
-            dst.write_stream(&dst_dir_owned, &dst_name_owned, total, Box::new(pipe_read)).await
+            // 走共享 commit_upload：临时名+rename+失败清理，与 upload 同一套。
+            match omy_remote::commit_upload(
+                &dst,
+                dst_caps,
+                &dst_dir_owned,
+                &dst_name_owned,
+                total,
+                Box::new(pipe_read),
+                None,
+            )
+            .await
+            {
+                Ok(e) => Ok(e),
+                // 读端先断/写失败时把底层错误与残留风险一并交回外层。
+                Err(c) => Err(anyhow!(c.to_string())),
+            }
         });
 
         let mut off = 0u64;
@@ -380,10 +510,7 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
         if off != total {
             bail!("源文件 {src_id} 读取不完整：{off}/{total} 字节");
         }
-        upload
-            .await
-            .map_err(|e| anyhow!("上传任务异常: {e}"))?
-            .map_err(|e| anyhow!("写入目标失败: {e}"))
+        upload.await.map_err(|e| anyhow!("上传任务异常: {e}"))?
     })?;
 
     ctx.out.result(
