@@ -197,13 +197,13 @@ fn connect_webdav(sp: &SavedPlace) -> Result<AnyStore> {
 /// 「CLI 能用当前进程解锁的 KEK 打开 per-place 加密 session」的落点：CLI 是
 /// 一次性进程、没有 GUI 那样的长期会话，KEK 全靠本次现场密码现派。
 async fn connect_telegram(sp: &SavedPlace, password: Option<&[u8]>) -> Result<AnyStore> {
-    use omy_remote::telegram::{AppId, DeviceInfo, connect};
+    use omy_remote::telegram::{AppIdChoice, TelegramConnectionContext, connect};
 
-    let app = AppId::builtin();
-    let device = DeviceInfo::current();
-    let proxy = omy_remote::telegram::proxy::detect_system_proxy().map(|p| p.as_str().to_owned());
-
-    let conn = connect::connect_with_password(&app, &device, proxy.as_deref(), &sp.id, password)
+    // 与登录/重连同源：按配置解析实际 api_id 与代理。以前这里硬编码内置 2040 +
+    // 系统代理——自定义 api_id 登录的 session 在此会 SessionMismatch，配置里的
+    // manual 代理也被绕过。
+    let ctx = TelegramConnectionContext::load(AppIdChoice::FromConfig, None)?;
+    let conn = connect::connect_with_password(ctx.app(), ctx.device(), ctx.proxy(), &sp.id, password)
         .await
         .map_err(|e| map_connect_err(&sp.id, e))?;
     Ok(AnyStore::Tg(TelegramStore::from_connection(

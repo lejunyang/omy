@@ -37,8 +37,8 @@ use omy_remote::telegram::login::CodeShape;
 use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::proxy as tg_proxy;
 use omy_remote::telegram::{
-    AppId, DeviceInfo, QrError, QrEvent, QrSession, connect, encode_matrix, normalize_proxy,
-    register, session, tdata,
+    AppId, AppIdChoice, DeviceInfo, QrError, QrEvent, QrSession, connect, encode_matrix,
+    register, resolve_app, resolve_proxy, session, tdata,
 };
 use serde_json::json;
 
@@ -372,14 +372,13 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
 
 // ---- 代理解析（登录命令共用） ----
 
-/// 登录用代理：显式 `--proxy` 优先并归一化，否则探测系统代理。
-fn resolve_login_proxy(arg: Option<&str>) -> Result<Option<String>> {
-    match arg {
-        Some(raw) => Ok(normalize_proxy(raw)?
-            .map(|p| p.as_str().to_string())
-            .filter(|p| !p.is_empty())),
-        None => Ok(tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string())),
-    }
+/// 登录用代理：显式 `--proxy` 优先（override），否则按配置（system/manual）。
+///
+/// 与 GUI 登录、`telegram check` 同源（`resolve_proxy`）。以前这里只看 `--proxy`
+/// 或系统代理，配置里的 manual 地址被静默忽略——用户 `proxy-set` 了却没生效。
+fn resolve_login_proxy(ctx: &Ctx, arg: Option<&str>) -> Result<Option<String>> {
+    Ok(resolve_proxy(&ctx.cfg.remote, arg)?
+        .map(|p| p.as_str().to_string()))
 }
 
 /// 登录要用的应用身份：从配置解析（填了自己的就用自己的，否则内置）。
@@ -387,7 +386,7 @@ fn resolve_login_proxy(arg: Option<&str>) -> Result<Option<String>> {
 /// 这是「自定义 api_id 真正被登录流程消费」的落点——以前所有连接都硬编码
 /// `AppId::builtin()`，配置里填了也白填。解析时若发现还是旧明文
 /// （`Value::String`），顺手重封成信封完成迁移。
-fn resolve_app(ctx: &Ctx<'_>) -> Result<AppId> {
+fn resolve_login_app(ctx: &Ctx<'_>) -> Result<AppId> {
     // 与 GUI login_app_id 同源：共享「解析 + 锁内迁移」。旧明文在 Config 跨进程
     // 锁里重读磁盘最新后重封成信封；无保护器则保留明文不动，不丢身份。
     // --config 指定了路径就用显式路径，否则走默认配置。
@@ -437,7 +436,7 @@ fn read_secret(src: &PasswordSource, prompt: &str, hidden: bool) -> Result<Strin
 // ---- QR 登录 ----
 
 fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    let proxy = resolve_login_proxy(args.proxy.as_deref())?;
+    let proxy = resolve_login_proxy(ctx, args.proxy.as_deref())?;
     let pw_src = PasswordSource {
         env: args.password_env.clone(),
         file: args.password_file.clone(),
@@ -456,7 +455,7 @@ async fn run_login_cycle(
     proxy: &Option<String>,
     pw_src: &PasswordSource,
 ) -> Result<()> {
-    let appid = resolve_app(ctx)?;
+    let appid = resolve_login_app(ctx)?;
     let device = DeviceInfo::current();
 
     let mut sess = QrSession::connect(appid.clone(), proxy.as_deref(), &device)
@@ -566,7 +565,7 @@ async fn ask_password_loop(
 // ---- 手机号登录 ----
 
 fn phone(ctx: &Ctx, a: &PhoneLoginArgs) -> Result<()> {
-    let proxy = resolve_login_proxy(a.proxy.as_deref())?;
+    let proxy = resolve_login_proxy(ctx, a.proxy.as_deref())?;
     let code_src = PasswordSource {
         env: a.code_env.clone(),
         file: a.code_file.clone(),
@@ -608,7 +607,7 @@ async fn run_phone(
     code_src: &PasswordSource,
     pw_src: &PasswordSource,
 ) -> Result<()> {
-    let appid = resolve_app(ctx)?;
+    let appid = resolve_login_app(ctx)?;
     let device = DeviceInfo::current();
     let mut sess = PhoneSession::connect(appid.clone(), proxy.as_deref(), &device)
         .map_err(|e| anyhow!("连接 Telegram 失败：{e}"))?;
@@ -863,7 +862,7 @@ fn tdata_import(ctx: &Ctx, a: &TdataImportArgs) -> Result<()> {
         stdin: a.passcode_stdin,
     };
     pass_src.validate()?;
-    let proxy = resolve_login_proxy(a.proxy.as_deref())?;
+    let proxy = resolve_login_proxy(ctx, a.proxy.as_deref())?;
     let rt = rt()?;
     rt.block_on(run_tdata_import(ctx, a, &proxy, &pass_src))
 }
@@ -898,7 +897,10 @@ async fn run_tdata_import(
     };
 
     // 2. 先问服务端认不认，成功才落盘（顺序与 GUI 一致：避免把失效 tdata 写成本地位置）。
-    let appid = resolve_app(ctx)?;
+    // tdata 的 auth key 出身于 Telegram Desktop（api_id 2040）：必须无视配置里的
+    // 自定义身份、强制内置——那份 key 是在 2040 下协商的，配别的 id 建连会以难解释
+    // 的方式失败。与 GUI tdata 导入同源。
+    let appid = resolve_app(AppIdChoice::Builtin, ctx.config_path).map_err(|e| anyhow!("{e}"))?;
     let device = DeviceInfo::current();
     let saved = tdata::to_saved_session(&auth, appid.id());
     let conn = connect::connect_with(&saved, &appid, &device, proxy.as_deref())
@@ -947,13 +949,9 @@ async fn run_tdata_import(
 /// `proxy-status` 与 `check` 共用：两处若各自解释 system/manual，迟早一个改了
 /// 另一个没跟着改，出现「状态显示生效、实际探测用的不是同一个代理」。
 fn effective_proxy(ctx: &Ctx) -> Result<Option<String>> {
-    let mode = ctx.cfg.remote.telegram_proxy_mode.as_str();
-    let manual = ctx.cfg.remote.telegram_proxy.as_str();
-    match mode {
-        "system" => Ok(tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string())),
-        "manual" => Ok(tg_proxy::normalize(manual)?.map(|p| p.as_str().to_string())),
-        other => bail!("配置里的代理模式非法：{other:?}（应为 system 或 manual）"),
-    }
+    // 与 GUI、登录同源（resolve_proxy）：一处解释 system/manual，三处行为一致。
+    Ok(resolve_proxy(&ctx.cfg.remote, None)?
+        .map(|p| p.as_str().to_string()))
 }
 
 fn proxy_status(ctx: &Ctx) -> Result<()> {
@@ -1175,7 +1173,7 @@ fn place_encrypt(ctx: &Ctx, a: &PlaceEncryptArgs) -> Result<()> {
     // confirm=true：创建密码要重复输入防打错（env/file/stdin 通道下 read_password
     // 自动跳过确认——你已经在通道里给过一次了）。
     let pw = read_password(&a.pw.source(), "设置位置密码", true)?;
-    let app = resolve_app(ctx)?;
+    let app = resolve_login_app(ctx)?;
     let profile = KdfProfile::from_name(a.kdf.as_deref().unwrap_or("moderate"))?;
     match session::encrypt_place_with_password(&app, &sp.id, &pw, profile.params(), &[]) {
         Ok(true) => {
@@ -1203,7 +1201,7 @@ fn place_encrypt(ctx: &Ctx, a: &PlaceEncryptArgs) -> Result<()> {
 fn place_unlock(ctx: &Ctx, a: &PlacePwArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     let pw = read_password(&a.source(), "位置密码", false)?;
-    let app = resolve_app(ctx)?;
+    let app = resolve_login_app(ctx)?;
     match session::unlock_place_with_password(&app, &sp.id, &pw, &[]) {
         Ok(Some(_)) => {
             ctx.out.result(
@@ -1240,7 +1238,7 @@ fn place_lock(ctx: &Ctx, a: &NameArgs) -> Result<()> {
 fn place_decrypt(ctx: &Ctx, a: &PlacePwArgs) -> Result<()> {
     let sp = require_telegram(ctx, &a.place)?;
     let pw = read_password(&a.source(), "位置密码", false)?;
-    let app = resolve_app(ctx)?;
+    let app = resolve_login_app(ctx)?;
     match session::decrypt_place_with_password(&app, &sp.id, &pw) {
         Ok(true) => {
             ctx.out.result(
