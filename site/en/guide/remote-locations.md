@@ -101,6 +101,8 @@ Right-click a local file or a file in a real remote location and choose **Upload
 - **Remote → remote (Cache locally and upload)** stores downloaded ciphertext blocks in the permanent cache. A retry reuses those blocks, at the cost of local disk space.
 - **Remote → remote (Upload through memory)** reads up to 8 MiB from the source at a time and connects download to upload with a fixed, bounded 64 MiB in-memory queue. It writes no local cache; if upload is slower, download waits instead of accumulating without bound.
 
+When media is copied from Telegram to another Telegram conversation, omy reads the source message's real media attributes and preserves its Telegram classification as a photo, video, audio item, or GIF during re-upload. A video therefore stays in the Media tab instead of becoming a generic file attachment. Ordinary documents and `.omy` files remain file attachments, and non-Telegram targets such as WebDAV still receive only the original byte stream.
+
 Commit and cleanup follow the destination's capabilities rather than assuming every remote can rename or delete:
 
 1. If write, rename, and delete are all supported, omy writes a random temporary name and renames it only after the upload succeeds; failures can delete that exact temporary object.
@@ -147,7 +149,7 @@ The key is the password you set. It shares the **same session key pool** as ordi
 ::: tip Most networks need a proxy
 Direct connections to Telegram's data centres fail on many networks. Telegram uses one **global proxy policy**, managed under **Settings → Remote locations → Telegram proxy**. Every account and every path—QR sign-in, phone sign-in, tdata import, browsing, downloads, uploads, remote copies, message reading, forwarding, and group creation—uses that same policy.
 
-The default **Use the current system proxy automatically** mode reads the system setting whenever a Telegram connection is created or rebuilt; if no supported system proxy is enabled, it connects directly. You can instead choose **Set manually** and enter one global fixed address, such as `socks5://127.0.0.1:7897`; an `http://` address is normalized to SOCKS5 on the same port. Saving a different policy invalidates existing Telegram connections and open remote-file handles, and the next operation rebuilds them under the new policy.
+The default **Use the current system proxy automatically** mode reads the system setting whenever a Telegram connection is created or rebuilt; if no supported system proxy is enabled, it connects directly. You can instead choose **Set manually** and enter one global fixed address, such as `socks5://127.0.0.1:7897`; an `http://` address is normalized to SOCKS5 on the same port. On desktop the controls are stacked at full width in Remote locations; on mobile, Settings has a dedicated **Telegram proxy** entry that opens the same global settings. **Save and check connection** first persists the current policy, then runs the connectivity probe through the backend policy that will actually be used. Saving a different policy invalidates existing Telegram connections and open remote-file handles, and the next operation rebuilds them under the new policy.
 
 Telegram location records **never store proxy addresses**. On upgrade, proxy values written into each location's `url` field by older versions are removed automatically and no longer participate in connection selection.
 :::
