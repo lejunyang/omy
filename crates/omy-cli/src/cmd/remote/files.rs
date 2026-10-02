@@ -112,6 +112,31 @@ pub struct MoveArgs {
     pub dest: String,
 }
 
+/// `omy remote decrypt <位置> <远程.omy> <本地目录>`。
+#[derive(Debug, Args)]
+pub struct DecryptArgs {
+    /// 位置 id（如 p1）或显示名
+    pub place: String,
+    /// 远程 .omy 文件路径
+    #[arg(value_name = "远程.omy")]
+    pub remote: String,
+    /// 本地输出目录（不存在会创建）
+    #[arg(value_name = "本地目录")]
+    pub dest_dir: PathBuf,
+    /// 允许覆盖本地已存在的明文文件
+    #[arg(long)]
+    pub force: bool,
+    /// 从环境变量读取密码（传变量名）
+    #[arg(long, value_name = "VAR")]
+    pub password_env: Option<String>,
+    /// 从文件读取密码
+    #[arg(long, value_name = "PATH")]
+    pub password_file: Option<PathBuf>,
+    /// 从标准输入读取密码
+    #[arg(long)]
+    pub password_stdin: bool,
+}
+
 /// `omy remote ls`。
 pub fn ls(ctx: &Ctx, a: &LsArgs) -> Result<()> {
     let sp = find_place(ctx.cfg, &a.place)?;
@@ -469,6 +494,97 @@ pub fn r#move(ctx: &Ctx, a: &MoveArgs) -> Result<()> {
     ctx.out.result(
         &format!("已移动 {} → {}", src, dst),
         &json!({ "from": src, "to": dst }),
+    );
+    Ok(())
+}
+
+/// `omy remote decrypt`：远程单文件 .omy 直接流式解密到本地目录。
+///
+/// 不先把整份密文下载到磁盘——只取头部，再按块边下边解边写，与 GUI
+/// `remote_decrypt_to_local` 走同一份 `omy_remote::decrypt_stream_to_local`：
+/// `.part` 临时写、改名前二次查存在性、失败清理都在共享层里。
+pub fn decrypt(ctx: &Ctx, a: &DecryptArgs) -> Result<()> {
+    let id = abs(&a.remote);
+    ensure_safe_remote(&id)?;
+    std::fs::create_dir_all(&a.dest_dir)
+        .with_context(|| format!("创建本地目录 {} 失败", a.dest_dir.display()))?;
+
+    let sp = find_place(ctx.cfg, &a.place)?;
+    let rt = rt()?;
+    let store = rt
+        .block_on(connect_store(&sp))
+        .map_err(|e| anyhow!("连接位置 {} 失败: {e}", sp.id))?;
+
+    let entry = rt.block_on(entry_by_path(&store, &id))?;
+    if entry.is_dir {
+        bail!("远程 {id} 是目录；`remote decrypt` 只解单文件");
+    }
+    let size = entry
+        .size
+        .ok_or_else(|| anyhow!("远程文件 {id} 大小未知"))?;
+
+    // 只读头部（按 header_len 补读），不下载整份密文。CLI 不配置密文块缓存，
+    // 传 None：只跑一次的解密没必要落一份密文在本地。
+    let header = rt
+        .block_on(omy_remote::fetch_header(&store, &entry.id, size, None, &sp.id))
+        .map_err(|e| anyhow!("读取远程文件头失败: {e}"))?;
+    let parsed = omy_core::file::peek_header(&header)
+        .map_err(|_| anyhow!("远程文件 {id} 不是有效的 .omy"))?;
+
+    // 密码走安全通道：--password-stdin/file/env 或交互式不回显，绝不进命令行参数。
+    let src = crate::password::PasswordSource {
+        env: a.password_env.clone(),
+        file: a.password_file.clone(),
+        stdin: a.password_stdin,
+    };
+    let pw = crate::password::read_password(&src, "解锁该文件的密码", false)?;
+    let kek = omy_core::crypto::Kek::from_password(&pw, &parsed.vault_salt, parsed.argon2_params())
+        .map_err(|e| anyhow!("派生密钥失败: {e}"))?;
+    // 先 open 一次做能力判定与取名/大小；真正解密在共享层里再 open 一次。
+    let probe = omy_core::file::open(&header, std::slice::from_ref(&kek))
+        .map_err(|_| anyhow!("密码错误或文件损坏"))?;
+    if probe.is_container() {
+        bail!("远程 {id} 是加密文件夹（容器），`remote decrypt` 本期只解单文件");
+    }
+    let raw_name = probe
+        .filename()
+        .map_err(|_| anyhow!("文件头部缺少文件名"))?;
+    // 文件名来自加密文件内部 TLV，是不可信输入，必须清洗防路径穿越。
+    let safe = omy_core::unpack::sanitize_filename(&raw_name);
+    let plaintext_size = probe.header.plaintext_size;
+
+    let outcome = rt
+        .block_on(omy_remote::decrypt_stream_to_local(
+            omy_remote::DecryptStreamRequest {
+                store: std::sync::Arc::new(store),
+                place_id: sp.id.clone(),
+                id: entry.id.clone(),
+                total_ct_size: size,
+                header,
+                keks: vec![kek],
+                cache: None,
+                dest_dir: a.dest_dir.clone(),
+                safe_name: safe.clone(),
+                plaintext_size,
+                force: a.force,
+                rt: rt.handle().clone(),
+            },
+        ))
+        .map_err(|e| anyhow!("解密到本地失败: {e}"))?;
+
+    ctx.out.result(
+        &format!(
+            "已解密 {} → {}（{}）",
+            id,
+            outcome.saved_path.display(),
+            human_bytes(outcome.bytes)
+        ),
+        &json!({
+            "remote": id,
+            "saved": outcome.saved_path,
+            "name": outcome.name,
+            "bytes": outcome.bytes,
+        }),
     );
     Ok(())
 }

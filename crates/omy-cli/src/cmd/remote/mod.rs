@@ -63,6 +63,8 @@ pub enum Cmd {
     Delete(files::DeleteArgs),
     /// 移动/重命名远程条目（同目录内改名）
     Move(files::MoveArgs),
+    /// 远程单文件 .omy 直接流式解密到本地目录
+    Decrypt(files::DecryptArgs),
     /// Telegram 账号扫码登录与位置管理
     #[command(subcommand)]
     Telegram(telegram::Cmd),
@@ -141,6 +143,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Mkdir(a) => files::mkdir(ctx, a),
         Cmd::Delete(a) => files::delete(ctx, a),
         Cmd::Move(a) => files::r#move(ctx, a),
+        Cmd::Decrypt(a) => files::decrypt(ctx, a),
         Cmd::Telegram(c) => telegram::run(ctx, c),
         Cmd::Cache(c) => cache::run(ctx, c),
     }
