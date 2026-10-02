@@ -1968,38 +1968,6 @@ pub async fn remote_effective_caps(
         .map_err(|e| to_cmd_err(&e))
 }
 
-/// 头部缓存键里的固定块号。
-///
-/// 正文按 1 MiB 分块、块号从 0 递增；头部永远只读文件开头那一小段
-/// （至多 `MIN_PROBE_SIZE` = 480 B，再按 `header_len` 补一点），
-/// 所以它在自己的键空间里只占 0 这一块。
-const HEADER_BLOCK: u64 = 0;
-
-/// 头部读取的缓存键。
-///
-/// 与正文块**共用同一个 `BlockCache`，但键空间互不相交**：正文键是
-/// `<id>\u{1}<版本哈希>`（omy 文件）或 `<id>\u{1}plain<size>`（普通文件），
-/// 头部键是 `<id>\u{1}hdr<size>`。
-///
-/// # 为什么键里要含 size
-///
-/// 同名文件在云端被**覆盖更新**后长度多半会变，键随之变化，旧头部自然失效，
-/// 不会把上一版的识别结果一直显示下去。长度恰好不变的覆盖会命中旧头部，
-/// 这是与 `RemoteSource::new_plain` 一致的**已知取舍**：为这种少数情况让
-/// 每次进目录都重下全部头部，代价是每次十几秒，不划算。
-///
-/// **这条取舍在 Telegram 上根本触发不到**：消息是不可变的，编辑一条消息的
-/// 媒体会产生新的消息号，也就是新的 id、新的键，不存在「同一个 id 指向的
-/// 字节变了」。（这也正是 id 用稳定的 `(对话, 消息号)` 而不用会过期的
-/// `file_reference` 的理由之一，见 `TelegramId`。）WebDAV 上则可能触发——
-/// 同一路径覆盖一个长度相同的文件。**接第三个 provider 时必须重新判断这条
-/// 对它成不成立**，不能照抄「已知取舍」四个字就过去。
-fn header_cache_key(id: &str, size: u64) -> String {
-    // 用控制字符分隔，正常 id（WebDAV 路径或 `tg:<对话>:<消息>`）里不会出现。
-    // 与 RemoteSource::cache_key 的分隔符保持一致
-    format!("{id}\u{1}hdr{size}")
-}
-
 /// 读到足以 `open` 的完整文件头，**优先走密文块缓存**。
 ///
 /// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的
@@ -2035,39 +2003,8 @@ async fn fetch_full_header<S: RemoteStore>(
     cache: Option<&omy_remote::cache::BlockCache>,
     place_id: &str,
 ) -> Result<Vec<u8>, RemoteError> {
-    let key = header_cache_key(path, size);
-
-    // size 为 0 的条目没有任何字节可读，也没必要为它写一个空缓存块
-    if size > 0
-        && let Some(c) = cache
-            && let Some(hit) = c.get(place_id, &key, HEADER_BLOCK) {
-                return Ok(hit);
-            }
-
-    let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
-    let mut buf = if probe_len == 0 {
-        Vec::new()
-    } else {
-        store.read_range(path, 0, probe_len).await?
-    };
-
-    if let Ok(h) = omy_core::file::peek_header(&buf) {
-        let need = u64::from(h.header_len);
-        if need <= size && (buf.len() as u64) < need {
-            let extra = store
-                .read_range(path, buf.len() as u64, need - buf.len() as u64)
-                .await?;
-            buf.extend_from_slice(&extra);
-        }
-    }
-
-    // 补读之后才写缓存：存半截头部的话，下次命中会拿到一段不完整的字节，
-    // 而 open 会把它报成「文件损坏」——那个症状完全指不到缓存
-    if size > 0
-        && let Some(c) = cache {
-            c.put(place_id, &key, HEADER_BLOCK, &buf);
-        }
-    Ok(buf)
+    // 读取/补读/缓存这套逻辑收在 omy_remote::ops，CLI 远程解密也复用同一份。
+    omy_remote::fetch_header(store, path, size, cache, place_id).await
 }
 
 /// 远程缓存用量，供设置页显示进度条。
@@ -2832,15 +2769,16 @@ mod tests {
     /// 而那个症状指向密钥，完全指不到缓存键。
     #[test]
     fn header_keys_never_collide_with_payload_keys() {
-        let k = header_cache_key("/a.omy", 4096);
+        use omy_remote::header_cache_key as key;
+        let k = key("/a.omy", 4096);
         // 正文键的两种形态（见 RemoteSource）：`<id>\u{1}<hex哈希>` 与
         // `<id>\u{1}plain<size>`。头部键必须与它们都不同
         assert_ne!(k, "/a.omy\u{1}plain4096");
         assert!(k.contains("\u{1}hdr"), "头部键要有自己的前缀：{k}");
         // size 必须真的进键里，否则覆盖更新后旧头部不会失效
         assert_ne!(
-            header_cache_key("/a.omy", 4096),
-            header_cache_key("/a.omy", 8192),
+            key("/a.omy", 4096),
+            key("/a.omy", 8192),
             "长度不同必须得到不同的键"
         );
     }

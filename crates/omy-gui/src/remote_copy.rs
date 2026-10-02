@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use omy_remote::{Capabilities, Error as RemoteError, RemoteStore, UploadMediaHint};
+use omy_remote::{Error as RemoteError, RemoteStore, UploadMediaHint};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::commands::{CmdError, CmdResult, Shared};
@@ -43,25 +43,6 @@ pub struct RemoteCopyRequest {
     /// 源消息暂时不可达而无法上传；前端请求不接受也不持久化此字段。
     #[serde(skip)]
     media_hint: Option<UploadMediaHint>,
-}
-
-/// 目标端按能力选择的提交策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommitPolicy {
-    /// 写临时对象，成功后改为最终名；失败能精确删除临时对象。
-    TemporaryThenRename,
-    /// 直接写最终名；失败时若目标 ID 可预知且支持删除，则尽力清理。
-    Direct,
-}
-
-fn commit_policy(caps: Capabilities) -> CommitPolicy {
-    // 只有 rename+delete 同时成立才走临时名。仅能改名、不能删除时，一旦上传或
-    // 改名失败会留下永远清不掉的临时对象，反而比直接写最终名更糟。
-    if caps.write && caps.rename && caps.delete {
-        CommitPolicy::TemporaryThenRename
-    } else {
-        CommitPolicy::Direct
-    }
 }
 
 /// 复制任务重试登记。只驻留内存，不把文件名和远程路径写入额外日志或配置。
@@ -252,15 +233,6 @@ async fn execute_copy(
         source.pin().map_err(|e| remote_code(&e).to_owned())?;
     }
 
-    let policy = commit_policy(caps);
-    let upload_name = match policy {
-        CommitPolicy::TemporaryThenRename => {
-            format!(".omy-upload-{}-{}", uuid::Uuid::new_v4(), req.target_name)
-        }
-        CommitPolicy::Direct => req.target_name.clone(),
-    };
-    let cleanup_id = target.store.child_id(&req.target_dir, &upload_name);
-
     let (mut writer, reader) = tokio::io::duplex(PIPE_CAPACITY);
     let total = req.source.size;
     let producer_handle = Arc::clone(handle);
@@ -301,62 +273,42 @@ async fn execute_copy(
             .map_err(|_| String::from("remote_copy_target_closed"))
     });
 
-    let upload_result = target
-        .store
-        .write_stream_with_hint(
-            &req.target_dir,
-            &upload_name,
-            total,
-            Box::new(reader),
-            media_hint.as_ref(),
-        )
-        .await;
+    // 临时名/直接写策略、改名与失败清理全部收进 omy_remote::commit_upload，
+    // 不再在 GUI 与 CLI 各写一份。这里只负责把字节喂进管道。
+    let commit = omy_remote::commit_upload(
+        target.store.as_ref(),
+        caps,
+        &req.target_dir,
+        &req.target_name,
+        total,
+        Box::new(reader),
+        media_hint.as_ref(),
+    )
+    .await;
     let producer_result = producer
         .await
         .map_err(|_| String::from("remote_copy_worker_failed"))?;
 
-    let entry = match upload_result {
+    let entry = match commit {
         Ok(entry) => entry,
-        Err(error) => {
-            let cleaned = cleanup_partial(target.store.as_ref(), caps, cleanup_id.as_deref()).await;
-            return Err(if cleaned || cleanup_id.is_none() {
-                remote_code(&error).to_owned()
-            } else {
+        Err(ce) => {
+            // 写入/改名失败的临时对象已在 commit_upload 内尽力清理。
+            return Err(if ce.residue {
                 String::from("remote_copy_residue")
+            } else {
+                remote_code(&ce.inner).to_owned()
             });
         }
     };
+    // 生产者在 write_stream 正常返回后才可能失败的竞态：上传其实已完整落盘并改名，
+    // 但读侧收尾报错。此时按失败清理掉刚提交的对象，避免「任务失败却有个文件在那」。
     if let Err(code) = producer_result {
-        let cleaned = cleanup_partial(target.store.as_ref(), caps, Some(&entry.id)).await;
+        let cleaned =
+            omy_remote::cleanup_remote(target.store.as_ref(), caps, Some(&entry.id)).await;
         return Err(if cleaned { code } else { String::from("remote_copy_residue") });
     }
     xfer.tick(app, handle);
-
-    if policy == CommitPolicy::TemporaryThenRename
-        && let Err(e) = target.store.rename(&entry.id, &req.target_name).await
-    {
-        let cleaned = cleanup_partial(target.store.as_ref(), caps, Some(&entry.id)).await;
-        return Err(if cleaned {
-            remote_code(&e).to_owned()
-        } else {
-            String::from("remote_copy_residue")
-        });
-    }
     Ok(())
-}
-
-async fn cleanup_partial(
-    store: &omy_remote::PlaceStore,
-    caps: Capabilities,
-    id: Option<&str>,
-) -> bool {
-    if !caps.delete {
-        return false;
-    }
-    let Some(id) = id else {
-        return false;
-    };
-    store.delete(id).await.is_ok()
 }
 
 fn remote_cmd_error(e: RemoteError) -> CmdError {
@@ -379,21 +331,6 @@ fn remote_code(e: &RemoteError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn commit_policy_requires_rename_and_delete() {
-        let full = Capabilities::cloud_writable();
-        assert_eq!(commit_policy(full), CommitPolicy::TemporaryThenRename);
-
-        let no_delete = Capabilities { delete: false, ..full };
-        assert_eq!(
-            commit_policy(no_delete),
-            CommitPolicy::Direct,
-            "不能删除时不得制造可能永久残留的临时对象"
-        );
-        let no_rename = Capabilities { rename: false, ..full };
-        assert_eq!(commit_policy(no_rename), CommitPolicy::Direct);
-    }
 
     #[test]
     fn memory_queue_is_bounded() {

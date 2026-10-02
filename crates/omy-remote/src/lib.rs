@@ -14,6 +14,7 @@
 
 pub mod cache;
 pub mod caps;
+pub mod ops;
 pub mod placebook;
 pub mod provider;
 pub mod source;
@@ -23,6 +24,10 @@ pub mod transfer;
 pub mod webdav;
 
 pub use caps::Capabilities;
+pub use ops::{
+    CommitError, DecryptLocalOutcome, cleanup_remote, commit_upload, decrypt_stream_to_local,
+    ensure_safe_remote, fetch_header, header_cache_key,
+};
 pub use placebook::{
     allocate_place_id, open_password, parse_vendor, protect_key, seal_password, seq_of,
     vendor_str, webdav_to_saved, saved_to_webdav,
