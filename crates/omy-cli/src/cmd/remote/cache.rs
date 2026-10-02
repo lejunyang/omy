@@ -1,23 +1,16 @@
-//! 密文块缓存管理：状态 / 清空 / 永久保留（pin）与取消（unpin）。
+//! 远程缓存管理：临时哈希分块与完整原文件永久层。
 //!
-//! # 为什么 pin 要经过 RemoteSource
-//!
-//! 缓存键里含「文件版本」（头部哈希 + 大小），只有 [`RemoteSource`] 算得对。
-//! CLI 在这里与 GUI 走同一条构造路径，绝不自己拼键——拼错了不会报错，
-//! 只会「标记了却永远不命中」。
-//!
-//! # 边界
-//!
-//! `status` / `clear` 是纯本地操作；`pin` 会先把整个文件拉进临时缓存再搬入
-//! 永久层（离线可用），因此要读全文件。`unpin` 只取消永久标记，不删已缓存块。
+//! `RemoteSource` 是文件版本与读取路径的唯一真相。`pin` 按远端原始字节顺序写
+//! `.part`，完整同步后原子提交；`unpin` 删除这份完整永久副本。临时分块缓存
+//! 独立存在，继续服务在线播放、随机读取和 LRU 淘汰。
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Args, Subcommand};
+use omy_remote::RemoteStore;
 use omy_remote::cache::BlockCache;
 use omy_remote::source::RemoteSource;
-use omy_remote::RemoteStore;
 use serde_json::json;
 
 use super::{
@@ -79,7 +72,14 @@ fn status(ctx: &Ctx) -> Result<()> {
     let rows: Vec<_> = pinned
         .iter()
         .map(|p| {
-            json!({ "place": p.place, "key": p.key, "blocks": p.total_blocks, "bytes": p.used_bytes })
+            json!({
+                "kind": p.kind,
+                "source": p.source,
+                "item_id": p.item_id,
+                "name": p.name,
+                "relative_dir": p.relative_dir,
+                "bytes": p.used_bytes,
+            })
         })
         .collect();
     let limit_str = if u.temp_limit == 0 {
@@ -123,7 +123,9 @@ fn status(ctx: &Ctx) -> Result<()> {
 }
 
 fn percent(used: u64, limit: u64) -> u64 {
-    used.checked_mul(100).and_then(|u| u.checked_div(limit)).unwrap_or(0)
+    used.checked_mul(100)
+        .and_then(|u| u.checked_div(limit))
+        .unwrap_or(0)
 }
 
 /// `omy remote cache clear`。纯本地。
@@ -132,7 +134,10 @@ fn clear(ctx: &Ctx) -> Result<()> {
     cache.clear().context("清空缓存失败")?;
     let u = cache.usage();
     ctx.out.result(
-        &format!("已清空临时缓存，当前占用 {}（永久保留未动）", human_bytes(u.temp_used)),
+        &format!(
+            "已清空临时缓存，当前占用 {}（永久保留未动）",
+            human_bytes(u.temp_used)
+        ),
         &json!({ "temp_used": u.temp_used, "pinned_used": u.pinned_used }),
     );
     Ok(())
@@ -149,9 +154,20 @@ fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
             .with_context(|| format!("连接位置 {} 失败", sp.id))?,
     );
 
-    let id = abs(&a.path);
-    // 列出父目录拿到文件大小（远端不发 HEAD，list 顺带给）
-    let (parent, name) = parent_name(&id);
+    let id = if sp.kind == "webdav" {
+        abs(&a.path)
+    } else {
+        a.path.trim().to_string()
+    };
+    // 列出父目录拿到文件大小和服务端原名。WebDAV 从路径拆父目录；Telegram
+    // 的 id 自带 chat，按 `tg:<chat>` 列消息。
+    let (parent, name) = if sp.kind == "telegram" {
+        let tg = omy_remote::telegram::TelegramId::decode(&id)
+            .map_err(|e| anyhow!("Telegram 条目 id 无效: {e}"))?;
+        (format!("tg:{}", tg.chat), String::new())
+    } else {
+        parent_name(&id)
+    };
     let entries = rt
         .block_on(store.list(&parent))
         .map_err(|e| anyhow!("列目录失败: {e}"))?;
@@ -171,6 +187,8 @@ fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
         .block_on(store.read_range(&id, 0, head_len as u64))
         .map_err(|e| anyhow!("读取文件头失败: {e}"))?;
 
+    let source_ref = omy_remote::saved_source_ref(&sp)
+        .ok_or_else(|| anyhow!("位置 {} 缺少稳定远程身份，无法永久保留", sp.id))?;
     let source = if omy_core::is_omy_file(&head) {
         RemoteSource::new(
             Arc::clone(&store),
@@ -191,21 +209,27 @@ fn pin(ctx: &Ctx, a: &PinArgs, do_pin: bool) -> Result<()> {
             Some(cache.clone()),
             rt.handle().clone(),
         )
-    };
+    }
+    .with_pinned_identity(source_ref, ent.name.clone());
 
     if do_pin {
-        // 必须先把块取到本地：pin 只搬运已在临时层的块，不预热的话永久层里
-        // 只有碰巧缓存过的几块——用户以为整份离线可用，点开才发现缺块。
-        source.prefetch_all().map_err(|e| anyhow!("预取文件到缓存失败: {e}"))?;
-        let bytes = source.pin().map_err(|e| anyhow!("标记永久保留失败: {e}"))?;
+        let bytes = source
+            .pin()
+            .map_err(|e| anyhow!("永久保留完整文件失败: {e}"))?;
         ctx.out.result(
             &format!("已永久保留 {}（{}）", id, human_bytes(bytes)),
             &json!({ "pinned": id, "bytes": bytes }),
         );
     } else {
-        let bytes = source.unpin().map_err(|e| anyhow!("取消永久保留失败: {e}"))?;
+        let bytes = source
+            .unpin()
+            .map_err(|e| anyhow!("取消永久保留失败: {e}"))?;
         ctx.out.result(
-            &format!("已取消永久保留 {}（释放 {} 永久层）", id, human_bytes(bytes)),
+            &format!(
+                "已取消永久保留 {}（释放 {} 永久层）",
+                id,
+                human_bytes(bytes)
+            ),
             &json!({ "unpinned": id, "bytes": bytes }),
         );
     }

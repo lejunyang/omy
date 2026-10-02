@@ -15,6 +15,7 @@
 pub mod cache;
 pub mod caps;
 pub mod ops;
+pub mod pinned;
 pub mod placebook;
 pub mod provider;
 pub mod source;
@@ -27,12 +28,12 @@ pub mod webdav;
 pub use caps::Capabilities;
 pub use ops::{
     CommitError, DecryptLocalOutcome, DecryptStreamRequest, cleanup_remote, commit_upload,
-    decrypt_stream_to_local, ensure_remote_dir, ensure_safe_remote, fetch_header, header_cache_key,
-    require_capability,
+    decrypt_stream_to_local, ensure_remote_dir, ensure_safe_remote, fetch_header,
+    fetch_header_with_pinned, header_cache_key, require_capability,
 };
 pub use placebook::{
-    allocate_place_id, open_password, parse_vendor, protect_key, seal_password, seq_of,
-    vendor_str, webdav_to_saved, saved_to_webdav,
+    allocate_place_id, open_password, parse_vendor, protect_key, saved_source_ref, saved_to_webdav,
+    seal_password, seq_of, vendor_str, webdav_to_saved,
 };
 pub use provider::PlaceStore;
 pub use source::RemoteSource;

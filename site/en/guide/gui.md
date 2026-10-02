@@ -82,7 +82,7 @@ On desktop settings is a dialog (gear in the top bar); on mobile it is a list wi
 | Category | Contents |
 |---|---|
 | General | Language, theme, default view (grid / list), open at startup (last folder / home) |
-| Remote locations | Recognition scope, request concurrency, and the **Ciphertext cache** second-level page (limit, usage, clear now, clear on exit) |
+| Remote locations | Recognition scope, request concurrency, and the **Remote cache** page for temporary-block limits/usage/clearing plus complete-original-file permanent storage |
 | Security & passwords | Auto-lock (idle duration, whether backgrounding counts as idle, playback exemption), number of passwords loaded in the current session, lock now, recovery-code hint |
 | Encryption defaults | KDF profile, chunk size, pre-encryption compression, filename encryption, original-file handling; these become the initial values in the encrypt dialog |
 | Playback & preview | Whether to show thumbnails in the list; Android also lists and clears default apps saved by file extension |

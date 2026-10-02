@@ -15,8 +15,8 @@
 //! 收成一份，driver 之上的所有调用都走这里。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use omy_core::crypto::Kek;
@@ -42,9 +42,7 @@ use crate::{Capabilities, Error, Result};
 /// 任一段为 `..` 时返回 [`Error::Protocol`]。
 pub fn ensure_safe_remote(path: &str) -> Result<()> {
     if path.split('/').any(|seg| seg == "..") {
-        return Err(Error::Protocol(format!(
-            "远程路径不得包含 '..'：{path}"
-        )));
+        return Err(Error::Protocol(format!("远程路径不得包含 '..'：{path}")));
     }
     Ok(())
 }
@@ -277,17 +275,38 @@ pub async fn fetch_header<S: RemoteStore + ?Sized>(
     cache: Option<&BlockCache>,
     place_id: &str,
 ) -> Result<Vec<u8>> {
+    fetch_header_with_pinned(store, id, size, cache, place_id, None).await
+}
+
+/// 同 [`fetch_header`]，但在联网前先尝试从完整永久原文件读取。
+pub async fn fetch_header_with_pinned<S: RemoteStore + ?Sized>(
+    store: &S,
+    id: &str,
+    size: u64,
+    cache: Option<&BlockCache>,
+    place_id: &str,
+    pinned_source: Option<&crate::virtuals::SourceRef>,
+) -> Result<Vec<u8>> {
     let key = header_cache_key(id, size);
 
-    if size > 0
+    let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
+    let pinned_probe = if probe_len > 0 {
+        cache.and_then(|c| {
+            pinned_source
+                .and_then(|source| c.get_pinned_candidate_range(source, id, size, 0, probe_len))
+        })
+    } else {
+        None
+    };
+    let from_pinned = pinned_probe.is_some();
+    let mut buf = if let Some(hit) = pinned_probe {
+        hit
+    } else if size > 0
         && let Some(c) = cache
             && let Some(hit) = c.get(place_id, &key, HEADER_BLOCK)
     {
         return Ok(hit);
-    }
-
-    let probe_len = size.min(omy_core::scan::MIN_PROBE_SIZE as u64);
-    let mut buf = if probe_len == 0 {
+    } else if probe_len == 0 {
         Vec::new()
     } else {
         store.read_range(id, 0, probe_len).await?
@@ -296,9 +315,16 @@ pub async fn fetch_header<S: RemoteStore + ?Sized>(
     if let Ok(h) = omy_core::file::peek_header(&buf) {
         let need = u64::from(h.header_len);
         if need <= size && (buf.len() as u64) < need {
-            let extra = store
-                .read_range(id, buf.len() as u64, need - buf.len() as u64)
-                .await?;
+            let offset = buf.len() as u64;
+            let len = need - offset;
+            let extra = if from_pinned
+                && let (Some(c), Some(source)) = (cache, pinned_source)
+                && let Some(hit) = c.get_pinned_candidate_range(source, id, size, offset, len)
+            {
+                hit
+            } else {
+                store.read_range(id, offset, len).await?
+            };
             buf.extend_from_slice(&extra);
         }
     }
@@ -320,10 +346,7 @@ pub async fn fetch_header<S: RemoteStore + ?Sized>(
 ///
 /// 列目录/建目录失败、或位置不支持建目录时返回。路径里含 `..` 的调用方应
 /// 事先用 [`ensure_safe_remote`] 挡住。
-pub async fn ensure_remote_dir<S: RemoteStore + ?Sized>(
-    store: &S,
-    path: &str,
-) -> Result<()> {
+pub async fn ensure_remote_dir<S: RemoteStore + ?Sized>(store: &S, path: &str) -> Result<()> {
     let path = path.trim_end_matches('/');
     if path.is_empty() || path == "/" {
         return Ok(());
@@ -408,9 +431,7 @@ pub struct DecryptStreamRequest<S> {
 /// # Errors
 ///
 /// 写出失败、解密流不完整、并发覆盖冲突时返回。
-pub async fn decrypt_stream_to_local<S>(
-    req: DecryptStreamRequest<S>,
-) -> Result<DecryptLocalOutcome>
+pub async fn decrypt_stream_to_local<S>(req: DecryptStreamRequest<S>) -> Result<DecryptLocalOutcome>
 where
     S: RemoteStore + 'static,
 {
@@ -443,15 +464,7 @@ where
     // RemoteSource 的读方法内部用保存的 Handle block_on 网络请求，
     // 必须在阻塞线程里调（async 线程里 block_on 当前 runtime 会 panic）。
     let join = tokio::task::spawn_blocking(move || -> Result<DecryptLocalOutcome> {
-        let source = RemoteSource::new(
-            store2,
-            &place_id,
-            &id,
-            &header2,
-            total_ct_size,
-            cache,
-            rt,
-        )
+        let source = RemoteSource::new(store2, &place_id, &id, &header2, total_ct_size, cache, rt)
         .map_err(|e| Error::Protocol(e.to_string()))?;
         let opened = omy_core::file::open(&header2, &keks)
             .map_err(|_| Error::Protocol("密码打不开或文件损坏".into()))?;
@@ -570,10 +583,7 @@ mod tests {
             _hint: Option<&UploadMediaHint>,
         ) -> Result<Entry> {
             self.uploaded.lock().unwrap().push(name.to_owned());
-            if self
-                .fail_write
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.fail_write.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(Error::Network("boom".into()));
             }
             Ok(Entry {
@@ -638,7 +648,10 @@ mod tests {
         let renamed = s.renamed.lock().unwrap();
         assert_eq!(renamed.len(), 1, "临时名必须 rename 成最终名");
         assert_eq!(renamed[0].1, "a.omy");
-        assert!(s.deleted.lock().unwrap().is_empty(), "rename 成功后不应删除");
+        assert!(
+            s.deleted.lock().unwrap().is_empty(),
+            "rename 成功后不应删除"
+        );
     }
 
     /// 写入失败且可定位 id 时必须尽力清理，residue 为 false。
@@ -703,11 +716,11 @@ mod tests {
         let err = commit_upload(&s, caps, "/d", "a.omy", 3, Box::new(&b"abc"[..]), None)
             .await
             .expect_err("写入应失败");
+        assert!(err.residue, "无 delete 能力、无法清理时必须报残留风险");
         assert!(
-            err.residue,
-            "无 delete 能力、无法清理时必须报残留风险"
+            s.deleted.lock().unwrap().is_empty(),
+            "无 delete 不应尝试删除"
         );
-        assert!(s.deleted.lock().unwrap().is_empty(), "无 delete 不应尝试删除");
     }
 
     /// 临时名改名失败：必须删除已上传的临时对象。

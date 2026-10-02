@@ -112,7 +112,7 @@ impl SourceRef {
         Self {
             kind: "webdav".to_owned(),
             telegram_user_id: None,
-            webdav_url: Some(url),
+            webdav_url: Some(normalize_webdav_url(&url)),
             webdav_username: Some(username),
         }
     }
@@ -139,6 +139,17 @@ impl SourceRef {
             _ => false,
         }
     }
+}
+
+fn normalize_webdav_url(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return raw.trim_end_matches('/').to_string();
+    };
+    url.set_fragment(None);
+    url.set_query(None);
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(if path.is_empty() { "/" } else { &path });
+    url.to_string().trim_end_matches('/').to_string()
 }
 
 /// 引用的显示快照——源不可达时仍能把条目列出来（灰显），不必连服务器。
@@ -998,9 +1009,9 @@ mod tests {
     #[test]
     fn webdav_matches_by_url_and_user_and_never_cross_kind() {
         let a = SourceRef::webdav("https://nas/dav".into(), "bob".into());
-        let b = SourceRef::webdav("https://nas/dav".into(), "bob".into());
+        let b = SourceRef::webdav("https://nas/dav/?token=old#fragment".into(), "bob".into());
         let c = SourceRef::webdav("https://nas/dav".into(), "alice".into());
-        assert!(a.matches(&b));
+        assert!(a.matches(&b), "尾斜杠、query 与 fragment 不应改变 WebDAV 源身份");
         assert!(!a.matches(&c), "账号不同不判等");
         assert!(!a.matches(&SourceRef::telegram(1)), "跨类型不判等");
     }

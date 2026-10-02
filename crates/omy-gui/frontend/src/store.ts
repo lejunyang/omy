@@ -909,6 +909,7 @@ export async function enterRemoteContainer(f) {
       (f as { id: string; size?: number }).id,
       (f as { id: string; size?: number }).size || 0,
       undefined,
+      (f as { name?: string }).name || null,
     );
     if (!opened || !opened.token) {
       state.placeError = i18n.te('container_failed');
@@ -3287,7 +3288,8 @@ export async function refreshCacheStats(place, items) {
         // size 必须兜底：缺了它后端 build_remote_source 可能拿不到正确的
         // 分块信息，返回一个 pinned=false 的空 stat（单文件路径就因为
         // 有 `|| 0` 而没踩到）
-        place_id: place, path: f.id, size: f.size || 0, name: f.name,
+        place_id: place, path: f.id, size: f.size || 0,
+        name: f.real_name || f.name, server_name: f.name,
       })),
     );
     if (!Array.isArray(stats)) return;
@@ -3328,7 +3330,8 @@ async function refreshVirtualCacheStats(entries) {
     try {
       const stats = await api.remoteCacheFileStats(
         list.map((e) => ({
-          place_id: place, path: e.source_file, size: e.size || 0, name: e.name,
+          place_id: place, path: e.source_file, size: e.size || 0,
+          name: e.real_name || e.name, server_name: e.name,
         })),
       );
       if (!Array.isArray(stats)) continue;
@@ -3769,7 +3772,8 @@ export async function decryptRemoteToLocal(f) {
     unlisten = null;
   }
   try {
-    const r = await api.remoteDecryptToLocal(state.remotePlace, f.id, f.size || 0, dest);
+    const r = await api.remoteDecryptToLocal(
+      state.remotePlace, f.id, f.size || 0, f.name || null, dest);
     setNotice(i18n.t('rplace.decrypted_local', { name: r.name, dir: dest }));
     return r;
   } catch (e) {
@@ -3808,7 +3812,7 @@ export async function requestRemoteFileCache(f) {
   try {
     const stat = await api.remoteCacheFileStat(
       (f.is_ref ? f.source_place : state.remotePlace) || state.remotePlace,
-      f.is_ref ? f.source_file : f.id, f.size || 0);
+      f.is_ref ? f.source_file : f.id, f.size || 0, f.name || null);
     const key = remoteFileCacheKeyFor(f);
     state.remoteCacheStat = { ...state.remoteCacheStat, [key]: stat };
   } catch {
@@ -3873,13 +3877,10 @@ export async function uploadToRemote() {
   }
 }
 
-/** 把一个远程文件转为**永久缓存**。
+/** 把一个远程文件保存为**完整原文件**永久缓存。
  *
- * 先把整个文件预热到本地再标记。不预热的话永久层里只有碰巧缓存过的
- * 那几块，而用户以为整个文件都留下了——直到离线打开失败才发现。
- * 那是承诺与事实不符，比不提供这个功能更糟。
- *
- * 预热要下整个文件，所以走 busy 态而不是静默进行。
+ * 下载过程写临时文件，完整校验后才原子提交；服务端文件名用于磁盘落盘，
+ * 解密后的真实名只用于传输列表显示。
  */
 export async function pinRemoteFile(f) {
   if (!state.remotePlace || !f || f.is_dir) return false;
@@ -3899,6 +3900,7 @@ export async function pinRemoteFile(f) {
       f.id,
       f.size || 0,
       f.real_name || f.name || null,
+      f.name || null,
     );
     // 重新查一次真 stat 填进去。用 requestRemoteFileCache（单文件、
     // 与右键菜单同一条路径），不用批量版：批量版在单文件场景实测不生效
@@ -3915,16 +3917,13 @@ export async function pinRemoteFile(f) {
   }
 }
 
-/** 取消永久缓存。
- *
- * 内容会搬回临时层，也就是**重新计入上限、重新参与淘汰**，可能很快被清掉。
- * 那正是「取消永久」该有的语义；只改标记的话空间不会真的还回来。
- */
+/** 取消永久缓存：删除完整原文件，已有临时分块仍由 LRU 管理。 */
 export async function unpinRemoteFile(f) {
   if (!state.remotePlace || !f || f.is_dir) return false;
   try {
     // remoteCacheUnpin 返回字节数、不是 stat。用单数路径重查真 stat
-    await api.remoteCacheUnpin(state.remotePlace, f.id, f.size || 0);
+    await api.remoteCacheUnpin(
+      state.remotePlace, f.id, f.size || 0, f.name || null);
     await requestRemoteFileCache(f);
     setNotice(i18n.t('rplace.unpinned'));
     return true;

@@ -363,12 +363,12 @@ impl PlaceRegistry {
     /// 前端「添加到虚拟远程」构造引用时共用同一份口径——不让「怎么算同一个源」
     /// 散在两处。取不到（缺 user_id / 非 telegram、webdav）返回 `None`。
     #[must_use]
-    pub fn place_source(p: &Place) -> Option<crate::virtual_place::SourceRef> {
+    pub fn place_source(p: &Place) -> Option<omy_remote::virtuals::SourceRef> {
         match p.kind.as_str() {
-            "telegram" => p.user_id.map(crate::virtual_place::SourceRef::telegram),
+            "telegram" => p.user_id.map(omy_remote::virtuals::SourceRef::telegram),
             "webdav" => p.store.as_webdav().map(|w| {
                 let c = w.config();
-                crate::virtual_place::SourceRef::webdav(c.base_url.clone(), c.username.clone())
+                omy_remote::virtuals::SourceRef::webdav(c.base_url.clone(), c.username.clone())
             }),
             _ => None,
         }

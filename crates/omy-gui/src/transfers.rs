@@ -269,9 +269,8 @@ impl Transfers {
     /// 不碰 app / 不发事件，便于单测。非失败任务返回 `None`。
     ///
     /// 只对 `Failed` 生效：对进行中 / 已完成的任务重试没有意义。done 清回
-    /// 起点只是 UI 进度条归零；pin 的预热会跳过已缓存的块（见
-    /// `RemoteSource::fetch_block`），所以「从进度续」是天然的，重试不会
-    /// 重下已经在本地的块。
+    /// 起点只是 UI 进度条归零；完整永久文件只在全部写完后原子提交，失败留下的
+    /// `.part` 会在重试开始时清理，因此不会把半文件误当成可复用成品。
     fn revive_failed(&self, id: u64) -> Option<Arc<TaskHandle>> {
         let ok = self.tasks.lock().ok().is_some_and(|mut t| {
             t.iter_mut().find(|x| x.id == id).is_some_and(|task| {

@@ -299,21 +299,9 @@ const pinned = ref([]);
 const pinnedLoading = ref(false);
 const unpinning = ref('');
 
-/** 把位置 id 换成用户看得懂的名字。
- *
- * **查不到是正常情况**：`PinnedFile.place` 记的是打 pin 那一刻的位置 id，
- * 用户之后把位置「从列表移除」，这条永久记录仍然在、文件也仍然占着磁盘。
- * 那时必须显示成「已移除的位置」并保持可取消——否则就成了最糟的组合：
- * 空间占着、用户想清、界面上却点不动。 */
-function placeName(id) {
-  const p = (state.remotePlaces || []).find((x) => x.id === id);
-  return p ? p.name : i18n.t('settings.pinned_gone_place');
-}
-
-/** 永久清单里一行的标识：位置 + 键。单用 key 不够——
- *  两个位置上完全可能存在内容相同、因而版本哈希也相同的文件。 */
+/** 永久清单里一行的稳定标识。相对目录由后端生成并经过路径校验。 */
 function pinnedRowId(f) {
-  return `${f.place}\u0000${f.key}`;
+  return f.relative_dir;
 }
 
 async function openPinnedPane() {
@@ -325,10 +313,8 @@ async function openPinnedPane() {
   }
   pinnedLoading.value = true;
   try {
-    // 先刷新位置列表再列清单：名字映射要对着当前真相。
-    // 不刷的话，设置页在位置列表从未加载过时打开（比如启动后直接进设置），
-    // placeName 会把**每一行**都回落成「已移除的位置」——
-    // 那比不显示名字更糟，用户会以为自己的位置全丢了
+    // 先刷新位置列表，再读取永久文件清单。清单本身使用稳定远程来源，
+    // 即使原位置已经被移除也仍可理解、可删除。
     await reloadRemotePlaces();
     pinned.value = await api.remoteCacheListPinned();
   } catch (e) {
@@ -344,7 +330,7 @@ async function unpinOne(f) {
   if (unpinning.value) return;
   unpinning.value = rid;
   try {
-    const freed = await api.remoteCacheUnpinByKey(f.place, f.key, f.total_blocks);
+    const freed = await api.remoteCacheUnpinByKey(f.relative_dir);
     pinned.value = pinned.value.filter((x) => pinnedRowId(x) !== rid);
     // 永久层的用量与文件数要跟着变，否则用户清完回上一页
     // 还看到原来那个数字，会以为没清掉
@@ -824,16 +810,14 @@ async function openLogDir() {
               data-sf="pinned_row"
             >
               <div class="fld pinnedinfo">
-                <div class="pinnedplace">{{ placeName(f.place) }}</div>
-                <!-- key 含版本哈希、不是路径，所以只当标识显示，
-                     宽度收住、不让它把行撑破 -->
-                <div class="desc pinnedkey" :title="f.key">{{ f.key }}</div>
+                <div class="pinnedplace">{{ f.name }}</div>
+                <div class="desc pinnedkey" :title="f.item_id">{{ f.source }} · {{ f.item_id }}</div>
               </div>
               <div class="pinnedsize">{{ i18n.formatSize(f.used_bytes) }}</div>
               <button
                 type="button"
                 class="btn small"
-                :data-sf-unpin="f.key"
+                :data-sf-unpin="f.relative_dir"
                 :disabled="unpinning === pinnedRowId(f)"
                 @click="unpinOne(f)"
               >

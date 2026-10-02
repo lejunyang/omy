@@ -382,16 +382,16 @@ Real behavior worth knowing:
 - A remote path containing `..` segments is rejected before any request is sent, to prevent climbing out of the intended directory; relative paths are normalized to a leading `/`.
 - A read-only destination is rejected before any request is sent.
 
-### Ciphertext cache
+### Remote cache
 
 | Subcommand | Purpose |
 |---|---|
 | `cache status` | Show temp/pinned cache usage and the pinned list |
 | `cache clear` | Clear temporary cache blocks (pinned files are untouched) |
-| `cache pin <location> <remote-file>` | Pull a whole file locally and keep it pinned (available offline) |
-| `cache unpin <location> <remote-file>` | Unpin; blocks return to the temp tier and may be evicted |
+| `cache pin <location> <remote-file>` | Store the complete remote file in the permanent directory (offline and directly copyable/viewable) |
+| `cache unpin <location> <remote-file>` | Delete that complete permanent copy; existing temporary blocks remain under LRU management |
 
-The cache directory and limit use the same keys as the GUI (`remote.cache_dir` / `remote.cache_limit`).
+The cache directory and limit use the same keys as the GUI (`remote.cache_dir` / `remote.cache_limit`). The temporary tier remains internally hashed and block-based. The permanent tier stores complete original files under stable remote identities: Telegram uses `userId/chatId/messageId/server filename`; WebDAV separates sources by normalized URL + username and items by remote-path hash. Copying or merging the whole `pinned` directory lets another machine reuse it after adding the same remote. Ordinary unencrypted remote files remain visible in their original format there.
 
 ### Telegram
 

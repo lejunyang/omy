@@ -17,8 +17,8 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 use crate::commands::{CmdError, CmdResult, Shared};
-use crate::decrypt::{DecryptProgress, DECRYPT_PROGRESS_EVENT};
-use crate::place_files::{PlaceContainers, OpenPlaceFile, PlaceFiles, PlaceThumbs, RemoteCache};
+use crate::decrypt::{DECRYPT_PROGRESS_EVENT, DecryptProgress};
+use crate::place_files::{OpenPlaceFile, PlaceContainers, PlaceFiles, PlaceThumbs, RemoteCache};
 use crate::places::{PlaceInfo, PlaceRegistry};
 use omy_core::crypto::Kek;
 use omy_remote::source::RemoteSource;
@@ -149,8 +149,9 @@ pub fn remote_place_list(
     // 未加密的保持 None，前端按「无锁标」渲染。
     for p in &mut places {
         if p.kind == "telegram" && p.tg_encrypted == Some(true) {
-            p.tg_unlocked =
-                Some(crate::telegram_cmds::telegram_session_unlocked(&p.id, &state));
+            p.tg_unlocked = Some(crate::telegram_cmds::telegram_session_unlocked(
+                &p.id, &state,
+            ));
         }
     }
     places
@@ -197,7 +198,12 @@ pub async fn remote_browse(
     // 从配置恢复出来的位置是未连接占位（恢复流程刻意不碰网络，否则应用会卡在
     // 启动那一刻）。不在这里补连的话，用户点「进入」只会看到一句
     // 「找不到该远程位置」——而那句话是错的：位置就在那儿，只是还没连。
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
 
     let place = reg
         .get(&place_id)
@@ -248,7 +254,8 @@ pub async fn remote_browse(
     // 只在**根目录**（dir 为空）且是 Telegram 位置时做：对话内层是文件、
     // 走的是另一条缩略图路径。
     if dir.is_empty()
-        && let Some(tg) = place.store.as_telegram() {
+        && let Some(tg) = place.store.as_telegram()
+    {
             let jobs = tg.take_pending_avatars();
             if !jobs.is_empty() {
                 spawn_avatar_backfill(
@@ -314,8 +321,12 @@ fn spawn_avatar_backfill(
             // 发**完整**的对话条目，不是只带 token——前端按 id 整体替换
             // （state.remoteItems[idx] = entry），只带 token 会把标题清空。
             // 从 store 取回这个对话的标题等，构成和 list 里一致的条目。
-            let Some(tg) = store.as_telegram() else { continue };
-            let Some(conv) = tg.conversation(chat) else { continue };
+            let Some(tg) = store.as_telegram() else {
+                continue;
+            };
+            let Some(conv) = tg.conversation(chat) else {
+                continue;
+            };
             let mut entry = skeleton_entry(
                 format!("tg:{chat}"),
                 conv.title.clone(),
@@ -388,7 +399,9 @@ fn spawn_thumb_upgrade(
             // token 相同也无害
             // insert_image 可能返回 None（空字节/登记失败）：那种情况不发事件，
             // 占位图留着即可，不要清成类型图标
-            let Some(token) = thumbs.insert_image(bytes) else { continue };
+            let Some(token) = thumbs.insert_image(bytes) else {
+                continue;
+            };
             let mut entry = skeleton_entry(id, name, false, size, mtime, false, None);
             entry.thumb_token = Some(token);
             let _ = app.emit(
@@ -443,9 +456,15 @@ fn scan_entries(
     let mut entries: Vec<RemoteEntry> = items
         .iter()
         .map(|it| {
-            let mut e =
-                skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir, it.size, it.mtime,
-                    false, it.media_tab.map(str::to_string));
+            let mut e = skeleton_entry(
+                it.id.clone(),
+                it.name.clone(),
+                it.is_dir,
+                it.size,
+                it.mtime,
+                false,
+                it.media_tab.map(str::to_string),
+            );
             // 服务端随消息送来的内嵌缩略图：**列目录时就已经在手里**，
             // 不需要任何额外请求，也不必等后台识别。
             //
@@ -480,17 +499,24 @@ fn scan_entries(
         }
         let permit = Arc::clone(&sem).acquire_owned();
         let store = Arc::clone(&place.store);
-        let base = entries
-            .get(idx)
-            .cloned()
-            .unwrap_or_else(|| skeleton_entry(it.id.clone(), it.name.clone(), it.is_dir,
-                it.size, it.mtime, true, it.media_tab.map(str::to_string)));
+        let base = entries.get(idx).cloned().unwrap_or_else(|| {
+            skeleton_entry(
+                it.id.clone(),
+                it.name.clone(),
+                it.is_dir,
+                it.size,
+                it.mtime,
+                true,
+                it.media_tab.map(str::to_string),
+            )
+        });
         let shared = Arc::clone(&shared);
         let thumbs = Arc::clone(&thumbs_arc);
         let app = app.clone();
         let place_id = place_id.to_owned();
         let dir = dir.to_owned();
         let cache = cache.clone();
+        let stable_source = PlaceRegistry::place_source(place);
         let place_for_probe = place_id.clone();
         tokio::spawn(async move {
             // 拿到许可才发请求；permit 在任务结束时释放
@@ -505,6 +531,7 @@ fn scan_entries(
                 base,
                 cache.as_ref(),
                 &place_for_probe,
+                stable_source.as_ref(),
             )
             .await;
             // 切目录后晚到的事件由前端按 位置+目录 过滤丢弃；这里照常发即可，
@@ -556,7 +583,12 @@ pub async fn remote_search(
     dir: String,
     query: String,
 ) -> CmdResult<Vec<RemoteEntry>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
 
     let place = reg
         .get(&place_id)
@@ -635,10 +667,16 @@ pub async fn remote_probe_entry(
     size: u64,
     name: Option<String>,
 ) -> CmdResult<RemoteEntry> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
+    let stable_source = PlaceRegistry::place_source(&place);
 
     // 名字优先用调用方给的——它列表里本来就有。
     //
@@ -665,6 +703,7 @@ pub async fn remote_probe_entry(
         base,
         cache.snapshot().as_ref(),
         &place_id,
+        stable_source.as_ref(),
     )
     .await;
     Ok(out)
@@ -714,9 +753,10 @@ async fn probe_remote_entry(
     // 一样慢），不传缓存的话每次进目录都要把所有文件的头部重下一遍
     cache: Option<&omy_remote::cache::BlockCache>,
     place_id: &str,
+    stable_source: Option<&omy_remote::virtuals::SourceRef>,
 ) -> RemoteEntry {
     let size = e.size.unwrap_or(0);
-    match fetch_full_header(store, &e.id, size, cache, place_id).await {
+    match fetch_full_header(store, &e.id, size, cache, place_id, stable_source).await {
         Ok(bytes) => {
             // 必须读到完整头部再试解锁：文件名等 TLV 常使 header_len
             // 超过识别窗，只拿识别窗去 open 会把已解锁文件误判成锁定。
@@ -800,7 +840,12 @@ pub async fn remote_upload(
     dir: String,
     paths: Vec<String>,
 ) -> CmdResult<Vec<UploadOutcome>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -808,7 +853,10 @@ pub async fn remote_upload(
 
     // 先问能力位图。不问的话，只读对话上会发一次注定失败的请求，
     // 错误还只有一句 provider 的原始报错
-    let caps = store.effective_capabilities(&dir).await.map_err(|e| to_cmd_err(&e))?;
+    let caps = store
+        .effective_capabilities(&dir)
+        .await
+        .map_err(|e| to_cmd_err(&e))?;
     if !caps.write {
         crate::applog::warn(
             "upload",
@@ -937,18 +985,21 @@ pub async fn remote_place_vaults(
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<crate::commands::VaultParams>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
 
-    let entries = store
-        .list(&dir)
-        .await
-        .map_err(|e| to_cmd_err(&e))?;
+    let entries = store.list(&dir).await.map_err(|e| to_cmd_err(&e))?;
 
     let cache_snap = cache.snapshot();
+    let stable_source = PlaceRegistry::place_source(&place);
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for e in entries {
@@ -960,8 +1011,15 @@ pub async fn remote_place_vaults(
         //
         // 这条路径与浏览用的是同一批头部：解锁时走到这里，多半刚刚才浏览过
         // 同一个目录，走缓存就不必把那十几个头部再下一遍
-        let Ok(bytes) =
-            fetch_full_header(store.as_ref(), &e.id, size, cache_snap.as_ref(), &place_id).await
+        let Ok(bytes) = fetch_full_header(
+            store.as_ref(),
+            &e.id,
+            size,
+            cache_snap.as_ref(),
+            &place_id,
+            stable_source.as_ref(),
+        )
+        .await
         else {
             continue;
         };
@@ -980,11 +1038,17 @@ pub async fn remote_place_vaults(
     }
     // 远程位置见过的 vault 也登记进全局表：同密码解锁虚拟位置/本地文件时
     // 才能为这些 salt 重派生 KEK。salt 来自明文文件头，不涉及密钥。
-    let materials: Vec<crate::vault_reg::VaultMaterial> = out.iter().filter_map(|v| {
+    let materials: Vec<crate::vault_reg::VaultMaterial> = out
+        .iter()
+        .filter_map(|v| {
         crate::commands::parse_salt(&v.salt).map(|salt| crate::vault_reg::VaultMaterial {
-            salt, m_kib: v.m_kib, t: v.t, p: v.p,
+                salt,
+                m_kib: v.m_kib,
+                t: v.t,
+                p: v.p,
+            })
         })
-    }).collect();
+        .collect();
     vault_reg.register_all(&materials);
     Ok(out)
 }
@@ -1001,12 +1065,10 @@ pub struct OpenTarget {
     pub path: String,
     /// 条目字节数。
     pub size: u64,
-    /// 条目显示名。
-    ///
-    /// 普通文件靠它推 MIME——Telegram 的 id 里没有扩展名，
-    /// 只看 id 的话每个文件都会被判成 `application/octet-stream`，
-    /// 图片视频统统不预览。
+    /// 条目显示名，用于普通文件 MIME 推断。
     pub name: Option<String>,
+    /// 服务端原文件名，用于定位完整永久原文件。
+    pub server_name: Option<String>,
 }
 
 /// 打开一个远程 `.omy`，登记可播放来源并返回令牌。
@@ -1030,18 +1092,23 @@ pub async fn remote_place_open(
         path,
         size,
         name,
+        server_name,
     } = target;
-    // 先确保这个位置已连上。平时打开文件前都先浏览过它、连接已就绪；但**虚拟位置
-    // 里原地预览一条引用**是直接按源坐标 (source_place, source_file) 打开、可能从没
-    // 进过那个源位置，它还是未连接占位。不在这里连上的话，下面读头部会失败。
-    // ensure_connected 幂等：已连接就 no-op，未加密位置按需连、加密未解锁返回 Locked
-    // （前端据此走解锁流程）。
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state))
+    // 已有完整永久副本时先走本地：换机复制后即使当前网络不可用，也能从已有
+    // 条目或虚拟引用直接打开。没有完整副本才连接远端，避免把损坏/残缺文件当成离线成品。
+    if !has_complete_pinned_candidate(&reg, &cache, &place_id, &path, size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
         .await?;
+    }
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
+    let stable_source = PlaceRegistry::place_source(&place);
 
     // 读完整头部（识别窗口 + 按需补读到 header_len），载荷一个字节都不碰。
     // 走缓存：打开一个文件之前基本都先浏览过它所在的目录，那时头部已经取过
@@ -1051,6 +1118,7 @@ pub async fn remote_place_open(
         size,
         cache.snapshot().as_ref(),
         &place_id,
+        stable_source.as_ref(),
     )
     .await
     .map_err(|e| to_cmd_err(&e))?;
@@ -1079,6 +1147,15 @@ pub async fn remote_place_open(
                 size,
                 cache.snapshot(),
                 rt,
+            )
+            .with_pinned_identity(
+                stable_source
+                    .clone()
+                    .ok_or_else(|| CmdError::code("remote_source_unidentified"))?,
+                server_name
+                    .clone()
+                    .or_else(|| name.clone())
+                    .unwrap_or_else(|| path.clone()),
             );
             let token = files.insert(OpenPlaceFile {
                 header: Vec::new(),
@@ -1173,8 +1250,15 @@ pub async fn remote_place_open(
         rt,
     )
     .map_err(|e| {
-        CmdError::with("remote_open_failed", serde_json::json!({ "detail": e.to_string() }))
-    })?;
+        CmdError::with(
+            "remote_open_failed",
+            serde_json::json!({ "detail": e.to_string() }),
+        )
+    })?
+    .with_pinned_identity(
+        stable_source.ok_or_else(|| CmdError::code("remote_source_unidentified"))?,
+        server_name.or(name).unwrap_or_else(|| path.clone()),
+    );
 
     let holder = OpenPlaceFile {
         header: header.clone(),
@@ -1208,10 +1292,7 @@ pub async fn remote_place_open(
 
 /// 关闭一个远程播放来源（播放结束时调用），释放句柄。
 #[tauri::command]
-pub fn remote_place_close(
-    files: tauri::State<'_, Arc<PlaceFiles>>,
-    token: String,
-) {
+pub fn remote_place_close(files: tauri::State<'_, Arc<PlaceFiles>>, token: String) {
     files.remove(&token);
 }
 
@@ -1229,12 +1310,13 @@ pub struct RemoteFileRef {
     pub place_id: String,
     pub path: String,
     pub size: u64,
-    /// 显示名，只用于传输列表。
-    ///
-    /// 由调用方给而不是从 `path` 猜：Telegram 的条目 id 形如
-    /// `tg:<对话>:<消息号>`，切出来是个数字，用户看不懂。
+    /// 界面显示名，只用于传输列表。
     #[serde(default)]
     pub name: Option<String>,
+    /// 服务端原文件名。永久缓存按它保存完整原文件，不能用 `.omy` 内部解出的
+    /// 明文名代替，否则落盘内容与扩展名不匹配。
+    #[serde(default)]
+    pub server_name: Option<String>,
 }
 
 /// 「解密到本地」结果。
@@ -1267,12 +1349,26 @@ pub async fn remote_decrypt_to_local(
     dest_dir: String,
 ) -> CmdResult<RemoteDecryptResult> {
     // name 只给传输列表显示用，这条路径用不到，显式忽略
-    let RemoteFileRef { place_id, path, size, .. } = req;
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    let RemoteFileRef {
+        place_id,
+        path,
+        size,
+        server_name,
+        ..
+    } = req;
+    if !has_complete_pinned_candidate(&reg, &cache, &place_id, &path, size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
+        .await?;
+    }
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
+    let stable_source = PlaceRegistry::place_source(&place);
 
     let header = fetch_full_header(
         store.as_ref(),
@@ -1280,11 +1376,12 @@ pub async fn remote_decrypt_to_local(
         size,
         cache.snapshot().as_ref(),
         &place_id,
+        stable_source.as_ref(),
     )
     .await
     .map_err(|e| to_cmd_err(&e))?;
-    let parsed = omy_core::file::peek_header(&header)
-        .map_err(|_| CmdError::code("not_an_omy_file"))?;
+    let parsed =
+        omy_core::file::peek_header(&header).map_err(|_| CmdError::code("not_an_omy_file"))?;
 
     let keks: Vec<Kek> = state
         .with_session(|s| {
@@ -1332,16 +1429,13 @@ pub async fn remote_decrypt_to_local(
     let join = tokio::task::spawn_blocking(move || -> Result<RemoteDecryptResult, String> {
         // RemoteSource 的读方法内部用保存的 Handle block_on 网络请求，
         // 必须在阻塞线程里调（async 线程里 block_on 当前 runtime 会 panic）
-        let source = RemoteSource::new(
-            store,
-            place_id,
-            path,
-            &header,
-            size,
-            cache_snap,
-            rt,
-        )
-        .map_err(|e| e.to_string())?;
+        let source =
+            RemoteSource::new(store, place_id, path.clone(), &header, size, cache_snap, rt)
+                .map_err(|e| e.to_string())?
+                .with_pinned_identity(
+                    stable_source.ok_or_else(|| "remote_source_unidentified".to_string())?,
+                    server_name.unwrap_or_else(|| path.clone()),
+                );
         let opened = omy_core::file::open(&header, &keks).map_err(|_| "locked".to_string())?;
 
         use std::io::Write;
@@ -1357,7 +1451,8 @@ pub async fn remote_decrypt_to_local(
             if chunk.is_empty() {
                 return Err("decrypt_failed".to_string());
             }
-            out.write_all(&chunk).map_err(|_| "write_failed".to_string())?;
+            out.write_all(&chunk)
+                .map_err(|_| "write_failed".to_string())?;
             done = done.saturating_add(chunk.len() as u64);
 
             // 按整百分比节流，否则大文件发几千次事件，IPC 反而拖慢传输
@@ -1428,18 +1523,28 @@ pub(crate) async fn build_remote_source_with_cache(
         .get(&req.place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
     let store = Arc::clone(&place.store);
+    let source_ref = PlaceRegistry::place_source(&place)
+        .ok_or_else(|| CmdError::code("remote_source_unidentified"))?;
     let header = fetch_full_header(
         store.as_ref(),
         &req.path,
         req.size,
         cache.as_ref(),
         &req.place_id,
+        Some(&source_ref),
     )
     .await
     .map_err(|e| to_cmd_err(&e))?;
     let rt = tokio::runtime::Handle::current();
 
-    match RemoteSource::new(
+    let source_ref = PlaceRegistry::place_source(&place)
+        .ok_or_else(|| CmdError::code("remote_source_unidentified"))?;
+    let server_name = req
+        .server_name
+        .clone()
+        .or_else(|| req.name.clone())
+        .unwrap_or_else(|| req.path.clone());
+    let source = match RemoteSource::new(
         Arc::clone(&store),
         req.place_id.clone(),
         req.path.clone(),
@@ -1448,16 +1553,17 @@ pub(crate) async fn build_remote_source_with_cache(
         cache.clone(),
         rt.clone(),
     ) {
-        Ok(src) => Ok(src),
-        Err(_) => Ok(RemoteSource::new_plain(
+        Ok(src) => src,
+        Err(_) => RemoteSource::new_plain(
             store,
             req.place_id.clone(),
             req.path.clone(),
             req.size,
             cache,
             rt,
-        )),
-    }
+        ),
+    };
+    Ok(source.with_pinned_identity(source_ref, server_name))
 }
 
 pub(crate) async fn build_remote_source(
@@ -1505,7 +1611,10 @@ pub async fn remote_list_container(
     let idx = tauri::async_runtime::spawn_blocking(move || {
         let h = omy_core::file::peek_header(&header).ok()?;
         let keks: Vec<omy_core::crypto::Kek> = shared.with_session(|s| {
-            s.all_for(&h.vault_salt).into_iter().map(|c| c.kek).collect()
+            s.all_for(&h.vault_salt)
+                .into_iter()
+                .map(|c| c.kek)
+                .collect()
         })?;
         let opened = omy_core::file::open(&header, &keks).ok()?;
         opened.folder_index().ok()
@@ -1576,7 +1685,12 @@ pub async fn remote_browse_more(
     dir: String,
     before: i32,
 ) -> CmdResult<Vec<RemoteEntry>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1626,7 +1740,12 @@ pub async fn remote_browse_tab(
     limit: usize,
 ) -> CmdResult<Vec<RemoteEntry>> {
     use omy_remote::telegram::store::MediaTab;
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1713,7 +1832,11 @@ pub async fn remote_dir_protected(
     // 实测过这个差别：冷启动直接问受保护的群得到 false，
     // 先 browse 一次再问才得到 true。界面上碰巧总是先 browse，
     // 但命令本身要自洽，不能要求调用方记住这个顺序。
-    if crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state))
+    if crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
         .await
         .is_err()
     {
@@ -1739,7 +1862,12 @@ pub async fn remote_messages(
     dir: String,
     before: Option<i32>,
 ) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1771,7 +1899,12 @@ pub async fn remote_messages_around(
     dir: String,
     around: i32,
 ) -> CmdResult<omy_remote::telegram::store::MessageWindow> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1804,7 +1937,12 @@ pub async fn remote_messages_after(
     dir: String,
     after: i32,
 ) -> CmdResult<Vec<omy_remote::telegram::store::MessageRow>> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1867,7 +2005,14 @@ pub async fn remote_cache_file_stat(
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<omy_remote::cache::FileCacheStat> {
-    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    if !has_complete_pinned_candidate(&reg, &cache, &req.place_id, &req.path, req.size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &req.place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
+        .await?;
+    }
     let source = build_remote_source(&reg, &cache, &req).await?;
     Ok(source.cache_stat())
 }
@@ -1901,7 +2046,9 @@ pub async fn remote_cache_file_stats(
     let keks = crate::place_keys::unlock_keks(&state);
     let mut connected = std::collections::BTreeSet::new();
     for req in &reqs {
-        if connected.insert(req.place_id.clone()) {
+        if !has_complete_pinned_candidate(&reg, &cache, &req.place_id, &req.path, req.size)
+            && connected.insert(req.place_id.clone())
+        {
             crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &keks).await?;
         }
     }
@@ -1934,7 +2081,14 @@ pub async fn remote_cache_remove_file(
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<serde_json::Value> {
-    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    if !has_complete_pinned_candidate(&reg, &cache, &req.place_id, &req.path, req.size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &req.place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
+        .await?;
+    }
     let source = build_remote_source(&reg, &cache, &req).await?;
     let freed_bytes = source.remove_cached_blocks();
     Ok(serde_json::json!({ "freed_bytes": freed_bytes }))
@@ -1957,7 +2111,12 @@ pub async fn remote_effective_caps(
     place_id: String,
     dir: String,
 ) -> CmdResult<omy_remote::Capabilities> {
-    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1968,7 +2127,25 @@ pub async fn remote_effective_caps(
         .map_err(|e| to_cmd_err(&e))
 }
 
-/// 读到足以 `open` 的完整文件头，**优先走密文块缓存**。
+fn has_complete_pinned_candidate(
+    reg: &PlaceRegistry,
+    cache: &RemoteCache,
+    place_id: &str,
+    path: &str,
+    size: u64,
+) -> bool {
+    let Some(place) = reg.get(place_id) else {
+        return false;
+    };
+    let Some(source) = PlaceRegistry::place_source(&place) else {
+        return false;
+    };
+    cache
+        .snapshot()
+        .is_some_and(|c| c.has_pinned_candidate(&source, path, size))
+}
+
+/// 读到足以 `open` 的完整文件头，**优先走完整永久文件和临时分块缓存**。
 ///
 /// 识别窗口（前 `MIN_PROBE_SIZE` 字节）通常已覆盖头部；带缩略图/压缩索引的
 /// 文件头部更长，此时按 `peek_header` 给出的 `header_len` 补读，直到覆盖
@@ -2002,9 +2179,9 @@ async fn fetch_full_header<S: RemoteStore>(
     size: u64,
     cache: Option<&omy_remote::cache::BlockCache>,
     place_id: &str,
+    pinned_source: Option<&omy_remote::virtuals::SourceRef>,
 ) -> Result<Vec<u8>, RemoteError> {
-    // 读取/补读/缓存这套逻辑收在 omy_remote::ops，CLI 远程解密也复用同一份。
-    omy_remote::fetch_header(store, path, size, cache, place_id).await
+    omy_remote::fetch_header_with_pinned(store, path, size, cache, place_id, pinned_source).await
 }
 
 /// 远程缓存用量，供设置页显示进度条。
@@ -2029,15 +2206,15 @@ pub struct RemoteCacheUsage {
     pub pinned_files: u64,
 }
 
-/// 把一个远程文件转为**永久缓存**。
+/// 把一个远程文件转为**完整原文件永久缓存**。
 ///
 /// # 这是一次真实的下载任务
 ///
-/// 产品上「转为永久」不是打个标记就完事：它要把整个文件的密文块都取到本地，
-/// 否则「永久」只是承诺而不是事实——下次离线打开照样失败。所以这个命令会
-/// 真的把所有块拉下来，耗时与文件大小成正比。
+/// 产品上「转为永久」不是打个标记就完事：它按顺序取得整个远端原文件，写入
+/// `.part`，同步完成后再原子提交。这样离线打开和跨机器复制依赖的是已验证完整
+/// 文件，而不是一组只有应用内部能理解的散块。
 ///
-/// 返回搬进永久层的字节数。
+/// 返回提交到永久层的字节数。
 ///
 /// # Errors
 ///
@@ -2054,7 +2231,14 @@ pub async fn remote_cache_pin(
 ) -> CmdResult<u64> {
     use crate::transfers::TaskKind;
 
-    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    if !has_complete_pinned_candidate(&reg, &cache, &req.place_id, &req.path, req.size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &req.place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
+        .await?;
+    }
     let source = build_remote_source(&reg, &cache, &req).await?;
 
     // 进传输管理页。「转为永久」在产品上就是一次真实的下载任务——
@@ -2089,13 +2273,8 @@ pub async fn remote_cache_pin(
     run_pin(&app, &source, &xfer, &req, &h)
 }
 
-/// pin 任务的执行体：预热所有块 → 搬进永久层，全程更新任务进度与终态。
-/// 首次 pin 与「失败后重试」共用它——重试判据、进度更新、终态写入只该有
-/// 一处，否则两条路各写一份迟早只改一处、行为分叉。
-///
-/// 预热天然从进度续：`prefetch_all_with_progress` 内部 `fetch_block` 先查
-/// 缓存命中就不重下（见 `RemoteSource::fetch_block`），所以重试不会把已经
-/// 在本地的块再拉一遍——这正是 `FailCause::Network` 对应的 `FromProgress`。
+/// pin 任务的执行体：顺序写完整远端原文件 → 原子提交，全程更新进度与终态。
+/// 首次 pin 与失败后重试共用它；已有完整文件时立即命中，不访问网络。
 fn run_pin(
     app: &tauri::AppHandle,
     source: &omy_remote::source::RemoteSource<PlaceStore>,
@@ -2105,30 +2284,20 @@ fn run_pin(
 ) -> CmdResult<u64> {
     use crate::transfers::TaskState;
 
-    // 先确保内容真的在本地：pin 只搬运已有的块，没有的块搬不了。
-    // 不预热的话，「转为永久」会变成「把已经缓存的那几块标成永久」，
-    // 而用户以为整个文件都留下来了——直到离线时才发现不是。
     let h2 = Arc::clone(h);
     let app2 = app.clone();
     let xfer2 = Arc::clone(xfer);
-    let pre = tokio::task::block_in_place(|| {
-        source.prefetch_all_with_progress(&mut |done| {
+    let r = tokio::task::block_in_place(|| {
+        source.pin_with_progress(&mut |done| {
             h2.set_done(done);
             xfer2.tick(&app2, &h2);
-            // 返回 false 表示要中止。在**分片边界**检查而不是直接 abort：
-            // 中途砍掉会留下半个文件，而它看起来和完整的一样
             !h2.is_canceled()
         })
-    });
-    if let Err(e) = pre {
-        xfer.finish(app, h.id(), TaskState::failed("remote_prefetch_failed"));
-        drop(e);
-        return Err(CmdError::code("remote_prefetch_failed"));
-    }
+    })
+    .map_err(|e| to_cmd_err(&e));
     if h.is_canceled() {
         return Err(CmdError::code("remote_canceled"));
     }
-    let r = source.pin().map_err(|e| to_cmd_err(&e));
     match &r {
         Ok(freed) => {
             crate::applog::info(
@@ -2254,7 +2423,12 @@ pub async fn transfer_retry(
         // 回文件那里重新「转为永久」。给明确码而不是静默失败。
         return Err(CmdError::code("remote_retry_expired"));
     };
-    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    crate::telegram_cmds::ensure_connected(
+        &reg,
+        &req.place_id,
+        &crate::place_keys::unlock_keks(&state),
+    )
+    .await?;
     // 先重建 source（网络 / 位置不存在会在这里失败，直接返回，不动任务状态）
     let source = build_remote_source(&reg, &cache, &req).await?;
     // 翻回 Running、发新句柄；非失败任务 reset_running 返回 None，说明这条
@@ -2290,11 +2464,10 @@ pub fn transfer_clear_done(
     }
 }
 
-/// 取消永久缓存。
+/// 取消永久缓存：删除完整远端原文件副本。
 ///
-/// 内容**搬回临时层**而不是原地改个标记——回到临时层就意味着重新计入 `limit`、
-/// 重新参与 LRU，可能很快被清掉。那正是用户点「取消永久」想要的语义；
-/// 只改标记的话空间不会真的还回来。
+/// 临时分块缓存与永久层独立；如果此前预览留下了临时块，它们继续受 LRU 管理，
+/// 不为取消永久而额外拆回或复制。
 ///
 /// # Errors
 ///
@@ -2306,7 +2479,14 @@ pub async fn remote_cache_unpin(
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<u64> {
-    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
+    if !has_complete_pinned_candidate(&reg, &cache, &req.place_id, &req.path, req.size) {
+        crate::telegram_cmds::ensure_connected(
+            &reg,
+            &req.place_id,
+            &crate::place_keys::unlock_keks(&state),
+        )
+        .await?;
+    }
     let source = build_remote_source(&reg, &cache, &req).await?;
     let r = source.unpin().map_err(|e| to_cmd_err(&e));
     match &r {
@@ -2351,42 +2531,23 @@ pub async fn remote_cache_unpin(
 #[must_use]
 pub fn remote_cache_list_pinned(
     cache: tauri::State<'_, Arc<RemoteCache>>,
-) -> Vec<omy_remote::cache::PinnedFile> {
-    cache.snapshot().map(|c| c.list_pinned()).unwrap_or_default()
+) -> Vec<omy_remote::pinned::PinnedFile> {
+    cache
+        .snapshot()
+        .map(|c| c.list_pinned())
+        .unwrap_or_default()
 }
 
-/// 按缓存键取消永久保留**并删掉那些块**，返回释放的字节数。
-///
-/// # 为什么不复用 `remote_cache_unpin`
-///
-/// 那一条要 `place_id + path + size`，因为它得先建一个 `RemoteSource`
-/// （而建它要读文件头、要发网络请求）。从「管理永久缓存」列表点过来时
-/// 这三样都拿不到：`key` 里带着版本哈希，前端拼不回 `path`，`size` 更无从
-/// 得知。硬要复用就得让界面先去原位置把文件找回来——那正是这个列表要免掉的事。
-///
-/// 这条直接按缓存键操作，**不碰网络**，所以离线时、甚至那个远程位置已经
-/// 被删掉之后，依然能把占的空间清出来。
-///
-/// # 为什么是 drop 而不是搬回临时层
-///
-/// 用户从「管理永久缓存」里点取消，动机基本只有一个：**腾空间**。
-/// 搬回临时层的话磁盘一个字节都没少，而他明确要的是少。想「留着但不永久」
-/// 的人会在文件自己的右键菜单里操作，那条路走 `remote_cache_unpin`。
-///
-/// # Errors
-///
-/// 本机没有可用的缓存目录、或标记删除失败时返回。
+/// 按永久清单返回的不透明相对目录删除完整原文件，不碰网络。
 #[tauri::command]
 pub fn remote_cache_unpin_by_key(
     cache: tauri::State<'_, Arc<RemoteCache>>,
-    place: String,
-    key: String,
-    total_blocks: u64,
+    relative_dir: String,
 ) -> CmdResult<u64> {
     let Some(c) = cache.snapshot() else {
         return Err(CmdError::code("remote_cache_unavailable"));
     };
-    c.unpin_and_drop(&place, &key, total_blocks)
+    c.remove_pinned_relative(&relative_dir)
         .map_err(|e| to_cmd_err(&e))
 }
 
@@ -2438,7 +2599,12 @@ fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+        .map_err(|e| {
+            CmdError::with(
+                "open_failed",
+                serde_json::json!({ "detail": e.to_string() }),
+            )
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -2447,7 +2613,12 @@ fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+        .map_err(|e| {
+            CmdError::with(
+                "open_failed",
+                serde_json::json!({ "detail": e.to_string() }),
+            )
+        })
 }
 
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
@@ -2456,7 +2627,12 @@ fn open_in_file_manager(path: &std::path::Path) -> CmdResult<()> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|e| CmdError::with("open_failed", serde_json::json!({ "detail": e.to_string() })))
+        .map_err(|e| {
+            CmdError::with(
+                "open_failed",
+                serde_json::json!({ "detail": e.to_string() }),
+            )
+        })
 }
 
 #[cfg(target_os = "android")]
@@ -2545,8 +2721,14 @@ mod tests {
     /// 该做的事完全不同——重新登录、等一会、检查网络。
     #[test]
     fn error_codes_are_distinguishable() {
-        assert_eq!(to_cmd_err(&RemoteError::Unauthorized).code, "remote_unauthorized");
-        assert_eq!(to_cmd_err(&RemoteError::RateLimited).code, "remote_rate_limited");
+        assert_eq!(
+            to_cmd_err(&RemoteError::Unauthorized).code,
+            "remote_unauthorized"
+        );
+        assert_eq!(
+            to_cmd_err(&RemoteError::RateLimited).code,
+            "remote_rate_limited"
+        );
         assert_eq!(
             to_cmd_err(&RemoteError::Network(String::from("x"))).code,
             "remote_network"
@@ -2580,8 +2762,19 @@ mod tests {
         };
         let j = serde_json::to_value(&e).expect("序列化");
         for k in [
-            "id", "name", "is_dir", "size", "mtime", "is_encrypted", "unlocked", "real_name",
-            "plaintext_size", "probe_failed", "thumb_token", "probing", "media_tab",
+            "id",
+            "name",
+            "is_dir",
+            "size",
+            "mtime",
+            "is_encrypted",
+            "unlocked",
+            "real_name",
+            "plaintext_size",
+            "probe_failed",
+            "thumb_token",
+            "probing",
+            "media_tab",
         ] {
             assert!(j.get(k).is_some(), "字段 {k} 不能改名或缺失");
         }
@@ -2593,8 +2786,7 @@ mod tests {
     /// 点下去必然失败。
     #[test]
     fn non_omy_bytes_are_not_encrypted() {
-        let state: crate::commands::Shared =
-            std::sync::Arc::new(crate::state::AppState::new());
+        let state: crate::commands::Shared = std::sync::Arc::new(crate::state::AppState::new());
         let junk = vec![0x41u8; 600];
         assert!(probe_omy(&junk, &state).is_none(), "随机数据不该被当成 omy");
         // 太短的数据同样不该误判
@@ -2629,10 +2821,7 @@ mod tests {
         fn describe(&self) -> String {
             String::from("counting")
         }
-        async fn list(
-            &self,
-            _dir_id: &str,
-        ) -> Result<Vec<omy_remote::store::Entry>, RemoteError> {
+        async fn list(&self, _dir_id: &str) -> Result<Vec<omy_remote::store::Entry>, RemoteError> {
             Ok(Vec::new())
         }
         async fn read_range(
@@ -2656,10 +2845,7 @@ mod tests {
 
     /// 造一个临时缓存目录，返回（缓存, 目录路径）。
     fn temp_cache(tag: &str) -> (omy_remote::cache::BlockCache, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "omy_hdrcache_{tag}_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("omy_hdrcache_{tag}_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let c = match omy_remote::cache::BlockCache::new(&dir, 0) {
             Ok(c) => c,
@@ -2692,14 +2878,28 @@ mod tests {
         let r = rt();
 
         let first = r
-            .block_on(fetch_full_header(&store, "/a.omy", 4096, Some(&cache), "p1"))
+            .block_on(fetch_full_header(
+                &store,
+                "/a.omy",
+                4096,
+                Some(&cache),
+                "p1",
+                None,
+            ))
             .unwrap_or_default();
         let after_first = store.calls();
         assert!(after_first > 0, "首次必须真的发请求");
         assert!(!first.is_empty(), "首次要读到内容");
 
         let second = r
-            .block_on(fetch_full_header(&store, "/a.omy", 4096, Some(&cache), "p1"))
+            .block_on(fetch_full_header(
+                &store,
+                "/a.omy",
+                4096,
+                Some(&cache),
+                "p1",
+                None,
+            ))
             .unwrap_or_default();
         assert_eq!(
             store.calls(),
@@ -2724,11 +2924,25 @@ mod tests {
         let r = rt();
 
         let a = r
-            .block_on(fetch_full_header(&old, "/a.omy", 4096, Some(&cache), "p1"))
+            .block_on(fetch_full_header(
+                &old,
+                "/a.omy",
+                4096,
+                Some(&cache),
+                "p1",
+                None,
+            ))
             .unwrap_or_default();
         // 同一个 id、同一个位置，但文件长度变了
         let b = r
-            .block_on(fetch_full_header(&new, "/a.omy", 8192, Some(&cache), "p1"))
+            .block_on(fetch_full_header(
+                &new,
+                "/a.omy",
+                8192,
+                Some(&cache),
+                "p1",
+                None,
+            ))
             .unwrap_or_default();
 
         assert!(new.calls() > 0, "长度变了必须重新请求，不能吃旧缓存");
@@ -2750,13 +2964,30 @@ mod tests {
         let r = rt();
 
         let a = r
-            .block_on(fetch_full_header(&a_store, "tg:1:2", 4096, Some(&cache), "p1"))
+            .block_on(fetch_full_header(
+                &a_store,
+                "tg:1:2",
+                4096,
+                Some(&cache),
+                "p1",
+                None,
+            ))
             .unwrap_or_default();
         let b = r
-            .block_on(fetch_full_header(&b_store, "tg:1:2", 4096, Some(&cache), "p2"))
+            .block_on(fetch_full_header(
+                &b_store,
+                "tg:1:2",
+                4096,
+                Some(&cache),
+                "p2",
+                None,
+            ))
             .unwrap_or_default();
 
-        assert!(b_store.calls() > 0, "另一个位置必须自己去取，不能命中前一个的缓存");
+        assert!(
+            b_store.calls() > 0,
+            "另一个位置必须自己去取，不能命中前一个的缓存"
+        );
         assert_ne!(a, b, "不同位置的同名条目内容不能串");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2792,7 +3023,7 @@ mod tests {
         let store = CountingStore::new(vec![0x55u8; 4096]);
         let r = rt();
         let out = r
-            .block_on(fetch_full_header(&store, "/a.omy", 4096, None, ""))
+            .block_on(fetch_full_header(&store, "/a.omy", 4096, None, "", None))
             .unwrap_or_default();
         assert!(!out.is_empty(), "没有缓存也要能读到头部");
         assert!(store.calls() > 0);

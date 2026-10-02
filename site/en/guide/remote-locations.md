@@ -98,7 +98,7 @@ Encrypted upload is available (see the Telegram section below). Delete, rename, 
 Right-click a local file or a file in a real remote location and choose **Upload to…**. The destination picker can browse WebDAV folders or Telegram conversations. It re-queries effective capabilities after every directory change, and confirmation is enabled only when that specific directory reports `write`; a location-level upper bound is never treated as proof that the current directory is writable.
 
 - **Local → remote** uses the ordinary local-file upload path.
-- **Remote → remote (Cache locally and upload)** stores downloaded ciphertext blocks in the permanent cache. A retry reuses those blocks, at the cost of local disk space.
+- **Remote → remote (Cache locally and upload)** stores the complete source file in its server-side format in the permanent directory. A retry reuses that local file, at the cost of disk space.
 - **Remote → remote (Upload through memory)** reads up to 8 MiB from the source at a time and connects download to upload with a fixed, bounded 64 MiB in-memory queue. It writes no local cache; if upload is slower, download waits instead of accumulating without bound.
 
 When media is copied from Telegram to another Telegram conversation, omy reads the source message's real media attributes and preserves its Telegram classification as a photo, video, audio item, or GIF during re-upload. A video therefore stays in the Media tab instead of becoming a generic file attachment. Ordinary documents and `.omy` files remain file attachments, and non-Telegram targets such as WebDAV still receive only the original byte stream.
@@ -210,15 +210,15 @@ When uploading into a writable conversation, omy always sends **as a file** rath
 - A few files are served via a CDN redirect, which this version does not support. It reports a clear error instead of failing silently.
 - **The message view for broadcast channels is read-only, and omy does not implement sponsored messages.** Telegram's terms require clients that display a message stream to support and faithfully display sponsored messages (ads), and carrying ad delivery and impression reporting inside a local encrypted file manager conflicts with what omy is for. omy's choice is to **browse channel messages read-only and not implement sponsored messages** (i.e. not participate in ad delivery), rather than refusing to show messages at all. Files and the media tabs in those channels work as usual.
 
-## Ciphertext cache
+## Remote cache
 
-Repeatedly seeking through a remote file would otherwise re-fetch the same ciphertext. The app keeps a local block cache that stores **ciphertext only**:
+Repeatedly seeking through a remote file would otherwise re-fetch the same bytes. The temporary tier keeps an internal hashed block cache:
 
 - Blocks are aligned to 1 MiB and evicted with LRU once usage exceeds the limit;
-- **Plaintext and keys are never cached** — a copied cache directory contains nothing but ciphertext;
-- The cache key incorporates the file header and total length, so updated content under the same name never matches a stale cache.
+- Decrypted `.omy` plaintext and keys never enter the temporary cache;
+- The cache key incorporates the file version and total length, so updated content under the same name never matches stale blocks.
 
-Under **Settings → Remote locations → Ciphertext cache** you can:
+Under **Settings → Remote locations → Remote cache** you can:
 
 - Set the maximum size (512 MB / 1 GB / 2 GB / 5 GB / 10 GB / unlimited; default 2 GB);
 - See current usage and clear it immediately;
@@ -227,17 +227,22 @@ Under **Settings → Remote locations → Ciphertext cache** you can:
 
 Beyond clearing everything in settings, you can clean up a single file: choose "Remove from cache" in an entry's context menu. It deletes only that file's locally downloaded ciphertext blocks and never touches the remote file, so it is available on read-only locations too. The menu queries on demand — the item only appears when the file actually has some cached blocks; a file with no cache never shows an empty action. Whether a file is fully cached (available offline) is counted block by block at 1 MiB; this is not scanned for every file while listing the directory, to avoid slowing down browsing when there are many files.
 
-### Keeping files permanently
+### Keep permanently: complete original files and reuse across machines
 
-The cache above is evictable: when space runs short, the least recently used blocks go first. If you want a particular file to open reliably offline, choose "Keep permanently" in its context menu.
+The temporary blocks above are evictable. **Keep permanently** instead downloads and atomically commits the **complete remote file in its original server-side format**; it does not merely flag existing blocks. A `.omy` file remains encrypted as `.omy`, while an ordinary Telegram or WebDAV photo, video, or document remains directly usable by other applications.
 
-- Permanently kept files are **outside the cache limit above and never evicted**, which is why Settings shows the two numbers separately: the temporary cache gets "used / limit", while permanent storage reports only its size and file count — it has no limit, and a progress bar would send you looking for a denominator that does not exist;
-- Keeping a file is a real download: it fetches the file's ciphertext in full rather than just flagging it. A flag alone would make "permanent" a promise rather than a fact, and opening the file offline would still fail;
-- Stopping keeps deletes those ciphertext blocks and gives the space back.
+- Permanent files are **outside the temporary-cache limit and never evicted**; Settings reports their total size and file count separately;
+- Telegram uses `pinned/telegram/<userId>/<chatId>/<messageId>/<server filename>`;
+- WebDAV uses `pinned/webdav/<normalized URL + username source directory>/<remote-path hash>/<server filename>`;
+- These paths do not depend on machine-local `p1` / `p2` ids. Removing and re-adding the same remote, or copying/merging the whole `pinned` directory onto another machine and adding the same remote there, reuses the data;
+- Unsupported filesystem characters are escaped deterministically. `.omy-pin.json` beside the file records the original server name, stable source, size, and version for validation and management;
+- Stopping permanent storage deletes the complete copy. Any temporary preview blocks that still exist remain under LRU management.
 
-Settings → Remote locations → Ciphertext cache → "Manage permanent files…" lists everything kept permanently so you can release them one by one. Without that list your only option would be to go back to the location the file came from and find it in the directory again — and on Telegram that message may be long out of reach.
+::: warning Ordinary remote files remain ordinary files in the permanent directory
+When an ordinary Telegram or WebDAV file is not encrypted as `.omy`, its permanent copy is not additionally encrypted either. Other local programs can see its server filename and contents. A complete copy is created only when you explicitly choose **Keep permanently**.
+:::
 
-The list keeps working **after the location itself has been removed**: such a row reads "Removed location" but can still be released to reclaim the space.
+**Settings → Remote locations → Remote cache → Manage permanent files…** lists the stable source, item id, and server filename and lets you delete copies one by one. The list remains available after a location is removed, so reclaiming space does not require reconnecting to the remote.
 
 "Cache on Wi-Fi only" on mobile will follow in a later release.
 
@@ -268,7 +273,7 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
 | `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |
 | Remote single-file `decrypt` streamed down-and-decrypt to local | ✅ | ✅ |
-| Ciphertext cache: status / clear / pin / unpin | ✅ | ✅ |
+| Remote cache: status / clear temporary blocks / keep complete original files / stop keeping | ✅ | ✅ |
 | Virtual locations (favorites) place / folder / ref / encrypt / lock / unlock | ✅ | ✅ (offline) |
 | Preview / stream video & images, incremental scan, thumbnails | ✅ | N/A (GUI-only) |
 | Transfer manager page, resuming a failed transfer | ✅ | N/A (CLI is a short-lived process) |

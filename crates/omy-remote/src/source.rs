@@ -20,7 +20,8 @@ use omy_core::error::{Error as CoreError, Result as CoreResult};
 use omy_core::header::FixedHeader;
 use omy_core::source::BlockSource;
 
-use crate::cache::{blocks_for, BlockCache, FileCacheStat, BLOCK_SIZE};
+use crate::cache::{BLOCK_SIZE, BlockCache, FileCacheStat, blocks_for};
+use crate::pinned::PinnedTarget;
 use crate::store::RemoteStore;
 
 /// 远程 `.omy` 文件的密文来源。
@@ -49,6 +50,8 @@ pub struct RemoteSource<S: RemoteStore> {
     /// 头部本身是密文，参与哈希不会泄露明文信息（文件名也不会进路径）。
     cache_version: String,
     cache: Option<BlockCache>,
+    /// 可跨机器重建的完整永久文件目标。测试与不需要永久能力的调用方可不设。
+    pinned_target: Option<PinnedTarget>,
     /// 用于在同步上下文里驱动异步请求。
     rt: tokio::runtime::Handle,
 }
@@ -84,7 +87,10 @@ impl<S: RemoteStore> RemoteSource<S> {
         hasher
             .finalize_variable(&mut digest)
             .expect("16 字节输出长度合法");
-        let cache_version = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let cache_version = digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
 
         Ok(Self {
             store,
@@ -96,8 +102,48 @@ impl<S: RemoteStore> RemoteSource<S> {
             header_bytes: header_bytes.to_vec(),
             cache_version,
             cache,
+            pinned_target: None,
             rt,
         })
+    }
+
+    /// 当前远端对象的版本键，供完整永久文件元数据校验。
+    #[must_use]
+    pub fn version_key(&self) -> &str {
+        &self.cache_version
+    }
+
+    /// 为真实远程位置附加可跨机器重建的完整永久文件身份。
+    ///
+    /// 版本键仍由 `RemoteSource` 自己生成，调用方只提供 provider 的稳定身份和
+    /// 服务端原名，避免 GUI / CLI 各自复制版本算法。
+    #[must_use]
+    pub fn with_pinned_identity(
+        mut self,
+        source: crate::virtuals::SourceRef,
+        server_name: impl Into<String>,
+    ) -> Self {
+        self.pinned_target = Some(PinnedTarget::new(
+            source,
+            self.id.clone(),
+            server_name,
+            self.cache_version.clone(),
+            self.total_size(),
+        ));
+        self
+    }
+
+    /// 仅给测试和底层恢复流程显式附加已经构造好的目标。
+    #[must_use]
+    pub fn with_pinned_target(mut self, target: PinnedTarget) -> Self {
+        self.pinned_target = Some(target);
+        self
+    }
+
+    /// 读取远端完整原文件的总字节数。
+    #[must_use]
+    pub fn total_size(&self) -> u64 {
+        self.payload_start.saturating_add(self.payload_len)
     }
 
     /// 传给 [`BlockCache`] 的逻辑条目键：WebDAV id 再混入文件版本，
@@ -150,6 +196,7 @@ impl<S: RemoteStore> RemoteSource<S> {
             header: None,
             header_bytes: Vec::new(),
             cache,
+            pinned_target: None,
             rt,
         }
     }
@@ -184,10 +231,12 @@ impl<S: RemoteStore> RemoteSource<S> {
         if end > self.payload_start {
             let payload_offset = offset.saturating_sub(self.payload_start);
             let payload_end = end.saturating_sub(self.payload_start);
-            out.extend_from_slice(&self.read_payload_range(
+            out.extend_from_slice(
+                &self.read_payload_range(
                 payload_offset,
                 payload_end.saturating_sub(payload_offset),
-            )?);
+                )?,
+            );
         }
         Ok(out)
     }
@@ -248,14 +297,20 @@ impl<S: RemoteStore> RemoteSource<S> {
             // 读一个比上限还大的文件会一边下一边把刚下的删掉，永远不前进
             if let Some(c) = &self.cache {
                 let key = self.cache_key();
-                let keep: Vec<_> = used.iter().map(|n| c.path_of(&self.place, &key, *n)).collect();
+                let keep: Vec<_> = used
+                    .iter()
+                    .map(|n| c.path_of(&self.place, &key, *n))
+                    .collect();
                 c.evict(&keep);
             }
             let bs = b.saturating_mul(BLOCK_SIZE);
             let from = offset.saturating_sub(bs).min(data.len() as u64);
             let to = end.saturating_sub(bs).min(data.len() as u64);
             let (Ok(f), Ok(t)) = (usize::try_from(from), usize::try_from(to)) else {
-                return Err(CoreError::ChunkOutOfRange { index: offset, total: self.payload_len });
+                return Err(CoreError::ChunkOutOfRange {
+                    index: offset,
+                    total: self.payload_len,
+                });
             };
             out.extend_from_slice(data.get(f..t).unwrap_or(&[]));
         }
@@ -277,7 +332,18 @@ impl<S: RemoteStore> RemoteSource<S> {
     pub fn cache_stat(&self) -> FileCacheStat {
         let total = self.total_ct_blocks();
         match &self.cache {
-            Some(c) => c.stat_file(&self.place, &self.cache_key(), total),
+            Some(c) => {
+                let mut stat = c.stat_file(&self.place, &self.cache_key(), total);
+                if let Some(target) = &self.pinned_target
+                    && c.is_pinned_target(target)
+                {
+                    stat.cached_blocks = total;
+                    stat.cached_bytes = target.total_size;
+                    stat.fully_cached = total > 0;
+                    stat.pinned = true;
+                }
+                stat
+            }
             None => FileCacheStat {
                 cached_blocks: 0,
                 total_blocks: total,
@@ -349,53 +415,88 @@ impl<S: RemoteStore> RemoteSource<S> {
         Ok(got)
     }
 
-    /// 把该文件标记为永久保留，并把已缓存的块搬进永久层。
+    /// 把完整远端原文件写入用户可见的永久目录。
     ///
-    /// 这些永久层操作都由 `RemoteSource` 转发而不是让调用方直接用
-    /// `BlockCache`：缓存键含文件版本（见 `cache_version`），只有这里能算对。
-    /// 让 GUI 自己拼键必然拼错——错了不会报错，只会「标记了却永远不命中」。
-    ///
-    /// # Errors
-    ///
-    /// 本机不支持永久缓存、或标记写盘失败时返回。
+    /// 写入 `.part`，全部字节同步完成后才原子提交；取消或失败不会留下一个看似
+    /// 完整的半文件。已完整命中时直接返回文件大小，不再访问网络。
+    pub fn pin_with_progress(
+        &self,
+        on_progress: &mut dyn FnMut(u64) -> bool,
+    ) -> crate::Result<u64> {
+        let cache = self
+            .cache
+            .as_ref()
+            .ok_or(crate::Error::Unsupported("本次会话没有可用的缓存目录"))?;
+        let target = self
+            .pinned_target
+            .as_ref()
+            .ok_or(crate::Error::Unsupported(
+                "这个远程位置没有稳定永久缓存身份",
+            ))?;
+        if cache.is_pinned_target(target) {
+            let _ = on_progress(target.total_size);
+            return Ok(target.total_size);
+        }
+
+        let part = cache.prepare_pinned(target)?;
+        let result = (|| -> crate::Result<()> {
+            use std::io::Write as _;
+            let mut out = std::fs::File::create(&part)?;
+            let mut done = 0u64;
+            while done < target.total_size {
+                let want = (target.total_size - done).min(BLOCK_SIZE);
+                let chunk = self
+                    .read_raw_range(done, want)
+                    .map_err(|e| crate::Error::Io(std::io::Error::other(e.to_string())))?;
+                if chunk.len() as u64 != want {
+                    return Err(crate::Error::Io(std::io::Error::other(
+                        "永久缓存读取到意外的短数据",
+                    )));
+                }
+                out.write_all(&chunk)?;
+                done = done.saturating_add(chunk.len() as u64);
+                if !on_progress(done) {
+                    return Err(crate::Error::Unsupported("永久缓存任务已取消"));
+                }
+            }
+            out.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&part);
+            return Err(error);
+        }
+        let bytes = cache.commit_pinned(target)?;
+        // 完整原文件已成为权威副本后，删掉同一版本的临时载荷块，避免双占空间。
+        let _ = cache.remove_file_blocks(&self.place, &self.cache_key(), self.total_ct_blocks());
+        Ok(bytes)
+    }
+
+    /// 把完整远端原文件写入永久目录。
     pub fn pin(&self) -> crate::Result<u64> {
-        match &self.cache {
-            Some(c) => c.pin_file(&self.place, &self.cache_key(), self.total_ct_blocks()),
-            None => Err(crate::Error::Unsupported("本次会话没有可用的缓存目录")),
-        }
+        self.pin_with_progress(&mut |_| true)
     }
 
-    /// 取消永久保留，把块搬回临时层（从此可被淘汰）。
-    ///
-    /// # Errors
-    ///
-    /// 标记删除失败时返回。
+    /// 取消永久保留并删除完整原文件。临时分块缓存保持不动。
     pub fn unpin(&self) -> crate::Result<u64> {
-        match &self.cache {
-            Some(c) => c.unpin_file(&self.place, &self.cache_key(), self.total_ct_blocks()),
-            None => Ok(0),
+        match (&self.cache, &self.pinned_target) {
+            (Some(cache), Some(target)) => cache.remove_pinned(target),
+            _ => Ok(0),
         }
     }
 
-    /// 取消永久保留并直接删掉这些块，返回释放字节数。
-    ///
-    /// # Errors
-    ///
-    /// 标记删除失败时返回。
+    /// 管理页与条目右键现在语义相同：都删除完整永久副本。
     pub fn unpin_and_drop(&self) -> crate::Result<u64> {
-        match &self.cache {
-            Some(c) => c.unpin_and_drop(&self.place, &self.cache_key(), self.total_ct_blocks()),
-            None => Ok(0),
-        }
+        self.unpin()
     }
 
-    /// 该文件是否已被标记为永久保留。
+    /// 完整且版本匹配的永久原文件是否存在。
     #[must_use]
     pub fn is_pinned(&self) -> bool {
-        self.cache
-            .as_ref()
-            .map(|c| c.is_pinned(&self.place, &self.cache_key()))
-            .unwrap_or(false)
+        match (&self.cache, &self.pinned_target) {
+            (Some(cache), Some(target)) => cache.is_pinned_target(target),
+            _ => false,
+        }
     }
 
     /// 按块取密文，优先走缓存。
@@ -404,20 +505,27 @@ impl<S: RemoteStore> RemoteSource<S> {
     /// 写进缓存目录，那是威胁模型不允许的。
     fn fetch_block(&self, block: u64) -> CoreResult<Vec<u8>> {
         let key = self.cache_key();
-        if let Some(c) = &self.cache
-            && let Some(hit) = c.get(&self.place, &key, block) {
-                return Ok(hit);
-            }
-
-        let abs = self.payload_start.saturating_add(block.saturating_mul(BLOCK_SIZE));
-        // 末块可能不足一个 BLOCK_SIZE，要按剩余长度裁剪，
-        // 否则会向服务端请求超出文件末尾的区间
+        let abs = self
+            .payload_start
+            .saturating_add(block.saturating_mul(BLOCK_SIZE));
+        // 末块可能不足一个 BLOCK_SIZE，要按剩余长度裁剪。
         let remain = self
             .payload_len
             .saturating_sub(block.saturating_mul(BLOCK_SIZE));
         let want = remain.min(BLOCK_SIZE);
         if want == 0 {
             return Ok(Vec::new());
+        }
+
+        if let Some(c) = &self.cache {
+            if let Some(target) = &self.pinned_target
+                && let Some(hit) = c.get_pinned_range(target, abs, want)
+            {
+                return Ok(hit);
+            }
+            if let Some(hit) = c.get(&self.place, &key, block) {
+                return Ok(hit);
+            }
         }
 
         let store = Arc::clone(&self.store);
@@ -517,7 +625,10 @@ impl<S: RemoteStore> BlockSource for RemoteSource<S> {
             let from = offset.saturating_sub(block_start).min(data.len() as u64);
             let to = end.saturating_sub(block_start).min(data.len() as u64);
             let (Ok(f), Ok(t)) = (usize::try_from(from), usize::try_from(to)) else {
-                return Err(CoreError::ChunkOutOfRange { index: offset, total: self.payload_len });
+                return Err(CoreError::ChunkOutOfRange {
+                    index: offset,
+                    total: self.payload_len,
+                });
             };
             out.extend_from_slice(data.get(f..t).unwrap_or(&[]));
         }
@@ -553,7 +664,10 @@ mod tests {
 
     impl FakeStore {
         fn new(data: Vec<u8>) -> Self {
-            Self { data, calls: Mutex::new(Vec::new()) }
+            Self {
+                data,
+                calls: Mutex::new(Vec::new()),
+            }
         }
         fn call_count(&self) -> usize {
             self.calls.lock().map(|c| c.len()).unwrap_or(0)
@@ -576,14 +690,18 @@ mod tests {
             }
             let s = usize::try_from(offset).unwrap_or(usize::MAX);
             let e = usize::try_from(offset.saturating_add(len)).unwrap_or(usize::MAX);
-            Ok(self.data.get(s..e.min(self.data.len())).unwrap_or(&[]).to_vec())
+            Ok(self
+                .data
+                .get(s..e.min(self.data.len()))
+                .unwrap_or(&[])
+                .to_vec())
         }
     }
 
     /// 造一个真实的加密文件，返回（完整字节, 明文）。
     fn make_file(plain_len: usize) -> (Vec<u8>, Vec<u8>) {
         use omy_core::crypto::{Argon2Params, Kek};
-        use omy_core::file::{encrypt, EncryptOptions, RandomMaterial};
+        use omy_core::file::{EncryptOptions, RandomMaterial, encrypt};
 
         let plain: Vec<u8> = (0..plain_len).map(|i| (i % 251) as u8).collect();
         let salt = [0x33u8; 16];
@@ -596,8 +714,7 @@ mod tests {
             compress: false,
             ..EncryptOptions::default()
         };
-        let enc = encrypt(&plain, &[kek], &salt, &opts, &RandomMaterial::generate())
-            .expect("加密");
+        let enc = encrypt(&plain, &[kek], &salt, &opts, &RandomMaterial::generate()).expect("加密");
         (enc.bytes, plain)
     }
 
@@ -642,9 +759,7 @@ mod tests {
 
         for (off, len) in [(0u64, 100u64), (65_536, 2000), (299_000, 1000)] {
             let got = read_source_range(&src, &opened, off, len).expect("读取");
-            let want = plain
-                .get(off as usize..(off + len) as usize)
-                .expect("切片");
+            let want = plain.get(off as usize..(off + len) as usize).expect("切片");
             assert_eq!(got, want, "区间 ({off},{len}) 不符");
         }
         assert!(src.is_remote(), "远程来源必须自报为远程");
@@ -677,9 +792,7 @@ mod tests {
         .expect("构造来源");
 
         let start = header_len.saturating_sub(32);
-        let got = src
-            .read_raw_range(start, 128)
-            .expect("跨头部边界读取");
+        let got = src.read_raw_range(start, 128).expect("跨头部边界读取");
         let end = usize::try_from(start + 128).expect("结束偏移");
         assert_eq!(
             got,
@@ -699,8 +812,7 @@ mod tests {
         let store = Arc::new(FakeStore::new(bytes.clone()));
         let r = rt();
 
-        let dir = std::env::temp_dir()
-            .join(format!("omy_rs_cache_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omy_rs_cache_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let cache = BlockCache::new(&dir, 0).expect("建缓存");
 
@@ -740,8 +852,7 @@ mod tests {
         let store1 = Arc::new(FakeStore::new(b1.clone()));
         let store2 = Arc::new(FakeStore::new(b2.clone()));
 
-        let dir = std::env::temp_dir()
-            .join(format!("omy_rs_stale_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omy_rs_stale_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let cache = BlockCache::new(&dir, 0).expect("建缓存");
         let r = rt();
@@ -772,7 +883,9 @@ mod tests {
             "文件更新后必须 miss 旧缓存、真正向新存储发请求"
         );
         let hlen2 = u64::from(
-            omy_core::file::peek_header(&b2).expect("解析 v2 头部").header_len,
+            omy_core::file::peek_header(&b2)
+                .expect("解析 v2 头部")
+                .header_len,
         ) as usize;
         assert_eq!(
             got,
@@ -793,7 +906,7 @@ mod tests {
     #[test]
     fn cache_never_contains_plaintext() {
         use omy_core::crypto::{Argon2Params, Kek};
-        use omy_core::file::{encrypt, open, EncryptOptions, RandomMaterial};
+        use omy_core::file::{EncryptOptions, RandomMaterial, encrypt, open};
         use omy_core::source::read_source_range;
 
         // 用一段可辨识的明文，且长度足够跨块
@@ -813,13 +926,11 @@ mod tests {
             compress: false,
             ..EncryptOptions::default()
         };
-        let enc = encrypt(&plain, &[kek], &salt, &opts, &RandomMaterial::generate())
-            .expect("加密");
+        let enc = encrypt(&plain, &[kek], &salt, &opts, &RandomMaterial::generate()).expect("加密");
         let bytes = enc.bytes;
         let total = bytes.len() as u64;
 
-        let dir = std::env::temp_dir()
-            .join(format!("omy_rs_canary_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omy_rs_canary_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let cache = BlockCache::new(&dir, 0).expect("建缓存");
 
@@ -840,19 +951,25 @@ mod tests {
         let opened = open(&bytes, &[kek2]).expect("打开");
         // 走完整解密链路，确保明文确实在内存里出现过
         let got = read_source_range(&src, &opened, 0, 150_000).expect("读取");
-        assert!(got.windows(marker.len()).any(|w| w == marker), "先确认明文真的解出来了");
+        assert!(
+            got.windows(marker.len()).any(|w| w == marker),
+            "先确认明文真的解出来了"
+        );
 
         // 扫描整个缓存目录
         let mut found = false;
         let mut stack = vec![dir.clone()];
         while let Some(p) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&p) else { continue };
+            let Ok(rd) = std::fs::read_dir(&p) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let path = e.path();
                 if path.is_dir() {
                     stack.push(path);
                 } else if let Ok(buf) = std::fs::read(&path)
-                    && buf.windows(marker.len()).any(|w| w == marker) {
+                    && buf.windows(marker.len()).any(|w| w == marker)
+                {
                         found = true;
                     }
             }
@@ -878,8 +995,7 @@ mod tests {
         let store = Arc::new(FakeStore::new(bytes.clone()));
         let r = rt();
 
-        let dir = std::env::temp_dir()
-            .join(format!("omy_rs_small_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omy_rs_small_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         // 上限只有一块半，远小于整个文件：跨块读时必然触发淘汰
         let cache = BlockCache::new(&dir, BLOCK_SIZE + BLOCK_SIZE / 2).expect("建缓存");
@@ -903,7 +1019,10 @@ mod tests {
         assert_eq!(got.len() as u64, len, "必须完整读出，不能因自噬而缺数据");
 
         let blocks = len.div_ceil(BLOCK_SIZE);
-        assert!(blocks >= 3, "这个测试要求文件跨三块以上，否则淘汰逻辑走不到");
+        assert!(
+            blocks >= 3,
+            "这个测试要求文件跨三块以上，否则淘汰逻辑走不到"
+        );
         assert_eq!(store.call_count() as u64, blocks, "首轮每块应恰好取一次");
 
         // 关键断言：本次读用到的块必须全部还在缓存里。
@@ -924,6 +1043,62 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 同一 Telegram 账号在另一台机器拿到不同本地 place id 时，仍应直接复用
+    /// 已复制的完整永久文件，而且读取过程中不能触发任何远端请求。
+    #[test]
+    fn complete_pin_survives_local_place_id_change_without_network() {
+        let data: Vec<u8> = (0..(BLOCK_SIZE as usize + 777))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let total = data.len() as u64;
+        let base = std::env::temp_dir().join(format!("omy_rs_migrate_{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let cache = BlockCache::with_pinned_root(base.join("remote"), 0, Some(base.join("pinned")))
+            .expect("建缓存");
+        let source_ref = crate::virtuals::SourceRef::telegram(42);
+        let r = rt();
+
+        let first_store = Arc::new(FakeStore::new(data.clone()));
+        let first = RemoteSource::new_plain(
+            Arc::clone(&first_store),
+            "p1",
+            "tg:-10088:19",
+            total,
+            Some(cache.clone()),
+            r.handle().clone(),
+        )
+        .with_pinned_identity(source_ref.clone(), "video.mp4");
+        assert_eq!(first.pin().expect("写完整永久文件"), total);
+        assert!(first_store.call_count() > 0, "首次必须真的从远端读取");
+
+        let second_store = Arc::new(FakeStore::new(data.clone()));
+        let second = RemoteSource::new_plain(
+            Arc::clone(&second_store),
+            "p99",
+            "tg:-10088:19",
+            total,
+            Some(cache.clone()),
+            r.handle().clone(),
+        )
+        .with_pinned_identity(source_ref, "video.mp4");
+        let got = second
+            .read_plain_range(123, 4567)
+            .expect("换机后读永久文件");
+        assert_eq!(got, data[123..4690]);
+        assert_eq!(
+            second_store.call_count(),
+            0,
+            "不同本地 place id 也不得访问网络"
+        );
+        assert!(second.cache_stat().pinned);
+        assert_eq!(
+            cache.used(),
+            0,
+            "提交永久文件后同版本临时块应清理，避免双占空间"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// 越界读必须报错，而不是返回短数据。

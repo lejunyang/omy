@@ -29,7 +29,7 @@ omy 常被连同加密文件一起放在移动硬盘或 U 盘上。配置散落�
 | 状态 | 便携路径 | 系统回退 |
 |---|---|---|
 | 配置文件 | `omy-data/config.toml` | `%APPDATA%\omy\config.toml` 等 |
-| 密文缓存 | `omy-data/cache/` | 系统缓存目录下的 `omy/` |
+| 远程缓存（临时分块 + 完整永久文件） | `omy-data/cache/` | 系统缓存目录下的 `omy/` |
 | 日志 | `omy-data/logs/` | 系统数据目录下的 `omy/logs/` |
 | 设备库（本机身份与配对记录，内含私钥） | `omy-data/devices.omy` | `%APPDATA%\omy\devices.omy` 等 |
 
@@ -137,7 +137,7 @@ lock_on_background = false
 wipe_temp_plaintext = true
 
 [remote]
-# 密文缓存上限（字节）；0 表示不限制
+# 临时分块缓存上限（字节）；0 表示不限制
 cache_limit = 2147483648
 # 缓存目录；留空用默认（桌面为可执行文件旁 omy-data/cache/remote，移动为 app data）
 # cache_dir = ""
@@ -183,9 +183,9 @@ scan_omy_only = true
 | `security.wipe_temp_plaintext` | `true` | 外部程序关闭后清理临时明文（GUI 能力待接入）|
 | `password_managers.keepassxc.proxy_path` | 无 | KeePassXC proxy 的自定义路径；留空时自动探测。桌面 GUI 可在“设置 → 安全与密码 → KeePassXC 便携版”修改 |
 | `password_managers.keepassxc.associations` | `[]` | 已关联数据库的公开 hash 与名称；授权 key 单独存入系统凭据库 |
-| `remote.cache_limit` | `2147483648` | 密文缓存上限，2 GiB；`0` 不限制（GUI 与 CLI `remote cache` 共用）|
+| `remote.cache_limit` | `2147483648` | 临时分块缓存上限，2 GiB；`0` 不限制（GUI 与 CLI `remote cache` 共用）|
 | `remote.cache_dir` | 无 | 自定义缓存目录，留空用默认便携路径（GUI 与 CLI `remote cache` 共用）|
-| `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI；CLI 用完即退，无此概念）|
+| `remote.clear_cache_on_exit` | `false` | 退出应用时清空临时分块缓存（仅 GUI；永久文件不受影响）|
 | `remote.cache_wifi_only` | `false` | 仅 Wi-Fi 下缓存（移动端，暂未生效）|
 | `remote.scan_concurrency` | `8` | 远程扫描并发请求数，1–32（仅 GUI）|
 | `remote.places` | `[]` | 已保存的远程位置，GUI 与 CLI `remote` 命令共同维护；密码在其中以加密信封形式保存 |

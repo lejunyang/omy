@@ -483,8 +483,8 @@ export const onRemoteEntry = (handler: (payload: any) => void): Promise<() => vo
 
 /** 把已解锁的远程 `.omy` 流式解密到本地目录（只读位置也保留的主要用途）。
  *  嵌套文件引用走 snake_case（与 EncryptRequest 等一致），顶层参数走 camelCase。 */
-export const remoteDecryptToLocal = (placeId: any, path: any, size: any, destDir: any): Promise<any> => invoke('remote_decrypt_to_local', {
-    req: { place_id: placeId, path, size },
+export const remoteDecryptToLocal = (placeId: any, path: any, size: any, serverName: any, destDir: any): Promise<any> => invoke('remote_decrypt_to_local', {
+    req: { place_id: placeId, path, size, server_name: serverName },
     destDir,
   });
 
@@ -505,8 +505,14 @@ export const remoteDecryptToLocal = (placeId: any, path: any, size: any, destDir
  */
 export const remoteSearch = (placeId: any, dir: any, query: any): Promise<any> => invoke('remote_search', { placeId, dir, query });
 
-export const remotePlaceOpen = (placeId: string, path: string, size: number, name?: string | null): Promise<any> => invoke('remote_place_open', {
-    target: { placeId, path, size, name: name ?? null },
+export const remotePlaceOpen = (
+  placeId: string,
+  path: string,
+  size: number,
+  name?: string | null,
+  serverName?: string | null,
+): Promise<any> => invoke('remote_place_open', {
+    target: { placeId, path, size, name: name ?? null, serverName: serverName ?? null },
   });
 
 /** 关闭一个远程播放来源（播放结束时调用）。 */
@@ -538,8 +544,8 @@ export const remoteCacheOpenDir = (): Promise<any> => invoke('remote_cache_open_
 
 /** 查单个远程文件的密文块缓存覆盖情况：
  *  {cached_blocks,total_blocks,cached_bytes,fully_cached}，不下载载荷。 */
-export const remoteCacheFileStat = (placeId: any, path: any, size: any): Promise<any> => invoke('remote_cache_file_stat', {
-    req: { place_id: placeId, path, size },
+export const remoteCacheFileStat = (placeId: any, path: any, size: any, serverName: any = null): Promise<any> => invoke('remote_cache_file_stat', {
+    req: { place_id: placeId, path, size, server_name: serverName },
   });
 
 /** 列一个对话里的消息（以文件为主线的消息视图）。
@@ -572,20 +578,16 @@ export const remoteListContainer = (token: any): Promise<any> => invoke('remote_
 
 /** 把一个远程文件转为永久缓存。
  *
- * **这是一次真实的下载任务**：会把整个文件的密文块都取到本地，耗时与文件
- * 大小成正比。只打标记的话「永久」只是承诺不是事实——下次离线打开照样失败。
+ * **这是一次真实的下载任务**：按服务端文件名保存完整远端原文件，耗时与文件
+ * 大小成正比。只有完整同步并原子提交后才算成功，半成品不会被当作可离线文件。
  */
-export const remoteCachePin = (placeId: any, path: any, size: any, name: any): Promise<any> => invoke('remote_cache_pin', {
-    req: { place_id: placeId, path, size, name },
+export const remoteCachePin = (placeId: any, path: any, size: any, displayName: any, serverName: any): Promise<any> => invoke('remote_cache_pin', {
+    req: { place_id: placeId, path, size, name: displayName, server_name: serverName },
   });
 
-/** 取消永久缓存。
- *
- * 内容会搬回临时层，也就是**重新计入上限、重新参与淘汰**，可能很快被清掉。
- * 那正是「取消永久」该有的语义；只改标记的话空间不会真的还回来。
- */
-export const remoteCacheUnpin = (placeId: any, path: any, size: any): Promise<any> => invoke('remote_cache_unpin', {
-    req: { place_id: placeId, path, size },
+/** 取消永久缓存，删除完整原文件；已有临时分块仍由 LRU 管理。 */
+export const remoteCacheUnpin = (placeId: any, path: any, size: any, serverName: any): Promise<any> => invoke('remote_cache_unpin', {
+    req: { place_id: placeId, path, size, server_name: serverName },
   });
 
 /** 启动一条远程位置间复制任务；命令立即返回任务 id，字节搬运在后台进行。 */
@@ -618,23 +620,11 @@ export const remoteCacheRemoveFile = (placeId: any, path: any, size: any): Promi
  */
 export const telegramCanPersist = (): Promise<any> => invoke('telegram_can_persist');
 
-/** 列出所有被转为「永久保留」的文件。
- *
- * 返回 `PinnedFile[]`，字段 `place` / `key` / `total_blocks` / `used_bytes`。
- * `place` 就是位置 id（与 `remote_browse` 用的是同一个值），可以直接拿去
- * `remotePlaceList` 里查名字——但**查不到是正常情况**：位置被移除后这条
- * 永久记录仍在，界面要按「已移除的位置」显示，不能空着。
- *
- * `key` 含文件版本哈希，是缓存里的身份、不是能拿去浏览的路径，
- * 界面当成不透明标识即可。 */
+/** 列出完整原文件永久缓存。每项含 kind/source/item_id/name/relative_dir/used_bytes。 */
 export const remoteCacheListPinned = (): Promise<any> => invoke('remote_cache_list_pinned');
 
-/** 取消某个文件的永久保留并把它占的空间释放掉，返回释放的字节数。
- *
- * 按缓存键操作、不碰网络，所以离线时、甚至那个远程位置已经被删掉之后，
- * 依然能清。这里是直接删而不是搬回临时层：从「管理永久缓存」点取消的
- * 动机基本只有腾空间，搬回临时层磁盘一个字节都没少。 */
-export const remoteCacheUnpinByKey = (place: any, key: any, totalBlocks: any): Promise<any> => invoke('remote_cache_unpin_by_key', { place, key, totalBlocks });
+/** 按后端返回的安全相对目录删除一个完整永久文件；纯本地、不碰网络。 */
+export const remoteCacheUnpinByKey = (relativeDir: any): Promise<any> => invoke('remote_cache_unpin_by_key', { relativeDir });
 
 /** 扫码登录时 session 的暂存账号名，必须与后端 `PENDING_ACCOUNT` 一致。
  *

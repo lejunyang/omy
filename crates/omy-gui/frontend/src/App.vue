@@ -322,7 +322,7 @@ async function onOpenPlace(f) {
     // 名字要一起传：普通文件的 MIME 靠它推，而 Telegram 的 id
     // （tg:<对话>:<消息>）里没有扩展名
     const r = await api.remotePlaceOpen(
-      openPlace, openId, size, f.real_name || f.name);
+      openPlace, openId, size, f.real_name || f.name, f.name);
     if (r.token) {
       placePreview.value = {
         id: r.token,

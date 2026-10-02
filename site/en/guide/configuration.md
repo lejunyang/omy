@@ -29,7 +29,7 @@ Once the portable root is chosen, the rest of the local state lives under that s
 | State | Portable path | System fallback |
 |---|---|---|
 | Config file | `omy-data/config.toml` | `%APPDATA%\omy\config.toml`, etc. |
-| Ciphertext cache | `omy-data/cache/` | `omy/` under the system cache dir |
+| Remote cache (temporary blocks + complete permanent files) | `omy-data/cache/` | `omy/` under the system cache dir |
 | Logs | `omy-data/logs/` | `omy/logs/` under the system data dir |
 | Device store (local identity + paired devices, holds private keys) | `omy-data/devices.omy` | `%APPDATA%\omy\devices.omy`, etc. |
 
@@ -137,7 +137,7 @@ lock_on_background = false
 wipe_temp_plaintext = true
 
 [remote]
-# Ciphertext cache limit in bytes; 0 means unlimited
+# Temporary block cache limit in bytes; 0 means unlimited
 cache_limit = 2147483648
 # Cache directory; empty uses the default portable path (GUI only)
 # cache_dir = ""
@@ -183,9 +183,9 @@ scan_omy_only = true
 | `security.wipe_temp_plaintext` | `true` | Wipe temporary plaintext when the external opener closes (GUI wiring pending) |
 | `password_managers.keepassxc.proxy_path` | none | Custom KeePassXC proxy path; empty enables automatic discovery. The desktop GUI exposes it under **Settings → Security → Portable KeePassXC** |
 | `password_managers.keepassxc.associations` | `[]` | Public hashes and names of paired databases; authorization keys live in the OS credential store |
-| `remote.cache_limit` | `2147483648` | Ciphertext cache limit, 2 GiB; `0` unlimited (shared by the GUI and `remote cache`) |
+| `remote.cache_limit` | `2147483648` | Temporary block-cache limit, 2 GiB; `0` unlimited (shared by the GUI and `remote cache`) |
 | `remote.cache_dir` | none | Custom cache directory; empty uses the default portable path (shared by the GUI and `remote cache`) |
-| `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only; the CLI exits immediately and has no such concept) |
+| `remote.clear_cache_on_exit` | `false` | Clear the temporary block cache on exit (GUI only; permanent files are unaffected) |
 | `remote.cache_wifi_only` | `false` | Cache on Wi-Fi only (mobile; not yet active) |
 | `remote.scan_concurrency` | `8` | Concurrent requests when scanning, 1–32 (GUI only) |
 | `remote.places` | `[]` | Saved remote locations, maintained jointly by the GUI and the `remote` CLI; passwords are stored there as encrypted envelopes |

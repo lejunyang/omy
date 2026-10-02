@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use omy_config::SavedPlace;
 use omy_secret::{Envelope, ProtectKey};
 
+use crate::virtuals::SourceRef;
 use crate::webdav::{Vendor, WebDavConfig};
 
 /// 凭据在本机凭据库里的服务名。
@@ -152,6 +153,19 @@ pub fn saved_to_webdav(sp: &SavedPlace, key: Option<&ProtectKey>) -> Option<(Web
     Some((cfg, need_relogin))
 }
 
+/// 从持久化位置导出跨机器稳定的远程身份。
+///
+/// Telegram 使用服务端 user id；WebDAV 使用规范化 URL + username。显示名、本地
+/// `pN`、密码与读写模式都不参与，因为它们不能决定是不是同一个远程内容空间。
+#[must_use]
+pub fn saved_source_ref(sp: &SavedPlace) -> Option<SourceRef> {
+    match sp.kind.as_str() {
+        "telegram" => sp.user_id.map(SourceRef::telegram),
+        "webdav" => Some(SourceRef::webdav(sp.url.clone(), sp.username.clone())),
+        _ => None,
+    }
+}
+
 /// 从一个位置 id 里取出序号（`p7` → 7）。认不出返回 `None`。
 ///
 /// GUI 的单调计数器与 CLI 的「取最大值 +1」分配法都要靠它解析已有 id，
@@ -173,7 +187,11 @@ pub fn seq_of(id: &str) -> Option<usize> {
 /// 撞上仍在使用（或残留 session 文件）的 id。
 #[must_use]
 pub fn allocate_place_id(existing: &HashSet<String>, blocked: &dyn Fn(&str) -> bool) -> String {
-    let mut seq = existing.iter().filter_map(|id| seq_of(id)).max().unwrap_or(0);
+    let mut seq = existing
+        .iter()
+        .filter_map(|id| seq_of(id))
+        .max()
+        .unwrap_or(0);
     loop {
         seq = seq.saturating_add(1);
         let candidate = format!("p{seq}");
@@ -279,14 +297,14 @@ mod tests {
     /// session / 覆盖旧位置的凭据——这是多账号下最致命的一类错。
     #[test]
     fn allocate_id_avoids_taken_and_blocked() {
-        let mut taken: HashSet<String> = ["p1", "p2", "p5"].iter().map(|s| String::from(*s)).collect();
+        let mut taken: HashSet<String> = ["p1", "p2", "p5"]
+            .iter()
+            .map(|s| String::from(*s))
+            .collect();
         // 无 blocked：应取最大值 5 的下一个
         assert_eq!(allocate_place_id(&taken, &|_| false), "p6");
         // p6 被残留文件占着时要跳到 p7
-        assert_eq!(
-            allocate_place_id(&taken, &|id| id == "p6"),
-            "p7"
-        );
+        assert_eq!(allocate_place_id(&taken, &|id| id == "p6"), "p7");
         // 空集合从 p1 开始
         taken.clear();
         assert_eq!(allocate_place_id(&taken, &|_| false), "p1");
