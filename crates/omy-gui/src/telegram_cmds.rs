@@ -34,6 +34,7 @@ use omy_remote::telegram::phonelogin::{PhoneEvent, PhoneSession};
 use omy_remote::telegram::qrlogin::{QrError, QrEvent, QrSession};
 use omy_remote::telegram::store::{FORWARD_PROTECTED, TelegramStore};
 use omy_remote::telegram::{connect, proxy, session as tgsession, tdata, ForwardTarget};
+use omy_remote::telegram::proxy::ConnCheck;
 use omy_remote::Error as RemoteError;
 
 use crate::commands::{CmdError, CmdResult};
@@ -267,20 +268,6 @@ pub fn telegram_system_proxy() -> String {
         .unwrap_or_default()
 }
 
-/// 连通性自检的结果。
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ConnCheck {
-    /// `ok` | `bad_proxy` | `no_route`。
-    ///
-    /// 三种要分开，因为用户该做的事完全不同：通了就继续；代理地址不合法
-    /// 要改地址（重试多少次都没用）；连不上才是去配代理或查网络。
-    pub status: &'static str,
-    /// 这次自检花了多久（毫秒）。6 秒和 0.3 秒对用户的意义不一样。
-    pub elapsed_ms: u64,
-    /// 自检时用的代理（空表示直连）。界面据此说「经代理」还是「直连」。
-    pub via_proxy: bool,
-}
-
 /// 在登录**之前**检查能不能连到 Telegram。
 ///
 /// # 为什么要有这一步
@@ -289,100 +276,24 @@ pub struct ConnCheck {
 /// 代理是必需项，而用户分不清「连不上」是代理、网络还是 api_id 的问题。
 /// 先自检就把归因定下来，不用等他登录失败之后盲猜。
 ///
-/// # 只测 TCP，不做 MTProto 握手
+/// # TCP 探测已下沉共享
 ///
-/// 握手失败还可能是 api_id 的问题，那是另一回事；混在一起就违背了
-/// 「把归因定下来」这个目的。TCP 够判断「路通不通」，而且失败得快。
+/// 只测 TCP、不做 MTProto 握手，以及最小 SOCKS5 握手的实现在
+/// [`omy_remote::telegram::proxy::probe_connection`]，与 CLI
+/// `remote telegram check` 共用同一份。这里只负责解析配置里的代理策略，
+/// 以及「代理地址本身非法」这一调用方层的 `bad_proxy`。
 #[tauri::command]
 pub async fn telegram_check_connection() -> ConnCheck {
     use std::time::Instant;
-
     let t0 = Instant::now();
-    let proxy = match global_proxy() {
-        Ok(p) => p,
-        Err(_) => {
-            return ConnCheck {
-                status: "bad_proxy",
-                elapsed_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-                via_proxy: true,
-            }
-        }
-    };
-
-    // 目标取 DC2（149.154.167.51:443）——它是 Telegram 的主用入口之一。
-    // 只连一个就够：自检回答的是「路通不通」，不是「哪个 DC 最快」
-    let target = ("149.154.167.51", 443_u16);
-    let ok = match proxy.as_ref() {
-        Some(p) => probe_via_socks5(p, target).await,
-        None => probe_direct(target).await,
-    };
-
-    ConnCheck {
-        status: if ok { "ok" } else { "no_route" },
-        elapsed_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-        via_proxy: proxy.is_some(),
+    match global_proxy() {
+        Ok(p) => proxy::probe_connection(p.as_deref()).await,
+        Err(_) => ConnCheck {
+            status: "bad_proxy",
+            elapsed_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+            via_proxy: true,
+        },
     }
-}
-
-/// 直连一个 host:port，6 秒超时。
-async fn probe_direct(target: (&str, u16)) -> bool {
-    let addr = format!("{}:{}", target.0, target.1);
-    matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(6),
-            tokio::net::TcpStream::connect(addr),
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
-/// 经 SOCKS5 代理连一个 host:port。
-///
-/// 只做最小握手（无认证 + CONNECT），够验证「代理能不能把我送到那儿」。
-/// 不引第三方 socks 客户端：这里只需要十几个字节的固定报文。
-async fn probe_via_socks5(proxy: &str, target: (&str, u16)) -> bool {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    let hostport = proxy.trim_start_matches("socks5://");
-    // 代理本身可能带认证前缀，取最后一个 '@' 之后的部分
-    let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
-
-    let Ok(Ok(mut s)) = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
-        tokio::net::TcpStream::connect(hostport),
-    )
-    .await
-    else {
-        return false;
-    };
-
-    // 问候：VER=5, NMETHODS=1, METHOD=0(无认证)
-    if s.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
-        return false;
-    }
-    let mut buf = [0u8; 2];
-    if s.read_exact(&mut buf).await.is_err() || buf[0] != 0x05 || buf[1] != 0x00 {
-        return false;
-    }
-
-    // CONNECT 到目标（ATYP=1 IPv4）
-    let Ok(ip) = target.0.parse::<std::net::Ipv4Addr>() else {
-        return false;
-    };
-    let mut req = vec![0x05, 0x01, 0x00, 0x01];
-    req.extend_from_slice(&ip.octets());
-    req.extend_from_slice(&target.1.to_be_bytes());
-    if s.write_all(&req).await.is_err() {
-        return false;
-    }
-
-    // 回复：第 2 字节 0x00 表示成功
-    let mut rep = [0u8; 4];
-    if s.read_exact(&mut rep).await.is_err() {
-        return false;
-    }
-    rep[1] == 0x00
 }
 
 /// 当前用的是哪一份应用身份。

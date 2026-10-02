@@ -272,6 +272,118 @@ fn windows_system_proxy() -> Option<String> {
     }
 }
 
+/// 连通性自检的结果（登录**之前**判断「路通不通」）。
+///
+/// # 为什么要分三态
+///
+/// 实测本机直连 MTProto 数据中心超时、经 socks5 才通。对很多网络环境代理是
+/// 必需项，而用户分不清「连不上」是代理、网络还是 api_id 的问题。先自检就把
+/// 归因定下来。三态要分开，因为用户该做的事完全不同：通了就继续；代理地址
+/// 不合法要改地址（重试多少次都没用）；连不上才是去配代理或查网络。
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct ConnCheck {
+    /// `ok` | `bad_proxy` | `no_route`。
+    pub status: &'static str,
+    /// 这次自检花了多久（毫秒）。6 秒和 0.3 秒对用户意义不一样。
+    pub elapsed_ms: u64,
+    /// 自检时用的代理（false 表示直连）。据此说「经代理」还是「直连」。
+    pub via_proxy: bool,
+}
+
+/// 对 Telegram 主数据中心做一次 TCP 连通性自检。
+///
+/// # 只测 TCP，不做 MTProto 握手
+///
+/// 握手失败还可能是 api_id 的问题，那是另一回事；混在一起就违背了「把归因
+/// 定下来」这个目的。TCP 够判断「路通不通」，而且失败得快。
+///
+/// # 与 GUI / CLI 共用
+///
+/// 这层原本只在 GUI 登录页里；CLI 要做可脚本化的 `telegram check`，同一份
+/// 握手报文不该写第二份（两套实现迟早漂移），故下沉到此处，两端都调它。
+///
+/// `proxy` 传已经过 [`normalize`] 的 `socks5://` 地址；`None` 表示直连。
+/// 调用方若在解析代理时就失败（例如手动地址非法），应自己给出 `bad_proxy`——
+/// 那是「配置错」，和这里「路不通」是两回事。
+pub async fn probe_connection(proxy: Option<&str>) -> ConnCheck {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
+    // 目标取 DC2（149.154.167.51:443）——Telegram 主用入口之一。
+    // 只连一个就够：自检回答的是「路通不通」，不是「哪个 DC 最快」。
+    let target = ("149.154.167.51", 443_u16);
+    let ok = match proxy {
+        Some(p) => probe_via_socks5(p, target).await,
+        None => probe_direct(target).await,
+    };
+    ConnCheck {
+        status: if ok { "ok" } else { "no_route" },
+        elapsed_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+        via_proxy: proxy.is_some(),
+    }
+}
+
+/// 直连一个 host:port，6 秒超时。
+async fn probe_direct(target: (&str, u16)) -> bool {
+    let addr = format!("{}:{}", target.0, target.1);
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// 经 SOCKS5 代理连一个 host:port。
+///
+/// 只做最小握手（无认证 + CONNECT），够验证「代理能不能把我送到那儿」。
+/// 不引第三方 socks 客户端：这里只需要十几个字节的固定报文。
+async fn probe_via_socks5(proxy: &str, target: (&str, u16)) -> bool {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let hostport = proxy.trim_start_matches("socks5://");
+    // 代理本身可能带认证前缀，取最后一个 '@' 之后的部分
+    let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
+
+    let Ok(Ok(mut s)) = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        tokio::net::TcpStream::connect(hostport),
+    )
+    .await
+    else {
+        return false;
+    };
+
+    // 问候：VER=5, NMETHODS=1, METHOD=0(无认证)
+    if s.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 2];
+    if s.read_exact(&mut buf).await.is_err() || buf[0] != 0x05 || buf[1] != 0x00 {
+        return false;
+    }
+
+    // CONNECT 到目标（ATYP=1 IPv4）
+    let Ok(ip) = target.0.parse::<std::net::Ipv4Addr>() else {
+        return false;
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
+    req.extend_from_slice(&ip.octets());
+    req.extend_from_slice(&target.1.to_be_bytes());
+    if s.write_all(&req).await.is_err() {
+        return false;
+    }
+
+    // 回复：第 2 字节 0x00 表示成功
+    let mut rep = [0u8; 4];
+    if s.read_exact(&mut rep).await.is_err() {
+        return false;
+    }
+    rep[1] == 0x00
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +481,26 @@ mod tests {
     fn empty_means_no_proxy() {
         assert_eq!(normalize(""), Ok(None));
         assert_eq!(normalize("   "), Ok(None));
+    }
+
+    /// 连通性自检结果的 JSON 形状是前端与 CLI 脚本共同依赖的契约。
+    ///
+    /// 不这样会怎样：字段名一旦改动（例如 status 改成 result），GUI 前端按
+    /// `data.status` 分支就永远走到默认分支，而 CLI 脚本按 `status=="ok"`
+    /// 判断也会全部误判——且都是静默错，编译期发现不了。
+    #[test]
+    fn conn_check_serializes_to_the_agreed_shape() {
+        let c = ConnCheck { status: "ok", elapsed_ms: 42, via_proxy: true };
+        let v = serde_json::to_value(c).expect("序列化");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["elapsed_ms"], 42);
+        assert_eq!(v["via_proxy"], true);
+
+        // 三态字面量必须与文档一致：脚本就是按这三个串分支的
+        for s in ["ok", "bad_proxy", "no_route"] {
+            let c = ConnCheck { status: s, elapsed_ms: 0, via_proxy: false };
+            assert_eq!(serde_json::to_value(c).unwrap()["status"], s);
+        }
     }
 
     /// 缺端口要当场报错，并说清要补什么。

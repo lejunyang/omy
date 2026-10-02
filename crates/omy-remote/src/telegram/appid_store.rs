@@ -138,10 +138,7 @@ mod tests {
     use omy_config::Remote;
 
     fn remote_of(id: Option<i32>, hash: Option<Value>) -> Remote {
-        let mut r = Remote::default();
-        r.telegram_api_id = id;
-        r.telegram_api_hash = hash;
-        r
+        Remote { telegram_api_id: id, telegram_api_hash: hash, ..Default::default() }
     }
 
     /// 两个字段都没有 → 内置。

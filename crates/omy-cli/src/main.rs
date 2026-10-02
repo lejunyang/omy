@@ -208,14 +208,11 @@ mod tests {
         assert!(matches!(c.command, Command::Remote(_)));
 
         let c = Cli::try_parse_from(["omy", "remote", "add-webdav", "NAS", "--url", "https://dav/", "--password-stdin"]).unwrap();
-        match &c.command {
-            Command::Remote(cmd::remote::Cmd::AddWebdav(a)) => {
-                assert_eq!(a.name, "NAS");
-                assert!(a.password_stdin);
-                assert!(!a.read_only, "默认应可写");
-            }
-            _ => panic!("应解析为 add-webdav"),
-        }
+        assert!(
+            matches!(&c.command, Command::Remote(cmd::remote::Cmd::AddWebdav(a))
+                if a.name == "NAS" && a.password_stdin && !a.read_only),
+            "add-webdav 应解析出 AddWebdav 且字段符合预期"
+        );
 
         // 密码绝不接受 --password 明文 argv
         assert!(
@@ -225,6 +222,22 @@ mod tests {
 
         let c = Cli::try_parse_from(["omy", "remote", "cache", "status"]).unwrap();
         assert!(matches!(c.command, Command::Remote(cmd::remote::Cmd::Cache(_))));
+
+        // Telegram：新增的连通性自检必须真的接上子命令（漏挂会静默不出现在 help 里）。
+        let c = Cli::try_parse_from(["omy", "remote", "telegram", "check"]).unwrap();
+        assert!(
+            matches!(&c.command, Command::Remote(cmd::remote::Cmd::Telegram(
+                cmd::remote::telegram::Cmd::Check
+            ))),
+            "telegram check 应解析为 Telegram::Check"
+        );
+
+        // virtual 的 unlock/lock 必须挂在子命令树上（与 GUI 命令树对齐）。
+        let c = Cli::try_parse_from(["omy", "remote", "virtual", "lock", "v1"]).unwrap();
+        assert!(matches!(
+            &c.command,
+            Command::Remote(cmd::remote::Cmd::Virtual(cmd::remote::virt::Cmd::Lock(_)))
+        ));
     }
 
     #[test]

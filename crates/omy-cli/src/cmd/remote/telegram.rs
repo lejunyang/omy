@@ -67,6 +67,12 @@ pub enum Cmd {
     ProxySet(ProxySetArgs),
     /// 恢复为跟随系统代理
     ProxyReset,
+    /// 登录前连通性自检：按配置的代理去连 Telegram 主 DC，只测 TCP。
+    ///
+    /// 与 GUI 登录页「检查连接」共用 omy_remote::telegram::proxy::probe_connection。
+    /// 结果写到 stdout；**不通时退出码为 1**，供脚本在批量登录/转发前先判断网络或代理。
+    #[command(name = "check")]
+    Check,
     /// 查看当前应用身份（内置或自定义 api_id）
     AppIdStatus,
     /// 保存自定义 api_id / api_hash（api_hash 经安全通道输入，不进命令行）
@@ -348,6 +354,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::ProxyStatus => proxy_status(ctx),
         Cmd::ProxySet(a) => proxy_set(ctx, a),
         Cmd::ProxyReset => proxy_reset(ctx),
+        Cmd::Check => check_connection(ctx),
         Cmd::AppIdStatus => appid_status(ctx),
         Cmd::AppIdSet(a) => appid_set(ctx, a),
         Cmd::AppIdReset => appid_reset(ctx),
@@ -939,15 +946,25 @@ async fn run_tdata_import(
 
 // ---- 代理设置 ----
 
+/// 按当前配置算出本次建连实际用的代理（`None`=直连）。
+///
+/// `proxy-status` 与 `check` 共用：两处若各自解释 system/manual，迟早一个改了
+/// 另一个没跟着改，出现「状态显示生效、实际探测用的不是同一个代理」。
+fn effective_proxy(ctx: &Ctx) -> Result<Option<String>> {
+    let mode = ctx.cfg.remote.telegram_proxy_mode.as_str();
+    let manual = ctx.cfg.remote.telegram_proxy.as_str();
+    match mode {
+        "system" => Ok(tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string())),
+        "manual" => Ok(tg_proxy::normalize(manual)?.map(|p| p.as_str().to_string())),
+        other => bail!("配置里的代理模式非法：{other:?}（应为 system 或 manual）"),
+    }
+}
+
 fn proxy_status(ctx: &Ctx) -> Result<()> {
     let mode = ctx.cfg.remote.telegram_proxy_mode.clone();
     let manual = ctx.cfg.remote.telegram_proxy.clone();
     let system = tg_proxy::detect_system_proxy().map(|p| p.as_str().to_string());
-    let effective: Option<String> = match mode.as_str() {
-        "system" => system.clone(),
-        "manual" => tg_proxy::normalize(&manual)?.map(|p| p.as_str().to_string()),
-        other => bail!("配置里的代理模式非法：{other:?}（应为 system 或 manual）"),
-    };
+    let effective = effective_proxy(ctx)?;
     let human = match &effective {
         Some(u) => format!("Telegram 代理当前生效：{u}（模式 {mode}）"),
         None => format!("Telegram 当前无代理（模式 {mode}）"),
@@ -961,6 +978,29 @@ fn proxy_status(ctx: &Ctx) -> Result<()> {
             "effective": effective,
         }),
     );
+    Ok(())
+}
+
+/// 登录前连通性自检：按配置的代理去连 Telegram 主 DC，只测 TCP。
+///
+/// 与 GUI 登录页共用 `omy_remote::telegram::proxy::probe_connection`，这里只做
+/// 终端外壳——解析有效代理、跑探测、把结果写成人类可读 + JSON。
+///
+/// 探测类命令约定：结果照常打印，**只有 `status == "ok"` 才退出 0**；否则
+/// 退出 1，供脚本在批量登录/转发前先判断是网络不通还是代理配置错。
+fn check_connection(ctx: &Ctx) -> Result<()> {
+    let proxy = effective_proxy(ctx)?;
+    let c = rt()?.block_on(tg_proxy::probe_connection(proxy.as_deref()));
+    let human = format!(
+        "连通性 {}（{} ms，{}）",
+        c.status,
+        c.elapsed_ms,
+        if c.via_proxy { "经代理" } else { "直连" }
+    );
+    ctx.out.result(&human, &serde_json::to_value(c)?);
+    if c.status != "ok" {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

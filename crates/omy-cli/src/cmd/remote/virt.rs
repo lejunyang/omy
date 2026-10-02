@@ -54,9 +54,9 @@ pub enum Cmd {
     Ref(RefCmd),
     /// 用独立密码加密一个虚拟位置
     Encrypt(PlacePwArgs),
-    /// 校验位置密码是否正确（一次性进程，不持久解锁）
+    /// 校验位置密码是否正确（一次性进程：只验密码，解锁不持久、不落盘）
     Unlock(PlacePwArgs),
-    /// 锁定一个虚拟位置（一次性进程内为空操作，与 GUI 对称）
+    /// 确认一个加密位置当前处于锁定态（一次性 CLI 每次全新载入，本就锁定；未加密会报错）
     Lock(PlaceIdArgs),
     /// 取消加密：用密码解锁后写回明文收藏
     Decrypt(PlacePwArgs),
@@ -341,16 +341,30 @@ fn run_inner(ctx: &Ctx, cmd: &Cmd) -> std::result::Result<(), VErr> {
         }
         Cmd::Unlock(a) => {
             let id = resolve(&reg, &a.place)?;
+            // 未加密的位置在解锁表里没有条目，直接调 unlock_with_extra 会回
+            // `NoSuchPlace`——把「位置不存在」和「位置没加密」说混，是误导。这里
+            // 显式判一次，给出明确的 NOT_ENCRYPTED。
+            if !reg.is_encrypted(&id) {
+                return Err(VErr::new("VIRTUAL_NOT_ENCRYPTED", 1, format!("位置 {id} 未加密，无需解锁")));
+            }
             let pw = read_password(&PasswordSource::from(&a.pw), "虚拟位置密码", false)
                 .map_err(|e| VErr::new("VIRTUAL_PASSWORD_INPUT", 1, e.to_string()))?;
             reg.unlock_with_extra(&id, &pw, &[], |_, _, _| {}).map_err(crypto)?;
-            out(ctx, "密码正确，位置已解锁（本进程内生效）", &json!({ "id": id, "unlocked": true }));
+            // 一次性进程：成功只意味着「密码对」。不写盘，进程退出后内存即清空，
+            // 下次访问仍需密码——措辞不能让脚本以为解锁被持久化了。
+            out(ctx, "密码正确（一次性进程：不持久解锁，下次仍需密码）", &json!({ "id": id, "password_ok": true, "unlocked_in_process": true }));
             Ok(())
         }
         Cmd::Lock(a) => {
             let id = resolve(&reg, &a.place)?;
-            reg.lock(&id);
-            out(ctx, "已锁定（一次性进程退出后内存即清空）", &json!({ "id": id, "locked": true }));
+            // 一次性 CLI 每次都全新载入：加密位置此时天然就是锁定态（内存里没有
+            // KEK）。这里不做任何磁盘改动，只如实确认。未加密的位置没有「锁定」
+            // 这回事，照例会报 NOT_ENCRYPTED，而不是像以前那样对任何位置都硬报
+            // 「已锁定」——那是伪功能。
+            if !reg.is_encrypted(&id) {
+                return Err(VErr::new("VIRTUAL_NOT_ENCRYPTED", 1, format!("位置 {id} 未加密，没有可锁定的内容")));
+            }
+            out(ctx, &format!("位置 {id} 已加密并处于锁定态（一次性进程间天然锁定）"), &json!({ "id": id, "encrypted": true, "locked": true }));
             Ok(())
         }
         Cmd::Decrypt(a) => {

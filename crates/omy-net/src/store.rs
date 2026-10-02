@@ -890,8 +890,10 @@ mod tests {
         let legacy_parent = migrate_sandbox("copy-leg");
         let legacy = legacy_parent.join("devices.omy");
         // 字节各不相同，拷错偏移能被测出来（仓库安全软件对长串同值字节敏感，
-        // 故用算式生成而不是写 0xAA 重复）
-        let body: Vec<u8> = (0u32..400).map(|i| (i.wrapping_mul(7) ^ 0x3D) as u8).collect();
+        // 故用算式生成而不是写 0xAA 重复）。全程 u8 算术：取 i 的低字节再乘/异或，
+        // 等价于原来的 u32 截断，但不产生 clippy 标记的可能截断强转。
+        let body: Vec<u8> =
+            (0..400u32).map(|i| i.to_be_bytes()[3].wrapping_mul(7) ^ 0x3D).collect();
         std::fs::write(&legacy, &body).unwrap();
 
         let got = migrate_legacy_store(&new, Some(&legacy));
