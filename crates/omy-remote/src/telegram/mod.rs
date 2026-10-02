@@ -43,6 +43,7 @@ pub mod appid;
 pub mod appid_store;
 pub mod auth;
 pub mod connect;
+pub mod context;
 pub mod device;
 pub mod login;
 pub mod phonelogin;
@@ -58,6 +59,10 @@ pub mod tdata;
 pub use appid::{AppId, AppIdError, SessionIdentity, SessionMismatch, BUILTIN_API_ID};
 pub use auth::{SendCodeOutcome, SentCodeKind};
 pub use connect::{connect_saved, connect_saved_with_keks, connect_with_password, ConnectError, Connection};
+pub use context::{
+    resolve_app, resolve_proxy, resolve_proxy_with_system, AppIdChoice, ContextError,
+    TelegramConnectionContext,
+};
 pub use device::{DeviceInfo, DEVICE_MODEL};
 pub use login::{LoginError, LoginFlow, LoginMethod, LoginState};
 pub use proxy::{normalize as normalize_proxy, ProxyError, ProxyUrl};
