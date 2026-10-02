@@ -1249,4 +1249,74 @@ mod tests {
         assert_eq!(c, "v3", "重载后必须继续 v3，不能复用已删的 v1");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// 引用复制的稳定性：每条生成新 ref_id，且改源不影响副本（引用是值拷贝）。
+    #[test]
+    fn ref_copy_is_independent_with_new_ids() {
+        let (reg, _dir) = test_reg();
+        let from = reg.create("源".into());
+        let to = reg.create("目标".into());
+        reg.with_place_mut(&from, |vp| {
+            vp.root.refs.push(make_ref("keep"));
+        });
+        // 模拟 CLI copy：先在源位置读出克隆，再插进目标
+        let clones: Vec<Reference> = reg.with_place(&from, |vp| vp.root.refs.clone()).unwrap();
+        let mut new_ids = Vec::new();
+        reg.with_place_mut(&to, |vp| {
+            let mut out = Vec::new();
+            for mut r in clones {
+                r.ref_id = format!("vr{}", random_id());
+                new_ids.push(r.ref_id.clone());
+                out.push(r);
+            }
+            vp.root.refs = out;
+        });
+        // 新 id 与源 id 不同、且唯一
+        assert_eq!(new_ids.len(), 1);
+        assert_ne!(new_ids[0], "vrkeep".to_string());
+        // 改源位置的快照名，目标副本不受影响（值语义，不共享）
+        reg.with_place_mut(&from, |vp| vp.root.refs[0].snapshot.name = "改名.bin".into());
+        reg.with_place(&to, |vp| assert_eq!(vp.root.refs[0].snapshot.name, "keep.bin"));
+    }
+
+    /// 并发对同一注册表加引用：不 panic、不死锁，最终树自洽。
+    #[test]
+    fn concurrent_ref_add_is_sound() {
+        use std::sync::Arc;
+        use std::thread;
+        let (reg, _dir) = test_reg();
+        let id = reg.create("共享".into());
+        let reg = Arc::new(reg);
+        let mut hs = Vec::new();
+        for i in 0..8 {
+            let r = Arc::clone(&reg);
+            let id = id.clone();
+            hs.push(thread::spawn(move || {
+                r.with_place_mut(&id, |vp| vp.root.refs.push(make_ref(&format!("r{i}"))));
+            }));
+        }
+        for h in hs {
+            h.join().unwrap();
+        }
+        let total = reg.with_place(&id, |vp| vp.root.refs.len()).unwrap();
+        assert_eq!(total, 8, "8 线程各加一条引用必须都在树里");
+    }
+
+    /// 加密位置重命名不破坏加密态与落盘。
+    #[test]
+    fn rename_keeps_encryption() {
+        let (reg, dir) = test_reg();
+        let id = reg.create("私密".into());
+        reg.with_place_mut(&id, |vp| vp.root.refs.push(make_ref("x")));
+        reg.encrypt(&id, b"pw", Vec::new(), |_, _, _| {}).unwrap();
+        assert!(reg.rename(&id, "新名".into()));
+        // 重载后仍是加密态，名字改了，密码仍能解锁
+        let r2 = VirtualRegistry::with_path(dir.join("virtual-places.json"));
+        r2.load().unwrap();
+        assert!(r2.is_encrypted(&id));
+        assert_eq!(r2.list(), vec![(id.clone(), "新名".to_string())]);
+        r2.unlock_with_extra(&id, b"pw", &[], |_, _, _| {}).unwrap();
+        r2.with_place(&id, |vp| assert_eq!(vp.root.refs.len(), 1));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
