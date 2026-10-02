@@ -21,8 +21,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use omy_remote::telegram::TelegramStore;
-use omy_remote::webdav::{Vendor, WebDavConfig, WebDavStore};
+use omy_remote::webdav::{WebDavConfig, WebDavStore};
 use omy_remote::{Capabilities, PlaceStore, RemoteStore};
+
+// 厂商串与密码信封的封/解在 omy_remote::placebook，CLI 与 GUI 共用同一份，
+// 避免两边对「怎么存一个 WebDAV 位置」各写一份而漂移。
+use omy_remote::placebook::{saved_to_webdav, webdav_to_saved};
 
 /// 一个已注册的远程位置。
 pub struct Place {
@@ -472,40 +476,8 @@ impl PlaceRegistry {
     }
 }
 
-/// 从配置里的字符串解析厂商。
-///
-/// 未知值回落到 `Generic` 而不是报错：配置可能是更高版本写的，
-/// 为一个厂商名让整个位置用不了并不值得。
-#[must_use]
-pub fn parse_vendor(s: &str) -> Vendor {
-    match s {
-        "nextcloud" | "owncloud" => Vendor::Nextcloud,
-        _ => Vendor::Generic,
-    }
-}
-
-/// 厂商转回配置里的字符串。
-///
-/// 与 [`parse_vendor`] 是一对，**改一处必须改两处**，
-/// 否则存进去的值读回来会变成 `Generic`。
-#[must_use]
-pub fn vendor_str(v: Vendor) -> &'static str {
-    match v {
-        Vendor::Nextcloud => "nextcloud",
-        Vendor::Generic => "generic",
-    }
-}
-
-/// 凭据在本机凭据库里的服务名。
-#[cfg(not(test))]
-const SECRET_SERVICE: &str = "omy-remote-places";
-
-/// 所有远程位置共用的那一把密钥的 id。
-///
-/// 只用一把：每个位置一条钥匙串记录的话，删位置时漏清就会在用户的
-/// 钥匙串里堆垃圾，而 Linux 的 Secret Service 对条目数也不友好。
-#[cfg(not(test))]
-const SECRET_KEY_ID: &str = "places-key-v1";
+// 厂商串解析、凭据服务名/密钥 id 都在 [`omy_remote::placebook`]：
+// CLI 与 GUI 逐字一致，否则一边加的位置另一边解不开密码。
 
 /// 持久化状态：这台机器上凭据能不能保护。
 ///
@@ -527,10 +499,12 @@ impl PlaceRegistry {
     ///
     /// 每次现取而不缓存：钥匙串可能中途被锁上，缓存会让我们用一把
     /// 已经无权使用的密钥，错误也就推迟到更难解释的地方才出现。
+    ///
+    /// 生产实现直接用 [`omy_remote::placebook::protect_key`]——它与 CLI 定位
+    /// 同一把保护密钥，两边加的位置才能互相解开。
     #[cfg(not(test))]
     fn protect_key() -> Option<omy_secret::ProtectKey> {
-        let p = omy_secret::default_protector(SECRET_SERVICE).ok()?;
-        p.retrieve_or_create(SECRET_KEY_ID).ok()
+        omy_remote::placebook::protect_key()
     }
 
     #[cfg(test)]
@@ -614,27 +588,7 @@ impl PlaceRegistry {
             // 用空串凑出来的记录下次恢复会造出一个连不上的位置。
             // **新增 provider 时要在这里补一支**，而不是任它静默消失。
             .filter_map(|p| p.store.as_webdav().map(|w| (Arc::clone(p), w.config())))
-            .map(|(p, c)| {
-                // 没有密码就不必造信封；有密码但没有保护密钥时也不存，
-                // 两种情况在配置里都表现为 secret 缺失，界面提示重新登录
-                let secret = if c.password.is_empty() {
-                    None
-                } else {
-                    key.and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
-                        .and_then(|env| toml::Value::try_from(env).ok())
-                };
-                omy_config::SavedPlace {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
-                    kind: p.kind.clone(),
-                    url: c.base_url.clone(),
-                    username: c.username.clone(),
-                    vendor: String::from(vendor_str(c.vendor)),
-                    writable: c.writable,
-                    secret,
-                    user_id: None, // WebDAV 无账号 user id
-                }
-            })
+            .map(|(p, c)| webdav_to_saved(p.id.as_str(), p.name.as_str(), c, key))
             .collect();
         saved.extend(webdav_saved);
         saved
@@ -737,42 +691,16 @@ impl PlaceRegistry {
                 continue;
             }
 
-            let password = sp
-                .secret
-                .as_ref()
-                .and_then(|v| match v.clone().try_into::<omy_secret::Envelope>() {
-                    Ok(env) => Some(env),
-                    Err(e) => {
-                        eprintln!("[omy] 位置 {} 的凭据信封无法解析：{e}", sp.name);
-                        None
-                    }
-                })
-                .and_then(|env| {
-                    key.as_ref().and_then(|k| match omy_secret::unseal(k, &env) {
-                        Ok(pt) => Some(pt),
-                        Err(e) => {
-                            eprintln!("[omy] 位置 {} 的凭据解密失败：{e}", sp.name);
-                            None
-                        }
-                    })
-                })
-                .and_then(|pt| String::from_utf8(pt.to_vec()).ok())
-                .unwrap_or_default();
-
-            // 有密文却解不开（换了机器、清了钥匙串）要单独计数：
-            // 这与「本来就是匿名位置」完全不同，界面给的提示也不同
-            if sp.secret.is_some() && password.is_empty() {
+            // 信封解析与密码解密在 placebook（与 CLI 同一份）。解不开的位置
+            // 照样恢复，只是没有密码；有密文却解不开要单独计数——那与
+            // 「本来就是匿名位置」完全不同，界面给的提示也不同。
+            let Some((wcfg, need_relogin)) = saved_to_webdav(sp, key.as_ref()) else {
+                continue;
+            };
+            if need_relogin {
                 need_login += 1;
             }
 
-            let wcfg = WebDavConfig {
-                base_url: sp.url.clone(),
-                username: sp.username.clone(),
-                password,
-                writable: sp.writable,
-                vendor: parse_vendor(&sp.vendor),
-                ..WebDavConfig::default()
-            };
             let Ok(store) = WebDavStore::new(wcfg) else {
                 // URL 坏了就跳过这一条，不要让整个恢复流程失败——
                 // 其余位置还是好的
@@ -877,26 +805,6 @@ mod tests {
         assert_eq!(names, vec!["b"]);
     }
 
-    /// 未知厂商名回落到 Generic，而不是让位置用不了。
-    #[test]
-    fn unknown_vendor_falls_back() {
-        assert_eq!(parse_vendor("nextcloud"), Vendor::Nextcloud);
-        assert_eq!(parse_vendor("owncloud"), Vendor::Nextcloud);
-        assert_eq!(parse_vendor("generic"), Vendor::Generic);
-        assert_eq!(parse_vendor("某个未来才有的厂商"), Vendor::Generic);
-    }
-
-    /// 厂商的写出与读回必须互为逆运算。
-    ///
-    /// 不这样会怎样：存 Nextcloud 读回 Generic，针对该厂商的兼容处理
-    /// 静默失效——位置还能用，只是某些请求方式退回通用路径，很难察觉。
-    #[test]
-    fn vendor_roundtrips() {
-        for v in [Vendor::Nextcloud, Vendor::Generic] {
-            assert_eq!(parse_vendor(vendor_str(v)), v, "{v:?} 往返后变了");
-        }
-    }
-
     /// 持久化再恢复，位置的各字段与密码都要回来。
     ///
     /// 环境没有可用凭据库时（CI 容器常见）跳过密码断言，但仍验证
@@ -906,7 +814,7 @@ mod tests {
         let r = PlaceRegistry::new();
         r.add_webdav(String::from("我的NAS"), cfg(true)).expect("添加");
 
-        // 不碰真实配置文件：手工走一遍 persist 用的那套转换
+        // 不碰真实配置文件：走与 persist 同一份转换（placebook::webdav_to_saved）
         let key = PlaceRegistry::protect_key();
         let saved: Vec<omy_config::SavedPlace> = r
             .list()
@@ -914,21 +822,7 @@ mod tests {
             .filter_map(|info| r.get(&info.id))
             .map(|p| {
                 let c = p.store.as_webdav().expect("夹具里都是 WebDAV").config();
-                let secret = key
-                    .as_ref()
-                    .and_then(|k| omy_secret::seal(k, c.password.as_bytes()).ok())
-                    .and_then(|env| toml::Value::try_from(env).ok());
-                omy_config::SavedPlace {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
-                    kind: p.kind.clone(),
-                    url: c.base_url.clone(),
-                    username: c.username.clone(),
-                    vendor: String::from(vendor_str(c.vendor)),
-                    writable: c.writable,
-                    secret,
-                    user_id: None,
-                }
+                webdav_to_saved(p.id.as_str(), p.name.as_str(), c, key.as_ref())
             })
             .collect();
 

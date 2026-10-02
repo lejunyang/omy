@@ -122,7 +122,7 @@ pub fn remote_place_add(
         base_url: url,
         username,
         password,
-        vendor: crate::places::parse_vendor(&vendor),
+        vendor: omy_remote::parse_vendor(&vendor),
         writable,
         ..WebDavConfig::default()
     };

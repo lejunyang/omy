@@ -13,6 +13,7 @@ pub mod encrypt;
 pub mod info;
 pub mod key;
 pub mod list;
+pub mod remote;
 pub mod scan;
 pub mod shard;
 pub mod share;
@@ -32,6 +33,11 @@ pub struct Ctx<'a> {
     pub cfg: &'a Config,
     /// 是否跳过确认。
     pub assume_yes: bool,
+    /// `--config` 显式指定的配置路径。
+    ///
+    /// 需要写回配置（如 `remote add-webdav` 把新位置落盘）时用：显式指定了
+    /// 就写回那个文件，否则走默认路径。None 表示用默认配置文件。
+    pub config_path: Option<&'a std::path::Path>,
 }
 
 /// KDF 档位。取值与设计文档 03 号 §4 的表格一致。

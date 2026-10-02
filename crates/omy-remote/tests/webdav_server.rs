@@ -681,3 +681,66 @@ async fn range_get_returns_exact_window() {
 
     server.shutdown().await;
 }
+
+/// CLI 纵向切片真正走的两条路径：`write_stream` 上传 + 「按固定块循环读到空」的
+/// 分块下载，以及跨位置（两个独立服务端）原样复制。
+///
+/// 为什么单独测：CLI 的下载/复制不是调一次 `read_range`，而是自写的
+/// 「offset 递增、读到空为止」循环。块边界 off-by-one、最后一块被多读一次或
+/// 少读一次，store 层的单次读写测试都测不出来——只有把 CLI 那个循环原样跑一遍
+/// 真实服务器才能抓到。跨位置复制同理：源读完、目标写出、再核对磁盘字节。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_style_stream_upload_chunked_download_and_copy() {
+    let root_a = unique_dir("cli_a");
+    let root_b = unique_dir("cli_b");
+    let srv_a = spawn_server(root_a.clone(), None).await;
+    let srv_b = spawn_server(root_b.clone(), None).await;
+    let a = Arc::new(store_for(&srv_a.base_url(), "", "", true));
+    let b = Arc::new(store_for(&srv_b.base_url(), "", "", true));
+
+    // 3.1 MiB 确定性数据，横跨多个 1 MiB 块，专门压块边界
+    const CHUNK: u64 = 1 << 20;
+    let payload: Vec<u8> = (0..(3 * 1024 * 1024 + 123_456))
+        .map(|i| (i % 251) as u8)
+        .collect();
+
+    // 1) write_stream 上传（CLI upload 的真实调用，流式、不整段进内存）
+    let reader = Box::new(std::io::Cursor::new(payload.clone()))
+        as Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+    let ent = a
+        .write_stream("", "blob.bin", payload.len() as u64, reader)
+        .await
+        .expect("write_stream 上传");
+    assert_eq!(ent.name, "blob.bin");
+
+    // 2) CLI download 的真实循环：先从 list 拿总大小，再按 CHUNK 读满为止。
+    //    不能「读到空就停」：offset 越过文件尾时服务端回 416 错误而非空响应。
+    let ent_full = find_entry(&a, "", "blob.bin").await;
+    let total = ent_full.size.expect("content-length");
+    let mut got = Vec::new();
+    let mut off = 0u64;
+    while off < total {
+        let want = CHUNK.min(total - off);
+        let buf = a.read_range(&ent.id, off, want).await.expect("分块读");
+        off = off.saturating_add(buf.len() as u64);
+        got.extend_from_slice(&buf);
+    }
+    assert_eq!(got.len(), payload.len(), "下载长度必须等于上传长度");
+    assert_eq!(got, payload, "分块下载必须逐字节一致");
+
+    // 3) CLI copy 的真实循环：按已知大小整段读 A，写 B，再核对 B 磁盘字节
+    let mut copied = Vec::with_capacity(total as usize);
+    let mut off = 0u64;
+    while off < total {
+        let want = CHUNK.min(total - off);
+        let buf = a.read_range(&ent.id, off, want).await.expect("复制读");
+        off = off.saturating_add(buf.len() as u64);
+        copied.extend_from_slice(&buf);
+    }
+    b.write("/", "blob_copy.bin", &copied).await.expect("写到 B");
+    let on_b = std::fs::read(root_b.join("blob_copy.bin")).expect("读回 B 磁盘");
+    assert_eq!(on_b, payload, "跨位置复制后 B 磁盘字节必须与源一致");
+
+    srv_a.shutdown().await;
+    srv_b.shutdown().await;
+}

@@ -97,6 +97,9 @@ enum Command {
     Bench(cmd::bench::Args),
     /// 环境自检
     Doctor(cmd::doctor::Args),
+    /// 远程位置（WebDAV）：注册、浏览、上传下载、缓存管理
+    #[command(subcommand)]
+    Remote(cmd::remote::Cmd),
     /// 生成 shell 补全脚本
     Completion(cmd::completion::Args),
 }
@@ -152,6 +155,7 @@ fn dispatch(cli: &Cli, cfg: &config::Config, out: &Out) -> Result<()> {
         out,
         cfg,
         assume_yes: cli.yes,
+        config_path: cli.config.as_deref(),
     };
     match &cli.command {
         Command::Encrypt(a) => cmd::encrypt::run(&ctx, a),
@@ -166,6 +170,7 @@ fn dispatch(cli: &Cli, cfg: &config::Config, out: &Out) -> Result<()> {
         Command::Share(c) => cmd::share::run(&ctx, c),
         Command::Bench(a) => cmd::bench::run(&ctx, a),
         Command::Doctor(a) => cmd::doctor::run(&ctx, a),
+        Command::Remote(c) => cmd::remote::run(&ctx, c),
         Command::Completion(a) => cmd::completion::run::<Cli>(&ctx, a),
     }
 }
@@ -197,6 +202,29 @@ mod tests {
 
         let c = Cli::try_parse_from(["omy", "shard", "split", "--size", "4M", "a.omy"]).unwrap();
         assert!(matches!(c.command, Command::Shard(_)));
+
+        // remote 子命令：位置管理与文件操作
+        let c = Cli::try_parse_from(["omy", "remote", "list"]).unwrap();
+        assert!(matches!(c.command, Command::Remote(_)));
+
+        let c = Cli::try_parse_from(["omy", "remote", "add-webdav", "NAS", "--url", "https://dav/", "--password-stdin"]).unwrap();
+        match &c.command {
+            Command::Remote(cmd::remote::Cmd::AddWebdav(a)) => {
+                assert_eq!(a.name, "NAS");
+                assert!(a.password_stdin);
+                assert!(!a.read_only, "默认应可写");
+            }
+            _ => panic!("应解析为 add-webdav"),
+        }
+
+        // 密码绝不接受 --password 明文 argv
+        assert!(
+            Cli::try_parse_from(["omy", "remote", "add-webdav", "NAS", "--url", "https://dav/", "--password", "x"]).is_err(),
+            "不得存在 --password 明文参数"
+        );
+
+        let c = Cli::try_parse_from(["omy", "remote", "cache", "status"]).unwrap();
+        assert!(matches!(c.command, Command::Remote(cmd::remote::Cmd::Cache(_))));
     }
 
     #[test]

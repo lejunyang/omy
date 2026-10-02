@@ -14,6 +14,7 @@
 
 pub mod cache;
 pub mod caps;
+pub mod placebook;
 pub mod provider;
 pub mod source;
 pub mod store;
@@ -22,6 +23,10 @@ pub mod transfer;
 pub mod webdav;
 
 pub use caps::Capabilities;
+pub use placebook::{
+    allocate_place_id, open_password, parse_vendor, protect_key, seal_password, seq_of,
+    vendor_str, webdav_to_saved, saved_to_webdav,
+};
 pub use provider::PlaceStore;
 pub use source::RemoteSource;
 pub use store::{Entry, RemoteStore, UploadMediaHint};

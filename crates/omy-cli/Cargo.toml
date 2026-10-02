@@ -31,6 +31,10 @@ omy-net = { path = "../omy-net", version = "0.0.1" }
 # CLI 也要能管理它——否则「用 GUI 加的设备密钥，命令行看不见」，
 # 而 key list 恰恰是排查密码问题时最常用的入口
 omy-secret = { path = "../omy-secret", version = "0.0.1" }
+# 远程位置（WebDAV）：浏览 / 上传 / 下载 / 跨位置复制 / 缓存管理。
+# 位置的配置落盘与密码封装走 omy_remote::placebook，与 GUI 同一份，
+# 命令行加的位置 GUI 必须认得出、解得了密码。
+omy-remote = { path = "../omy-remote", version = "0.0.1" }
 tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
