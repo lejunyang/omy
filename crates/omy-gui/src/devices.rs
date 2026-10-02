@@ -143,6 +143,9 @@ impl DeviceSession {
     ///
     /// 密码错误、文件损坏或写盘失败时返回。
     pub fn open(&self, password: &[u8], default_name: &str) -> Result<DeviceStatus, DeviceError> {
+        // 升级迁移必须赶在 exists() 判断之前：便携位置缺库而老位置有库时，
+        // 不迁过来就会在新位置生成空白身份，老身份被永久搁置。失败静默。
+        omy_net::store::migrate_legacy_if_needed();
         let path = self.store_path().ok_or(DeviceError::NoStorePath)?;
 
 

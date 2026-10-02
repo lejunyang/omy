@@ -441,23 +441,37 @@ pub fn default_path() -> Option<PathBuf> {
 /// [`resolve_store_path_with`] 拿不到任何进程状态，测试才能把三个
 /// 优先级排错这种缺陷抓出来（见其测试）。
 fn resolve_store_path(env_value: Option<&str>) -> Option<PathBuf> {
-    let portable_root = omy_config::portable_root();
-    let config_dir = dirs::config_dir();
-    let decided = resolve_store_path_with(
+    resolve_store_path_with(
         env_value,
-        portable_root.as_deref(),
-        config_dir.as_deref(),
-    )?;
-    // 只有决策落在便携路径上才需要迁移：环境变量显式覆盖时 decided 是用户
-    // 指定的绝对路径，不在便携根下，自然跳过——显式覆盖不迁移、不触碰。
-    if portable_root
-        .as_deref()
-        .is_some_and(|root| decided.strip_prefix(root).is_ok())
-    {
-        let legacy = config_dir.map(|d| d.join("omy").join("devices.omy"));
-        return Some(migrate_legacy_store(&decided, legacy.as_deref()));
+        omy_config::portable_root().as_deref(),
+        dirs::config_dir().as_deref(),
+    )
+}
+
+/// 生产环境**真正打开设备库前**调用一次：升级场景下把老系统位置的库
+/// 一次性迁到便携位置。失败静默——迁移不是开库的前提，开库流程照常走。
+///
+/// # 为什么不放在 `default_path()` 里
+///
+/// `default_path()` 会被状态查询高频调用，测试也频繁问它。把「复制用户
+/// 真实身份文件」这种副作用放进去，等于让每个测试二进制都把开发者的真实
+/// 设备库拷进 `target/`——既是隐私事故，也让测试依赖本机环境。迁移只在
+/// 要开库、要生成/加载身份那一刻才需要，故与路径解析显式分开。
+///
+/// 显式设了 `OMY_DEVICE_STORE` 时不迁移：用户指定的路径是权威位置，
+/// 不替他搬东西。
+pub fn migrate_legacy_if_needed() {
+    // 空白环境变量视同未设，和 resolve_store_path_with 的判定保持一致
+    let env = std::env::var("OMY_DEVICE_STORE").ok();
+    if env.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        return;
     }
-    Some(decided)
+    let Some(root) = omy_config::portable_root() else {
+        return;
+    };
+    let new = root.join("devices.omy");
+    let legacy = dirs::config_dir().map(|d| d.join("omy").join("devices.omy"));
+    migrate_legacy_store(&new, legacy.as_deref());
 }
 
 /// 一次性把老系统位置的设备库迁到便携位置。

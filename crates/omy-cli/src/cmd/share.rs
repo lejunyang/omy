@@ -298,7 +298,12 @@ fn open_store(
 ) -> Result<(Store, PathBuf)> {
     let p = match path {
         Some(p) => p.to_path_buf(),
-        None => omy_net::store::default_path().context("无法确定设备库默认路径")?,
+        None => {
+            // 显式指定了 --store 就不动；默认路径才做升级迁移，且赶在
+            // exists() 之前——否则新位置缺库会被当成「首次使用」重建身份。
+            omy_net::store::migrate_legacy_if_needed();
+            omy_net::store::default_path().context("无法确定设备库默认路径")?
+        }
     };
 
     if p.exists() {
