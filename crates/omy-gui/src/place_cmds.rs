@@ -635,6 +635,7 @@ pub async fn remote_probe_entry(
     size: u64,
     name: Option<String>,
 ) -> CmdResult<RemoteEntry> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -794,10 +795,12 @@ pub struct OpenPlaceResult {
 #[tauri::command]
 pub async fn remote_upload(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     place_id: String,
     dir: String,
     paths: Vec<String>,
 ) -> CmdResult<Vec<UploadOutcome>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -928,11 +931,13 @@ pub struct UploadOutcome {
 #[tauri::command]
 pub async fn remote_place_vaults(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     vault_reg: tauri::State<'_, Arc<crate::vault_reg::VaultRegistry>>,
     place_id: String,
     dir: String,
 ) -> CmdResult<Vec<crate::commands::VaultParams>> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1263,6 +1268,7 @@ pub async fn remote_decrypt_to_local(
 ) -> CmdResult<RemoteDecryptResult> {
     // name 只给传输列表显示用，这条路径用不到，显式忽略
     let RemoteFileRef { place_id, path, size, .. } = req;
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -1857,9 +1863,11 @@ pub fn remote_meta_get(
 #[tauri::command]
 pub async fn remote_cache_file_stat(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<omy_remote::cache::FileCacheStat> {
+    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let source = build_remote_source(&reg, &cache, &req).await?;
     Ok(source.cache_stat())
 }
@@ -1886,9 +1894,17 @@ pub async fn remote_cache_file_stat(
 #[tauri::command]
 pub async fn remote_cache_file_stats(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     reqs: Vec<RemoteFileRef>,
 ) -> CmdResult<Vec<omy_remote::cache::FileCacheStat>> {
+    let keks = crate::place_keys::unlock_keks(&state);
+    let mut connected = std::collections::BTreeSet::new();
+    for req in &reqs {
+        if connected.insert(req.place_id.clone()) {
+            crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &keks).await?;
+        }
+    }
     let mut out = Vec::with_capacity(reqs.len());
     for req in reqs {
         // 一项失败给零值占位，不让整批垮掉：这批数据只用来画标识，
@@ -1914,9 +1930,11 @@ pub async fn remote_cache_file_stats(
 #[tauri::command]
 pub async fn remote_cache_remove_file(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<serde_json::Value> {
+    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let source = build_remote_source(&reg, &cache, &req).await?;
     let freed_bytes = source.remove_cached_blocks();
     Ok(serde_json::json!({ "freed_bytes": freed_bytes }))
@@ -1935,9 +1953,11 @@ pub async fn remote_cache_remove_file(
 #[tauri::command]
 pub async fn remote_effective_caps(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     place_id: String,
     dir: String,
 ) -> CmdResult<omy_remote::Capabilities> {
+    crate::telegram_cmds::ensure_connected(&reg, &place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let place = reg
         .get(&place_id)
         .ok_or_else(|| CmdError::code("remote_no_such_place"))?;
@@ -2089,6 +2109,7 @@ pub struct RemoteCacheUsage {
 pub async fn remote_cache_pin(
     app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     pins: tauri::State<'_, Arc<PinRetryStore>>,
@@ -2096,6 +2117,7 @@ pub async fn remote_cache_pin(
 ) -> CmdResult<u64> {
     use crate::transfers::TaskKind;
 
+    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let source = build_remote_source(&reg, &cache, &req).await?;
 
     // 进传输管理页。「转为永久」在产品上就是一次真实的下载任务——
@@ -2264,16 +2286,23 @@ impl PinRetryStore {
 /// 重跑 pin。找不到登记的原始请求（进程重启后内存表已空）时返回错误、
 /// 让界面提示重新从文件那里发起。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn transfer_retry(
     app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<crate::transfers::Transfers>>,
     pins: tauri::State<'_, Arc<PinRetryStore>>,
     copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     id: u64,
 ) -> CmdResult<u64> {
-    if copies.get(id).is_some() {
+    if let Some(req) = copies.get(id) {
+        let keks = crate::place_keys::unlock_keks(&state);
+        crate::telegram_cmds::ensure_connected(&reg, &req.source.place_id, &keks).await?;
+        if req.target_place_id != req.source.place_id {
+            crate::telegram_cmds::ensure_connected(&reg, &req.target_place_id, &keks).await?;
+        }
         return crate::remote_copy::retry_copy(
             app,
             Arc::clone(&reg),
@@ -2288,6 +2317,7 @@ pub async fn transfer_retry(
         // 回文件那里重新「转为永久」。给明确码而不是静默失败。
         return Err(CmdError::code("remote_retry_expired"));
     };
+    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
     // 先重建 source（网络 / 位置不存在会在这里失败，直接返回，不动任务状态）
     let source = build_remote_source(&reg, &cache, &req).await?;
     // 翻回 Running、发新句柄；非失败任务 reset_running 返回 None，说明这条
@@ -2335,9 +2365,11 @@ pub fn transfer_clear_done(
 #[tauri::command]
 pub async fn remote_cache_unpin(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     req: RemoteFileRef,
 ) -> CmdResult<u64> {
+    crate::telegram_cmds::ensure_connected(&reg, &req.place_id, &crate::place_keys::unlock_keks(&state)).await?;
     let source = build_remote_source(&reg, &cache, &req).await?;
     let r = source.unpin().map_err(|e| to_cmd_err(&e));
     match &r {

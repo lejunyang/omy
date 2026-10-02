@@ -54,14 +54,56 @@ pub fn config_get() -> CmdResult<omy_config::Config> {
     omy_config::Config::load().map_err(|e| to_cmd_err("config_read_failed", &e))
 }
 
+pub(crate) fn clear_telegram_place_urls(config: &mut omy_config::Config) -> bool {
+    let mut changed = false;
+    for place in &mut config.remote.places {
+        if place.kind == "telegram" && !place.url.is_empty() {
+            place.url.clear();
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// 写回整份配置。
+///
+/// Telegram 代理是全局策略：保存时清除每个 Telegram 位置遗留的 `url`，并在
+/// 策略变化后断开现有长连接。下一次业务操作会按新策略自动重连。
 ///
 /// # Errors
 ///
-/// 无法确定路径或写盘失败时返回 `config_write_failed`。
+/// 代理模式/地址无效或配置写盘失败时返回结构化错误。
 #[tauri::command]
-pub fn config_set(config: omy_config::Config) -> CmdResult<()> {
-    config.save().map_err(|e| to_cmd_err("config_write_failed", &e))
+pub fn config_set(
+    mut config: omy_config::Config,
+    places: tauri::State<'_, std::sync::Arc<crate::places::PlaceRegistry>>,
+    place_files: tauri::State<'_, std::sync::Arc<crate::place_files::PlaceFiles>>,
+    place_containers: tauri::State<'_, std::sync::Arc<crate::place_files::PlaceContainers>>,
+) -> CmdResult<()> {
+    let old = omy_config::Config::load()
+        .map_err(|e| to_cmd_err("config_read_failed", &e))?;
+    match config.remote.telegram_proxy_mode.as_str() {
+        "system" => config.remote.telegram_proxy.clear(),
+        "manual" => {
+            let normalized = omy_remote::telegram::normalize_proxy(&config.remote.telegram_proxy)
+                .map_err(|e| CmdError::with("tg_bad_proxy", serde_json::json!({ "detail": e.to_string() })))?
+                .ok_or_else(|| CmdError::code("tg_bad_proxy"))?;
+            config.remote.telegram_proxy = normalized.as_str().to_string();
+        }
+        _ => return Err(CmdError::code("tg_bad_proxy_mode")),
+    }
+    clear_telegram_place_urls(&mut config);
+    let changed = old.remote.telegram_proxy_mode != config.remote.telegram_proxy_mode
+        || old.remote.telegram_proxy != config.remote.telegram_proxy;
+    config.save().map_err(|e| to_cmd_err("config_write_failed", &e))?;
+    if changed {
+        places.disconnect_all_telegram();
+        // 已打开文件的 RemoteSource 持有建连时的 store。只断注册表连接不清句柄，
+        // 播放/容器读取仍会沿用旧代理，形成第二套实际策略。
+        place_files.clear();
+        place_containers.clear();
+    }
+    Ok(())
 }
 
 /// 前端上报一条用户操作日志（进对话、切账号、切视图、pin 等）。
@@ -218,6 +260,43 @@ fn build_time_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_legacy_place_proxies_leaves_webdav_urls_untouched() {
+        let mut cfg = omy_config::Config::default();
+        cfg.remote.places = vec![
+            omy_config::SavedPlace {
+                id: String::from("tg"),
+                name: String::from("Telegram"),
+                kind: String::from("telegram"),
+                url: String::from("socks5://127.0.0.1:7897"),
+                username: String::new(),
+                vendor: String::new(),
+                writable: true,
+                secret: None,
+                user_id: Some(1),
+            },
+            omy_config::SavedPlace {
+                id: String::from("dav"),
+                name: String::from("WebDAV"),
+                kind: String::from("webdav"),
+                url: String::from("https://dav.example.test"),
+                username: String::new(),
+                vendor: String::new(),
+                writable: true,
+                secret: None,
+                user_id: None,
+            },
+        ];
+
+        assert!(clear_telegram_place_urls(&mut cfg));
+        assert!(cfg.remote.places[0].url.is_empty(), "旧位置代理必须被迁移清除");
+        assert_eq!(
+            cfg.remote.places[1].url, "https://dav.example.test",
+            "WebDAV 的服务地址不是代理，不能被误删"
+        );
+        assert!(!clear_telegram_place_urls(&mut cfg), "重复迁移必须是幂等的");
+    }
 
     /// 路径查询必须给出便携标志。
     ///

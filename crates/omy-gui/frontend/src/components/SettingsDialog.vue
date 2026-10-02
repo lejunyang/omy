@@ -49,6 +49,8 @@ const error = ref('');
  *  配置里的 cache_limit 是「将要保存」的值，这里是「磁盘上现在」的值。 */
 const cacheUsage = ref({ used: 0, limit: 0, root: '', pinned_used: 0, pinned_files: 0 });
 const clearing = ref(false);
+/** 自动模式下当前从操作系统探测到的实际代理；空表示系统代理未启用。 */
+const telegramSystemProxy = ref('');
 
 /** 当前会话已装入的密码数量，安全页显示 + 判断「立即锁定」是否可点。 */
 const loadedCount = ref(0);
@@ -162,6 +164,12 @@ onMounted(async () => {
     error.value = i18n.te(api.errCode(e), 'settings.load_failed');
   } finally {
     loading.value = false;
+  }
+  // 系统代理探测只是自动模式的辅助展示；失败时显示“直连”，不能拖垮整张设置页。
+  try {
+    telegramSystemProxy.value = await api.telegramSystemProxy();
+  } catch {
+    telegramSystemProxy.value = '';
   }
   // 用量与配置独立加载：配置失败不该连累用量显示
   loadCacheUsage();
@@ -679,6 +687,27 @@ async function openLogDir() {
 
           <!-- 远程位置 -->
           <template v-else-if="(isMobile ? mobilePane : pane) === 'remote'">
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.telegram_proxy') }}</label>
+              <div class="fld">
+                <select data-sf="telegram_proxy_mode" v-model="cfg.remote.telegram_proxy_mode">
+                  <option value="system">{{ i18n.t('settings.telegram_proxy_system') }}</option>
+                  <option value="manual">{{ i18n.t('settings.telegram_proxy_manual') }}</option>
+                </select>
+                <input
+                  v-if="cfg.remote.telegram_proxy_mode === 'manual'"
+                  v-model="cfg.remote.telegram_proxy"
+                  data-sf="telegram_proxy"
+                  type="text"
+                  placeholder="socks5://127.0.0.1:7897"
+                  spellcheck="false"
+                />
+                <div v-else class="desc" data-sf="telegram_system_proxy">
+                  {{ telegramSystemProxy || i18n.t('settings.telegram_proxy_none') }}
+                </div>
+                <div class="desc">{{ i18n.t('settings.telegram_proxy_desc') }}</div>
+              </div>
+            </div>
             <div class="row">
               <label class="lb">{{ i18n.t('settings.scan_scope') }}</label>
               <div class="fld">

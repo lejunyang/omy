@@ -671,11 +671,8 @@ export const telegramApiIdSave = (apiId: any, apiHash: any): Promise<any> => inv
 /** 恢复使用内置的那一份。 */
 export const telegramApiIdReset = (): Promise<any> => invoke('telegram_api_id_reset');
 
-/** 登录之前先自检能不能连到 Telegram。
- *
- * 返回 `{status, elapsed_ms, via_proxy}`（snake_case，同本仓库其它命令），status 是
- * `ok` | `bad_proxy` | `no_route`。三种要分开显示：用户该做的事不同。 */
-export const telegramCheckConnection = (proxyUrl: any): Promise<any> => invoke('telegram_check_connection', { proxyUrl });
+/** 用全局 Telegram 代理策略做登录前连通性检查。 */
+export const telegramCheckConnection = (): Promise<any> => invoke('telegram_check_connection');
 
 /** 列出当前 Telegram 账号中实际可写、可接收转发的群组或个人。 */
 export const telegramForwardTargets = (placeId: string): Promise<any> =>
@@ -719,14 +716,10 @@ export const remotePageSize = (): Promise<any> => invoke('remote_page_size');
  * 只影响是否显示一行告知。非 Telegram 位置恒为 false。 */
 export const remoteDirProtected = (placeId: any, dir: any): Promise<any> => invoke('remote_dir_protected', { placeId, dir });
 
-/** 给代理输入框的默认值：已有 Telegram 位置的代理 > 系统代理 > 空。
- *
- * 不让用户对着空框猜。开了 Clash 那类「全局代理」的机器上尤其要紧——
- * 它只接管系统代理层的流量，不接管 MTProto 那种裸 TCP，所以「我开了
- * 全局代理」并不等于 omy 能直连，而这一点用户没有理由知道。 */
+/** 返回全局 Telegram 代理策略当前解析到的实际地址，仅供只读展示。 */
 export const telegramSuggestProxy = (): Promise<any> => invoke('telegram_suggest_proxy');
 
-/** 只读取此刻的系统代理；不复用已有 Telegram 位置保存的历史代理。 */
+/** 只读取此刻的系统代理，供全局设置页展示自动模式的当前值。 */
 export const telegramSystemProxy = (): Promise<any> => invoke('telegram_system_proxy');
 
 /** 这份登录态可用吗（判的是 auth key 在不在，不是文件在不在）。
@@ -795,14 +788,10 @@ export const telegramTdataCheck = (path: any): Promise<any> => invoke('telegram_
  * 有没有设置事先无法预知，所以第一次调用不传；若报
  * `tg_tdata_need_passcode` 再向用户要，然后带着它重调。
  */
-export const telegramTdataImport = (path: any, passcode: any, proxyUrl: any): Promise<any> => invoke('telegram_tdata_import', { path, passcode, proxyUrl });
+export const telegramTdataImport = (path: any, passcode: any): Promise<any> => invoke('telegram_tdata_import', { path, passcode });
 
-/** 开始扫码登录。立刻返回，进度走 `onTelegramLogin` 推送。
- *
- * `proxyUrl` 可空。后端会先归一化——grammers 只认 socks5://，
- * 而系统代理给出的通常是 http:// 形式。
- */
-export const telegramLoginStart = (proxyUrl: any): Promise<any> => invoke('telegram_login_start', { proxyUrl: proxyUrl || null });
+/** 开始扫码登录。代理由后端统一按全局设置解析。 */
+export const telegramLoginStart = (): Promise<any> => invoke('telegram_login_start');
 
 /** 提交两步验证的云密码。 */
 export const telegramSubmitPassword = (password: any): Promise<any> => invoke('telegram_submit_password', { password });
@@ -814,7 +803,7 @@ export const telegramLoginCancel = (): Promise<any> => invoke('telegram_login_ca
  *
  * 幂等：已经连过就返回原来那个 id，不会在侧栏里堆出两个 Telegram。
  */
-export const telegramPlaceConnect = (proxyUrl: any): Promise<any> => invoke('telegram_place_connect', { proxyUrl: proxyUrl || null });
+export const telegramPlaceConnect = (): Promise<any> => invoke('telegram_place_connect');
 
 /**
  * 订阅扫码登录进度。payload 形如 `{ phase, ... }`：
@@ -827,7 +816,7 @@ export const onTelegramLogin = (handler: (payload: any) => void): Promise<() => 
 // ---- 手机号登录（与扫码并列的一条路）----
 
 /** 开始手机号登录。立刻返回，进度走 `onTelegramPhoneLogin` 推送。 */
-export const telegramPhoneStart = (proxyUrl: any): Promise<any> => invoke('telegram_phone_start', { proxyUrl: proxyUrl || null });
+export const telegramPhoneStart = (): Promise<any> => invoke('telegram_phone_start');
 
 /** 提交手机号（含国家码，如 +8613800138000）。 */
 export const telegramPhoneSubmitPhone = (phone: any): Promise<any> => invoke('telegram_phone_submit_phone', { phone });

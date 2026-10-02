@@ -123,9 +123,10 @@ Mount your Telegram conversations as a remote location: **each conversation is a
 
 ### Signing in
 
-Click the Telegram icon in the sidebar. There are two routes:
+Click the Telegram icon in the sidebar. There are three routes:
 
 - **Sign in with a QR code**: scan it with a phone that is already signed in, so you never type a phone number or verification code into omy. The code refreshes itself when it expires, and the interface makes that refresh visible. If your account has two-step verification enabled, omy asks for the cloud password at the point where the server requires it — accounts without it never see that step.
+- **Sign in with a phone number**: enter a number with its country code, submit Telegram's verification code, and enter the cloud password if two-step verification is enabled.
 - **Reuse the desktop sign-in**: read the `tdata` folder of Telegram Desktop on this machine and reuse the sign-in it already has, with no QR code. You must **quit** the desktop client first — closing its window is not enough, it minimises to the tray. The portable build keeps `tdata` next to `Telegram.exe`, where automatic detection usually will not find it, so the interface lets you point to it.
 
 ::: warning Reusing the desktop sign-in means sharing one session
@@ -144,7 +145,11 @@ The key is the password you set. It shares the **same session key pool** as ordi
 **Once encrypted**, the location shows as encrypted (with a lock badge). On a cold start, before you type the password, it shows as **locked** — you can see its name but can't enter, with a prompt to unlock first; after you enter the correct password you're in and it connects automatically. The name stays visible while locked. **Locations that are not encrypted are unaffected** and open directly.
 
 ::: tip Most networks need a proxy
-Direct connections to Telegram's data centres fail on many networks. The sign-in screen accepts a proxy address such as `socks5://127.0.0.1:7897`; an `http://` address is retried as SOCKS5 on the same port. When the sign-in screen opens, omy first suggests a proxy already proven by an existing Telegram location and falls back to the system proxy only when none exists. Clicking **Read system proxy** explicitly reads the current system setting and never reuses a port saved by an old location. The proxy is saved along with the location.
+Direct connections to Telegram's data centres fail on many networks. Telegram uses one **global proxy policy**, managed under **Settings → Remote locations → Telegram proxy**. Every account and every path—QR sign-in, phone sign-in, tdata import, browsing, downloads, uploads, remote copies, message reading, forwarding, and group creation—uses that same policy.
+
+The default **Use the current system proxy automatically** mode reads the system setting whenever a Telegram connection is created or rebuilt; if no supported system proxy is enabled, it connects directly. You can instead choose **Set manually** and enter one global fixed address, such as `socks5://127.0.0.1:7897`; an `http://` address is normalized to SOCKS5 on the same port. Saving a different policy invalidates existing Telegram connections and open remote-file handles, and the next operation rebuilds them under the new policy.
+
+Telegram location records **never store proxy addresses**. On upgrade, proxy values written into each location's `url` field by older versions are removed automatically and no longer participate in connection selection.
 :::
 
 omy reports itself **honestly as omy** in Telegram's list of active sessions rather than impersonating an official client, so you can always recognise it there and revoke it.

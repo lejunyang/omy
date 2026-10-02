@@ -222,48 +222,43 @@ impl LoginTask {
 /// 共享句柄。
 pub type SharedLogin = Arc<LoginTask>;
 
-/// 这台机器能不能安全保存 Telegram 登录态。
+/// 解析当前全局 Telegram 代理策略。
 ///
-/// 界面要在**开始扫码之前**问它：答案为否时先告诉用户「这台机器上登录态存不住，
-/// 每次启动都要重新扫一次」，而不是等他扫完了才说。
-/// 给代理输入框一个**有依据的默认值**，而不是让用户对着空框猜。
-///
-/// # 为什么需要
-///
-/// 实测过一个让人困惑的组合：用户开了 Clash「全局代理」，已有的 Telegram
-/// 位置一切正常，但新建登录和 tdata 导入都报网络失败。原因是那类工具的
-/// 「全局」是系统代理设置 + 可能的 TUN，没开 TUN 时**不接管应用发起的裸
-/// TCP**，而 MTProto 正是裸 TCP；已有位置之所以能用，是因为它的配置里存着
-/// 之前填过的 socks5 地址，而新建那几条路传空就成了直连。
-///
-/// 三个来源按可信度排序：
-///
-/// 1. **已有 Telegram 位置的代理**——用户已经用它连通过一次，最可信；
-/// 2. **系统代理**——大概率是同一个混合端口，但也可能是个纯 HTTP 端口；
-/// 3. 都没有就返回空，由用户自己填。
-fn preferred_proxy(existing: Option<String>, system: Option<String>) -> String {
-    existing.or(system).unwrap_or_default()
+/// `system` 每次调用都重新读取操作系统代理，因此端口变化会在下次建连时生效；
+/// `manual` 使用全局固定地址。位置对象和位置配置都不参与代理选择。
+fn resolve_proxy(
+    mode: &str,
+    manual: &str,
+    system: Option<String>,
+) -> CmdResult<Option<String>> {
+    let raw = match mode {
+        "system" => system,
+        "manual" => Some(String::from(manual)),
+        _ => return Err(CmdError::code("tg_bad_proxy_mode")),
+    };
+    match proxy::normalize(raw.as_deref().unwrap_or_default()) {
+        Ok(value) => Ok(value.map(|p| p.as_str().to_string())),
+        Err(e) => Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
+    }
 }
 
-/// 给代理输入框提供自动推荐值。
-///
-/// 自动推荐可以优先复用已有 Telegram 位置验证过的代理；这与用户主动点击
-/// “读取系统代理”不同，后者必须绕过已有位置，只读取此刻的系统设置。
-#[tauri::command]
-#[must_use]
-pub fn telegram_suggest_proxy(
-    reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
-) -> String {
-    preferred_proxy(
-        reg.telegram_proxy(),
+fn global_proxy() -> CmdResult<Option<String>> {
+    let cfg = omy_config::Config::load()
+        .map_err(|e| CmdError::with("config_read_failed", detail(&e.to_string())))?;
+    resolve_proxy(
+        &cfg.remote.telegram_proxy_mode,
+        &cfg.remote.telegram_proxy,
         proxy::detect_system_proxy().map(|p| p.as_str().to_string()),
     )
 }
 
-/// 只读取当前系统代理，不复用任何已有 Telegram 位置保存的代理。
-///
-/// 这个命令专供“读取系统代理”按钮使用。若复用 [`telegram_suggest_proxy`]，
-/// 按钮可能返回旧位置里的历史端口，界面却声称它来自系统设置。
+/// 返回当前全局 Telegram 代理的实际值，供登录页展示。
+#[tauri::command]
+pub fn telegram_suggest_proxy() -> CmdResult<String> {
+    Ok(global_proxy()?.unwrap_or_default())
+}
+
+/// 只读取当前系统代理，供设置页在自动模式下展示探测结果。
 #[tauri::command]
 #[must_use]
 pub fn telegram_system_proxy() -> String {
@@ -299,12 +294,11 @@ pub struct ConnCheck {
 /// 握手失败还可能是 api_id 的问题，那是另一回事；混在一起就违背了
 /// 「把归因定下来」这个目的。TCP 够判断「路通不通」，而且失败得快。
 #[tauri::command]
-pub async fn telegram_check_connection(proxy_url: Option<String>) -> ConnCheck {
+pub async fn telegram_check_connection() -> ConnCheck {
     use std::time::Instant;
 
     let t0 = Instant::now();
-    let raw = proxy_url.unwrap_or_default();
-    let proxy = match proxy::normalize(&raw) {
+    let proxy = match global_proxy() {
         Ok(p) => p,
         Err(_) => {
             return ConnCheck {
@@ -319,7 +313,7 @@ pub async fn telegram_check_connection(proxy_url: Option<String>) -> ConnCheck {
     // 只连一个就够：自检回答的是「路通不通」，不是「哪个 DC 最快」
     let target = ("149.154.167.51", 443_u16);
     let ok = match proxy.as_ref() {
-        Some(p) => probe_via_socks5(p.as_str(), target).await,
+        Some(p) => probe_via_socks5(p, target).await,
         None => probe_direct(target).await,
     };
 
@@ -666,7 +660,6 @@ pub async fn telegram_tdata_import(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
     path: String,
     passcode: Option<String>,
-    proxy_url: Option<String>,
 ) -> CmdResult<RegisterOutcome> {
     let dir = std::path::PathBuf::from(&path);
     let pass = passcode.unwrap_or_default();
@@ -687,10 +680,7 @@ pub async fn telegram_tdata_import(
         })?;
     crate::applog::info("tg-tdata", "解析成功，开始向服务端验证");
 
-    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
-        Ok(p) => p.map(|p| p.to_string()),
-        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
-    };
+    let proxy = global_proxy()?;
 
     let app = AppId::builtin();
     let device = DeviceInfo::current();
@@ -723,7 +713,7 @@ pub async fn telegram_tdata_import(
         if let Err(e) = tgsession::save_current(&saved, &existing) {
             eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
         }
-        reg.update_telegram_connection(&existing, store, user_id);
+        reg.update_telegram_connection(&existing, store, proxy.clone(), user_id);
         if let Err(e) = reg.persist() {
             eprintln!("[omy] 保存 Telegram 位置失败：{e}");
         }
@@ -837,12 +827,8 @@ fn dedupe_target(
 pub async fn telegram_place_connect(
     reg: tauri::State<'_, Arc<crate::places::PlaceRegistry>>,
     state: tauri::State<'_, crate::commands::Shared>,
-    proxy_url: Option<String>,
 ) -> CmdResult<RegisterOutcome> {
-    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
-        Ok(p) => p.map(|p| p.to_string()),
-        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
-    };
+    let proxy = global_proxy()?;
 
     let app = AppId::builtin();
     let device = DeviceInfo::current();
@@ -872,7 +858,7 @@ pub async fn telegram_place_connect(
         // 命中已有账号：不新建。用这次更新鲜的登录态覆盖已有位置的连接，
         // 并把 PENDING 那份 session 收编成已有位置的（覆盖旧的），
         // 绝不留孤儿 session 文件。
-        reg.update_telegram_connection(&existing, store, user_id);
+        reg.update_telegram_connection(&existing, store, proxy.clone(), user_id);
         if let Err(e) = tgsession::adopt_pending(&existing) {
             eprintln!("[omy] 覆盖已有账号 session 失败：{e}");
         }
@@ -1158,12 +1144,15 @@ pub async fn ensure_connected(
     let Some(p) = reg.get(place_id) else {
         return Ok(()); // 位置不存在由调用方自己报，这里不越俎代庖
     };
-    if p.kind != "telegram" || telegram_store_connected(&p.store) {
+    if p.kind != "telegram" {
         return Ok(());
     }
-    // 用这个位置自己存着的代理重连。本机直连 Telegram 数据中心是超时的，
-    // 丢了代理就只能等超时——而超时很久，用户只看到界面卡住
-    let proxy = p.proxy.clone();
+    let proxy = global_proxy()?;
+    if telegram_store_connected(&p.store) && p.connected_proxy == proxy {
+        return Ok(());
+    }
+    // 每次建连都解析全局策略。自动模式会重新读取当前系统代理，因此端口变化
+    // 不需要修改任何 Telegram 位置；已有连接使用的代理不同则在这里换新。
     let app = AppId::builtin();
     let device = DeviceInfo::current();
     // **按这个位置自己的 session 重连。** 多账号下这一步不能含糊：
@@ -1278,20 +1267,12 @@ fn detail(s: &str) -> serde_json::Value {
 pub async fn telegram_login_start(
     app: tauri::AppHandle,
     task: tauri::State<'_, SharedLogin>,
-    proxy_url: Option<String>,
 ) -> CmdResult<()> {
     if task.is_busy() {
         return Err(CmdError::code("tg_login_in_progress"));
     }
 
-    // 代理地址在这里就校验：放过去的话 grammers 会在连接层回一句英文的
-    // 「proxy scheme not supported」，那句话指不到「你填的地址要改」这件事
-    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
-        Ok(p) => p.map(|p| p.as_str().to_owned()),
-        Err(e) => {
-            return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string())));
-        }
-    };
+    let proxy = global_proxy()?;
 
     let (password_tx, password_rx) = tokio::sync::mpsc::unbounded_channel();
     let emitter = app.clone();
@@ -1734,15 +1715,11 @@ fn phone_emit(app: &tauri::AppHandle, phase: &PhonePhase) {
 pub async fn telegram_phone_start(
     app: tauri::AppHandle,
     task: tauri::State<'_, SharedPhoneLogin>,
-    proxy_url: Option<String>,
 ) -> CmdResult<()> {
     if task.is_busy() {
         return Err(CmdError::code("tg_login_in_progress"));
     }
-    let proxy = match proxy::normalize(proxy_url.as_deref().unwrap_or_default()) {
-        Ok(p) => p.map(|p| p.as_str().to_owned()),
-        Err(e) => return Err(CmdError::with("tg_bad_proxy", detail(&e.to_string()))),
-    };
+    let proxy = global_proxy()?;
     let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let emitter = app.clone();
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2129,31 +2106,61 @@ mod tests {
     }
 
     #[test]
-    fn automatic_proxy_suggestion_prefers_an_existing_working_proxy() {
+    fn global_proxy_strategy_uses_only_selected_source() {
         assert_eq!(
-            preferred_proxy(
-                Some(String::from("socks5://127.0.0.1:7897")),
+            resolve_proxy(
+                "system",
+                "socks5://127.0.0.1:7897",
                 Some(String::from("socks5://127.0.0.1:6480")),
-            ),
-            "socks5://127.0.0.1:7897",
-            "自动推荐仍应优先复用已经验证过的 Telegram 位置代理"
+            )
+            .ok()
+            .flatten()
+            .as_deref(),
+            Some("socks5://127.0.0.1:6480"),
+            "自动模式必须使用当前系统代理，不能混入历史手动地址"
         );
         assert_eq!(
-            preferred_proxy(None, Some(String::from("socks5://127.0.0.1:6480"))),
-            "socks5://127.0.0.1:6480",
-            "没有历史代理时才回落到系统代理"
+            resolve_proxy(
+                "manual",
+                "http://127.0.0.1:7897",
+                Some(String::from("socks5://127.0.0.1:6480")),
+            )
+            .ok()
+            .flatten()
+            .as_deref(),
+            Some("socks5://127.0.0.1:7897"),
+            "手动模式必须忽略系统代理，并按 Telegram 支持的 scheme 归一化"
+        );
+        assert_eq!(
+            resolve_proxy("system", "ignored", None).ok().flatten(),
+            None,
+            "系统未启用代理时自动模式应直连"
         );
     }
 
     #[test]
-    fn system_proxy_command_never_uses_an_existing_place_proxy() {
+    fn invalid_global_proxy_strategy_is_rejected() {
+        assert_eq!(
+            resolve_proxy("legacy", "", None).err().map(|e| e.code),
+            Some(String::from("tg_bad_proxy_mode")),
+            "未知模式不能静默回落，否则损坏的配置会表现成随机直连"
+        );
+        assert_eq!(
+            resolve_proxy("manual", "socks5://", None).err().map(|e| e.code),
+            Some(String::from("tg_bad_proxy")),
+            "手动模式的无效地址必须在建连前明确报错"
+        );
+    }
+
+    #[test]
+    fn system_proxy_command_reads_the_current_system_value() {
         let expected = proxy::detect_system_proxy()
             .map(|p| p.as_str().to_string())
             .unwrap_or_default();
         assert_eq!(
             telegram_system_proxy(),
             expected,
-            "“读取系统代理”必须只返回当前系统设置，不能混入已有位置的历史端口"
+            "系统代理命令必须返回当前系统设置"
         );
     }
 

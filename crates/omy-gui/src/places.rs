@@ -32,11 +32,10 @@ pub struct Place {
     pub name: String,
     /// 驱动类型，与 [`PlaceStore::kind`] 一致，也是配置里存的那个字符串。
     pub kind: String,
-    /// 这个位置用的代理地址（目前只有 Telegram 用）。
+    /// 当前 Telegram 长连接实际使用的代理，仅用于检测全局策略是否变化。
     ///
-    /// 存在 `Place` 上而不是只存在于那次连接调用里：重启后要靠它重连，
-    /// 而本机直连 Telegram 数据中心是超时的。
-    pub proxy: Option<String>,
+    /// 这是进程内运行态，绝不写入位置配置；WebDAV 与未连接占位均为 `None`。
+    pub connected_proxy: Option<String>,
     /// Telegram 账号的服务端 user id（仅 Telegram 有，其余为 `None`）。
     ///
     /// 登录去重的判据：昵称会重会改，只有它在服务端唯一。从配置恢复出来的
@@ -186,7 +185,7 @@ impl PlaceRegistry {
             // 由驱动自己报类型，不在这里写字面量：两处各写一份迟早对不上，
             // 而对不上的后果是配置存进去读回来变成另一种驱动
             kind: String::from(store.kind()),
-            proxy: None,
+            connected_proxy: None,
             user_id: None, // WebDAV 没有账号 user id
             store,
         });
@@ -211,7 +210,7 @@ impl PlaceRegistry {
         &self,
         name: String,
         store: TelegramStore,
-        proxy: Option<String>,
+        connected_proxy: Option<String>,
         user_id: Option<i64>,
     ) -> omy_remote::Result<String> {
         let store = Arc::new(PlaceStore::from(store));
@@ -223,7 +222,7 @@ impl PlaceRegistry {
             id: id.clone(),
             name,
             kind: String::from(store.kind()),
-            proxy,
+            connected_proxy,
             user_id,
             store,
         });
@@ -242,7 +241,7 @@ impl PlaceRegistry {
         id: String,
         name: String,
         store: TelegramStore,
-        proxy: Option<String>,
+        connected_proxy: Option<String>,
         user_id: Option<i64>,
     ) {
         let store = Arc::new(PlaceStore::from(store));
@@ -250,7 +249,7 @@ impl PlaceRegistry {
             id: id.clone(),
             name,
             kind: String::from(store.kind()),
-            proxy,
+            connected_proxy,
             user_id,
             store,
         });
@@ -304,7 +303,7 @@ impl PlaceRegistry {
             id: old.id.clone(),
             name,
             kind: old.kind.clone(),
-            proxy: old.proxy.clone(),
+            connected_proxy: old.connected_proxy.clone(),
             user_id: old.user_id, // 改名不动账号身份
             store: Arc::clone(&old.store),
         });
@@ -374,14 +373,15 @@ impl PlaceRegistry {
     /// 把一个已有 Telegram 位置的连接与 user id 就地换新。
     ///
     /// 登录去重命中已有账号时用：这次登录产生的是更新鲜的登录态，用它替换
-    /// 已有位置的 store，比留着旧连接合理。名字与代理沿用已有的——用户之前
-    /// 给这个账号起的名字不该被一次重复登录冲掉。
+    /// 已有位置的 store，比留着旧连接合理。已有位置的名字保持不变；连接使用的
+    /// 代理更新为本次全局策略解析结果。
     ///
     /// 返回是否换成功（位置不存在或不是 Telegram 时为 `false`）。
     pub fn update_telegram_connection(
         &self,
         id: &str,
         store: TelegramStore,
+        connected_proxy: Option<String>,
         user_id: Option<i64>,
     ) -> bool {
         let store = Arc::new(PlaceStore::from(store));
@@ -398,7 +398,7 @@ impl PlaceRegistry {
             id: old.id.clone(),
             name: old.name.clone(),
             kind: old.kind.clone(),
-            proxy: old.proxy.clone(),
+            connected_proxy,
             // user id 用新拿到的；正常与旧的相同（因为是靠它命中的），
             // 但占位此前可能没有 user id，这里正好补上
             user_id: user_id.or(old.user_id),
@@ -429,7 +429,7 @@ impl PlaceRegistry {
                 id: old.id.clone(),
                 name: old.name.clone(),
                 kind: old.kind.clone(),
-                proxy: old.proxy.clone(),
+                connected_proxy: None,
                 user_id: old.user_id,
                 store: Arc::new(PlaceStore::from(TelegramStore::new())),
             });
@@ -445,18 +445,6 @@ impl PlaceRegistry {
         if let Ok(mut o) = self.order.lock() {
             o.retain(|x| x != id);
         }
-    }
-
-    /// 已有 Telegram 位置用的代理地址（任取一个）。
-    ///
-    /// 新建登录拿它当默认值：用户已经用这个地址连通过一次，比系统代理更
-    /// 可信。没有 Telegram 位置或那个位置没配代理时返回 `None`。
-    #[must_use]
-    pub fn telegram_proxy(&self) -> Option<String> {
-        let m = self.places.lock().ok()?;
-        m.values()
-            .find(|p| p.kind == "telegram" && p.proxy.is_some())
-            .and_then(|p| p.proxy.clone())
     }
 
     /// 列出全部位置，顺序稳定。
@@ -680,15 +668,10 @@ impl PlaceRegistry {
                 // 「Telegram」，用户无从分辨哪个是哪个
                 name: p.name.clone(),
                 kind: p.kind.clone(),
-                // 复用 url 字段存代理地址。
-                //
-                // 不新增字段：这个字段对 Telegram 本来就空着，而代理**不是
-                // 凭据**（它是本机地址，不涉及账号），放明文没有问题。
-                //
-                // 必须存：本机直连 Telegram 数据中心是超时的，没有代理就连不上。
-                // 不存的话重启后自动连必然超时，而超时要等很久，
-                // 用户只看到界面卡住、看不出和代理有关。
-                url: p.proxy.clone().unwrap_or_default(),
+                // Telegram 位置只保存账号身份；代理由全局 remote 配置统一管理。
+                // 空 URL 配合 SavedPlace 的 skip_serializing_if，确保位置记录中不再
+                // 出现历史代理。旧配置里的 URL 在恢复时也会被忽略。
+                url: String::new(),
                 username: String::new(),
                 vendor: String::new(),
                 // 能不能写由对话决定（effective_capabilities），位置级这一位
@@ -737,8 +720,8 @@ impl PlaceRegistry {
                     id: sp.id.clone(),
                     name: sp.name.clone(),
                     kind: sp.kind.clone(),
-                    // 代理存在 url 字段里（见 persist 处的说明）
-                    proxy: Some(sp.url.clone()).filter(|s| !s.is_empty()),
+                    // 位置不再持有代理；旧配置里的 URL 仅作迁移遗留，直接忽略。
+                    connected_proxy: None,
                     // 从配置带回 user id：老配置没有这个字段时为 None（见
                     // SavedPlace.user_id 的 serde default），重启后判重就少了
                     // 这一个账号，等它下次连接再补上
@@ -799,7 +782,7 @@ impl PlaceRegistry {
                 id: sp.id.clone(),
                 name: sp.name.clone(),
                 kind: sp.kind.clone(),
-                proxy: None,
+                connected_proxy: None,
                 user_id: None, // WebDAV 无账号 user id
                 store: Arc::new(PlaceStore::from(store)),
             });
@@ -1204,6 +1187,19 @@ mod tests {
             saved.iter().all(|s| s.kind == "telegram"),
             "这两条都该是 Telegram 记录"
         );
+        assert!(
+            saved.iter().all(|s| s.url.is_empty()),
+            "Telegram 位置记录不得保存全局或历史代理地址"
+        );
+        let serialized = toml::to_string(&omy_config::Remote {
+            places: saved.clone(),
+            ..omy_config::Remote::default()
+        })
+        .expect("序列化 Telegram 位置");
+        assert!(
+            !serialized.contains("url ="),
+            "空 URL 必须从 TOML 中完全省略，不能留下可被误用的位置级代理字段：{serialized}"
+        );
 
         let remote = omy_config::Remote {
             places: saved,
@@ -1217,6 +1213,34 @@ mod tests {
         assert_eq!(restored.telegram_ids(), vec![a, b], "id 必须原样恢复");
         let names: Vec<String> = restored.list().into_iter().map(|p| p.name).collect();
         assert_eq!(names, vec!["工作号", "私人号"], "各自的名字也要回来");
+    }
+
+    #[test]
+    fn restoring_legacy_telegram_url_does_not_keep_it_in_runtime() {
+        let mut remote = omy_config::Remote::default();
+        remote.places.push(omy_config::SavedPlace {
+            id: String::from("p1"),
+            name: String::from("旧账号"),
+            kind: String::from("telegram"),
+            url: String::from("socks5://127.0.0.1:7897"),
+            username: String::new(),
+            vendor: String::new(),
+            writable: true,
+            secret: None,
+            user_id: Some(42),
+        });
+        let r = PlaceRegistry::new();
+        r.restore(&remote);
+        let restored = r.get("p1").expect("旧 Telegram 位置应恢复");
+        assert!(
+            restored.connected_proxy.is_none(),
+            "旧 URL 只能作为待清理的迁移遗留，不能成为本次运行的连接代理"
+        );
+        let saved = match (r.places.lock(), r.order.lock()) {
+            (Ok(m), Ok(o)) => PlaceRegistry::assemble_saved_places(&m, &o, None),
+            _ => Vec::new(),
+        };
+        assert!(saved.first().is_some_and(|p| p.url.is_empty()));
     }
 
     /// 恢复出来的多个 Telegram 位置，id 不能互相覆盖。
@@ -1315,7 +1339,7 @@ mod tests {
         let r = PlaceRegistry::new();
         let id = add_tg(&r, "我的账号"); // 占位此前没有 user id（老配置恢复的）
         assert!(
-            r.update_telegram_connection(&id, TelegramStore::new(), Some(111)),
+            r.update_telegram_connection(&id, TelegramStore::new(), None, Some(111)),
             "对已有 Telegram 位置换连接应成功"
         );
         let p = r.get(&id).expect("位置还在");
@@ -1374,6 +1398,11 @@ writable = true
             toml::from_str(old).expect("老配置必须仍能反序列化");
         assert_eq!(remote.places.len(), 1, "位置不能丢");
         assert_eq!(remote.places[0].user_id, None, "缺字段应回落为 None");
+        assert_eq!(
+            remote.telegram_proxy_mode, "system",
+            "旧配置缺少全局代理字段时必须默认跟随系统代理"
+        );
+        assert!(remote.telegram_proxy.is_empty());
 
         let r = PlaceRegistry::new();
         let (n, _) = r.restore(&remote);

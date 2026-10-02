@@ -150,7 +150,7 @@ async function checkConn() {
   connChecking.value = true;
   conn.value = null;
   try {
-    conn.value = await api.telegramCheckConnection(proxyUrl.value.trim());
+    conn.value = await api.telegramCheckConnection();
   } catch {
     // 自检本身失败也当成连不上——它不该比登录更脆弱
     conn.value = { status: 'no_route', elapsed_ms: 0, via_proxy: false };
@@ -159,42 +159,8 @@ async function checkConn() {
   }
 }
 
-/** 从系统设置读回代理。
- *
- * 后端会把读到的 http:// 形式改写成 socks5://（grammers 只认后者），
- * 所以这里拿到的已经是可用形式。 */
-async function useSystemProxy() {
-  try {
-    const p = await api.telegramSystemProxy();
-    proxyUrl.value = p || '';
-    proxyAuto.value = !!p;
-    conn.value = null;
-    if (p) await checkConn();
-  } catch {
-    // 读不到就维持原样，不打断用户
-  }
-}
-
-/** 用户填了 http:// 时给一个显式的改写按钮。
- *
- * 后端本来就会按同端口的 SOCKS5 尝试，但那是**静默**的——用户不知道
- * 自己填的东西被改过。显式提示 + 一键改写，他才知道真正生效的是什么。 */
-const proxyNeedsFix = computed(() => {
-  const v = proxyUrl.value.trim().toLowerCase();
-  return v.startsWith('http://') || v.startsWith('https://');
-});
-function fixProxyScheme() {
-  proxyUrl.value = proxyUrl.value
-    .trim()
-    .replace(/^https?:\/\//i, 'socks5://');
-  proxyAuto.value = false;
-}
-
-/** 代理地址。默认值由后端给：已有位置的代理 > 系统代理 > 空。 */
-const proxyUrl = ref('');
-/** 默认值是不是自动填的——是的话在输入框下方说明来源，
- *  否则用户会疑惑这个地址哪来的、该不该改。 */
-const proxyAuto = ref(false);
+/** 当前全局策略解析出的实际代理，只读展示；配置只能在设置页修改。 */
+const activeProxy = ref('');
 /** 已经点过开始了吗（决定显示前置说明还是登录过程）。 */
 const started = ref(false);
 /** 本机已经有可用的登录态吗。
@@ -293,14 +259,8 @@ function onPhase(p) {
     case 'done':
       phase.value = 'done';
       sessionSaved.value = p.session_saved;
-      // 代理要一并回传：登录走了代理而后续浏览不走，表现是「登录成功了
-      // 但点进去什么都加载不出来」，而这两件事看起来毫无关联
-      // placeId 为 null 表示「位置还没建，请外面去 connect」——扫码这条
-      // 路的 session 落在 PENDING_ACCOUNT 下，位置要等 connect 才创建。
-      // 显式写出来，免得与「忘了传」混淆
       emit('done', {
         sessionSaved: p.session_saved,
-        proxyUrl: proxyUrl.value,
         placeId: null,
       });
       break;
@@ -406,7 +366,6 @@ function onPhonePhase(p) {
       sessionSaved.value = p.session_saved;
       emit('done', {
         sessionSaved: p.session_saved,
-        proxyUrl: proxyUrl.value,
         placeId: null,
       });
       break;
@@ -431,7 +390,7 @@ async function startPhone() {
   if (phoneUnlisten) phoneUnlisten();
   phoneUnlisten = await api.onTelegramPhoneLogin(onPhonePhase);
   try {
-    await api.telegramPhoneStart(proxyUrl.value.trim());
+    await api.telegramPhoneStart();
   } catch (e) {
     phoneErr.value = api.errCode(e) || 'tg_login_failed';
   }
@@ -553,12 +512,11 @@ async function importTdata() {
     // session 不在那儿——于是要么报「尚未登录」而位置其实已经建好了，
     // 要么拿上次扫码残留的 session 又建一个**别的账号**的位置
     // 后端返回 { id, duplicate }：命中已有账号时 id 是那个已有位置的
-    const r = await api.telegramTdataImport(p, pw, proxyUrl.value.trim());
+    const r = await api.telegramTdataImport(p, pw);
     tdPass.value = '';
     tdPlaceId.value = r.id;
     emit('done', {
       sessionSaved: true,
-      proxyUrl: proxyUrl.value,
       placeId: r.id,
       duplicate: r.duplicate === true,
     });
@@ -580,7 +538,7 @@ async function start() {
   resetTransient();
   refreshes.value = 0;
   try {
-    await api.telegramLoginStart(proxyUrl.value.trim());
+    await api.telegramLoginStart();
   } catch (e) {
     phase.value = 'failed';
     errCode.value = api.errCode(e) || 'tg_login_failed';
@@ -645,15 +603,11 @@ onMounted(async () => {
   void loadApiStatus();
 
   try {
-    // 先填默认代理再做别的：用户打开对话框第一眼就该看到它，
-    // 而不是在连接失败之后才被告知「你需要配代理」
+    // 登录页只展示后端按全局策略解析出的实际地址；修改入口只在设置页。
     const p = await api.telegramSuggestProxy();
-    if (p) {
-      proxyUrl.value = p;
-      proxyAuto.value = true;
-    }
+    activeProxy.value = p || '';
   } catch {
-    // 探测失败不影响登录，回落到手工填
+    // 读取失败不阻断登录；真正建连时后端会返回可翻译的配置错误。
   }
   try {
     canPersist.value = await api.telegramCanPersist();
@@ -710,7 +664,7 @@ onBeforeUnmount(() => {
           <button class="btn" data-tg="rescan" @click="scanAnyway">
             {{ i18n.t('tg.scan_again') }}
           </button>
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true, proxyUrl, placeId: tdPlaceId })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved: true, placeId: tdPlaceId })">
             {{ i18n.t('common.close') }}
           </button>
         </div>
@@ -769,30 +723,10 @@ onBeforeUnmount(() => {
         <!-- 只在选了扫码那一支时显示这句说明 -->
         <p v-if="method === 'qr'" class="lead">{{ i18n.t('tg.qr_why') }}</p>
 
-        <label v-if="method" class="f">
+        <div v-if="method" class="f">
           <span class="fl">{{ i18n.t('tg.proxy') }}</span>
-          <input
-            v-model="proxyUrl"
-            @input="proxyAuto = false"
-            data-tg="proxy"
-            type="text"
-            placeholder="socks5://127.0.0.1:7897"
-            spellcheck="false"
-            @keydown.enter="start"
-          />
-          <span v-if="proxyAuto" class="d auto" data-tg="proxy-auto">
-            {{ i18n.t('tg.proxy_auto') }}
-          </span>
-          <span class="d">{{ i18n.t('tg.proxy_desc') }}</span>
-        </label>
-
-        <!-- 填了 http:// 时显式提示会改写，而不是静默按 SOCKS5 试。
-             静默转换的问题是用户不知道真正生效的是什么 -->
-        <div v-if="method && (proxyNeedsFix)" class="pxfix" data-tg="px-fix">
-          <span>{{ i18n.t('tg.proxy_scheme_hint') }}</span>
-          <button class="btn" data-tg="px-fixbtn" @click="fixProxyScheme">
-            {{ i18n.t('tg.proxy_scheme_fix') }}
-          </button>
+          <div class="d" data-tg="proxy">{{ activeProxy || i18n.t('tg.proxy_direct') }}</div>
+          <span class="d">{{ i18n.t('tg.proxy_global_desc') }}</span>
         </div>
 
         <!-- 内置 api_id 说明 + 改用自己的那一对。
@@ -855,9 +789,6 @@ onBeforeUnmount(() => {
           </div>
           <button class="btn" data-tg="conn-retry" :disabled="connChecking" @click="checkConn">
             {{ i18n.t('tg.conn_check') }}
-          </button>
-          <button class="btn" data-tg="px-sys" @click="useSystemProxy">
-            {{ i18n.t('tg.proxy_from_system') }}
           </button>
         </div>
 
@@ -1203,7 +1134,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-if="phase === 'done'" class="act">
-          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved, proxyUrl, placeId: tdPlaceId })">
+          <button class="btn pri" data-tg="close" @click="emit('done', { sessionSaved, placeId: tdPlaceId })">
             {{ i18n.t('common.close') }}
           </button>
         </div>

@@ -297,6 +297,10 @@ pub struct Remote {
     ///
     /// 为 `false` 时能识别伪装文件，但远程每个文件都要多一次请求。
     pub scan_omy_only: bool,
+    /// Telegram 全局代理模式：`system` 自动读取当前系统代理，`manual` 使用固定地址。
+    pub telegram_proxy_mode: String,
+    /// Telegram 全局手动代理。仅 `telegram_proxy_mode = "manual"` 时生效。
+    pub telegram_proxy: String,
     /// 已保存的远程位置。
     ///
     /// 密码不在这里——它经 `omy-secret` 加密后放在 [`SavedPlace::secret`]，
@@ -343,7 +347,8 @@ pub struct SavedPlace {
     pub name: String,
     /// 驱动类型，目前只有 `webdav`。
     pub kind: String,
-    /// 服务地址。
+    /// 服务地址。Telegram 位置不使用此字段，且空值不写入配置。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
     /// 用户名，匿名时为空。
     #[serde(default)]
@@ -387,6 +392,9 @@ impl Default for Remote {
             cache_wifi_only: false,
             scan_concurrency: 8,
             scan_omy_only: true,
+            // Telegram 默认在每次建连时读取当前系统代理；手动地址是显式覆盖。
+            telegram_proxy_mode: String::from("system"),
+            telegram_proxy: String::new(),
             places: Vec::new(),
             // 默认用内置 api_id。填自己那一对是逃生口，不是常规配置
             telegram_api_id: None,
@@ -699,6 +707,8 @@ mod tests {
         assert_eq!(r.cache_limit, 2 * 1024 * 1024 * 1024);
         assert_eq!(r.scan_concurrency, 8);
         assert!(r.scan_omy_only, "默认只扫 .omy，避免远程逐个探测");
+        assert_eq!(r.telegram_proxy_mode, "system", "Telegram 默认跟随系统代理");
+        assert!(r.telegram_proxy.is_empty(), "自动模式不应携带手动代理地址");
     }
 
     /// 合并是逐层的，不能整表替换。

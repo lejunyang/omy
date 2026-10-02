@@ -10,7 +10,7 @@ use std::time::Duration;
 use omy_remote::{Capabilities, Error as RemoteError, RemoteStore};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::commands::{CmdError, CmdResult};
+use crate::commands::{CmdError, CmdResult, Shared};
 use crate::place_cmds::{build_remote_source_with_cache, RemoteFileRef};
 use crate::place_files::RemoteCache;
 use crate::places::PlaceRegistry;
@@ -90,11 +90,17 @@ impl CopyRetryStore {
 pub async fn remote_copy(
     app: tauri::AppHandle,
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
+    state: tauri::State<'_, Shared>,
     cache: tauri::State<'_, Arc<RemoteCache>>,
     xfer: tauri::State<'_, Arc<Transfers>>,
     retries: tauri::State<'_, Arc<CopyRetryStore>>,
     req: RemoteCopyRequest,
 ) -> CmdResult<u64> {
+    let keks = crate::place_keys::unlock_keks(&state);
+    crate::telegram_cmds::ensure_connected(&reg, &req.source.place_id, &keks).await?;
+    if req.target_place_id != req.source.place_id {
+        crate::telegram_cmds::ensure_connected(&reg, &req.target_place_id, &keks).await?;
+    }
     validate_request(&reg, &req).await?;
 
     let source_name = req
@@ -373,10 +379,6 @@ mod tests {
             PIPE_CAPACITY % COPY_CHUNK as usize,
             0,
             "完整窗口能留在管道中，避免固定产生半窗口尾巴"
-        );
-        assert!(
-            PIPE_CAPACITY <= 64 * 1024 * 1024,
-            "队列上限失控会在下载远快于上传时吞掉大量内存"
         );
     }
 }

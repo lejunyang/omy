@@ -134,7 +134,7 @@ const showTelegramLogin = ref(false);
  * 登录态是否落盘要如实转达：存不住时用户下次打开又要扫码，不说清楚
  * 他会以为程序把他登出了。
  */
-async function onTelegramDone({ sessionSaved, proxyUrl, placeId, duplicate }) {
+async function onTelegramDone({ sessionSaved, placeId, duplicate }) {
   showTelegramLogin.value = false;
   setNotice(sessionSaved ? i18n.t('tg.session_saved') : i18n.t('tg.session_not_saved'));
   // 登录完就把它接成一个远程位置并进去。
@@ -154,7 +154,7 @@ async function onTelegramDone({ sessionSaved, proxyUrl, placeId, duplicate }) {
     let dup = duplicate === true;
     if (!id) {
       // 扫码 / 手机号：这里才真正建位置，后端返回 { id, duplicate }
-      const r = await api.telegramPlaceConnect(proxyUrl);
+      const r = await api.telegramPlaceConnect();
       id = r.id;
       dup = r.duplicate === true;
     }
