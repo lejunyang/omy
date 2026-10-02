@@ -280,11 +280,12 @@ Telegram 对话里的文件和消息都可以原生转发：
 几条 CLI 特有的真实约束：
 
 - **密码绝不进 argv**：WebDAV 密码、Telegram 两步验证、位置密码、虚拟收藏密码、自定义 `api_hash` 都只走交互隐藏输入 / `--password-stdin` / `--password-file` / `--password-env`（或各自的 `--code-*` / `--passcode-*` / `--hash-*`），没有 `--password`。匿名 WebDAV 要显式 `--anonymous`（与任何密码通道互斥），不再靠「密码留空」。
+- **文件命令的 `--password-*` 只在加密 Telegram 位置需要**：`ls` / `upload` / `download` / `mkdir` / `delete` / `move` / `cache pin|unpin` 都带这组位置密码通道，但它是「解开 per-place 加密的 Telegram 位置 session」用的，与 `.omy` 文件密码两码事。WebDAV 位置、未加密位置、本机机器密钥能自动解开的位置都不需要——此时既不提示也不消费 stdin。`remote copy` 两端各用 `--source-password-*` / `--dest-password-*`；两端都要密码时不能两端都选 stdin（一条 stdin 只能读一次）。`remote decrypt` 的 `--password-*` 是文件密码、`--place-password-*` 才是位置 session 密码，别混。
 - **覆盖要显式 `--force`**：`upload` / `download` / `copy` / `decrypt` 默认拒绝覆盖同名目标，确认覆盖才加 `--force`；`delete` 的 `--force` 是跳过「永久删除」确认。
 - **远程路径禁越权**：路径里的 `..` 段会在发请求前被拒。
 - **二维码在 stderr，且不进 `--json`**：真终端用半角块渲染，管道 / 重定向（非 TTY）时回落纯 ASCII，并始终打印可复制的 `tg://` 链接；但这行短时登录票据**只打 stderr，不进结构化 stdout**，避免被 `--json | tee` 之类写进日志。非交互下两步密码错了只试一次就退出。
-- **代理是全局的**：`telegram proxy-set` 设的全局策略（`--url` 手动 / `--system` 跟随系统，互斥）对所有账号生效；`login` / `phone` / `tdata import` 的 `--proxy` 只是该次登录的一次性覆盖。`proxy-status` 看当前生效值，`proxy-reset` 回到跟随系统。
-- **退出码**：用法错 2；远程其余失败统一 1；虚拟收藏密码错 3、取消确认 8；`telegram check` 不通也是 1。Telegram 位置类错误是 `[tg_*]` 消息前缀（退出码恒 1），脚本按前缀匹配而不是退出码。
+- **代理与应用身份全局同源**：`telegram proxy-set` 设的全局策略（`--url` 手动 / `--system` 跟随系统，互斥）对所有账号生效；`login` / `phone` / `tdata import` 的 `--proxy` 只是该次登录的一次性覆盖。`proxy-status` 看当前生效值，`proxy-reset` 回到跟随系统。扫码、手机号、tdata 导入与之后的重连/打开 session 用的是**同一份** api_id / api_hash 与代理；唯一例外是 tdata 导入强制用内置 api_id 2040（那份 key 出身 Telegram Desktop），代理仍同源。
+- **退出码**：用法错 2；加密 Telegram 位置密码错 **3**（`TG_PLACE_WRONG_PASSWORD`）；远程其余失败统一 1；虚拟收藏密码错 3、取消确认 8；`telegram check` 不通也是 1。建连失败在 `--json` 的 `error.code` 给 `TG_*` 结构化码；离线的 Telegram 位置类错误仍是 `[tg_*]` 消息前缀（退出码恒 1），脚本按前缀匹配而不是退出码。
 
 ::: warning 对着真号的联网段未在无头环境端到端实测
 `telegram login` 的二维码渲染、两步密码通道、登录态收编与去重有单测钉死；`mkdir` / `delete` / `move` / `decrypt`、递归 `upload`、跨位置 `copy` 与虚拟收藏（含加解密、引用增删改）都有对着本地 dav-server 的 WebDAV 端到端测试兜底。但真正连 Telegram 数据中心、用真人账号完成扫码 / 收验证码 / tdata 导入 / 转发 / 服务端搜索这一段，无头环境代替不了人操作，**没有当成已验证**——只做了正确接线与失败如实报错。

@@ -45,13 +45,29 @@ title: 退出码
 |---|---|---|
 | `remote` / `remote telegram` / `remote virtual` 用法错 | 2 | clap 报 |
 | 远程一般失败（连不上、读写失败、`telegram check` 不通） | 1 | 与「用法错 2」可据此区分 |
+| 加密 Telegram 位置密码错 | **3** | `TG_PLACE_WRONG_PASSWORD` |
 | `remote virtual` 密码错 | **3** | `VIRTUAL_WRONG_PASSWORD` |
 | `remote virtual place remove` 等交互确认选否 | 8 | 与文件命令一致 |
 | `remote virtual` 其余失败 | 1 | `VIRTUAL_*` 结构化码见下 |
 
 `remote virtual` 的错误是结构化的：`--json` 的 `error.code` 形如 `VIRTUAL_LOCKED`（加密位置没给密码）、`VIRTUAL_WRONG_PASSWORD`（密码错 = 3）、`VIRTUAL_NOT_ENCRYPTED`、`VIRTUAL_NO_SUCH_PLACE` 等，脚本应匹配它而不是中文文案。
 
-Telegram 位置类操作（`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`）的错误退出码恒为 1，靠消息里带方括号的稳定前缀区分：`[tg_unlock_wrong]` 密码错、`[tg_no_protector]` 无凭据库拒绝落明文、`[tg_not_encrypted]` 位置没加密、`[tg_no_session]` 还没登录态、`[tg_cross_chat]` 转发条目不在同一对话。脚本匹配前缀，不要匹配退出码。
+建连一个远程位置（`ls` / `upload` / `download` / `copy` / `decrypt` / `cache pin` 等）失败时，`--json` 的 `error.code` 给一组 `TG_*` 结构化码：
+
+| `error.code` | 退出码 | 含义 |
+|---|---|---|
+| `TG_PLACE_WRONG_PASSWORD` | **3** | 给过位置密码但解不开加密的 Telegram 位置 |
+| `TG_PLACE_PASSWORD_REQUIRED` | 1 | 加密位置本机自动解锁失败，又不在 TTY、也没给密码通道（脚本请用 `--password-*`） |
+| `TG_PLACE_LOCKED` | 1 | 位置已加密但没解开（没给密码），提示用密码通道 |
+| `TG_NO_SESSION` | 1 | 该位置没有可用的 Telegram 登录态，先 `telegram login` |
+| `TG_SESSION_EXPIRED` | 1 | 登录态已失效（unauthorized），需重新登录 |
+| `TG_CONNECT_NO_PROXY` | 1 | 直连 Telegram 失败且未配置代理 |
+| `TG_SESSION_UNREADABLE` | 1 | 登录态文件读不出来 |
+| `TG_CONNECT_FAILED` | 1 | 其它建连失败 |
+
+WebDAV 位置不会产生这些码：它不需要现场位置密码。
+
+Telegram 位置类**离线**操作（`encrypt` / `unlock` / `lock` / `decrypt` / `targets` / `forward` / `search`）的错误退出码恒为 1，靠消息里带方括号的稳定前缀区分：`[tg_unlock_wrong]` 密码错、`[tg_no_protector]` 无凭据库拒绝落明文、`[tg_not_encrypted]` 位置没加密、`[tg_no_session]` 还没登录态、`[tg_cross_chat]` 转发条目不在同一对话。脚本匹配前缀，不要匹配退出码。它与上面的 `TG_*` 结构化码是两套：前者是离线变换登录态信封时的人类可读前缀，后者是真正建连时进 `--json` 的机器可读码。
 
 ## 在脚本里用
 
