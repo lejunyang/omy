@@ -24,6 +24,7 @@ This page reflects the actual output of `omy --help`. Use `omy <command> --help`
 | `key` | Key slot management |
 | `shard` | Split and merge shards |
 | `share` | LAN sharing and access |
+| `remote` | Remote locations (WebDAV / Telegram): register, browse, upload/download, cache |
 | `bench` | KDF and cipher throughput benchmarks |
 | `doctor` | Environment self-check |
 | `completion` | Generate shell completion scripts |
@@ -318,6 +319,100 @@ Common `serve` options: `--name`, `--port` (0 = system-assigned), `--local-only`
 Common `connect` options: `--addr` (skip mDNS), `--fetch <DIR>` (fetch ciphertext without decrypting).
 
 Common `pair` options: `--listen`, `--port`, `--expires-in <DAYS>` (0 = never), `--pin-file`.
+
+## remote
+
+```
+omy remote <COMMAND>
+```
+
+Remote locations share the **same configuration** (`remote.places`) as the GUI: a location added on the CLI is recognized by the GUI and vice versa. Location ids look like `p1`, `p2`…; `<location>` below accepts either an id or a display name — a name that matches more than one location errors out and asks you to use the id.
+
+Exit codes: 2 for usage errors, and 1 for every other remote failure (so scripts can tell "bad invocation" from "ran but failed").
+
+### Location management
+
+| Subcommand | Purpose |
+|---|---|
+| `list` | List registered locations (id, r/w, kind, name; never the password) |
+| `show <location>` | Show one location's connection info (no password) |
+| `add-webdav <name> --url <URL>` | Add a WebDAV location |
+| `remove <location>` | Remove a location (registration only; **cloud files untouched**, with a confirm) |
+| `rename <location> <new-name>` | Change the local display name only; the server is not touched |
+
+`add-webdav` options:
+
+| Option | Notes |
+|---|---|
+| `--url <URL>` | **Required**, WebDAV root, e.g. `https://dav.example.com/dav` |
+| `--user <USER>` | Username |
+| `--vendor <NAME>` | `generic` (default) or `nextcloud` |
+| `--read-only` | Read-only (writable by default) |
+| `--anonymous` | Anonymous access: stores no username/password; mutually exclusive with any `--password-*` |
+| `--password-stdin` / `--password-file <PATH>` / `--password-env <VAR>` | Password source, pick one |
+
+Unless you pass `--anonymous`, the password is **required** (interactive hidden input / stdin / file / env); leaving it blank to mean anonymous no longer works. Before saving, it builds the client and lists the root as a liveness probe: an invalid URL or an unreachable server means the location is **not saved**. Like every other command there is **no `--password <plaintext>`**.
+
+### Browsing and file operations
+
+| Subcommand | Purpose |
+|---|---|
+| `ls <location> [path]` | List a remote directory; defaults to root |
+| `upload <location> <local-file> <remote-dir>` | Upload a single local file to a remote directory (streamed) |
+| `download <location> <remote-file> <local-path>` | Download to local in 1 MiB chunks, streamed to disk |
+| `copy <src-loc>:<file> <dst-loc>:<path>` | Copy a remote file verbatim between two locations |
+
+All three write operations take `--force`: by default they **refuse to overwrite** an existing same-name target — add it to confirm. `upload` overwrites an existing remote file, `download` overwrites an existing local file, `copy` overwrites an existing target remote file.
+
+Real behavior worth knowing:
+
+- `upload` sends **one single file** at a time; it does not upload a whole directory.
+- `copy` copies the **raw bytes (ciphertext)** — both ends need no shared password. The transfer is **bounded and streamed** (backpressured chunks, only a block or two in memory at a time), so large files do not get aggregated into memory.
+- A remote path containing `..` segments is rejected before any request is sent, to prevent climbing out of the intended directory; relative paths are normalized to a leading `/`.
+- A read-only destination is rejected before any request is sent.
+
+### Ciphertext cache
+
+| Subcommand | Purpose |
+|---|---|
+| `cache status` | Show temp/pinned cache usage and the pinned list |
+| `cache clear` | Clear temporary cache blocks (pinned files are untouched) |
+| `cache pin <location> <remote-file>` | Pull a whole file locally and keep it pinned (available offline) |
+| `cache unpin <location> <remote-file>` | Unpin; blocks return to the temp tier and may be evicted |
+
+The cache directory and limit use the same keys as the GUI (`remote.cache_dir` / `remote.cache_limit`).
+
+### Telegram
+
+```
+omy remote telegram <COMMAND>
+```
+
+| Subcommand | Purpose |
+|---|---|
+| `login` | QR-code log in to a Telegram account and save it as a location |
+| `logout <location>` | Remove the location **and destroy** the local session (must re-scan to use again) |
+| `detach <location>` | Remove from the list but **keep** the local session (can be re-added without re-scanning) |
+
+`login` options:
+
+| Option | Notes |
+|---|---|
+| `--name <name>` | Location name; defaults to the server-side nickname |
+| `--proxy <URL>` | Proxy, e.g. `socks5://127.0.0.1:7897`; defaults to auto-detecting the system proxy |
+| `--password-stdin` / `--password-file <PATH>` / `--password-env <VAR>` | Two-step password source, pick one |
+
+The QR code is printed to **stderr**: half-block Unicode in a real terminal, falling back to plain ASCII when piped/redirected (non-TTY), and a copyable `tg://login?token=...` link is **always** printed so you can open it elsewhere on your phone. The code refreshes automatically when it expires. The two-step password never appears on the command line; in a non-interactive (piped) run a wrong password fails after a single attempt instead of waiting on the pipe.
+
+::: warning The successful `--json` result carries no login ticket
+That `tg://login?token=...` line is a short-lived scannable ticket; it goes to **stderr only, never into the `--json` stdout** — otherwise `... --json | tee …` would persist it into a log, effectively saving a link anyone could scan to log in. The success JSON contains only `id` / `name` / `duplicate` / `user_id` / `session_saved`.
+:::
+
+After a successful login the account is de-duplicated by `user_id`: logging in again for the same account adopts the existing location instead of creating a new one. Once saved, `ls` / `upload` / `download` / `copy` / `cache` work on the Telegram location too (each conversation is a directory).
+
+::: warning Telegram capabilities the CLI does not cover yet
+The CLI covers QR login plus basic file operations. The GUI's phone-number login, importing desktop `tdata`, message forwarding, server-side search, broadcast-channel message view, and virtual favorite locations have **no CLI equivalent**; deleting, renaming, or creating remote folders is not offered on either side. See the coverage table at the end of [Remote locations](../guide/remote-locations).
+:::
 
 ## bench
 

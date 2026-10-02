@@ -24,6 +24,21 @@ omy 常被连同加密文件一起放在移动硬盘或 U 盘上。配置散落�
 装在 `C:\Program Files`、`/usr/bin` 这类只读位置时会自动回退到系统目录。判定方式是真的写一个临时文件试试，而不是看权限位——只读挂载和 Windows 的 ACL 都不是单看权限位能判断的，判断错的后果是设置悄悄丢失。
 :::
 
+便携根一旦确定，其它本机状态也都落在同一个 `omy-data/` 下，拷走整个文件夹才是完整迁移：
+
+| 状态 | 便携路径 | 系统回退 |
+|---|---|---|
+| 配置文件 | `omy-data/config.toml` | `%APPDATA%\omy\config.toml` 等 |
+| 密文缓存 | `omy-data/cache/` | 系统缓存目录下的 `omy/` |
+| 日志 | `omy-data/logs/` | 系统数据目录下的 `omy/logs/` |
+| 设备库（本机身份与配对记录，内含私钥） | `omy-data/devices.omy` | `%APPDATA%\omy\devices.omy` 等 |
+
+设备库路径另有环境变量 `OMY_DEVICE_STORE` 可显式覆盖（指向一个具体文件），优先级高于便携根——例如把身份指到随身 U 盘做多身份。空白值视为未设置。设了 `OMY_DEVICE_STORE` 时程序按你指的路径走，**不做**下面的自动迁移。
+
+::: tip 升级时老设备库会自动迁一次
+便携位置是后来才纳入默认路径的。旧版本的设备身份存在系统配置目录里；升级到便携模式后，仅当**便携 `devices.omy` 还不存在、而老系统 `devices.omy` 存在**时，程序会把老库一次性复制到便携位置（先写临时文件再改名，失败则本次仍用老库、下次重试）。老库**永不删除**，并发启动也绝不会互相覆盖。也就是说配对身份会跟着 `omy-data/` 走，不会因为升级凭空生成一份空白身份。
+:::
+
 文件默认**不存在**，此时全部用内置默认值。`omy doctor` 会打印当前实际使用的路径；图形界面里在「设置 › 关于」也能看到。
 
 用 `--config` 可临时指定别的文件：
@@ -135,8 +150,9 @@ scan_concurrency = 8
 scan_omy_only = true
 ```
 
-::: tip security 与 remote 目前只对图形界面生效
-命令行用不到自动锁定与远程缓存，但两边读同一份文件，所以这些键在 CLI 下会被正常保留、不会被当成未知键警告。
+::: tip 哪些键 CLI 也用、哪些只在图形界面生效
+`remote.places`、`remote.cache_dir`、`remote.cache_limit` 现在由 GUI 与 `omy remote` 命令**共用**：命令行加的位置、缓存目录与上限设置两边一致。
+`security.*`（自动锁定等）以及 `remote.clear_cache_on_exit` / `scan_concurrency` / `scan_omy_only` 仍只在图形界面生效。两边读同一份文件，CLI 用不到的键会被正常保留，不会当成未知键警告。
 :::
 
 ## 各项默认值
@@ -166,12 +182,12 @@ scan_omy_only = true
 | `security.wipe_temp_plaintext` | `true` | 外部程序关闭后清理临时明文（GUI 能力待接入）|
 | `password_managers.keepassxc.proxy_path` | 无 | KeePassXC proxy 的自定义路径；留空时自动探测。桌面 GUI 可在“设置 → 安全与密码 → KeePassXC 便携版”修改 |
 | `password_managers.keepassxc.associations` | `[]` | 已关联数据库的公开 hash 与名称；授权 key 单独存入系统凭据库 |
-| `remote.cache_limit` | `2147483648` | 密文缓存上限，2 GiB；`0` 不限制（仅 GUI）|
-| `remote.cache_dir` | 无 | 自定义缓存目录，留空用默认便携路径（仅 GUI）|
-| `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI）|
+| `remote.cache_limit` | `2147483648` | 密文缓存上限，2 GiB；`0` 不限制（GUI 与 CLI `remote cache` 共用）|
+| `remote.cache_dir` | 无 | 自定义缓存目录，留空用默认便携路径（GUI 与 CLI `remote cache` 共用）|
+| `remote.clear_cache_on_exit` | `false` | 退出应用时清空密文缓存（仅 GUI；CLI 用完即退，无此概念）|
 | `remote.cache_wifi_only` | `false` | 仅 Wi-Fi 下缓存（移动端，暂未生效）|
 | `remote.scan_concurrency` | `8` | 远程扫描并发请求数，1–32（仅 GUI）|
-| `remote.places` | `[]` | 已保存的远程位置，由界面维护；密码在其中以加密信封形式保存（仅 GUI）|
+| `remote.places` | `[]` | 已保存的远程位置，GUI 与 CLI `remote` 命令共同维护；密码在其中以加密信封形式保存 |
 | `remote.scan_omy_only` | `true` | 远程扫描是否只看 `.omy`（仅 GUI）|
 
 ::: warning original_action 改成 trash 或 delete 要想清楚

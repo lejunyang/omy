@@ -24,6 +24,21 @@ omy often travels on an external drive or USB stick together with the encrypted 
 Installed into a read-only location such as `C:\Program Files` or `/usr/bin`, it falls back to the system directory automatically. The check actually writes a temporary file rather than inspecting permission bits — read-only mounts and Windows ACLs cannot be judged from permission bits alone, and getting it wrong means settings disappear silently.
 :::
 
+Once the portable root is chosen, the rest of the local state lives under that same `omy-data/` folder, so copying the whole folder is a complete migration:
+
+| State | Portable path | System fallback |
+|---|---|---|
+| Config file | `omy-data/config.toml` | `%APPDATA%\omy\config.toml`, etc. |
+| Ciphertext cache | `omy-data/cache/` | `omy/` under the system cache dir |
+| Logs | `omy-data/logs/` | `omy/logs/` under the system data dir |
+| Device store (local identity + paired devices, holds private keys) | `omy-data/devices.omy` | `%APPDATA%\omy\devices.omy`, etc. |
+
+The device store path can also be overridden explicitly via the `OMY_DEVICE_STORE` environment variable (pointing at a specific file); it takes precedence over the portable root — e.g. to keep your identity on a USB stick for multi-identity use. A blank value is treated as unset. When `OMY_DEVICE_STORE` is set, the program uses the path you name and does **not** perform the automatic migration below.
+
+::: tip On upgrade, the old device store is migrated once automatically
+The portable location was made the default later. Older builds kept device identity in the system config dir; after upgrading to portable mode, only when the **portable `devices.omy` does not yet exist but the legacy system one does** does the program copy it once into the portable location (write a temp file then rename; on failure it keeps using the legacy path this run and retries next launch). The legacy store is **never deleted**, and concurrent launches never overwrite each other. So your pairing identity travels with `omy-data/` instead of upgrading into a fresh blank identity.
+:::
+
 The file **does not exist by default**, in which case built-in defaults apply throughout. `omy doctor` prints the path actually in use; the GUI shows it under Settings › About.
 
 Use `--config` to point somewhere else temporarily:
@@ -135,8 +150,9 @@ scan_concurrency = 8
 scan_omy_only = true
 ```
 
-::: tip security and remote currently only affect the GUI
-The command line has no use for auto-lock or a remote cache, but both read the same file, so these keys are preserved and never reported as unknown under the CLI.
+::: tip Which keys the CLI also reads, and which are GUI-only
+`remote.places`, `remote.cache_dir`, and `remote.cache_limit` are now **shared** by the GUI and the `omy remote` command: locations added on the CLI, the cache directory, and the cache limit agree on both ends.
+`security.*` (auto-lock, etc.) and `remote.clear_cache_on_exit` / `scan_concurrency` / `scan_omy_only` still only affect the GUI. Both ends read the same file; keys the CLI has no use for are preserved and never reported as unknown.
 :::
 
 ## Defaults for each key
@@ -166,12 +182,12 @@ The command line has no use for auto-lock or a remote cache, but both read the s
 | `security.wipe_temp_plaintext` | `true` | Wipe temporary plaintext when the external opener closes (GUI wiring pending) |
 | `password_managers.keepassxc.proxy_path` | none | Custom KeePassXC proxy path; empty enables automatic discovery. The desktop GUI exposes it under **Settings → Security → Portable KeePassXC** |
 | `password_managers.keepassxc.associations` | `[]` | Public hashes and names of paired databases; authorization keys live in the OS credential store |
-| `remote.cache_limit` | `2147483648` | Ciphertext cache limit, 2 GiB; `0` unlimited (GUI only) |
-| `remote.cache_dir` | none | Custom cache directory; empty uses the default portable path (GUI only) |
-| `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only) |
+| `remote.cache_limit` | `2147483648` | Ciphertext cache limit, 2 GiB; `0` unlimited (shared by the GUI and `remote cache`) |
+| `remote.cache_dir` | none | Custom cache directory; empty uses the default portable path (shared by the GUI and `remote cache`) |
+| `remote.clear_cache_on_exit` | `false` | Clear the ciphertext cache on exit (GUI only; the CLI exits immediately and has no such concept) |
 | `remote.cache_wifi_only` | `false` | Cache on Wi-Fi only (mobile; not yet active) |
 | `remote.scan_concurrency` | `8` | Concurrent requests when scanning, 1–32 (GUI only) |
-| `remote.places` | `[]` | Saved remote locations, managed by the GUI; passwords are stored there as encrypted envelopes (GUI only) |
+| `remote.places` | `[]` | Saved remote locations, maintained jointly by the GUI and the `remote` CLI; passwords are stored there as encrypted envelopes |
 | `remote.scan_omy_only` | `true` | Whether remote scanning only looks at `.omy` (GUI only) |
 
 ::: warning Think before setting original_action to trash or delete

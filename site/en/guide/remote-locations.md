@@ -245,10 +245,41 @@ The list keeps working **after the location itself has been removed**: such a ro
 
 Portable-first layout:
 
-- **Desktop**: `omy-data/config.toml` and `omy-data/cache/remote/` sit next to the executable; copying that folder carries settings and cache with it;
+- **Desktop**: `omy-data/config.toml`, the `omy-data/cache/remote/` ciphertext cache, and the local device store `omy-data/devices.omy` (which holds the local private key and paired-device list) all sit next to the executable; copying that whole folder carries settings, cache, and pairing identity with it;
 - **Mobile**: the app's own data directory.
 
-See [Configuration](configuration) for the full list of keys.
+The device store path can also be overridden explicitly via the `OMY_DEVICE_STORE` environment variable. See [Configuration](configuration) for the full list of keys.
+
+## Managing remote locations from the command line
+
+Remote locations are not limited to the GUI. The `omy remote` subcommands read and write the **same `remote.places`** as the GUI: a WebDAV location added on the CLI is recognized by the GUI and its password unlocks there, and vice versa. For the full command and option list see [Command overview › remote](../reference/cli#remote); this section gives the GUI↔CLI coverage and the real boundaries.
+
+| Capability | GUI | CLI |
+|---|---|---|
+| WebDAV location: add (with liveness probe) / list / show / rename / remove | ✅ | ✅ |
+| Telegram: QR-code login (terminal QR) | ✅ | ✅ |
+| Telegram: detach (keep session) vs logout (destroy session) | ✅ | ✅ |
+| List directory, upload a single file, download, cross-location ciphertext copy | ✅ | ✅ |
+| Ciphertext cache: status / clear / pin / unpin | ✅ | ✅ |
+| Preview / stream video & images, incremental scan, thumbnails | ✅ | ❌ out of CLI scope |
+| Decrypt-to-local (streamed, resumable via cache) | ✅ | ❌ (`remote download` fetches ciphertext, it does not decrypt) |
+| Directory upload, resumable transfer, transfer manager page | ✅ | ❌ (one file at a time; `copy` is bounded streaming but does not resume on failure) |
+| Telegram: phone-number login, import desktop `tdata`, forwarding, server-side search, channel message view | ✅ | ❌ |
+| Virtual remote locations (favorites) | ✅ | ❌ |
+| Delete / rename / create remote folders | ❌ | ❌ (not built on either side yet) |
+
+A few CLI-specific constraints:
+
+- **Passwords never hit the command line**: both the WebDAV password and the Telegram two-step password only come from interactive hidden input / `--password-stdin` / `--password-file` / `--password-env`; there is no `--password`. Anonymous WebDAV needs an explicit `--anonymous` (mutually exclusive with any password channel) — it is no longer "leave the password blank".
+- **Overwriting needs an explicit `--force`**: `upload` / `download` / `copy` refuse to overwrite an existing same-name target by default; add `--force` to confirm.
+- **Remote paths can't escape**: any `..` segment in a remote path is rejected before a request is sent.
+- **The QR code goes to stderr and never into `--json`**: half-block Unicode in a real terminal, falling back to plain ASCII when piped/redirected (non-TTY), with a copyable `tg://` link always printed — but that short-lived login ticket goes to **stderr only, never into the structured stdout**, so `--json | tee …` can't persist it into a log. In a non-interactive run a wrong two-step password fails after a single attempt.
+- **Proxy**: Telegram connections auto-detect the system proxy; `telegram login` takes an explicit `--proxy`, and later file operations reuse the system proxy detected at login.
+- **Exit codes**: 2 for usage errors, 1 for every other remote failure, so scripts can tell them apart.
+
+::: warning The online QR-login leg is not end-to-end tested headless
+The QR rendering, two-step password channels, session adoption, and de-duplication are pinned by unit tests, but actually reaching Telegram's data centers to complete a scan cannot be exercised headless — that leg is wired correctly and reports failures honestly, rather than being claimed as tested. File-operation networking is covered end-to-end against a local dav-server for WebDAV.
+:::
 
 ## How passwords are stored
 
