@@ -55,7 +55,7 @@ pub enum Cmd {
     Recovery(RecoveryArgs),
     /// 用恢复码打开文件并设置新密码
     Restore(RestoreArgs),
-    /// 管理设备密钥（用 Windows Hello 免密解锁）
+    /// 管理设备密钥（用系统生物识别免密解锁：Windows Hello / Touch ID）
     Device(DeviceArgs),
 }
 
