@@ -605,13 +605,17 @@ mod tests {
         //
         // 有损 WebP 要靠 FFmpeg 的 libwebp（见 `encode` 的注释），而 FFmpeg
         // 是可选依赖。没装时 `encode` 会静默退回 JPEG，两条路径产出**同一份
-        // 字节**，这条断言必然失败——它测的是「本机装没装 FFmpeg」，
+        // 字节**，这条断言必然失败——它测的是「本机能不能编有损 WebP」，
         // 而不是我们的格式选择。CI 的 runner 正是这种环境。
         //
-        // 所以没有 FFmpeg 时跳过。不改成「小于等于」蒙混过关：那样即使
-        // 真的退回了 JPEG 也照样通过，这条测试就白写了。
-        if !crate::ffprobe::has_ffmpeg() {
-            eprintln!("跳过 WebP/JPEG 体积对比：本机没有 FFmpeg，WebP 会退回 JPEG");
+        // 注意光检测 ffmpeg 在不在不够：macOS Homebrew 的 ffmpeg 不带
+        // libwebp 编码器（见 `ffprobe::has_libwebp` 的注释），此时同样会退回
+        // JPEG。所以两条都要查。
+        //
+        // 不改成「小于等于」蒙混过关：那样即使真的退回了 JPEG 也照样通过，
+        // 这条测试就白写了。
+        if !crate::ffprobe::has_ffmpeg() || !crate::ffprobe::has_libwebp() {
+            eprintln!("跳过 WebP/JPEG 体积对比：本机 ffmpeg 编不出有损 WebP，会退回 JPEG");
             return;
         }
         let photo = photo_like(640, 480);

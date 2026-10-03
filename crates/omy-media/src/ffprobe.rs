@@ -202,6 +202,36 @@ pub fn has_ffmpeg() -> bool {
     tool_path(Tool::Ffmpeg).is_some()
 }
 
+/// 本机 ffmpeg 是否带 libwebp 编码器。
+///
+/// 装了 ffmpeg ≠ 能编有损 WebP：macOS Homebrew 的 ffmpeg 配方（9.0 实测）
+/// 不带 libwebp——`brew deps ffmpeg` 里没有 webp 依赖，`-encoders` 列表里
+/// 既没有 `libwebp` 也没有 `webp`，而 choco（Windows）与 apt（Linux）
+/// 的 ffmpeg 都带。这时 `encode_webp_lossy` 失败、上层静默退回 JPEG 缩略图，
+/// 产品行为可接受；但「WebP 应小于 JPEG」这条测试必须能识别这种环境，
+/// 否则两条路径产出同一份字节，会把「环境缺编码器」误判成格式选择回归。
+#[must_use]
+pub fn has_libwebp() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let Some(exe) = tool_path(Tool::Ffmpeg) else {
+            return false;
+        };
+        let out = command_for(exe)
+            .arg("-hide_banner")
+            .arg("-encoders")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match out {
+            // 编码器列表打到 stdout；没有 libwebp 子串就是这个构建没编进去
+            Ok(o) => String::from_utf8_lossy(&o.stdout).contains("libwebp"),
+            Err(_) => false,
+        }
+    })
+}
+
 /// 已定位到的 ffprobe 路径，供诊断显示。
 #[must_use]
 pub fn ffprobe_path() -> Option<PathBuf> {
