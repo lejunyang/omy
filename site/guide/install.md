@@ -7,7 +7,7 @@ title: 安装
 omy 有两个入口：命令行工具 `omy`，以及图形界面 `omy-gui`。两者可以只装一个。
 
 ::: info 平台验证范围
-下面的步骤在 **Windows** 与 **Android** 上实测过。**Linux 与 macOS 尚未验证**——代码路径已经实现，但没有在真机上跑过，遇到问题请以实际报错为准。
+下面的步骤在 **Windows**、**Android** 与 **macOS（Apple Silicon）** 上实测过。**Linux 与 macOS（Intel）尚未真机验证**——代码路径已经实现并经 CI 编译，但没有在真机上跑过，遇到问题请以实际报错为准。
 :::
 
 ## 方式一：下载预编译产物
@@ -22,7 +22,7 @@ omy 有两个入口：命令行工具 `omy`，以及图形界面 `omy-gui`。两
 | macOS（Intel） | `omy-<版本>-x86_64-apple-darwin.tar.gz` | 同上 |
 | Android | `*.apk`（按 ABI 分包） | 图形界面，**未签名**，需允许安装未知来源应用 |
 
-Linux 与 macOS 的产物经过 CI 编译与打包，但尚未在真机上实测运行；Windows 与 Android 已实测。
+Linux 与 macOS（Intel）的产物经过 CI 编译与打包，但尚未在真机上实测运行；Windows、Android 与 macOS（Apple Silicon）已实测。
 
 下载后把 `omy`（Windows 上是 `omy.exe`）可执行文件放到 `PATH` 里的任一目录即可。验证一下：
 

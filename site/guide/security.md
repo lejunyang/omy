@@ -86,7 +86,7 @@ FFmpeg 处理的是不可信输入（任意媒体文件是常见的攻击面）�
 
 **SPAKE2 实现未经第三方审计**，且其作者自述可能不是常量时间。配对场景下可接受（PIN 一次性随机、用完即弃），但如果你的威胁模型包含本地时序侧信道，请自行评估。
 
-**平台验证范围有限**：只在 Windows 与 Android 上实测过，Linux 与 macOS 尚未验证。
+**平台验证范围有限**：Windows、Android 与 macOS（Apple Silicon）已真机实测，Linux 与 macOS（Intel）尚未验证。
 
 ## 密码遗忘等于数据丢失
 

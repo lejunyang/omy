@@ -7,7 +7,7 @@ title: Installation
 omy has two front ends: the `omy` command line tool and the `omy-gui` graphical interface. Installing just one is fine.
 
 ::: info Tested platforms
-The steps below have been tested on **Windows** and **Android**. **Linux and macOS are not yet verified** — the code paths exist but have never been exercised on real machines, so trust the actual error output over this page there.
+The steps below have been tested on **Windows**, **Android**, and **macOS (Apple Silicon)**. **Linux and macOS (Intel) are not yet real-machine verified** — the code paths exist and are built in CI, but have never been exercised on real machines, so trust the actual error output over this page there.
 :::
 
 ## Option 1: download a prebuilt artifact
@@ -22,7 +22,7 @@ Each release attaches artifacts for every platform to [GitHub Releases](https://
 | macOS (Intel) | `omy-<version>-x86_64-apple-darwin.tar.gz` | Same as above |
 | Android | `*.apk` (one per ABI) | GUI; **unsigned**, requires allowing unknown sources |
 
-The Linux and macOS artifacts are compiled and packaged in CI but have not been exercised on real machines; Windows and Android have been tested.
+The Linux and macOS (Intel) artifacts are compiled and packaged in CI but have not been exercised on real machines; Windows, Android, and macOS (Apple Silicon) have been tested.
 
 Put the `omy` executable (`omy.exe` on Windows) anywhere on your `PATH`, then check it:
 

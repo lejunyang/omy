@@ -81,10 +81,7 @@ sudo dnf group install "c-development"
 
 ### macOS
 
-::: warning 尚未验证
-:::
-
-需要 Xcode Command Line Tools：
+已验证（Apple Silicon）。需要 Xcode Command Line Tools：
 
 ```bash
 xcode-select --install

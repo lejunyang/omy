@@ -81,10 +81,7 @@ Tauri v2 requires **WebKitGTK 4.1**, so the baseline is Ubuntu 22.04 or Debian 1
 
 ### macOS
 
-::: warning Not yet verified
-:::
-
-Xcode Command Line Tools are needed:
+Verified on Apple Silicon. Xcode Command Line Tools are needed:
 
 ```bash
 xcode-select --install

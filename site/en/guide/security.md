@@ -86,7 +86,7 @@ The interface also **does not enable** Tauri's `protocol-asset`, which would exp
 
 **The SPAKE2 implementation is unaudited** and its author states it may not be constant-time. Acceptable for pairing (single-use random PINs, discarded after use), but evaluate it yourself if local timing side channels matter to you.
 
-**Platform verification is limited**: only Windows and Android have been tested; Linux and macOS have not.
+**Platform verification is limited**: Windows, Android, and macOS (Apple Silicon) have been tested on real hardware; Linux and macOS (Intel) have not.
 
 ## A forgotten password means lost data
 
