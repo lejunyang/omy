@@ -1,0 +1,153 @@
+# 内置 FFmpeg 的裁剪构建与验证。
+#
+# 为什么单独成流：它要从源码编 zlib + libwebp + FFmpeg，比日常测试任务慢得多，
+# 而它验证的东西（裁剪配方、组件清单、产物与 omy-media 的配合）只有在配方、
+# 版本、构建脚本或消费方实现改动时才会变。普通无关 PR 不该为它排队。
+#
+# 触发条件（三者之一）：
+#   1. PR 或 push 到 main，且改动落在下列路径——配方/版本/构建脚本、消费方
+#      omy-media、或本工作流自身；
+#   2. Actions 页手动 workflow_dispatch；
+#   3. 发布流水线 release.yml：它在打包时会再编一遍并作为门禁（见那里的
+#      build-windows / build-linux / build-macos），不在此重复。
+#
+# 这里每个架构都做三件事：构建 -> verify.sh 逐项复查组件 -> 用自建产物跑
+# omy-media 的测试。verify.sh 只能确认「组件在不在」，确认不了 omy 用起来
+# 对不对；历史上四个缺失组件全是 configure 接受了参数却没启用、且不报错，
+# 只有项目自己的测试才暴露，所以这一步不能省。
+
+name: 内置 FFmpeg
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ffmpeg-build/**'
+      - 'crates/omy-media/**'
+      - '.github/workflows/ffmpeg.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ffmpeg-build/**'
+      - 'crates/omy-media/**'
+      - '.github/workflows/ffmpeg.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ffmpeg-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  ffmpeg-windows:
+    name: Windows 裁剪 FFmpeg
+    runs-on: windows-latest
+    # 上游下载失去响应时尽快失败，不能再占满 runner 的 6 小时全局上限。
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # v0.0.4 还没有 Action，故固定到包含 Action 的已审阅提交；version
+      # 则显式选择已发布的 CLI，避免 SHA 引用触发 latest API 查询。
+      - name: 安装 osdk 并恢复工具缓存
+        uses: lejunyang/one-sdk@fa5430bc372854d5998b2e5de3501e1ebec6cd5d
+        with:
+          version: '0.0.4'
+          # Action 只负责安装、缓存与导出环境；若让它在仓库根目录执行默认的
+          # 全量 install，会把本任务完全不用的 Android system image 也下载。
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: ffmpeg-tools
+
+      - name: 信任 osdk.toml 并安装 FFmpeg 工具链
+        shell: pwsh
+        run: |
+          osdk --yes trust osdk.toml
+          # 显式列出配方实际使用的工具。特别是不要退回裸 `osdk install`：
+          # 它会下载约 1 GiB 的 Google Android system image，曾静默卡满 6 小时。
+          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base
+
+      - name: 构建
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'dist-ffmpeg'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $gcc = (osdk -q where conda:gcc_win-64).Trim() -split "`r?`n" | Select-Object -First 1
+          $posix = ($gcc -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          $env:SYSROOT = $posix + '/Library/x86_64-w64-mingw32/sysroot'
+          $env:OMY_FF_OUT = ($out -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/build-windows.sh
+          if ($LASTEXITCODE -ne 0) { throw "构建失败（退出码 $LASTEXITCODE）" }
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $out = ((Join-Path $PWD 'dist-ffmpeg') -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+          bash scripts/ffmpeg-build/verify.sh $out
+          if ($LASTEXITCODE -ne 0) { throw "产物校验未通过（退出码 $LASTEXITCODE）" }
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ffmpeg-build
+
+      - name: 用自建产物跑 omy-media 的测试
+        shell: pwsh
+        # verify.sh 只能确认「组件在不在」，确认不了 omy 用起来对不对。
+        # 历史上四个缺失组件全是 configure 接受了参数但没启用，手工命令行还
+        # 跑得通，只有项目自己的测试才失败——所以这一步不能省。
+        run: |
+          $env:OMY_FFMPEG = Join-Path $PWD 'dist-ffmpeg\ffmpeg.exe'
+          $env:OMY_FFPROBE = Join-Path $PWD 'dist-ffmpeg\ffprobe.exe'
+          cargo test -p omy-media
+
+  ffmpeg-macos:
+    name: macOS 裁剪 FFmpeg（arm64 + x86_64）
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal
+
+      # pkg-config / nasm / cmake：build-macos.sh 的前置。macos-latest 自带
+      # cmake，这里仍显式装，避免镜像变化导致「时好时坏」。
+      - name: 安装构建前置
+        run: brew install pkg-config nasm cmake
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ffmpeg-macos
+
+      # arm64：runner 是 Apple Silicon，原生编。
+      - name: 构建 arm64 产物
+        run: |
+          OMY_FF_OUT="$PWD/dist-ffmpeg-arm64" \
+            ARCH=arm64 bash scripts/ffmpeg-build/build-macos.sh
+
+      - name: 校验 arm64 产物
+        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-arm64"
+
+      # x86_64：同一台 arm64 机器交叉编（两架构共用 SDK，只靠 -arch 区分）。
+      - name: 构建 x86_64 产物
+        run: |
+          OMY_FF_OUT="$PWD/dist-ffmpeg-x86_64" \
+            ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
+
+      - name: 校验 x86_64 产物
+        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-x86_64"
+
+      - name: 用自建产物跑 omy-media 的测试
+        # runner 是 arm64，只能原生执行 arm64 产物；x86_64 产物由 verify.sh
+        # 复查组件与架构，运行期配合由 arm64 这份覆盖（配方两架构一致）。
+        run: |
+          OMY_FFMPEG="$PWD/dist-ffmpeg-arm64/ffmpeg" \
+          OMY_FFPROBE="$PWD/dist-ffmpeg-arm64/ffprobe" \
+            cargo test -p omy-media
