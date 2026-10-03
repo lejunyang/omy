@@ -218,9 +218,13 @@ fn try_lock_exclusive(file: &std::fs::File) -> Result<(), TryLockError> {
         return Ok(());
     }
     let err = io::Error::last_os_error();
-    // EWOULDBLOCK 在多数平台等于 EAGAIN；两者都按「被占着」处理
+    // EWOULDBLOCK 在多数平台等于 EAGAIN；两者都按「被占着」处理。
+    // 不能写成 `Some(EWOULDBLOCK) | Some(EAGAIN)` 的 or-pattern：macOS 上
+    // 这两个常量就是同一个值，clippy 会把后半判为不可达分支而 -D warnings 挂门禁。
     match err.raw_os_error() {
-        Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN) => Err(TryLockError::WouldBlock),
+        Some(e) if e == libc::EWOULDBLOCK || e == libc::EAGAIN => {
+            Err(TryLockError::WouldBlock)
+        }
         _ => Err(TryLockError::Fatal(err)),
     }
 }
