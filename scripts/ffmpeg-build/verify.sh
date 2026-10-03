@@ -19,6 +19,20 @@ FFMPEG="$OUT/ffmpeg${EXE}"
 FFPROBE="$OUT/ffprobe${EXE}"
 fail=0
 
+# 平台与可移植工具差异：
+#   stat：BSD/macOS 用 -f%z，GNU/Linux 用 -c %s。
+#   外部依赖：Windows 查 objdump 的 DLL，Linux 查 ldd，macOS 查 otool -L。
+case "$(uname -s)" in
+  Darwin*) PLATFORM=macos ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
+  *) PLATFORM=linux ;;
+esac
+if stat -f%z "$0" >/dev/null 2>&1; then
+  size_of() { stat -f%z "$1"; }
+else
+  size_of() { stat -c %s "$1"; }
+fi
+
 note() { printf '  %-46s %s\n' "$1" "$2"; }
 bad()  { printf '  %-46s %s\n' "$1" "失败: $2"; fail=$((fail + 1)); }
 
@@ -26,12 +40,12 @@ for f in "$FFMPEG" "$FFPROBE"; do
   [ -f "$f" ] || { echo "缺少 $f" >&2; exit 1; }
 done
 
-echo "=== 校验 $OUT ==="
+echo "=== 校验 ${OUT}（${PLATFORM}）==="
 echo
 echo "--- 1. 体积 ---"
 total=0
 for f in "$FFMPEG" "$FFPROBE"; do
-  sz="$(stat -c %s "$f")"
+  sz="$(size_of "$f")"
   total=$((total + sz))
   printf '  %-14s %10d 字节 (%.2f MB)\n' "$(basename "$f")" "$sz" "$(echo "$sz" | awk '{printf "%.2f", $1/1048576}')"
 done
@@ -56,7 +70,7 @@ fi
 
 echo
 echo "--- 3. 外部运行时依赖 ---"
-if [ "$EXE" = .exe ]; then
+if [ "$PLATFORM" = windows ]; then
   # mingw 构建有时会拖上 libgcc_s_seh-1.dll 之类，那样就不能只拷两个 exe。
   # 同理若 libwebp/zlib 没静态进去，会多出 libwebp.dll 甚至 VCRUNTIME140.dll。
   if command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1; then
@@ -70,6 +84,26 @@ if [ "$EXE" = .exe ]; then
     fi
   else
     note "无外部运行时 DLL" "跳过（objdump 不可用）"
+  fi
+elif [ "$PLATFORM" = macos ]; then
+  # macOS：libwebp / zlib 必须已静态嵌入，otool -L 里不应出现它们。
+  # 系统库（libSystem.B.dylib 等）动态链接是预期的，两架构都如此。
+  if command -v otool >/dev/null 2>&1; then
+    ext="$(otool -L "$FFMPEG" \
+          | grep -Ei 'libwebp|libz\.' || true)"
+    if [ -n "$ext" ]; then
+      bad "libwebp/zlib 已静态嵌入" "$(tr '\n' ' ' <<<"$ext")"
+    else
+      note "libwebp/zlib 已静态嵌入" "ok"
+    fi
+    # 架构要对：release 会把 arm64 产物塞进 arm64 tarball、x86_64 塞进 x86_64
+    # tarball，混了就是换错目录，运行即崩。lipo 列出的架构必须唯一且明确。
+    if command -v lipo >/dev/null 2>&1; then
+      archs="$(lipo -archs "$FFMPEG" 2>/dev/null || true)"
+      note "产物架构（lipo -archs）" "${archs:-未知}"
+    fi
+  else
+    note "libwebp/zlib 已静态嵌入" "跳过（otool 不可用）"
   fi
 else
   # Linux：libwebp / zlib 必须已静态嵌入，ldd 里不应出现它们。
@@ -102,7 +136,7 @@ check() { # check <类型> <名字> <用在哪>
   if "have_$kind" "$name"; then
     note "$kind $name" "ok"
   else
-    bad "$kind $name" "缺失（$why）"
+    bad "$kind $name" "缺失（${why}）"
   fi
 }
 

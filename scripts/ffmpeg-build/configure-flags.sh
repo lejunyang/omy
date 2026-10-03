@@ -4,6 +4,7 @@
 # 用法：source 本文件后读 $FF_FLAGS 数组。
 #   - Windows（交叉编译）：先设好 SYSROOT / WEBP / ZLIB，FF_TARGET=windows。
 #   - Linux（原生构建）：先设好 WEBP / ZLIB，FF_TARGET=linux。
+#   - macOS（原生或交叉）：先设好 WEBP / ZLIB / FF_ARCH，FF_TARGET=macos。
 #   未显式给 FF_TARGET 时，从 SYSROOT 是否存在推断（兼容旧调用方式）。
 #
 # 每一条 flag 的取舍都有实测依据，见 docs/research/13-ffmpeg-minimal-build.md
@@ -136,8 +137,37 @@ case "$FF_TARGET" in
       --pkg-config-flags=--static
     )
     ;;
+  macos)
+    # FF_ARCH 由 build-macos.sh 传入：arm64（Apple Silicon）或 x86_64（Intel）。
+    # macOS 两架构共用同一份 SDK，交叉编译只靠 -arch，不需要额外 sysroot：
+    # 在 arm64 机器上编 x86_64 与原生编 arm64 用的是同一套系统头与库。
+    #
+    # --cc 走 build-macos.sh 解析出的真实 clang 路径（CC 环境变量），而不是
+    # 裸 `clang`：开发机 PATH 上的 clang 可能是 osdk shim，它在本机是坏的。
+    : "${FF_ARCH:?macOS 构建必须由外层传入 FF_ARCH（arm64 或 x86_64）}"
+    FF_FLAGS+=(
+      --target-os=darwin
+      --arch="$FF_ARCH"
+      --cc="${CC:-clang}"
+      --extra-cflags="-arch ${FF_ARCH} -I${WEBP}/include -I${ZLIB}/include -O2"
+      --extra-ldflags="-arch ${FF_ARCH} -L${WEBP}/lib -L${ZLIB}/lib"
+      --pkg-config-flags=--static
+    )
+    # 交叉编译（目标架构 ≠ 本机架构）时必须显式 --enable-cross-compile：
+    # configure 编完测试程序后默认会**运行**它来验证链接器，而在 arm64 机器上
+    # 跑 x86_64 二进制会报 "Bad CPU type in executable"，configure 据此误判
+    # "C compiler test failed"。开了交叉开关它就跳过运行测试程序这一步。
+    case "$(uname -m)" in
+      arm64|aarch64) host_arch=arm64 ;;
+      x86_64|amd64)  host_arch=x86_64 ;;
+      *)             host_arch=unknown ;;
+    esac
+    if [ "$FF_ARCH" != "$host_arch" ]; then
+      FF_FLAGS+=(--enable-cross-compile)
+    fi
+    ;;
   *)
-    echo "未知 FF_TARGET: $FF_TARGET（只支持 windows / linux）" >&2
+    echo "未知 FF_TARGET: ${FF_TARGET}（只支持 windows / linux / macos）" >&2
     exit 1
     ;;
 esac
