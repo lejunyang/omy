@@ -270,7 +270,7 @@ mod imp {
     }
 
     /// 把 OSStatus 翻成我们的错误分类。
-    fn map_status(code: OSStatus) -> Result<()> {
+    pub(super) fn map_status(code: OSStatus) -> Result<()> {
         match code {
             0 => Ok(()),
             -25300 => Err(Error::NotFound),
@@ -406,6 +406,53 @@ mod tests {
             Err(Error::BiometricsUnavailable(m)) => println!("本机无 Touch ID：{m}"),
             Err(Error::BiometricsNotEnrolled(m)) => println!("本机未录入指纹：{m}"),
             Err(e) => panic!("探测返回了意料外的错误：{e:?}"),
+        }
+    }
+
+    /// OSStatus → 我们错误分类的纯函数映射。
+    ///
+    /// 不依赖环境，任何机器都该通过。这些码是系统契约，写错了界面就会
+    /// 把「用户取消」显示成「解锁失败」。
+    #[test]
+    fn osstatus_mapping_is_stable() {
+        use imp::map_status;
+        assert!(map_status(0).is_ok());
+        assert!(matches!(map_status(-25300), Err(Error::NotFound)));
+        assert!(matches!(map_status(-128), Err(Error::UserCancelled)));
+        assert!(matches!(map_status(-34018), Err(Error::NoBackend(_))));
+        assert!(matches!(map_status(-25293), Err(Error::Backend(_))));
+        assert!(matches!(map_status(-99999), Err(Error::Backend(_))));
+    }
+
+    /// 存在性查询在未签名环境里也不能 panic，且查不到就是 false。
+    ///
+    /// 不这样会怎样：状态查询本来是为了不弹窗、不打扰用户，结果它自己
+    /// 先崩了，设置页直接打不开。
+    #[test]
+    fn exists_does_not_panic_when_keychain_unavailable() {
+        let p = MacBiometricProtector { service: "omy-test".into() };
+        // 不关心结果是 true 还是 false，只关心它不 panic、不弹窗。
+        let _ = p.has("definitely-not-there");
+    }
+
+    /// 未签名环境写 DP Keychain 必须如实报 NoBackend，而不是成功或退回。
+    ///
+    /// 本机（未 Developer ID 签名）实测：SecItemAdd 返回 -34018。
+    /// 这条把「无降级」这条不变量钉住：哪天有人图省事把它改成写普通钥匙串，
+    /// 这里会红。
+    #[test]
+    fn unsigned_store_is_no_backend_not_silent_downgrade() {
+        let p = match MacBiometricProtector::new("omy-test") {
+            Ok(p) => p,
+            // 这台机器连 Touch ID 都没有，new() 就先失败了——
+            // 那种环境下 store 本来就走不到，跳过即可。
+            Err(_) => return,
+        };
+        let key = crate::random_key();
+        match p.store("lifecycle-probe", &key) {
+            Ok(()) => println!("已签名环境，store 成功（不在本断言预期内）"),
+            Err(Error::NoBackend(_)) => {}
+            Err(e) => panic!("未签名/受限环境的 store 必须是 NoBackend，实际是 {e:?}"),
         }
     }
 }

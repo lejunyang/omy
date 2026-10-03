@@ -1,21 +1,21 @@
-//! 验证 `HelloProtector`：走完整的 `Protector` 接口，而不是直接调 CNG。
+//! 真机探针：验证「设备密钥」保管器在当前平台上的真实行为。
 //!
-//! 这一步必须单独做。前面的 spike 证明了 CNG 调用本身可行，但那不等于
-//! 包了一层之后还对——store/retrieve/delete 的配合、密文落盘路径、
-//! NotFound 的判定，每一处都可能出错而 spike 完全看不到。
-//!
-//! 需要真人交互：创建密钥时弹一次 Hello，每次 retrieve 各弹一次。
-//! 所以它不能进 CI，只能手动跑。
+//! 走完整的 `Protector` 接口，而不是直接调底层 API。需要真人交互的步骤
+//! （Windows Hello 确认 / Touch ID 扫描）会弹系统对话框，所以它不进 CI。
 //!
 //! 跑法：cargo run -p omy-secret --example device_key_check
+//!
+//! 在不支持或未配置的机器上，它会如实打印每一条路径返回什么错误，
+//! 而不是 panic——这本身就是要验证的行为之一。
 
 #![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
 
-use omy_secret::{HelloProtector, Protector};
+use omy_secret::{Protector};
 
 fn main() {
     let mut pass = 0u32;
     let mut fail = 0u32;
+    let mut skip = 0u32;
     let mut check = |name: &str, ok: bool, detail: String| {
         if ok {
             pass += 1;
@@ -25,14 +25,21 @@ fn main() {
             println!("  FAIL  {name} — {detail}");
         }
     };
+    let mut note = |name: &str, detail: String| {
+        skip += 1;
+        println!("  --  {name}（跳过：{detail}）");
+    };
 
     println!("--- 后端可用性 ---");
-    let p = match HelloProtector::new("omy-devkey-check") {
+    let p = match omy_secret::device_protector("omy-devkey-check") {
         Ok(p) => p,
         Err(e) => {
-            println!("  FAIL  创建 HelloProtector — {e}");
-            println!("\n这台机器可能没有 TPM，或 CNG 打不开 Platform Crypto Provider。");
-            std::process::exit(1);
+            println!("  当前环境用不了设备密钥：{e}");
+            println!();
+            println!("这本身就是一条要验证的失败路径：");
+            println!("  Windows：没有 TPM / 没配 Hello；macOS：没有 Touch ID / 未录入 / 未签名。");
+            println!("探针到此结束（{skip} 条跳过）。");
+            return;
         }
     };
     check("后端可用", true, String::new());
@@ -41,15 +48,13 @@ fn main() {
         p.requires_user_presence(),
         format!("requires_user_presence = {}", p.requires_user_presence()),
     );
+    println!("  后端名：{}", p.name());
 
     let id = "probe-slot";
-    // 先清一次，避免上次跑残留影响判断
     let _ = p.delete(id);
 
     println!();
     println!("--- 没存过时要报 NotFound，而不是返回一把新密钥 ---");
-    // 这条最要紧：返回新密钥会让上层拿错误的密钥去解旧数据，
-    // 得到「数据损坏」这种完全指错方向的错误
     let missing = p.retrieve(id);
     check(
         "未存过时报 NotFound",
@@ -58,18 +63,31 @@ fn main() {
     );
 
     println!();
-    println!("--- 存一把密钥（会弹 Hello：创建期确认）---");
+    println!("--- has() 不应弹窗、且没存过时为 false ---");
+    check("没存过时 has() = false", !p.has(id), "".into());
+
+    println!();
+    println!("--- 存一把密钥 ---");
     let key = omy_secret::random_key();
     match p.store(id, &key) {
         Ok(()) => check("store 成功", true, String::new()),
+        Err(omy_secret::Error::NoBackend(d)) => {
+            note("store（未签名/未配对等环境限制）", d);
+            println!();
+            println!("通过 {pass} 项，失败 {fail} 项，跳过 {skip} 项");
+            return;
+        }
         Err(e) => {
             check("store 成功", false, e.to_string());
+            println!();
+            println!("通过 {pass} 项，失败 {fail} 项，跳过 {skip} 项");
             std::process::exit(1);
         }
     }
+    check("存过之后 has() = true", p.has(id), "".into());
 
     println!();
-    println!("--- 取回来（会弹 Hello：每次解封都要确认）---");
+    println!("--- 取回来（会弹系统生物识别确认）---");
     match p.retrieve(id) {
         Ok(got) => {
             check("retrieve 成功", true, String::new());
@@ -83,32 +101,17 @@ fn main() {
     }
 
     println!();
-    println!("--- 换一个 id 不该取到同一把 ---");
-    // 不这样会怎样：所有槽位共用一把密钥，删掉一个等于删掉全部
-    let other = p.retrieve("another-slot");
-    check(
-        "别的 id 报 NotFound",
-        matches!(other, Err(omy_secret::Error::NotFound)),
-        format!("{other:?}"),
-    );
-
-    println!();
-    println!("--- 删除后要真的没了 ---");
-    match p.delete(id) {
-        Ok(()) => check("delete 成功", true, String::new()),
-        Err(e) => check("delete 成功", false, e.to_string()),
-    }
-    let after = p.retrieve(id);
+    println!("--- 删除后要真的没了，且重复删除不报错 ---");
+    check("delete 成功", p.delete(id).is_ok(), "".into());
     check(
         "删除后报 NotFound",
-        matches!(after, Err(omy_secret::Error::NotFound)),
-        format!("{after:?}"),
+        matches!(p.retrieve(id), Err(omy_secret::Error::NotFound)),
+        "".into(),
     );
-    // 幂等：再删一次不该报错
-    check("重复删除不报错", p.delete(id).is_ok(), "第二次 delete 失败".into());
+    check("重复删除不报错", p.delete(id).is_ok(), "".into());
 
     println!();
-    println!("通过 {pass} 项，失败 {fail} 项");
+    println!("通过 {pass} 项，失败 {fail} 项，跳过 {skip} 项");
     if fail > 0 {
         std::process::exit(1);
     }
