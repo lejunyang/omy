@@ -861,8 +861,11 @@ fn device_status(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
         }
     };
     // retrieve 会弹 Hello，所以这里不能用它判断「有没有挂过」。
-    // 用 delete 之外唯一的非破坏性手段：看密文文件在不在
-    let enrolled = omy_secret::Protector::retrieve(&p, id).is_ok();
+    // has() 由各后端覆盖成「不弹窗的存在性检查」：Windows 上只看密文文件在不在，
+    // 钥匙串后端则回退到 retrieve（那些后端本来就不弹窗）。
+    // 曾误写成 retrieve().is_ok()，导致 `omy key device status` 一跑就弹一次
+    // 指纹确认——用户只是想看看状态。
+    let enrolled = omy_secret::Protector::has(&p, id);
     let human = if enrolled {
         format!(
             "文件        {}\n设备密钥    已挂载（{}）\n\n\
