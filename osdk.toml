@@ -1,10 +1,10 @@
 [tools]
-java = "21.0.12.1+1"
-android-ndk = "29.0.14206865"
-rust = "1.98.0"
-android-platform-tools = "37.0.1"
-android-emulator = "37.1.11"
-android-build-tools = "37.0.0"
+java = "21"
+android-ndk = "29"
+rust = "1.98"
+android-platform-tools = "37"
+android-emulator = { version = "37", accept-license = "android-sdk-preview-license" }
+android-build-tools = "37"
 android-cmdline-tools = "latest"
 android-system-images = "android-35;google_apis;x86_64"
 # FFmpeg 裁剪构建的工具链（见 docs/research/13-ffmpeg-minimal-build.md）。
@@ -16,10 +16,10 @@ android-system-images = "android-35;google_apis;x86_64"
 # bash/sed/make 盖住系统同名命令（且它们是 Windows exe，在 Linux 根本跑不了），
 # gcc_win-64 这类交叉编译器则毫无用处。nasm 是唯一系统通常不自带、而两个平台
 # 都需要的工具（x86 SIMD 汇编），所以 Windows 与 Linux 都装它。
-"conda:gcc_win-64" = { version = "16.2.0", when = { os = ["windows"] } }  # mingw-w64 交叉编译器 + binutils
-"conda:nasm" = { version = "2.16.3", when = { os = ["windows", "linux"] } }  # x86 SIMD 汇编
-"conda:cmake" = { version = "4.4.3", when = { os = ["windows"] } }  # 编 libwebp 用
-"conda:ninja" = { version = "1.13.2", when = { os = ["windows"] } }
+"conda:gcc_win-64" = { version = "16", when = { os = ["windows"] } }  # mingw-w64 交叉编译器 + binutils
+"conda:nasm" = { version = "2.16", when = { os = ["windows", "linux"] } }  # x86 SIMD 汇编
+"conda:cmake" = { version = "4", when = { os = ["windows"] } }  # 编 libwebp 用
+"conda:ninja" = { version = "1", when = { os = ["windows"] } }
 #
 # POSIX 环境刻意只 pin m2-base 一个包、其余用 `with` 装进同一 prefix，
 # 而不是每个 m2-* 各 pin 一行。原因不是少写几行：
@@ -41,9 +41,9 @@ android-system-images = "android-35;google_apis;x86_64"
 # 本段由 `osdk use conda:m2-base@2022.6.1 --opt with=m2-make,m2-diffutils,m2-pkg-config`
 # 生成，改动请用 osdk 命令而非手工编辑（`with` 参与安装 identity，
 # 手改会指向另一个 prefix）。
-"conda:m2-base" = { version = "2022.6.1", with = "m2-make,m2-diffutils,m2-pkg-config", when = { os = ["windows"] } }
-node = "22.23.3"
-pnpm = "9.15.1"
+"conda:m2-base" = { version = "2022", with = "m2-make,m2-diffutils,m2-pkg-config", when = { os = ["windows"] } }
+node = "22"
+pnpm = "9"
 android-platforms = "=android-36"
 
 [settings.shims.tools."conda:m2-base"]

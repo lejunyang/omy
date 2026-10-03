@@ -1,0 +1,77 @@
+schema = 4
+
+[platforms.macos-arm64.tools.android-build-tools]
+request = "37"
+version = "37.0.0"
+
+[platforms.macos-arm64.tools.android-build-tools.artifact]
+url = "https://dl.google.com/android/repository/build-tools_r37_macosx.zip"
+file_name = "build-tools_r37_macosx.zip"
+checksum = "sha1:eb080751b2b2028eb3604f571027d6f7b3c46321"
+
+[platforms.macos-arm64.tools.android-emulator]
+request = "37"
+version = "37.2.12"
+
+[platforms.macos-arm64.tools.android-emulator.artifact]
+url = "https://dl.google.com/android/repository/emulator-darwin_x64-16428233.zip"
+file_name = "emulator-darwin_x64-16428233.zip"
+checksum = "sha1:0c08fc22f41f2e63976f5503d593f821ff11e30b"
+
+[platforms.macos-arm64.tools.android-ndk]
+request = "29"
+version = "29.0.14206865"
+
+[platforms.macos-arm64.tools.android-ndk.artifact]
+url = "https://dl.google.com/android/repository/android-ndk-r29-darwin.zip"
+file_name = "android-ndk-r29-darwin.zip"
+checksum = "sha1:03d29fbb57e3c05a7d53597dd011d856c1456a4f"
+
+[platforms.macos-arm64.tools.android-platform-tools]
+request = "37"
+version = "37.0.1"
+
+[platforms.macos-arm64.tools.android-platform-tools.artifact]
+url = "https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip"
+file_name = "platform-tools_r37.0.1-darwin.zip"
+checksum = "sha1:6ae73f4de6452dc57e62ec02b68eed92a4c21661"
+
+[platforms.macos-arm64.tools.java]
+request = "21"
+version = "21.0.12.1+1"
+
+[platforms.macos-arm64.tools.java.options]
+distribution = "temurin"
+java-version = "21.0.12.1+1"
+package-type = "jdk"
+
+[platforms.macos-arm64.tools.java.artifact]
+url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz"
+file_name = "OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz"
+checksum = "sha256:3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998"
+
+[platforms.macos-arm64.tools.node]
+request = "22"
+version = "22.23.3"
+
+[platforms.macos-arm64.tools.node.options]
+arch = "arm64"
+corepack = "false"
+
+[platforms.macos-arm64.tools.node.artifact]
+url = "https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-arm64.tar.gz"
+file_name = "node-v22.23.3-darwin-arm64.tar.gz"
+checksum = "sha256:23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53"
+
+[platforms.macos-arm64.tools.pnpm]
+request = "9"
+version = "9.15.9"
+
+[platforms.macos-arm64.tools.pnpm.artifact]
+url = "https://registry.npmmirror.com/pnpm/-/pnpm-9.15.9.tgz"
+file_name = "pnpm-9.15.9.tgz"
+checksum = "sha512:68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
+
+[platforms.macos-arm64.tools.rust]
+request = "1.98"
+version = "1.98"
