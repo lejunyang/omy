@@ -238,7 +238,8 @@ See [recovery codes](../guide/passwords.md#recovery-codes-the-only-way-back-in).
 
 ### device (device key)
 
-Unlock with Windows Hello instead of typing the password every time.
+Unlock with system biometrics (Windows Hello / macOS Touch ID) instead of typing the
+password every time.
 
 ```bash
 omy key device secret.omy add        # enroll (asks for the password once)
@@ -249,21 +250,25 @@ omy decrypt secret.omy --device      # unlock with it
 
 It is an ordinary password slot; the only difference is where the key comes from.
 A password slot's key is derived from the password; a device key is **randomly
-generated** and its ciphertext is kept by this machine's TPM. Retrieving it requires
-Windows Hello confirmation.
+generated** and kept by this machine's secure hardware:
+
+- **Windows**: the private key lives in a TPM 2.0 chip; every retrieval requires
+  Windows Hello confirmation by the system.
+- **macOS**: the key lives in the Data Protection Keychain with an access control
+  that forces Touch ID on every read, enforced by the system.
 
 ::: warning It does not make the file safer, only more convenient
-The TPM protects against a stolen disk and against decryption on another machine. It
+It protects against a stolen disk and against decryption on another machine. It
 does **not** protect against malware running as you on this machine — that can request
-a decryption in the window right after you touch the sensor.
+an unlock in the window right after you touch the sensor.
 
 So do not weaken your password because this is enabled. A device key saves typing,
 not protection.
 :::
 
 ::: danger It can be lost permanently at any time
-Replacing the machine, reinstalling the OS, clearing the TPM, resetting Windows
-Hello — any of these makes the device key **unrecoverable**.
+Replacing the machine, reinstalling the OS, clearing the TPM, erasing Touch ID, or
+resetting biometrics — any of these makes the device key **unrecoverable**.
 
 It is not a backup. Keep remembering your password.
 :::
@@ -272,9 +277,17 @@ One device key covers a whole vault (every file sharing the same `vault_salt`), 
 different vaults are isolated automatically. Folders work too:
 `omy key device <encrypted folder> add`.
 
-Windows only for now, and it needs TPM 2.0 plus a configured Windows Hello. Other
-platforms report that it is unsupported rather than silently falling back to something
-without hardware backing.
+Platform requirements:
+
+- **Windows**: TPM 2.0 plus a configured Windows Hello.
+- **macOS**: an enrolled Touch ID, and omy must be distributed as a **Developer ID
+  signed** .app. Unsigned / ad-hoc binaries cannot write to the Data Protection
+  Keychain (the OS refuses outright); the command reports unavailable instead of
+  silently dropping down to an unprotected keychain entry.
+
+It uses the "any enrolled finger" policy: adding or removing a fingerprint later does
+not invalidate existing device keys. Other platforms report unsupported rather than
+silently falling back to something without hardware backing.
 
 ## shard
 
