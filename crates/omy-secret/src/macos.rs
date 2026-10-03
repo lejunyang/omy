@@ -48,7 +48,7 @@
 //! 换机器、清除 Touch ID、重装系统、换 Apple ID 钥匙串同步——任一发生，
 //! 这条密钥就再也解不开。所以它**永远不能是唯一凭据**。
 
-use crate::{Error, ProtectKey, Protector, Result, KEY_LEN};
+use crate::{Error, KEY_LEN, ProtectKey, Protector, Result};
 
 /// Touch ID（Data Protection Keychain）保管的密钥。
 #[derive(Debug)]
@@ -70,7 +70,9 @@ impl MacBiometricProtector {
     /// 让界面能分别引导用户。
     pub fn new(service: &str) -> Result<Self> {
         imp::probe_biometrics()?;
-        Ok(Self { service: service.to_owned() })
+        Ok(Self {
+            service: service.to_owned(),
+        })
     }
 }
 
@@ -108,7 +110,7 @@ impl Protector for MacBiometricProtector {
 // Security 框架是 C API，这里集中 unsafe。crate 其余部分仍 deny(unsafe_code)。
 #[allow(unsafe_code)]
 mod imp {
-    use super::{Error, ProtectKey, Result, KEY_LEN};
+    use super::{Error, KEY_LEN, ProtectKey, Result};
     use core_foundation::base::TCFType;
     use core_foundation::boolean::CFBoolean;
     use core_foundation::data::CFData;
@@ -251,10 +253,7 @@ mod imp {
         pairs.push((unsafe { kSecClass }, unsafe { kSecClassGenericPassword }));
         pairs.push((unsafe { kSecAttrService }, svc.as_CFTypeRef()));
         pairs.push((unsafe { kSecAttrAccount }, acc.as_CFTypeRef()));
-        pairs.push((
-            unsafe { kSecUseDataProtectionKeychain },
-            tru.as_CFTypeRef(),
-        ));
+        pairs.push((unsafe { kSecUseDataProtectionKeychain }, tru.as_CFTypeRef()));
         pairs.extend_from_slice(extra);
         let (keys, vals): (Vec<CFTypeRef>, Vec<CFTypeRef>) = pairs.into_iter().unzip();
         unsafe {
@@ -362,10 +361,9 @@ mod imp {
             service,
             id,
             &[
-                (
-                    unsafe { kSecAttrAccessible },
-                    unsafe { kSecAttrAccessibleWhenUnlockedThisDeviceOnly },
-                ),
+                (unsafe { kSecAttrAccessible }, unsafe {
+                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                }),
                 (unsafe { kSecAttrAccessControl }, ac),
                 (unsafe { kSecValueData }, val.as_CFTypeRef()),
             ],
@@ -430,7 +428,9 @@ mod tests {
     /// 先崩了，设置页直接打不开。
     #[test]
     fn exists_does_not_panic_when_keychain_unavailable() {
-        let p = MacBiometricProtector { service: "omy-test".into() };
+        let p = MacBiometricProtector {
+            service: "omy-test".into(),
+        };
         // 不关心结果是 true 还是 false，只关心它不 panic、不弹窗。
         let _ = p.has("definitely-not-there");
     }
