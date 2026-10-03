@@ -273,6 +273,23 @@ bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
 
 **MSYS2 is not needed on Windows**: both the mingw cross compiler and the POSIX build environment come from the `osdk.toml` at the repository root.
 
+### macOS
+
+You need the Xcode Command Line Tools plus `brew install pkg-config nasm cmake`. Both arches share the same SDK; cross-compiling only switches `-arch`:
+
+```bash
+# Native arch (arm64 on Apple Silicon)
+bash scripts/ffmpeg-build/build-macos.sh
+
+# Intel: cross-compile on an arm64 machine (the output runs via Rosetta)
+ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
+
+# Verify the output (macOS checks otool -L and prints the lipo arch)
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
+After changing the recipe, run `cargo test -p omy-media` as well — the warning below holds for every platform.
+
 ::: warning verify.sh is not optional
 Run it whenever the recipe changes. All four problems hit so far (`rawvideo`, the `fd` protocol, `image_png_pipe`, `movtext`) were cases where configure accepted the argument but did not enable the component, **and reported nothing**: configure exited 0, make exited 0, hand-written command lines still worked, and only omy's own tests failed.
 

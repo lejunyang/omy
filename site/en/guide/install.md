@@ -18,7 +18,7 @@ Each release attaches artifacts for every platform to [GitHub Releases](https://
 |---|---|---|
 | Windows | `omy-<version>-x86_64-pc-windows-msvc.zip` | Contains `omy.exe`, `omy-gui.exe`, and a bundled FFmpeg; unzip and run |
 | Linux | `omy-<version>-x86_64-unknown-linux-gnu.tar.gz` | Contains `omy` and `omy-gui`; no bundled FFmpeg |
-| macOS (Apple Silicon) | `omy-<version>-aarch64-apple-darwin.tar.gz` | Contains `omy` and `omy-gui`; no bundled FFmpeg |
+| macOS (Apple Silicon) | `omy-<version>-aarch64-apple-darwin.tar.gz` | Contains `omy`, `omy-gui`, and a bundled FFmpeg; unzip and run |
 | macOS (Intel) | `omy-<version>-x86_64-apple-darwin.tar.gz` | Same as above |
 | Android | `*.apk` (one per ABI) | GUI; **unsigned**, requires allowing unknown sources |
 
@@ -77,9 +77,9 @@ For per-platform system dependencies and Android packaging, see [Building from s
 
 ## FFmpeg
 
-**The Windows build ships with FFmpeg** — unzip and it works, no separate install. It lives in the `ffmpeg\` directory inside the archive and is our own trimmed build (12.44 MB, with H.264 / HEVC / VP8 / VP9 / AV1 decoders), depending on nothing beyond the system DLLs.
+**Both the Windows and macOS builds ship with FFmpeg** — unzip and it works, no separate install. It lives in the `ffmpeg/` subdirectory inside the archive (`ffmpeg\` on Windows) and is our own trimmed build (with H.264 / HEVC / VP8 / VP9 / AV1 decoders), depending on nothing beyond the system libraries.
 
-Other platforms currently ship **without** FFmpeg and need their own install — the build chain has only been verified on Windows, and an unverified bundled binary is worse than none.
+Among the other platforms, the Linux graphical packages (deb/rpm/AppImage) also bundle it; only the Linux bare CLI tarball and Android ship **without** FFmpeg and need their own install.
 
 Without FFmpeg, encryption, decryption, sharding and sharing all work normally; only these features are unavailable:
 

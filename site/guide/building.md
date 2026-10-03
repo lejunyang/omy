@@ -267,6 +267,23 @@ bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
 
 Windows 上**不需要装 MSYS2**，mingw 交叉编译器与 POSIX 构建环境都由根目录的 `osdk.toml` 提供。
 
+### macOS
+
+需要 Xcode Command Line Tools 与 `brew install pkg-config nasm cmake`。两架构共用同一 SDK，交叉编只靠 `-arch`：
+
+```bash
+# 本机架构（Apple Silicon 上即 arm64）
+bash scripts/ffmpeg-build/build-macos.sh
+
+# Intel：在 arm64 机器上交叉编（产物经 Rosetta 运行）
+ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
+
+# 校验产物（macOS 查 otool -L，并打印 lipo 架构）
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
+改完配方后同样要跑 `cargo test -p omy-media`，下面的警告对所有平台都成立。
+
 ::: warning verify.sh 不是可选步骤
 改过配方之后一定要跑。曾经踩到的四个问题（`rawvideo`、`fd` 协议、`image_png_pipe`、`movtext`）全都是 configure 接受了参数但没启用，**且不报任何错**：configure 退出 0、make 退出 0、手工命令行还跑得通，只有 omy 自己的测试才失败。
 
