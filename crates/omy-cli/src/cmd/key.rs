@@ -940,6 +940,9 @@ fn device_add(
     }
 
     // 硬件里已经有就复用，没有才生成。复用时不会重复弹创建确认
+    // 文案按后端实际名字输出（Windows 上是 Windows Hello，macOS 上是 Touch ID），
+    // 不在 macOS 上写死「Windows Hello」。
+    let bio = p.name().to_owned();
     let secret = match omy_secret::Protector::retrieve(&p, id) {
         Ok(k) => {
             ctx.out.detail("复用这台机器上已保管的设备密钥");
@@ -948,8 +951,8 @@ fn device_add(
         Err(omy_secret::Error::NotFound) => {
             let k = omy_secret::random_key();
             omy_secret::Protector::store(&p, id, &k)
-                .map_err(|e| anyhow::anyhow!("交给 Windows Hello 保管失败：{e}"))?;
-            ctx.out.detail("已生成设备密钥并交给 Windows Hello 保管");
+                .map_err(|e| anyhow::anyhow!("交给{bio}保管失败：{e}"))?;
+            ctx.out.detail(&format!("已生成设备密钥并交给{bio}保管"));
             k
         }
         Err(e) => return Err(anyhow::anyhow!("读取设备密钥失败：{e}")),
@@ -970,7 +973,7 @@ fn device_add(
         ctx.out.result(
             &format!(
                 "已给 {} 挂上设备密钥，处理 {} 个文件。\n\n\
-                 之后解锁这个文件夹只需 Windows Hello。",
+                 之后解锁这个文件夹只需{bio}。",
                 a.file.display(),
                 rep.changed,
             ),
@@ -1021,7 +1024,7 @@ fn device_add(
     ctx.out.result(
         &format!(
             "已给 {} 挂上设备密钥。\n\n\
-             之后解锁只需 Windows Hello；密码仍然有效，请继续记住它。",
+             之后解锁只需{bio}；密码仍然有效，请继续记住它。",
             a.file.display()
         ),
         &json!({

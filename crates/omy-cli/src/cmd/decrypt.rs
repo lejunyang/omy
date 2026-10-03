@@ -74,6 +74,7 @@ fn device_kek(vault_salt: &[u8; 16]) -> Result<Kek> {
         )
     })?;
     let id = omy_core::devicekey::slot_id(vault_salt);
+    let bio = p.name().to_owned();
     let secret = match omy_secret::Protector::retrieve(&p, &id) {
         Ok(k) => k,
         Err(omy_secret::Error::NotFound) => {
@@ -82,7 +83,7 @@ fn device_kek(vault_salt: &[u8; 16]) -> Result<Kek> {
                  先用 `omy key device <文件> add` 挂上，或改用密码解锁。"
             )
         }
-        Err(omy_secret::Error::UserCancelled) => bail!("已取消 Windows Hello 确认"),
+        Err(omy_secret::Error::UserCancelled) => bail!("已取消{bio}确认"),
         Err(e) => bail!("取出设备密钥失败：{e}"),
     };
     Ok(omy_core::devicekey::kek_from_secret(&secret, vault_salt))
