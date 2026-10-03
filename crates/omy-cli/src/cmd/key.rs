@@ -794,7 +794,7 @@ fn list(ctx: &Ctx<'_>, a: &ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// 服务名：TPM 里的密钥都挂在这个名下，避免与别的应用撞名。
+/// 服务名：各平台后端的密钥都挂在这个名下，避免与别的应用撞名。
 const DEVICE_SERVICE: &str = "omy";
 
 /// 管理设备密钥。
@@ -807,7 +807,7 @@ const DEVICE_SERVICE: &str = "omy";
 ///
 /// # Errors
 ///
-/// 这台机器没有 TPM、密码不对、文件读写失败时返回错误。
+/// 这台机器不支持设备密钥、密码不对、文件读写失败时返回错误。
 fn device(ctx: &Ctx<'_>, a: &DeviceArgs) -> Result<()> {
     // 目录也要支持：树形的每个文件都用同一个 vault_salt，
     // 所以设备密钥对整棵树是一把
@@ -932,7 +932,7 @@ fn device_add(
          它挡得住硬盘被偷和换机器解密，挡不住这台机器上正在运行的恶意程序。",
     );
     ctx.out.warn(
-        "换机器、重装系统、清除 TPM 或重置 Hello 之后它会永久失效，\n\
+        "换机器、重装系统或重置生物识别之后它会永久失效，\n\
          所以务必继续记住密码——设备密钥不是备份手段。",
     );
     if !ctx.out.confirm(t("prompt.confirm"), ctx.assume_yes) {

@@ -50,7 +50,7 @@ pub struct Args {
     #[arg(long)]
     pub password_stdin: bool,
 
-    /// 用这台机器上的设备密钥解锁，不输密码（需要 Windows Hello 确认）
+    /// 用这台机器上的设备密钥解锁，不输密码（需要系统生物识别确认）
     ///
     /// 要求先用 `omy key device <文件> add` 挂过。
     #[arg(long, conflicts_with_all = ["password_env", "password_file", "password_stdin"])]
@@ -62,7 +62,7 @@ pub struct Args {
 /// # Errors
 ///
 /// 读取失败、密码不匹配、认证失败或写出失败时返回错误。
-/// 从这台机器的安全硬件取出设备密钥，派生成 KEK。
+/// 从这台机器的 OS 密钥库取出设备密钥，派生成 KEK。
 ///
 /// 会弹 Windows Hello / Touch ID。失败原因要分清：没挂过、这台机器不支持、
 /// 用户取消——三者的处置方式完全不同，混成一句「解锁失败」会让用户无从下手。
