@@ -127,11 +127,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: 安装 Rust 与 Android 目标
-        # 带上 clippy：minimal profile 不含它，而下面要跑 Android 目标的 clippy
+      - name: 安装 osdk 并恢复缓存
+        uses: lejunyang/one-sdk@main
+        with:
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: test-android
+
+      - name: 信任 osdk.toml 并安装 Rust
+        # rust、clippy 与全部 Android 交叉 target 的唯一来源是
+        # osdk.toml [tools].rust：osdk install rust 装工具链时用
+        # `--component clippy --target ...` 一次装好，不再 rustup target add。
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup target add aarch64-linux-android armv7-linux-androideabi
+          osdk --yes trust osdk.toml
+          osdk -y install rust
 
       - uses: actions/setup-java@v6.0.0
         with:

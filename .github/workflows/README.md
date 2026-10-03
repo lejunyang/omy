@@ -227,9 +227,9 @@ jq 从事件 JSON（`GITHUB_EVENT_PATH`）读出，不插值进 shell，避免�
 「真机用过」——目前只有 Windows 与 Android 真机实测过，Linux 与 macOS
 仅保证编译与打包成功，这一点明确写在 Release 说明的状态表里，不混淆。
 
-macOS 在 arm64 runner 上额外 `rustup target add x86_64-apple-darwin`
-交叉编译一份 Intel 产物；GitHub runner 的系统框架是 universal 的，不需要
-额外 SDK。
+macOS 在 arm64 runner 上由 `osdk install rust` 按 osdk.toml
+`[tools].rust.targets` 装好 aarch64/x86_64-apple-darwin，再交叉编译一份
+Intel 产物；GitHub runner 的系统框架是 universal 的，不需要额外 SDK。
 
 Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、NDK、SDK
 平台与 Build Tools；随后执行 `osdk run --no-deps android-release-build`。安装列表

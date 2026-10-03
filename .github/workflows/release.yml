@@ -407,14 +407,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: 安装 Rust
-        run: rustup toolchain install stable --profile minimal
+      - name: 安装 osdk 并恢复缓存
+        uses: lejunyang/one-sdk@main
+        with:
+          working-directory: ${{ runner.temp }}
+          install-tools: false
+          install-deps: false
+          cache-key: release-macos
 
-      # 同时出 Apple Silicon 与 Intel 两份：macos-latest 是 arm64 机器，
-      # x86_64 靠交叉编译。GitHub runner 的系统框架（WebKit 等）是
-      # universal 的，rustup 加个 target 即可链接，不需要额外 SDK。
-      - name: 添加 Intel 目标
-        run: rustup target add x86_64-apple-darwin
+      - name: 信任 osdk.toml 并安装 Rust
+        # 同时出 Apple Silicon 与 Intel 两份：macos-latest 是 arm64 机器，
+        # x86_64 靠交叉编译。GitHub runner 的系统框架（WebKit 等）是
+        # universal 的，osdk install rust 装工具链时按 osdk.toml
+        # [tools].rust.targets 一并装好 aarch64/x86_64-apple-darwin，
+        # 不再单独 rustup target add。
+        run: |
+          osdk --yes trust osdk.toml
+          osdk -y install rust
 
       # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
       - uses: actions/setup-node@v6.0.0

@@ -1,7 +1,7 @@
 [tools]
 java = "21"
 android-ndk = "29"
-rust = { version = "1.98", targets = "aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android,x86_64-apple-darwin" }
+rust = { version = "1.98", components = "clippy", targets = "x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android" }
 android-platform-tools = "37"
 android-emulator = { version = "37", accept-license = "android-sdk-preview-license" }
 android-build-tools = "37"
