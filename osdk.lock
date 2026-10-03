@@ -75,3 +75,6 @@ checksum = "sha512:68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee22898
 [platforms.macos-arm64.tools.rust]
 request = "1.98"
 version = "1.98"
+
+[platforms.macos-arm64.tools.rust.options]
+targets = "aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android,x86_64-apple-darwin"

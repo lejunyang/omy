@@ -1,7 +1,7 @@
 [tools]
 java = "21"
 android-ndk = "29"
-rust = "1.98"
+rust = { version = "1.98", targets = "aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android,x86_64-apple-darwin" }
 android-platform-tools = "37"
 android-emulator = { version = "37", accept-license = "android-sdk-preview-license" }
 android-build-tools = "37"
@@ -94,8 +94,10 @@ description = "执行前端检查与生产构建，再构建 Android debug APK"
 
 [tasks.android-release-build]
 dir = "crates/omy-gui"
+# 四个 Android ABI 的 rust target 不在这里 rustup target add：
+# 单一来源是上方 [tools].rust.targets，由 osdk install rust 装工具链时
+# 用 `rustup toolchain install --target ...` 一并装好（见发布流水线 build-android）。
 run = [
-  { argv = ["rustup", "target", "add", "aarch64-linux-android", "armv7-linux-androideabi", "i686-linux-android", "x86_64-linux-android"] },
   { argv = ["pnpm", "--dir", "frontend", "install", "--frozen-lockfile"] },
   { argv = ["pnpm", "--dir", "frontend", "build"] },
   { argv = ["cargo", "install", "tauri-cli", "--version", "^2", "--locked"] },

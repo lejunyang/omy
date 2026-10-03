@@ -253,7 +253,9 @@ jobs:
         # 不指定的话 zstd-sys 会报「failed to find tool」。
         # 完整理由见 test.yml 里的同名步骤。
         #
-        # 这里要配齐四个 ABI，与上面 rustup target add 的四个目标对应。
+        # 这里要配齐四个 ABI，与 osdk.toml [tools].rust.targets 声明的
+        # 四个 Android 目标对应（osdk install rust 已把它们装好，任务里不再
+        # 重复 rustup target add）。
         #
         # LINKER 也一并设上。APK 走 gradle 调 NDK 链接 .so，目前这条路径不依赖
         # 它，所以这里是**预防性**的：一旦将来在这个任务里直接 cargo build 出
