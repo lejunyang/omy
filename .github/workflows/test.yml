@@ -1,16 +1,16 @@
 # 测试流水线。
 #
-# # 平台策略：为什么 Linux/macOS 允许失败
+# # 平台策略：为什么 Linux 允许失败
 #
-# 这个项目目前只在 Windows 与 Android 上实测过。Linux 与 macOS 的代码路径
-# 写了但从未在真机上跑过，直接设成必过会让 main 长期挂红——那样红叉就失去
-# 意义，真正的回归也会被忽略。
+# 这个项目目前在 Windows、Android 与 macOS（Apple Silicon 真机）上实测过。
+# Linux 的代码路径写了但从未在真机上跑过，直接设成必过会让 main 长期挂红
+# ——那样红叉就失去意义，真正的回归也会被忽略。
 #
 # 所以分成两类：
-#   - windows / android：必过，挂了就是真的坏了
-#   - linux / macos：continue-on-error，只作为「未来要修什么」的信息来源
+#   - windows / android / macos：必过，挂了就是真的坏了
+#   - linux：continue-on-error，只作为「未来要修什么」的信息来源
 #
-# 等某个平台连续绿了并且有人真的在上面用过，就把它的 continue-on-error 删掉，
+# 等 Linux 连续绿了并且有人真的在上面用过，就把它的 continue-on-error 删掉，
 # 同时改掉 site 与 README 里「尚未验证」的说法。
 #
 # # 为什么必过任务用 stable 而不是 MSRV
@@ -307,7 +307,7 @@ jobs:
           pnpm typecheck
           pnpm test
 
-  # ---- 非阻塞核实：MSRV 与未验证平台 ----
+  # ---- 非阻塞核实：MSRV 与 Linux ----
 
   msrv:
     name: MSRV 1.88（未核实）
@@ -391,9 +391,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   macos:
-    name: macOS（未验证）
+    name: macOS（已验证）
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -431,11 +430,11 @@ jobs:
   result:
     name: 测试结论
     if: always()
-    needs: [windows, android, frontend]
+    needs: [windows, android, macos, frontend]
     runs-on: ubuntu-latest
     steps:
       - name: 检查必过任务
-        # 只看已验证平台与前端。msrv/linux/macos 不在 needs 里，
+        # 只看已验证平台与前端。msrv/linux 不在 needs 里，
         # 它们的红叉是信息，不是门禁。
         #
         # 必须显式判断 result：needs 里任一任务被 skip 或 cancel 时，
@@ -443,12 +442,14 @@ jobs:
         env:
           W: ${{ needs.windows.result }}
           A: ${{ needs.android.result }}
+          M: ${{ needs.macos.result }}
           F: ${{ needs.frontend.result }}
         run: |
           echo "windows  = $W"
           echo "android  = $A"
+          echo "macos    = $M"
           echo "frontend = $F"
-          if [ "$W" != "success" ] || [ "$A" != "success" ] || [ "$F" != "success" ]; then
+          if [ "$W" != "success" ] || [ "$A" != "success" ] || [ "$M" != "success" ] || [ "$F" != "success" ]; then
             echo "必过任务未全部通过"
             exit 1
           fi
