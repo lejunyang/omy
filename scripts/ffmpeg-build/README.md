@@ -78,8 +78,9 @@ bash scripts/ffmpeg-build/build-macos.sh
 # Intel：在 arm64 机器上交叉编（产物经 Rosetta 运行）
 ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
 
-# 校验产物（macOS 查 otool -L，并打印 lipo 架构）
-bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+# 校验产物（macOS 查 otool -L；lipo 架构必须与目标一致，否则硬失败）
+# 第二个参数是期望架构，也可省略由目录名推断；传错会直接 exit 1，防混包。
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out arm64
 ```
 
 产物目录默认是 `$OMY_FF_WORK/out`（`OMY_FF_WORK` 默认
@@ -95,7 +96,7 @@ bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
 | `build-windows.sh` | 下载校验、编 zlib 与 libwebp、交叉编 FFmpeg |
 | `build-linux.sh` | 下载校验、编 zlib 与 libwebp、原生编 FFmpeg |
 | `build-macos.sh` | 下载校验、编 zlib 与 libwebp、编 FFmpeg（`ARCH=arm64/x86_64`） |
-| `verify.sh` | 校验许可证边界、外部依赖、逐项复查组件 |
+| `verify.sh` | 校验许可证边界、随包 LGPL/SOURCE、外部依赖、macOS 架构一致性、逐项复查组件 |
 | `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT`（仅 Windows） |
 
 ## 为什么必须跑 verify.sh

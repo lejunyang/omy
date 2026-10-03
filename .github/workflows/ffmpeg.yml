@@ -133,7 +133,7 @@ jobs:
             ARCH=arm64 bash scripts/ffmpeg-build/build-macos.sh
 
       - name: 校验 arm64 产物
-        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-arm64"
+        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-arm64" arm64
 
       # x86_64：同一台 arm64 机器交叉编（两架构共用 SDK，只靠 -arch 区分）。
       - name: 构建 x86_64 产物
@@ -142,7 +142,7 @@ jobs:
             ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
 
       - name: 校验 x86_64 产物
-        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-x86_64"
+        run: bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-x86_64" x86_64
 
       - name: 用自建产物跑 omy-media 的测试
         # runner 是 arm64，只能原生执行 arm64 产物；x86_64 产物由 verify.sh
