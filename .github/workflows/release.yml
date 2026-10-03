@@ -38,9 +38,10 @@
 #
 # # 内置 FFmpeg
 #
-# Windows 产物内置自建的裁剪 FFmpeg（含 H.264/HEVC），见 scripts/ffmpeg-build/。
-# 其余平台暂不内置——构建链只在 Windows 上实测过，没实测过的内置二进制
-# 比不内置更糟，这些平台沿用系统 FFmpeg 或 OMY_FFMPEG 指定的路径。
+# Windows / Linux / macOS（两种架构）产物都内置同一份自建裁剪 FFmpeg
+# （含 H.264/HEVC，见 scripts/ffmpeg-build/），解压即用。Linux 的命令行裸包
+# 与 Android 不内置。裁剪构建只在配方/版本/脚本或 omy-media 改动时在
+# 「内置 FFmpeg」工作流里跑；本流水线在打包时再编一遍并作为门禁。
 
 name: 发布
 
@@ -428,6 +429,27 @@ jobs:
         with:
           key: release-macos
 
+      # ---- 内置 FFmpeg（两架构）----
+      # 与 Windows / Linux 同一份裁剪配方（scripts/ffmpeg-build/），分别编出
+      # arm64 与 x86_64 两份，再按架构塞进对应 tarball 的 ffmpeg/ 子目录——
+      # omy-media 的 candidate_dirs() 会找「自身目录/ffmpeg」，解压即用，
+      # 不需要用户配环境变量。runner 是 arm64，x86_64 靠 -arch 交叉编、
+      # 经 Rosetta 跑 verify.sh。
+      - name: 安装 FFmpeg 构建前置
+        run: brew install pkg-config nasm cmake
+
+      - name: 构建并校验 arm64 FFmpeg
+        run: |
+          OMY_FF_OUT="$PWD/dist-ffmpeg-arm64" ARCH=arm64 \
+            bash scripts/ffmpeg-build/build-macos.sh
+          bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-arm64"
+
+      - name: 构建并校验 x86_64 FFmpeg
+        run: |
+          OMY_FF_OUT="$PWD/dist-ffmpeg-x86_64" ARCH=x86_64 \
+            bash scripts/ffmpeg-build/build-macos.sh
+          bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-x86_64"
+
       - name: 构建 Apple Silicon
         run: cargo build --release -p omy-cli -p omy-gui --target aarch64-apple-darwin
 
@@ -437,11 +459,15 @@ jobs:
       - name: 打包
         run: |
           version='${{ needs.decide.outputs.version }}'
-          mkdir -p dist-arm dist-x86
+          mkdir -p dist-arm/ffmpeg dist-x86/ffmpeg
           cp target/aarch64-apple-darwin/release/omy \
              target/aarch64-apple-darwin/release/omy-gui README.md dist-arm/
           cp target/x86_64-apple-darwin/release/omy \
              target/x86_64-apple-darwin/release/omy-gui README.md dist-x86/
+          # 对应架构的 FFmpeg 放进 ffmpeg/ 子目录（含 COPYING.LGPLv2.1 与
+          # SOURCE.txt）。按架构分开放，别把 x86_64 塞进 arm64 包。
+          cp dist-ffmpeg-arm64/* dist-arm/ffmpeg/
+          cp dist-ffmpeg-x86_64/* dist-x86/ffmpeg/
           tar -czf "omy-${version}-aarch64-apple-darwin.tar.gz" -C dist-arm .
           tar -czf "omy-${version}-x86_64-apple-darwin.tar.gz" -C dist-x86 .
 
@@ -488,8 +514,8 @@ jobs:
             echo "| \`*.deb\` / \`*.rpm\` | Linux x86_64（Debian/Ubuntu/Fedora 等，内置 FFmpeg） |"
             echo "| \`*.AppImage\` | Linux x86_64（免安装，内置 FFmpeg） |"
             echo "| \`*-x86_64-unknown-linux-gnu-cli.tar.gz\` | 仅命令行的裸包，不内置 FFmpeg |"
-            echo "| \`*-aarch64-apple-darwin.tar.gz\` | macOS（Apple Silicon） |"
-            echo "| \`*-x86_64-apple-darwin.tar.gz\` | macOS（Intel） |"
+            echo "| \`*-aarch64-apple-darwin.tar.gz\` | macOS（Apple Silicon，内置 FFmpeg） |"
+            echo "| \`*-x86_64-apple-darwin.tar.gz\` | macOS（Intel，内置 FFmpeg） |"
             echo "| \`*.apk\` | Android（四个 ABI，**未签名**） |"
             echo
             echo "### 平台验证状态"
@@ -504,8 +530,9 @@ jobs:
             echo "Linux 发行包在 Ubuntu 22.04（glibc 2.35）上构建，Debian 12、"
             echo "Ubuntu 22.04 及更新的发行版可用；deb/rpm 安装后 \`omy-gui\` 位于"
             echo "应用菜单，内置 FFmpeg 随包安装。CLI 裸包不内置 FFmpeg，需要自行"
-            echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。macOS 仅经过 CI"
-            echo "编译与打包，未在真实系统上运行过。"
+            echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。Windows 与 macOS"
+            echo "（两种架构）的 FFmpeg 都随压缩包内置在 \`ffmpeg/\` 子目录，解压即用；"
+            echo "macOS 仍仅经过 CI 编译与打包，未在真实系统上运行过。"
             echo
             echo "### 说明"
             echo
