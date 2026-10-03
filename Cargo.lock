@@ -3705,6 +3705,7 @@ dependencies = [
 name = "omy-secret"
 version = "0.0.1"
 dependencies = [
+ "core-foundation 0.10.1",
  "hex",
  "keyring",
  "omy-config",

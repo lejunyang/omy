@@ -64,14 +64,13 @@ pub struct Args {
 /// 读取失败、密码不匹配、认证失败或写出失败时返回错误。
 /// 从这台机器的安全硬件取出设备密钥，派生成 KEK。
 ///
-/// 会弹 Windows Hello。失败原因要分清：没挂过、这台机器没 TPM、
-/// 用户取消——三者的处置方式完全不同，混成一句「解锁失败」会让用户
-/// 无从下手。
+/// 会弹 Windows Hello / Touch ID。失败原因要分清：没挂过、这台机器不支持、
+/// 用户取消——三者的处置方式完全不同，混成一句「解锁失败」会让用户无从下手。
 fn device_kek(vault_salt: &[u8; 16]) -> Result<Kek> {
-    let p = omy_secret::HelloProtector::new("omy").map_err(|e| {
+    let p = omy_secret::device_protector("omy").map_err(|e| {
         anyhow::anyhow!(
             "这台机器上用不了设备密钥：{e}\n\n\
-             设备密钥需要 TPM 2.0 与已配置的 Windows Hello，目前只支持 Windows。"
+             Windows 需要 TPM 2.0 与 Windows Hello；macOS 需要已签名应用与 Touch ID。"
         )
     })?;
     let id = omy_core::devicekey::slot_id(vault_salt);

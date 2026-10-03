@@ -76,7 +76,7 @@ pub struct DeviceKeyStatus {
 #[tauri::command]
 pub async fn device_key_status(dir: String) -> CmdResult<DeviceKeyStatus> {
     let salts = salts_of_dir(&dir)?;
-    let p = match omy_secret::HelloProtector::new(DEVICE_SERVICE) {
+    let p = match omy_secret::device_protector(DEVICE_SERVICE) {
         Ok(p) => p,
         Err(e) => {
             return Ok(DeviceKeyStatus {
@@ -113,7 +113,7 @@ pub async fn device_key_unlock(
     let handle: Shared = Arc::clone(&state);
     // Hello 会阻塞等用户确认，绝不能占着异步执行器——那会让整个界面僵住
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let p = omy_secret::HelloProtector::new(DEVICE_SERVICE)
+        let p = omy_secret::device_protector(DEVICE_SERVICE)
             .map_err(|e| CmdError::with(
                 "device_key_unavailable",
                 serde_json::json!({ "detail": e.to_string() }),
@@ -230,7 +230,7 @@ fn enroll(state: &Shared, path: &str, password: &str) -> CmdResult<DeviceKeyEnro
     omy_core::file::open(&data, &[cur.duplicate()])
         .map_err(|_| CmdError::code("wrong_password"))?;
 
-    let p = omy_secret::HelloProtector::new(DEVICE_SERVICE).map_err(|e| {
+    let p = omy_secret::device_protector(DEVICE_SERVICE).map_err(|e| {
         CmdError::with(
             "device_key_unavailable",
             serde_json::json!({ "detail": e.to_string() }),
@@ -339,7 +339,7 @@ fn enroll(state: &Shared, path: &str, password: &str) -> CmdResult<DeviceKeyEnro
 pub async fn device_key_forget(dir: String) -> CmdResult<()> {
     let salts = salts_of_dir(&dir)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let p = omy_secret::HelloProtector::new(DEVICE_SERVICE).map_err(|e| {
+        let p = omy_secret::device_protector(DEVICE_SERVICE).map_err(|e| {
             CmdError::with(
                 "device_key_unavailable",
                 serde_json::json!({ "detail": e.to_string() }),

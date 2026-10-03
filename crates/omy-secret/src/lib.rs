@@ -45,10 +45,14 @@ use zeroize::Zeroizing;
 
 mod envelope;
 mod hello;
+#[cfg(target_os = "macos")]
+mod macos;
 mod machine;
 
 pub use envelope::{seal, unseal, Envelope};
 pub use hello::HelloProtector;
+#[cfg(target_os = "macos")]
+pub use macos::MacBiometricProtector;
 pub use machine::MachineProtector;
 
 /// 密钥长度，与 `omy-core` 的对称密钥一致。
@@ -84,6 +88,21 @@ pub enum Error {
     /// 用户取消了身份验证（生物识别档）。
     #[error("用户取消了身份验证")]
     UserCancelled,
+    /// 这台机器没有可用的生物识别硬件（macOS：没有配对 Touch ID）。
+    ///
+    /// 与 `NoBackend` 分开：前者是「这台 Mac 压根没指纹硬件」，
+    /// 后者是「系统服务/签名环境用不了」。界面该分别说
+    /// 「接一个 Touch ID 键盘」和「这版应用没签好名」。
+    #[error("这台设备没有可用的生物识别硬件：{0}")]
+    BiometricsUnavailable(String),
+    /// 生物识别硬件可用，但系统里没录入任何指纹。
+    ///
+    /// 界面该引导用户去「系统设置 → 触控 ID」录一个，而不是让他重试。
+    #[error("这台设备还没录入指纹：{0}")]
+    BiometricsNotEnrolled(String),
+    /// 连续验证失败过多，系统暂时锁定了生物识别。
+    #[error("生物识别被暂时锁定：{0}")]
+    BiometricsLockout(String),
     /// 密文损坏或被篡改，解不开。
     #[error("数据无法解密（可能已损坏或来自其他设备）")]
     Undecryptable,
@@ -182,6 +201,29 @@ pub fn random_key() -> ProtectKey {
     Zeroizing::new(k)
 }
 
+// 让 Box<dyn Protector> 自己也是 Protector：上层拿到统一选择器返回的
+// Box 后，可以毫无差别地调 trait 方法，不必每次先 `&*` 解引用。
+impl Protector for Box<dyn Protector> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+    fn retrieve(&self, id: &str) -> Result<ProtectKey> {
+        (**self).retrieve(id)
+    }
+    fn store(&self, id: &str, key: &ProtectKey) -> Result<()> {
+        (**self).store(id, key)
+    }
+    fn delete(&self, id: &str) -> Result<()> {
+        (**self).delete(id)
+    }
+    fn has(&self, id: &str) -> bool {
+        (**self).has(id)
+    }
+    fn requires_user_presence(&self) -> bool {
+        (**self).requires_user_presence()
+    }
+}
+
 /// 挑一个当前环境可用的保护后端。
 ///
 /// 目前只有机器绑定一档。将来加入生物识别后，这里按配置选择，
@@ -193,6 +235,38 @@ pub fn random_key() -> ProtectKey {
 pub fn default_protector(service: &str) -> Result<Box<dyn Protector>> {
     let p = MachineProtector::new(service)?;
     Ok(Box::new(p))
+}
+
+/// 挑一个「需要本人在场」的设备密钥后端。
+///
+/// 这是 GUI 与 CLI 共用的**唯一**入口：上层不要再各自 `HelloProtector::new`，
+/// 否则加新平台时两端容易各漏一处。
+///
+/// | 平台 | 后端 |
+/// |---|---|
+/// | Windows | TPM + Windows Hello（[`HelloProtector`]）|
+/// | macOS | Data Protection Keychain + Touch ID（[`MacBiometricProtector`]）|
+/// | 其它 | [`Error::NoBackend`]，明确说不支持，不退回软件档 |
+///
+/// # Errors
+///
+/// 这台机器没有对应硬件、未录入指纹、未签名、或平台不支持时返回。
+pub fn device_protector(service: &str) -> Result<Box<dyn Protector>> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(Box::new(HelloProtector::new(service)?))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(MacBiometricProtector::new(service)?))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = service;
+        Err(Error::NoBackend(
+            "设备密钥（生物识别免密）目前只支持 Windows 与 macOS".into(),
+        ))
+    }
 }
 
 #[cfg(test)]

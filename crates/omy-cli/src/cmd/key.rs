@@ -832,13 +832,15 @@ fn device(ctx: &Ctx<'_>, a: &DeviceArgs) -> Result<()> {
     }
 }
 
-/// 造一个 Hello 保管器，并把「这台机器没有 TPM」翻译成人话。
-fn hello_protector() -> Result<omy_secret::HelloProtector> {
-    omy_secret::HelloProtector::new(DEVICE_SERVICE).map_err(|e| {
+/// 造一个设备密钥保管器（Windows Hello / macOS Touch ID，按平台自动选）。
+///
+/// 统一走 `omy_secret::device_protector`：上层不再关心当前平台是哪一档。
+fn device_protector() -> Result<Box<dyn omy_secret::Protector>> {
+    omy_secret::device_protector(DEVICE_SERVICE).map_err(|e| {
         anyhow::anyhow!(
             "这台机器上用不了设备密钥：{e}\n\n\
-             设备密钥需要 TPM 2.0 与已配置的 Windows Hello。\n\
-             目前只支持 Windows。"
+             Windows 需要 TPM 2.0 与已配置的 Windows Hello；\n\
+             macOS 需要已签名的应用与已录入的 Touch ID。"
         )
     })
 }
@@ -846,7 +848,7 @@ fn hello_protector() -> Result<omy_secret::HelloProtector> {
 fn device_status(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
     // 探测本身不该弹 Hello——用户只是想看看状态。
     // 所以只问「有没有这条记录」，不去解封它
-    let p = match hello_protector() {
+    let p = match device_protector() {
         Ok(p) => p,
         Err(e) => {
             ctx.out.result(
@@ -899,7 +901,7 @@ fn device_add(
     sample: &std::path::Path,
     id: &str,
 ) -> Result<()> {
-    let p = hello_protector()?;
+    let p = device_protector()?;
 
     // 先验密码：挂设备密钥要求已知一个现有密码。
     //
@@ -1032,7 +1034,7 @@ fn device_add(
 }
 
 fn device_remove(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
-    let p = hello_protector()?;
+    let p = device_protector()?;
 
     // 只清硬件里那把密钥，不动文件。
     //
