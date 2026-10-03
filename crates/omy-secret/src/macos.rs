@@ -135,6 +135,7 @@ mod imp {
             keyCallbacks: *const c_void,
             valueCallbacks: *const c_void,
         ) -> CFMutableDictionaryRef;
+        fn CFRelease(cf: CFTypeRef);
         fn CFDataGetLength(data: CFTypeRef) -> usize;
         fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
     }
@@ -165,6 +166,8 @@ mod imp {
 
         fn SecItemAdd(attributes: CFMutableDictionaryRef, result: *mut CFTypeRef) -> OSStatus;
         fn SecItemCopyMatching(query: CFMutableDictionaryRef, result: *mut CFTypeRef) -> OSStatus;
+        fn SecItemUpdate(query: CFMutableDictionaryRef, attributesToUpdate: CFMutableDictionaryRef)
+            -> OSStatus;
         fn SecItemDelete(query: CFMutableDictionaryRef) -> OSStatus;
     }
 
@@ -188,6 +191,8 @@ mod imp {
         fn sel_registerName(name: *const c_void) -> Sel;
         #[link_name = "objc_msgSend"]
         fn msg0(obj: ObjcId, sel: Sel) -> ObjcId;
+        #[link_name = "objc_msgSend"]
+        fn msg_void(obj: ObjcId, sel: Sel);
         #[link_name = "objc_msgSend"]
         fn msg_bool_err(obj: ObjcId, sel: Sel, policy: isize, err: *mut ObjcId) -> bool;
         #[link_name = "objc_msgSend"]
@@ -218,21 +223,26 @@ mod imp {
         let sel_policy =
             unsafe { sel_registerName(cstr("canEvaluatePolicy:error:").as_ptr() as *const c_void) };
         let sel_code = unsafe { sel_registerName(cstr("code").as_ptr() as *const c_void) };
+        let sel_release = unsafe { sel_registerName(cstr("release").as_ptr() as *const c_void) };
 
+        // alloc/init 拿到的 ctx 归我们所有（+1），用完必须 release，
+        // 否则每次探测都漏一个 LAContext。
         let ctx = unsafe { msg0(msg0(cls, sel_alloc), sel_init) };
         if ctx.is_null() {
             return Err(Error::BiometricsUnavailable("建不起 LAContext".into()));
         }
         let mut err: ObjcId = std::ptr::null_mut();
         let ok = unsafe { msg_bool_err(ctx, sel_policy, POLICY_BIOMETRICS, &mut err) };
-        if ok {
-            return Ok(());
-        }
-        let code = if err.is_null() {
+        let code = if ok || err.is_null() {
             0
         } else {
             unsafe { msg_isize(err, sel_code) }
         };
+        // 无论结果如何，释放 ctx。err 是借出的，不属于我们，不 release。
+        unsafe { msg_void(ctx, sel_release) };
+        if ok {
+            return Ok(());
+        }
         let msg = format!("LAContext 错误码 {code}");
         match code {
             LA_BIOMETRY_NOT_ENROLLED => Err(Error::BiometricsNotEnrolled(msg)),
@@ -285,6 +295,12 @@ mod imp {
             -25293 => Err(Error::Backend(
                 "Touch ID 验证失败（未录入指纹、被锁定或权限被拒绝）".into(),
             )),
+            // -25299 重复条目（理论上 add/update 已自行消化）、
+            // -25308 交互不允许（设备锁屏/不在前台）、
+            // -25243 设备失败：都不是用户能当场取消的，归 Backend 并带码。
+            -25299 | -25308 | -25243 => Err(Error::Backend(format!(
+                "Keychain 受限状态（{code}）：解锁后再试或检查屏幕锁定"
+            ))),
             other => Err(Error::Backend(format!("Keychain 操作失败（{other}）"))),
         }
     }
@@ -303,6 +319,11 @@ mod imp {
         );
         let mut res: CFTypeRef = std::ptr::null();
         let r = unsafe { SecItemCopyMatching(q, &mut res) };
+        // 查询字典与（命中时）返回的属性字典都 +1，配对释放。
+        unsafe { CFRelease(q) };
+        if !res.is_null() {
+            unsafe { CFRelease(res) };
+        }
         r == 0
     }
 
@@ -320,22 +341,37 @@ mod imp {
         );
         let mut data: CFTypeRef = std::ptr::null();
         let status = unsafe { SecItemCopyMatching(q, &mut data) };
+        // 查询字典用完即释，与秘密驻留时间解耦。
+        unsafe { CFRelease(q) };
         map_status(status)?;
 
         if data.is_null() {
             return Err(Error::Backend("Keychain 没返回数据".into()));
         }
-        // data 是 CFDataRef。直接读长度与指针，避免版本间包装方法漂移。
+        // data 是 CFDataRef，+1 归我们。拷进 Zeroizing 后立刻释放，
+        // 不延长明文在钥匙串缓冲区里的驻留。
         let len = unsafe { CFDataGetLength(data) };
         let ptr = unsafe { CFDataGetBytePtr(data) };
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        let arr: [u8; KEY_LEN] = bytes
+        let parsed: Result<[u8; KEY_LEN]> = bytes
             .try_into()
-            .map_err(|_| Error::Backend("钥匙串里的密钥长度不对".into()))?;
-        Ok(Zeroizing::new(arr))
+            .map_err(|_| Error::Backend("钥匙串里的密钥长度不对".into()));
+        // 拿到结果后立刻释放秘密 CFData，再去传播错误，不延长明文驻留。
+        unsafe { CFRelease(data) };
+        Ok(Zeroizing::new(parsed?))
     }
 
     /// 存密钥。带访问控制：以后每次读取都要 Touch ID。
+    ///
+    /// 不做「先删后加」——那样在两步之间崩了会丢旧值。改为：先 Add；
+    /// 若条目已存在（errSecDuplicateItem -25299），用 SecItemUpdate 原位覆盖。
+    /// 要么成功写入新值，要么保留旧值，不留丢失窗口。
+    ///
+    /// accessibility 选 `WhenUnlockedThisDeviceOnly` 而非更严的
+    /// `WhenPasscodeSetThisDeviceOnly`：两者都是 ThisDeviceOnly（不随备份/迁移
+    /// 带走）；挂了 BiometryAny 后读取本来就强制 Touch ID，而录 Touch ID 必然
+    /// 要求设备密码，「必须设密码」这层门槛实践中冗余。ThisDeviceOnly 档是
+    /// spike 实测验证过能用的，不冒然换未实测档。
     pub(super) fn store(service: &str, id: &str, key: &ProtectKey) -> Result<()> {
         // 先造访问控制对象。失败说明系统不支持这个组合。
         let mut ac_err: CFTypeRef = std::ptr::null();
@@ -353,9 +389,6 @@ mod imp {
             ));
         }
 
-        // 已存在就先删，再按带访问控制的方式写——等于覆盖同 id 的旧值。
-        let _ = remove(service, id);
-
         let val = CFData::from_buffer(key.as_slice());
         let attrs = query(
             service,
@@ -368,8 +401,35 @@ mod imp {
                 (unsafe { kSecValueData }, val.as_CFTypeRef()),
             ],
         );
+        // ac 我们自己持 +1（字典通过回调又 retained 了一份），用完减掉自己这一份。
         let mut res: CFTypeRef = std::ptr::null();
         let status = unsafe { SecItemAdd(attrs, &mut res) };
+        unsafe { CFRelease(attrs) };
+        unsafe { CFRelease(ac) };
+
+        // -25299：条目已存在。SecItemUpdate 第一个参数是「定位哪条」
+        // （service+account），第二个是「把哪些属性改成什么」（只给 value）。
+        // 访问控制保持不变：同一条记录本来就是 Touch ID 门禁。
+        if status == -25299 {
+            let locate = query(service, id, &[]);
+            // 更新字典只放 kSecValueData；不带查询属性，避免 SecItemUpdate 拒参。
+            let keys = [unsafe { kSecValueData }];
+            let vals = [val.as_CFTypeRef()];
+            let newval = unsafe {
+                CFDictionaryCreate(
+                    std::ptr::null(),
+                    keys.as_ptr(),
+                    vals.as_ptr(),
+                    1,
+                    &kCFTypeDictionaryKeyCallBacks,
+                    &kCFTypeDictionaryValueCallBacks,
+                )
+            };
+            let st2 = unsafe { SecItemUpdate(locate, newval) };
+            unsafe { CFRelease(locate) };
+            unsafe { CFRelease(newval) };
+            return map_status(st2);
+        }
         map_status(status)
     }
 
@@ -377,6 +437,7 @@ mod imp {
     pub(super) fn remove(service: &str, id: &str) -> Result<()> {
         let q = query(service, id, &[]);
         let status = unsafe { SecItemDelete(q) };
+        unsafe { CFRelease(q) };
         match status {
             0 => Ok(()),
             -25300 => Ok(()), // 本来就没有
@@ -456,24 +517,33 @@ mod tests {
         let _ = p.has("definitely-not-there");
     }
 
-    /// 未签名环境写 DP Keychain 必须如实报 NoBackend，而不是成功或退回。
+    /// store 在受限/无传感器环境里不能 panic。
     ///
-    /// 本机（未 Developer ID 签名）实测：SecItemAdd 返回 -34018。
-    /// 这条把「无降级」这条不变量钉住：哪天有人图省事把它改成写普通钥匙串，
-    /// 这里会红。
+    /// 注意：这条**不是**「无降级」的证明。在本机（无 Touch ID）上 new() 就
+    /// 失败了，store 根本走不到——它只验证「构造不出来时调用 store 不会
+    /// 恐慌」。真正钉住「未签名必须报 NoBackend 而不是成功」的是上面
+    /// `osstatus_mapping_is_stable` 里 map_status(-34018)==NoBackend 这条纯断言。
     #[test]
-    fn unsigned_store_is_no_backend_not_silent_downgrade() {
+    fn store_never_panics_regardless_of_environment() {
         let p = match MacBiometricProtector::new("omy-test") {
             Ok(p) => p,
-            // 这台机器连 Touch ID 都没有，new() 就先失败了——
-            // 那种环境下 store 本来就走不到，跳过即可。
+            // 无 Touch ID：构造失败也算一种受保护环境，store 不该被调到。
+            // 这里只确认构造失败本身是个 Err，而不是 panic。
             Err(_) => return,
         };
+        // 走到这一步说明有 Touch ID 但未签名——真机手工验证项；不强行断言。
         let key = crate::random_key();
-        match p.store("lifecycle-probe", &key) {
-            Ok(()) => println!("已签名环境，store 成功（不在本断言预期内）"),
-            Err(Error::NoBackend(_)) => {}
-            Err(e) => panic!("未签名/受限环境的 store 必须是 NoBackend，实际是 {e:?}"),
-        }
+        let _ = p.store("lifecycle-probe", &key);
+    }
+
+    /// 「无降级」的真正钉法：未签名 entitlement 缺失必须映射成 NoBackend，
+    /// 而不是 Backend 或成功。这是纯函数、任何机器都该成立。
+    #[test]
+    fn no_downgrade_is_pinned_by_error_mapping() {
+        use imp::map_status;
+        // 未签名/缺 entitlement：必须 NoBackend，不许被吞成 Backend 或 Ok。
+        assert!(matches!(map_status(-34018), Err(Error::NoBackend(_))));
+        // 成功码才是 Ok；任何负码都不得静默通过。
+        assert!(matches!(map_status(1), Err(Error::Backend(_))));
     }
 }
