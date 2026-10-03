@@ -250,7 +250,7 @@ omy decrypt secret.omy --device      # unlock with it
 
 It is an ordinary password slot; the only difference is where the key comes from.
 A password slot's key is derived from the password; a device key is **randomly
-generated** and kept by this machine's secure hardware:
+generated** and kept by this machine's OS key store:
 
 - **Windows**: the private key lives in a TPM 2.0 chip; every retrieval requires
   Windows Hello confirmation by the system.

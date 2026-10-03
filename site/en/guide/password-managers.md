@@ -4,14 +4,14 @@ omy can generate a high-entropy key and ask a third-party password manager to st
 You do not need to remember or copy the key. When the same KDBX database is synced, the
 credential can follow you to another device.
 
-This complements, rather than replaces, the Windows Hello device key:
+This complements, rather than replaces, the device key:
 
-| | Password-manager sync key | Windows Hello device key |
+| | Password-manager sync key | Device key |
 |---|---|---|
 | Available after changing devices | Yes, after the KDBX is synced and unlocked | No |
-| Stored by | KeePassXC, KeePassDX, or another provider | This machine's TPM |
-| Daily action | Choose in the password manager | Confirm Windows Hello |
-| Loss boundary | Losing the KDBX and its backups | Replacing the PC, OS, TPM, or Hello setup |
+| Stored by | KeePassXC, KeePassDX, or another provider | This machine's OS key store (Windows: TPM 2.0; macOS: Data Protection Keychain) |
+| Daily action | Choose in the password manager | System biometric confirmation (Windows Hello / Touch ID) |
+| Loss boundary | Losing the KDBX and its backups | Replacing the PC, OS, or resetting biometrics |
 
 ## KeePassXC on desktop
 

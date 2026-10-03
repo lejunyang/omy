@@ -4,14 +4,14 @@ omy 可以把随机生成的高强度密钥交给第三方密码管理器保存�
 这串密钥；密码管理器使用同一份 KDBX 数据库时，它也可以随数据库到达另一台
 设备。
 
-这项能力与 Windows Hello 设备密钥互补：
+这项能力与设备密钥互补：
 
-| | 密码管理器同步密钥 | Windows Hello 设备密钥 |
+| | 密码管理器同步密钥 | 设备密钥 |
 |---|---|---|
 | 换设备后可用 | KDBX 已同步并能解锁时可以 | 不可以 |
-| 密钥保存位置 | KeePassXC / KeePassDX 等密码库 | 当前机器的 TPM |
-| 日常操作 | 从密码管理器选择 | Windows Hello 确认 |
-| 丢失后果 | KDBX 与备份都丢失后不可恢复 | 换机、重装或清 TPM 后不可恢复 |
+| 密钥保存位置 | KeePassXC / KeePassDX 等密码库 | 当前机器的 OS 密钥库（Windows：TPM 2.0；macOS：Data Protection Keychain） |
+| 日常操作 | 从密码管理器选择 | 系统生物识别确认（Windows Hello / Touch ID） |
+| 丢失后果 | KDBX 与备份都丢失后不可恢复 | 换机、重装或重置生物识别后不可恢复 |
 
 ## 桌面 KeePassXC
 

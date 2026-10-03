@@ -242,7 +242,7 @@ omy decrypt secret.omy --device      # 用它解锁
 ```
 
 它就是一个普通的密码槽，区别只在这把钥匙从哪来：密码槽的钥匙由密码算出来，
-设备密钥的钥匙是**随机生成**的，交给这台机器的安全硬件保管：
+设备密钥的钥匙是**随机生成**的，交给这台机器的 OS 密钥库保管：
 
 - **Windows**：私钥封进 TPM 2.0，取用时系统强制 Windows Hello 确认。
 - **macOS**：密钥放进 Data Protection Keychain，访问控制挂 Touch ID，
