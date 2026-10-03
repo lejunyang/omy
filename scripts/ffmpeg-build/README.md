@@ -11,10 +11,14 @@
 |---|---|---|
 | win-x64 | `ffmpeg.exe` + `ffprobe.exe` | **12.44 MB** |
 | linux-x64 | `ffmpeg` + `ffprobe` | **12.53 MB** |
+| macos-arm64 | `ffmpeg` + `ffprobe` | **8.75 MB** |
+| macos-x86_64 | `ffmpeg` + `ffprobe` | **12.66 MB** |
 
 已 strip，静态链接 libwebp 与 zlib：Windows 版除系统 DLL 外无任何外部依赖
 （可以只拷这两个 exe）；Linux 版 glibc 等系统库仍动态链接（全静态 glibc 有
-NSS 等已知坑），libwebp/zlib 已嵌入，`ldd` 看不到它们。
+NSS 等已知坑），libwebp/zlib 已嵌入，`ldd` 看不到它们；macOS 版只动态链接
+系统框架（libSystem / CoreFoundation / CoreVideo / CoreMedia），`otool -L`
+看不到 libwebp 与 libz。
 
 能力范围：
 
@@ -62,6 +66,22 @@ bash scripts/ffmpeg-build/build-linux.sh
 bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
 ```
 
+### macOS
+
+需要 Xcode Command Line Tools（提供 clang 与 macOS SDK），以及
+`brew install pkg-config nasm cmake`。两架构共用同一 SDK，交叉编只靠 `-arch`：
+
+```bash
+# 本机架构（Apple Silicon 上即 arm64）
+bash scripts/ffmpeg-build/build-macos.sh
+
+# Intel：在 arm64 机器上交叉编（产物经 Rosetta 运行）
+ARCH=x86_64 bash scripts/ffmpeg-build/build-macos.sh
+
+# 校验产物（macOS 查 otool -L，并打印 lipo 架构）
+bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
+```
+
 产物目录默认是 `$OMY_FF_WORK/out`（`OMY_FF_WORK` 默认
 `/tmp/omy-ffmpeg-build`），可用 `OMY_FF_OUT` 指定别处——CI 就是这么把产物
 直接放进打包目录的。
@@ -71,9 +91,10 @@ bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out
 | 文件 | 作用 |
 |---|---|
 | `VERSION` | 三个上游库的版本与 SHA256，每两行一组 |
-| `configure-flags.sh` | 组件配方（Windows / Linux 共用，由 `FF_TARGET` 区分） |
+| `configure-flags.sh` | 组件配方（三平台共用，由 `FF_TARGET` 区分） |
 | `build-windows.sh` | 下载校验、编 zlib 与 libwebp、交叉编 FFmpeg |
 | `build-linux.sh` | 下载校验、编 zlib 与 libwebp、原生编 FFmpeg |
+| `build-macos.sh` | 下载校验、编 zlib 与 libwebp、编 FFmpeg（`ARCH=arm64/x86_64`） |
 | `verify.sh` | 校验许可证边界、外部依赖、逐项复查组件 |
 | `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT`（仅 Windows） |
 
