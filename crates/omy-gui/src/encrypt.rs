@@ -709,7 +709,25 @@ fn handle_original(src: &Path, mode: &str, failed: &mut Vec<(String, String)>) {
 /// `pub(crate)`：右键菜单的删除也走这里。共用而不是各写一份——否则
 /// 「Android 没有回收站要明确报不支持、绝不降级为永久删除」这条只在
 /// 一处生效，另一处会静默删掉用户的文件。
-#[cfg(not(target_os = "android"))]
+///
+/// macOS 不能用 `trash::delete` 的默认（Finder）方式：它靠 osascript
+/// 让 Finder 删文件，首次调用会弹「允许控制 Finder」的自动化授权。
+/// 无交互会话（CI 虚拟机、launchd 拉起的后台进程）下这个弹窗没人点，
+/// 调用直接失败——本仓库首次在真机跑测试时就踩到了：首次套件两个
+/// trash 用例全挂，手动批准过一次授权之后再也不复现。改成
+/// `trashItemAtURL`（NSFileManager）后不需要任何额外授权，代价只是
+/// Finder 里失去「放回原处」菜单项（上游已知的 macOS 行为，拖出废纸篓
+/// 仍可还原），见 trash crate 文档的方法对照表。
+#[cfg(target_os = "macos")]
+pub(crate) fn move_to_trash(src: &Path) -> Result<(), &'static str> {
+    use trash::macos::TrashContextExtMacos;
+    let mut ctx = trash::TrashContext::new();
+    ctx.set_delete_method(trash::macos::DeleteMethod::NsFileManager);
+    ctx.delete(src).map_err(|_| "trash_failed")
+}
+
+/// Windows / Linux：trash::delete 走系统原生回收站 API，不需要自动化授权。
+#[cfg(all(not(target_os = "android"), not(target_os = "macos")))]
 pub(crate) fn move_to_trash(src: &Path) -> Result<(), &'static str> {
     trash::delete(src).map_err(|_| "trash_failed")
 }
