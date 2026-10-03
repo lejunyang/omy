@@ -10,7 +10,11 @@
 
 set -uo pipefail
 
-OUT="${1:?用法: verify.sh <产物目录>}"
+OUT="${1:?用法: verify.sh <产物目录> [期望架构]}"
+# 期望架构仅 macOS 用：第二参数（或 OMY_FF_ARCH）给出时，lipo 实际架构必须等于它；
+# 不给则从产物目录名（out-arm64 / dist-ffmpeg-x86_64 之类）推断，仍推不出就只校验
+# 「单一架构」，不做一致性子项。这里传值是为了避免 arm64/x86_64 产物错塞进对方包。
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 产物名随平台：Windows 是 ffmpeg.exe，Linux 是 ffmpeg。按目录里实际存在的文件
 # 选择，这样在任一平台都能校验同一份产物布局。
@@ -69,6 +73,36 @@ else
 fi
 
 echo
+echo "--- 2b. 随包分发的许可证正文与源码说明 ---"
+# LGPL 强制要求随二进制提供许可证正文，以及一份说明如何获取对应源码的文字。
+# 这两项过去靠构建脚本「尽量拷」，失败被 || true 吞掉，产物可能缺文件而构建仍绿。
+# 现在缺失即硬失败：少了它们，分发在许可证层面就是不合法的。
+LGPL="$OUT/COPYING.LGPLv2.1"
+SOURCE_NOTE="$OUT/SOURCE.txt"
+for f in "$LGPL" "$SOURCE_NOTE"; do
+  if [ ! -s "$f" ]; then
+    bad "$(basename "$f") 存在且非空" "缺失或为空"
+  else
+    note "$(basename "$f") 存在且非空" "ok（$(size_of "$f") 字节）"
+  fi
+done
+# SOURCE.txt 还得真的对应这次构建：带上 VERSION 文件锁的版本号与源码校验和。
+# 只写「基于 FFmpeg」没用——版本对不上，用户照它拿的源码编不出同一个二进制。
+EXPECT_VER="$(sed -n 1p "$HERE/VERSION" 2>/dev/null || true)"
+if [ -s "$SOURCE_NOTE" ]; then
+  if [ -n "$EXPECT_VER" ] && ! grep -qF "$EXPECT_VER" "$SOURCE_NOTE"; then
+    bad "SOURCE.txt 指向构建版本" "未找到 ${EXPECT_VER}"
+  else
+    note "SOURCE.txt 指向构建版本" "ok（${EXPECT_VER}）"
+  fi
+  if grep -qiE 'sha256|校验和|源码 SHA' "$SOURCE_NOTE"; then
+    note "SOURCE.txt 含源码校验和" "ok"
+  else
+    bad "SOURCE.txt 含源码校验和" "未出现 SHA256/校验和"
+  fi
+fi
+
+echo
 echo "--- 3. 外部运行时依赖 ---"
 if [ "$PLATFORM" = windows ]; then
   # mingw 构建有时会拖上 libgcc_s_seh-1.dll 之类，那样就不能只拷两个 exe。
@@ -97,10 +131,44 @@ elif [ "$PLATFORM" = macos ]; then
       note "libwebp/zlib 已静态嵌入" "ok"
     fi
     # 架构要对：release 会把 arm64 产物塞进 arm64 tarball、x86_64 塞进 x86_64
-    # tarball，混了就是换错目录，运行即崩。lipo 列出的架构必须唯一且明确。
+    # tarball，混了就是换错目录，运行即崩。这一段从「打印一下」升级为硬失败：
+    #   1) lipo 只能列出一个架构——出现两个就是 fat/universal，我们的配方只编单架构；
+    #   2) 若能确定期望架构（第二参数 / OMY_FF_ARCH / 目录名推断），实际必须等于它，
+    #      否则按错包处理。lipo 本身不可用也按失败算（fail-closed，宁可误拦不可漏过）。
     if command -v lipo >/dev/null 2>&1; then
-      archs="$(lipo -archs "$FFMPEG" 2>/dev/null || true)"
-      note "产物架构（lipo -archs）" "${archs:-未知}"
+      archs="$(lipo -archs "$FFMPEG" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+      want_arch="${2:-${OMY_FF_ARCH:-}}"
+      if [ -z "$want_arch" ]; then
+        case "$(basename "$OUT")" in
+          *arm64*|*aarch64*) want_arch=arm64 ;;
+          *x86_64*|*amd64*|*intel*) want_arch=x86_64 ;;
+        esac
+      fi
+      case "$want_arch" in
+        arm64|aarch64) want_arch=arm64 ;;
+        x86_64|amd64)  want_arch=x86_64 ;;
+        *)             want_arch="" ;;
+      esac
+      actual_first="$(printf '%s' "$archs" | awk '{print $1}')"
+      case "$actual_first" in
+        arm64|aarch64) actual_arch=arm64 ;;
+        x86_64|amd64)  actual_arch=x86_64 ;;
+        *)             actual_arch="" ;;
+      esac
+      n_arch="$(printf '%s' "$archs" | wc -w | tr -d ' ')"
+      if [ "$n_arch" != "1" ]; then
+        bad "产物为单一架构" "lipo 列出 ${n_arch} 个: ${archs:-空}"
+      elif [ -z "$actual_arch" ]; then
+        bad "产物架构可识别" "未知: ${archs:-空}"
+      elif [ -n "$want_arch" ] && [ "$actual_arch" != "$want_arch" ]; then
+        bad "产物架构与目标一致" "实际 ${actual_arch}，期望 ${want_arch}"
+      elif [ -n "$want_arch" ]; then
+        note "产物架构（lipo -archs）" "${archs}（期望 ${want_arch}）"
+      else
+        note "产物架构（lipo -archs）" "${archs}（未指定期望架构，仅校验单架构）"
+      fi
+    else
+      bad "产物架构校验" "lipo 不可用，无法确认 arm64/x86_64 未混包"
     fi
   else
     note "libwebp/zlib 已静态嵌入" "跳过（otool 不可用）"

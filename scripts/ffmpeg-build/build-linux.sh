@@ -152,8 +152,9 @@ for f in ffmpeg ffprobe; do
 done
 
 # 许可证文件必须随产物分发：LGPL 要求提供许可证正文，
-# 且要说明如何获取对应源码（SOURCE.txt）。
-cp -f "$SRC/ffmpeg-${FFMPEG_VER}/COPYING.LGPLv2.1" "$OUT/" 2>/dev/null || true
+# 且要说明如何获取对应源码（SOURCE.txt）。这里不能 2>/dev/null || true：
+# 拷失败要让构建立刻报错，而不是等 verify.sh 以「缺许可证」告终。
+cp -f "$SRC/ffmpeg-${FFMPEG_VER}/COPYING.LGPLv2.1" "$OUT/COPYING.LGPLv2.1"
 cat > "$OUT/SOURCE.txt" <<EOF
 本目录中的 ffmpeg / ffprobe 由 omy 项目自行编译。
 
