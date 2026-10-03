@@ -238,8 +238,8 @@ See [recovery codes](../guide/passwords.md#recovery-codes-the-only-way-back-in).
 
 ### device (device key)
 
-Unlock with system biometrics (Windows Hello / macOS Touch ID) instead of typing the
-password every time.
+Unlock with system biometrics (Windows Hello; macOS Touch ID **not available yet**,
+see below) instead of typing the password every time.
 
 ```bash
 omy key device secret.omy add        # enroll (asks for the password once)
@@ -277,17 +277,27 @@ One device key covers a whole vault (every file sharing the same `vault_salt`), 
 different vaults are isolated automatically. Folders work too:
 `omy key device <encrypted folder> add`.
 
-Platform requirements:
+Current platform availability (read this first):
 
-- **Windows**: TPM 2.0 plus a configured Windows Hello.
-- **macOS**: an enrolled Touch ID, and omy must be distributed as a **Developer ID
-  signed** .app. Unsigned / ad-hoc binaries cannot write to the Data Protection
-  Keychain (the OS refuses outright); the command reports unavailable instead of
-  silently dropping down to an unprotected keychain entry.
+| Platform | Available in today's official build? |
+|---|---|
+| Windows | Yes: TPM 2.0 + Windows Hello, real-machine verified. |
+| macOS (Apple Silicon) | **Not yet.** The official release today is an **unsigned, un-notarized bare tar.gz**, which cannot write to the Data Protection Keychain (the OS refuses with `-34018`). The command reports unavailable, and you **keep using the master password** — it does **not** silently drop to an unprotected keychain entry. This no-downgrade is deliberate. The Touch ID path's success / cancel / lockout has also **not** been end-to-end verified on a Touch-ID machine yet. |
+| Other platforms | Reported unsupported; no fallback. |
+
+To turn Touch ID device keys on in macOS later, two things must land:
+
+1. The omy GUI must ship as a **Developer ID signed + notarized** `.app`;
+2. The CLI must either live inside that signed `.app` bundle, or be invoked by a
+   wrapper from the same Team with the same `keychain-access-groups` — otherwise it
+   lacks the keychain entitlement.
+
+Until then, macOS users: keep using the master password. macOS's **general** features
+(encrypt/decrypt, playback, remote locations) are real-machine verified on Apple
+Silicon; only the **Touch ID passwordless unlock** itself is not yet available.
 
 It uses the "any enrolled finger" policy: adding or removing a fingerprint later does
-not invalidate existing device keys. Other platforms report unsupported rather than
-silently falling back to something without hardware backing.
+not invalidate existing device keys.
 
 ## shard
 

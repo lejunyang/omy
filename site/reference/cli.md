@@ -232,7 +232,7 @@ omy key restore secret.omy --code-file code.txt
 
 ### device（设备密钥）
 
-用系统生物识别免密解锁（Windows Hello / macOS Touch ID），不必每次输密码。
+用系统生物识别免密解锁（Windows Hello；macOS Touch ID **尚未可用**，见下），不必每次输密码。
 
 ```bash
 omy key device secret.omy add        # 挂上（需要先输一次密码）
@@ -265,15 +265,24 @@ omy decrypt secret.omy --device      # 用它解锁
 一把设备密钥覆盖整个库（同一个 `vault_salt` 下的所有文件），不同库之间自动
 隔离。文件夹也可以：`omy key device <加密后的文件夹> add`。
 
-平台要求：
+平台可用性现状（务必先读）：
 
-- **Windows**：TPM 2.0 与已配置的 Windows Hello。
-- **macOS**：已录入 Touch ID，并且 omy 是以 Developer ID **签名**的 .app 分发。
-  未签名 / 临时签名的二进制写不了 Data Protection Keychain（系统直接拒绝），
-  本命令会如实报告不可用，**不会**退回一个不设防的钥匙串条目。
+| 平台 | 当前官方分发下可用吗 |
+|---|---|
+| Windows | 可用：TPM 2.0 + Windows Hello 已真机验证。 |
+| macOS（Apple Silicon） | **暂不可用**。当前官方发布的是**未签名、未公证的裸 tar.gz**，写不了 Data Protection Keychain（系统 `-34018` 直接拒绝）。命令会如实报告不可用，**继续用主密码解锁，不会**退回一个不设防的普通钥匙串条目——这是有意的无降级语义。Touch ID 这条路径的成功/取消/锁定也还**没有**在带 Touch ID 的真机上端到端验证过。 |
+| 其它平台 | 如实报不支持，不降级。 |
+
+未来要在 macOS 上打开 Touch ID 设备密钥，需要：
+
+1. omy GUI 以 **Developer ID 签名 + 公证**打包成 `.app` 分发；
+2. CLI 要么放进同一个签名 `.app` 的包内，要么由同一 Team、同一
+   `keychain-access-groups` 的 wrapper 调用——否则它没有那把钥匙串权限。
+
+在此之前，macOS 用户请继续用主密码。macOS 的**常规功能**（加解密、播放、远程
+位置等）已在 Apple Silicon 上真机验证过；只是**Touch ID 免密这一项**尚未可用。
 
 用的是「任意已录入指纹均可」这一档：之后增删指纹不会让已有设备密钥失效。
-其它平台会如实报告不支持，而不是退回一个没有硬件保护的实现。
 
 ## shard
 
