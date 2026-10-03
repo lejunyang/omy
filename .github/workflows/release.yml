@@ -32,8 +32,9 @@
 #
 # 四个构建任务全部是硬门禁（不再有 continue-on-error）：既然要发布三系统
 # 桌面目标与 APK，哪个平台编不过就不该出 Release，否则用户下载到的就是
-# 缺平台的版本。但「CI 构建通过」不等于「真机实测通过」——目前只有
-# Windows 与 Android 真正用过，Linux 与 macOS 仅保证编译与打包成功，
+# 缺平台的版本。但「CI 构建通过」不等于「真机实测通过」——目前 Windows、
+# Android 与 macOS（Apple Silicon）真正在真机上跑过 build/test/clippy；
+# Linux 与 macOS（Intel）仅保证编译、打包与 FFmpeg 产物校验成功，
 # 这一点会写进 Release 说明，不把两者混为一谈。
 #
 # # 内置 FFmpeg
@@ -400,7 +401,7 @@ jobs:
           path: out/*
 
   build-macos:
-    name: 构建 macOS（构建门禁，尚未真机实测）
+    name: 构建 macOS（Apple Silicon 已真机实测，Intel 仅交叉构建）
     needs: decide
     if: needs.decide.outputs.publish == 'true'
     runs-on: macos-latest
@@ -534,14 +535,16 @@ jobs:
             echo "| Windows | ✅ | ✅ |"
             echo "| Android | ✅ | ✅ |"
             echo "| Linux（deb/rpm/AppImage/CLI） | ✅ | ⚠️ 核心功能本机测试通过，发行包安装未逐项实测 |"
-            echo "| macOS（两种架构） | ✅ | ❌ 尚未实测 |"
+            echo "| macOS（Apple Silicon） | ✅ | ✅ build/test/clippy 已在真机跑通 |"
+            echo "| macOS（Intel） | ✅ | ❌ 仅交叉编译/打包与 FFmpeg 产物校验，未在 Intel 真机运行 |"
             echo
             echo "Linux 发行包在 Ubuntu 22.04（glibc 2.35）上构建，Debian 12、"
             echo "Ubuntu 22.04 及更新的发行版可用；deb/rpm 安装后 \`omy-gui\` 位于"
             echo "应用菜单，内置 FFmpeg 随包安装。CLI 裸包不内置 FFmpeg，需要自行"
             echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。Windows 与 macOS"
             echo "（两种架构）的 FFmpeg 都随压缩包内置在 \`ffmpeg/\` 子目录，解压即用；"
-            echo "macOS 仍仅经过 CI 编译与打包，未在真实系统上运行过。"
+            echo "macOS Apple Silicon 已在真机跑通 build/test/clippy，Intel 产物仅经过"
+            echo "CI 交叉编译、打包与 FFmpeg 产物校验，未在 Intel 真机上运行过。"
             echo
             echo "### 说明"
             echo

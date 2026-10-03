@@ -42,11 +42,11 @@ test.yml
 | frontend | ubuntu-latest | 是 | 构建文档站、检查 i18n 键 |
 | msrv | ubuntu-latest | 否 | 用 1.88 编一遍，核实声明的下限 |
 | linux | ubuntu-latest | 否 | build / test / clippy |
-| macos | macos-latest | 否 | build / test / clippy |
+| macos | macos-latest | 是 | build / test / clippy |
 | result | ubuntu-latest | 是 | 汇总必过任务，供分支保护使用 |
 
 **分支保护只需要勾 `测试结论` 这一项。** 它只看 windows / android /
-frontend；未验证平台的红叉不会阻塞合并。
+macos / frontend；未验证平台（linux）的红叉不会阻塞合并。
 
 `omy-gui` 的远程位置单元测试与 `omy-remote` 的 session 单元测试使用进程内
 测试密钥，不访问系统凭据库。凭据库本身的真实读写仍由 `omy-secret` 的专门
@@ -122,13 +122,13 @@ Android 目标的 clippy：平台专属分支只有在对应目标下才会被 l
 `omy-gui` 不在其中：它的 Android 版要走 gradle + tauri 打包，不是 cargo 单独
 能编的，那件事在 release.yml 里做。
 
-### 为什么 linux / macos 允许失败
+### 为什么只有 linux 允许失败
 
-项目只在 Windows 与 Android 上实测过。这两个平台的代码路径写了但没跑过，
-设成必过会让 main 长期挂红，红叉也就不再有意义。它们现在的作用是持续
-提供「还差什么」的信息。
+项目已在 Windows、Android 与 macOS（Apple Silicon）真机上实测过，这些平台
+设成必过。Linux 的代码路径写了但没在真机上跑过，设成必过会让 main 长期挂红，
+红叉也就不再有意义。它现在的作用是持续提供「还差什么」的信息。
 
-某个平台连续绿且确实有人用过之后，删掉它的 `continue-on-error`，同时改掉
+Linux 连续绿且确实有人用过之后，删掉它的 `continue-on-error`，同时改掉
 `site/index.md`、`site/en/index.md`、`site/guide/install.md` 里「尚未验证」
 的说法。
 
@@ -224,8 +224,9 @@ jq 从事件 JSON（`GITHUB_EVENT_PATH`）读出，不插值进 shell，避免�
 
 四个任务**都是硬门禁**，不再有 `continue-on-error`：既然发布承诺三系统
 桌面目标加 APK，哪个平台编不过就不该出 Release。但「CI 编过」不等于
-「真机用过」——目前只有 Windows 与 Android 真机实测过，Linux 与 macOS
-仅保证编译与打包成功，这一点明确写在 Release 说明的状态表里，不混淆。
+「真机用过」——目前 Windows、Android 与 macOS（Apple Silicon）真机实测过，
+Linux 与 macOS（Intel）仅保证编译、打包与 FFmpeg 产物校验成功，
+这一点明确写在 Release 说明的状态表里，不混淆。
 
 macOS 在 arm64 runner 上由 `osdk install rust` 按 osdk.toml
 `[tools].rust.targets` 装好 aarch64/x86_64-apple-darwin，再交叉编译一份
