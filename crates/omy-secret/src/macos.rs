@@ -385,7 +385,16 @@ mod imp {
     }
 
     /// kSecAccessControlBiometryAny。
-    const BIOMETRY_ANY: u64 = 1 << 3;
+    ///
+    /// SDK 头文件（Security/SecAccessControl.h）逐字：
+    /// ```text
+    /// kSecAccessControlUserPresence       = 1u << 0,
+    /// kSecAccessControlBiometryAny        = 1u << 1,
+    /// kSecAccessControlBiometryCurrentSet = 1u << 3,
+    /// ```
+    /// 产品语义是「只要本人在场即可，增删指纹不失效」——对应 BiometryAny。
+    /// 之前误写成 1<<3，那其实是 CurrentSet（指纹集一变动整条密钥作废）。
+    pub(super) const BIOMETRY_ANY: u64 = 1 << 1;
 }
 
 #[cfg(test)]
@@ -419,7 +428,19 @@ mod tests {
         assert!(matches!(map_status(-128), Err(Error::UserCancelled)));
         assert!(matches!(map_status(-34018), Err(Error::NoBackend(_))));
         assert!(matches!(map_status(-25293), Err(Error::Backend(_))));
+        // -25299 重复条目、-25308 交互不允许、-25243 设备失败：归 Backend。
+        assert!(matches!(map_status(-25299), Err(Error::Backend(_))));
+        assert!(matches!(map_status(-25308), Err(Error::Backend(_))));
+        assert!(matches!(map_status(-25243), Err(Error::Backend(_))));
         assert!(matches!(map_status(-99999), Err(Error::Backend(_))));
+    }
+
+    /// 钉死 BiometryAny 的位值：SDK 是 1<<1，写错成 1<<3 就会退化成
+    /// CurrentSet（指纹集一变密钥全废），那与产品语义相反。
+    #[test]
+    fn biometry_flag_matches_sdk() {
+        assert_eq!(imp::BIOMETRY_ANY, 1 << 1, "kSecAccessControlBiometryAny = 1<<1");
+        assert_ne!(imp::BIOMETRY_ANY, 1 << 3, "1<<3 是 BiometryCurrentSet，别用反");
     }
 
     /// 存在性查询在未签名环境里也不能 panic，且查不到就是 false。
