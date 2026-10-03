@@ -868,17 +868,18 @@ fn device_status(ctx: &Ctx<'_>, a: &DeviceArgs, id: &str) -> Result<()> {
     // 曾误写成 retrieve().is_ok()，导致 `omy key device status` 一跑就弹一次
     // 指纹确认——用户只是想看看状态。
     let enrolled = omy_secret::Protector::has(&p, id);
+    let bio = omy_secret::Protector::name(&p).to_owned();
     let human = if enrolled {
         format!(
             "文件        {}\n设备密钥    已挂载（{}）\n\n\
-             解锁时会要求 Windows Hello 确认。",
+             解锁时会要求{bio}确认。",
             a.file.display(),
-            omy_secret::Protector::name(&p),
+            bio,
         )
     } else {
         format!(
             "文件        {}\n设备密钥    未挂载\n\n\
-             用 `omy key device {} add` 挂上，之后解锁只需 Windows Hello。",
+             用 `omy key device {} add` 挂上，之后解锁只需{bio}。",
             a.file.display(),
             a.file.display(),
         )
