@@ -377,8 +377,8 @@ pub fn rewrite_slots_managed(
 
     // 只剩设备密钥也等于销毁数据，只是代价延迟到换机器那天。
     //
-    // 设备密钥绑在这台机器的硬件上：换机器、重装系统、清除 TPM、重置
-    // Windows Hello——任一发生它就永久解不开，而且**无法恢复**。那时若
+    // 设备密钥绑在这台机器的 OS 密钥库上：换机器、重装系统或重置系统
+    // 生物识别——任一发生它就永久解不开，而且**无法恢复**。那时若
     // 没有密码或恢复码，数据彻底拿不回来。
     //
     // 用户很容易走到这一步：按指纹进来、看着清单觉得「密码反正记不住，
@@ -405,7 +405,7 @@ pub fn rewrite_slots_managed(
         {
             return Err(Error::MalformedHeader {
                 reason: "refusing to leave only device keys; they stop working when the machine, \
-                         OS or TPM changes, and there would be no way back in",
+                         OS or biometrics change, and there would be no way back in",
             });
         }
     }

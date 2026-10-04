@@ -1,10 +1,10 @@
-//! 设备密钥：用 Windows Hello 免密解锁。
+//! 设备密钥：用系统生物识别免密解锁。
 //!
 //! # 它在这一层要做三件事
 //!
 //! 1. 告诉界面「这个库能不能用、挂没挂」——决定要不要显示那个按钮
 //! 2. 挂载（需要先验一次密码）
-//! 3. 免密解锁：从硬件取出密钥，装进会话
+//! 3. 免密解锁：从 OS 密钥库取出密钥，装进会话
 //!
 //! # 为什么挂载要先验密码
 //!
@@ -50,7 +50,7 @@ fn salts_of_dir(dir: &str) -> CmdResult<Vec<[u8; 16]>> {
 /// 设备密钥在这台机器上的状态。
 #[derive(Debug, serde::Serialize)]
 pub struct DeviceKeyStatus {
-    /// 这台机器支不支持（有 TPM、Hello 可用）。
+    /// 这台机器支不支持（系统生物识别可用）。
     ///
     /// false 时界面不该显示任何设备密钥入口——摆一个点了就报错的按钮
     /// 比没有更糟。
@@ -65,7 +65,7 @@ pub struct DeviceKeyStatus {
 ///
 /// **不会弹 Hello**：用户只是想看看状态，为此弹窗很突兀。代价是
 /// `enrolled` 的判断只看「有没有那份密文」，不验证它还能不能解开——
-/// 清除 TPM 之后这里仍会报 true，直到真去解锁才失败。
+/// 清除生物识别之后这里仍会报 true，直到真去解锁才失败。
 ///
 /// 这个取舍是有意的：让状态查询免打扰，比让它绝对准确更要紧。真正的
 /// 失败路径（解锁时）已经有明确的错误提示。
@@ -87,7 +87,7 @@ pub async fn device_key_status(dir: String) -> CmdResult<DeviceKeyStatus> {
         }
     };
     // 任一库挂了就算这个位置启用了。只看第一个的话，挂在第二个库上的
-    // 设备密钥会被当成没挂，Hello 按钮直接不出现——而用户明明挂过
+    // 设备密钥会被当成没挂，免密按钮直接不出现——而用户明明挂过
     let enrolled = salts
         .iter()
         .any(|s| p.has(&omy_core::devicekey::slot_id(s)));
@@ -96,13 +96,13 @@ pub async fn device_key_status(dir: String) -> CmdResult<DeviceKeyStatus> {
 
 /// 用设备密钥解锁，把 KEK 装进会话。
 ///
-/// 会弹 Hello。
+/// 会弹系统生物识别确认。
 ///
 /// # Errors
 ///
-/// - `device_key_unavailable`：这台机器没有 TPM 或 Hello
+/// - `device_key_unavailable`：这台机器不支持生物识别
 /// - `device_key_not_enrolled`：这个库没挂过
-/// - `user_cancelled`：用户在 Hello 弹窗上取消了
+/// - `user_cancelled`：用户在生物识别弹窗上取消了
 #[tauri::command]
 pub async fn device_key_unlock(
     state: State<'_, Shared>,
@@ -111,7 +111,7 @@ pub async fn device_key_unlock(
     let salts = salts_of_dir(&dir)?;
 
     let handle: Shared = Arc::clone(&state);
-    // Hello 会阻塞等用户确认，绝不能占着异步执行器——那会让整个界面僵住
+    // 生物识别确认会阻塞等用户，绝不能占着异步执行器——那会让整个界面僵住
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let p = omy_secret::device_protector(DEVICE_SERVICE)
             .map_err(|e| CmdError::with(
@@ -120,7 +120,7 @@ pub async fn device_key_unlock(
             ))?;
         // 先挑出真正挂过的那些库，再去解封。
         //
-        // 顺序很重要：先 has() 后 retrieve()，因为 retrieve 会弹 Hello。
+        // 顺序很重要：先 has() 后 retrieve()，因为 retrieve 会弹生物识别确认。
         // 反过来的话，一个混着三个库的目录会连弹三次，其中两次注定失败
         let mounted: Vec<[u8; 16]> = salts
             .iter()
@@ -131,9 +131,9 @@ pub async fn device_key_unlock(
             return Err(CmdError::code("device_key_not_enrolled"));
         }
 
-        // 一次 Hello 确认解封所有挂过的库。
+        // 一次生物识别确认解封所有挂过的库。
         //
-        // 硬件那边每个库各有一把密钥，但门禁是按进程的会话给的，所以
+        // 保管后端那边每个库各有一把密钥，但门禁是按进程的会话给的，所以
         // 用户只需确认一次
         let mut keks: Vec<([u8; 16], Kek)> = Vec::new();
         for salt in &mounted {
@@ -179,7 +179,7 @@ pub async fn device_key_unlock(
 
 /// 给一个库挂上设备密钥。
 ///
-/// 需要先验一次密码。之后每次解锁只要 Hello。
+/// 需要先验一次密码。之后每次解锁只要生物识别确认。
 ///
 /// # Errors
 ///
@@ -224,8 +224,8 @@ fn enroll(state: &Shared, path: &str, password: &str) -> CmdResult<DeviceKeyEnro
 
     let cur = Kek::from_password(password.as_bytes(), &header.vault_salt, header.argon2_params())
         .map_err(|_| CmdError::code("kdf_failed"))?;
-    // 真去开一次。from_password 只派生不校验，不验的话会先造好硬件密钥
-    // 才发现密码不对——白弹一次 Hello，TPM 里还留下一把用不到的密钥。
+    // 真去开一次。from_password 只派生不校验，不验的话会先造好保管后端密钥
+    // 才发现密码不对——白弹一次生物识别确认，保管后端里还留下一把用不到的密钥。
     // CLI 那边踩过这个坑
     omy_core::file::open(&data, &[cur.duplicate()])
         .map_err(|_| CmdError::code("wrong_password"))?;
@@ -328,9 +328,9 @@ fn enroll(state: &Shared, path: &str, password: &str) -> CmdResult<DeviceKeyEnro
 
 /// 移除这个库的设备密钥。
 ///
-/// 只清硬件里那把密钥，不动文件：没了钥匙那个槽位就是一段随机字节，
+/// 只清 OS 密钥库里那把密钥，不动文件：没了钥匙那个槽位就是一段随机字节，
 /// 与空槽不可区分，留着不影响任何事。要精确清掉它得先解开文件，
-/// 反而多一次 Hello 确认。
+/// 反而多一次生物识别确认。
 ///
 /// # Errors
 ///

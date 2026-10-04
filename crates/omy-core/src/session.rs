@@ -331,7 +331,7 @@ impl SessionKeys {
     ) -> bool {
         self.touch();
         let fp = kek.fingerprint(vault_salt);
-        // 只在同一个 vault、同一种类型内比对。跨 vault 的同一把硬件密钥
+        // 只在同一个 vault、同一种类型内比对。跨 vault 的同一把保管后端密钥
         // 派生出的 KEK 本就不同（HKDF 的 salt 是 vault_salt），让它们各占
         // 一条是对的——那是两个库
         let dup = self.cache.iter().any(|(k, v)| {
