@@ -64,8 +64,7 @@ const emit = defineEmits([
   'devices',
   'settings',
   'places',
-  'add-place',
-  'telegram',
+  'new-remote',
 ]);
 
 // 总大小按**当前看到的**条目算。在容器里时 `state.entries` 是外层
@@ -160,8 +159,7 @@ function onRowMenu(e, ev) {
     @pick="$emit('pick')"
     @devices="$emit('devices')"
     @lang="$emit('lang')"
-    @add-place="$emit('add-place')"
-    @telegram="$emit('telegram')"
+    @new-remote="$emit('new-remote')"
     @places="$emit('places')"
     @files="() => {}"
     @settings="$emit('settings')"

@@ -48,6 +48,8 @@ import {
   switchLanguage,
   applyLanguage,
   afterPlaceAdded,
+  createVirtualPlaceOnly,
+  openPlaceBrowserAt,
   encryptTelegramPlace,
   confirmTgEncrypt,
   cancelVirtualEncrypt,
@@ -110,6 +112,7 @@ import RemoteScreen from './components/RemoteScreen.vue';
 import PlaceBrowser from './components/PlaceBrowser.vue';
 import TransferScreen from './components/TransferScreen.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
+import NewRemoteDialog from './components/NewRemoteDialog.vue';
 import RemotePlaceDialog from './components/RemotePlaceDialog.vue';
 import TgEncryptDialog from './components/TgEncryptDialog.vue';
 import TgUnlockDialog from './components/TgUnlockDialog.vue';
@@ -125,9 +128,11 @@ import { registerMobileBack } from './mobile-platform';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
-/** 添加远程位置对话框是否打开。 */
+/** 远程位置类型选择弹窗是否打开。 */
+const showNewRemote = ref(false);
+/** WebDAV 添加表单是否打开。 */
 const showAddPlace = ref(false);
-/** Telegram 扫码登录对话框是否打开。 */
+/** Telegram 登录对话框是否打开。 */
 const showTelegramLogin = ref(false);
 
 /** 扫码登录结束。
@@ -189,6 +194,23 @@ async function onPlaceAdded(id) {
   // 从桌面侧栏直接添加时浏览器可能还没开，这里保证添加后落在云盘视图里
   state.placeBrowserOpen = true;
   await afterPlaceAdded(id);
+}
+
+/** 统一新建入口选中一种位置类型后，进入对应的既有流程。 */
+async function onNewRemotePick(kind: 'webdav' | 'telegram' | 'virtual') {
+  showNewRemote.value = false;
+  if (kind === 'webdav') {
+    showAddPlace.value = true;
+    return;
+  }
+  if (kind === 'telegram') {
+    showTelegramLogin.value = true;
+    return;
+  }
+  const name = window.prompt(i18n.t('virtual.name_prompt'));
+  if (name === null) return;
+  const id = await createVirtualPlaceOnly(name.trim());
+  if (id) await openPlaceBrowserAt(id);
 }
 
 /** 设置页里改了语言：立刻加载对应语言包。
@@ -1038,6 +1060,7 @@ function onAndroidBack() {
   if (citemPreview.value) { citemPreview.value = null; return true; }
   if (showTelegramLogin.value) { showTelegramLogin.value = false; return true; }
   if (showAddPlace.value) { showAddPlace.value = false; return true; }
+  if (showNewRemote.value) { showNewRemote.value = false; return true; }
   if (showDevices.value) { void onDevicePanelClose(); return true; }
   if (showPasswordManager.value) { void closePasswordManager(); return true; }
   if (showUnlock.value) { onUnlockCancel(); return true; }
@@ -1177,7 +1200,7 @@ onBeforeUnmount(() => {
     @pick="onPick"
     @devices="showDevices = true"
     @lang="switchLanguage"
-    @telegram="showTelegramLogin = true"
+    @new-remote="showNewRemote = true"
     @settings="showSettings = true"
     @lock="doLock"
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
@@ -1193,9 +1216,8 @@ onBeforeUnmount(() => {
     @pick="onPick"
     @devices="showDevices = true"
     @lang="switchLanguage"
-    @telegram="showTelegramLogin = true"
+    @new-remote="showNewRemote = true"
     @settings="showSettings = true"
-    @add="showAddPlace = true"
     @lock="doLock"
     @quick-unlock="((unlockError = ''), (showUnlock = true))"
   />
@@ -1213,8 +1235,7 @@ onBeforeUnmount(() => {
     @lang="switchLanguage"
     @devices="showDevices = true"
     @settings="showSettings = true"
-    @add-place="showAddPlace = true"
-    @telegram="showTelegramLogin = true"
+    @new-remote="showNewRemote = true"
     @places="onPlacesEntry"
   />
 
@@ -1376,6 +1397,12 @@ onBeforeUnmount(() => {
     @lock="onSettingsLock"
     @devices="onSettingsDevices"
     @places="onSettingsPlaces"
+  />
+
+  <NewRemoteDialog
+    v-if="showNewRemote"
+    @cancel="showNewRemote = false"
+    @pick="onNewRemotePick"
   />
 
   <RemotePlaceDialog

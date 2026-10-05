@@ -632,6 +632,13 @@
   "rplace": {
     "lock": "Lock",
     "title": "Remote locations",
+    "new": "New remote location",
+    "new_webdav": "WebDAV",
+    "new_webdav_desc": "Connect a NAS, cloud drive, or another WebDAV service",
+    "new_telegram": "Telegram",
+    "new_telegram_desc": "Sign in and use groups, channels, and chats as remote locations",
+    "new_virtual": "Virtual remote",
+    "new_virtual_desc": "Create a local collection of references from multiple remotes",
     "add": "Connect a remote location",
     "name": "Name",
     "url": "Server URL",

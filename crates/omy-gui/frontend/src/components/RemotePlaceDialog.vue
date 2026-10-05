@@ -76,7 +76,7 @@ async function submit() {
 <template>
   <div class="mask" @click.self="$emit('cancel')">
     <div class="dlg" data-rp="add">
-      <div class="dh">{{ i18n.t('rplace.add') }}</div>
+      <div class="dh">{{ i18n.t('rplace.new_webdav') }}</div>
 
       <label class="f">
         <span class="fl">{{ i18n.t('rplace.name') }}</span>

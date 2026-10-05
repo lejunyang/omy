@@ -19,7 +19,7 @@ import { state } from '../store';
 import AppShell from './AppShell.vue';
 
 const emit = defineEmits([
-  'pick', 'devices', 'lang', 'add-place', 'telegram', 'settings',
+  'pick', 'devices', 'lang', 'new-remote', 'settings',
   'lock', 'quick-unlock', 'files', 'places',
 ]);
 
@@ -213,8 +213,7 @@ onBeforeUnmount(() => {
     @pick="emit('pick')"
     @devices="emit('devices')"
     @lang="emit('lang')"
-    @add-place="emit('add-place')"
-    @telegram="emit('telegram')"
+    @new-remote="emit('new-remote')"
     @settings="emit('settings')"
     @lock="emit('lock')"
     @quick-unlock="emit('quick-unlock')"

@@ -33,7 +33,7 @@ defineProps({
 });
 
 const emit = defineEmits([
-  'pick', 'devices', 'lang', 'add-place', 'telegram', 'places',
+  'pick', 'devices', 'lang', 'new-remote', 'places',
   'settings', 'lock', 'quick-unlock', 'files',
 ]);
 
@@ -164,8 +164,7 @@ onBeforeUnmount(unregisterBack);
       @devices="emit('devices'); onNavigate()"
       @navigate="onNavigate"
       @lang="emit('lang')"
-      @add-place="emit('add-place')"
-      @telegram="emit('telegram'); onNavigate()"
+      @new-remote="emit('new-remote'); onNavigate()"
     />
 
     <slot />

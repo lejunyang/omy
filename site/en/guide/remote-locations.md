@@ -18,7 +18,7 @@ WebDAV is an open standard with uniform semantics for listing directories, rando
 
 ## Add a remote location
 
-Open **Connect remote location** in the GUI and fill in:
+At the bottom of the sidebar's **Remote locations** section, click **New remote location**, choose **WebDAV**, and fill in:
 
 - **Server URL**: the WebDAV root, e.g. `https://nas.example.com/dav/`;
 - **Username / password**: credentials for that service;
@@ -137,7 +137,7 @@ Mount your Telegram conversations as a remote location: **each conversation is a
 
 ### Signing in
 
-Click the Telegram icon in the sidebar. There are three routes:
+At the bottom of the sidebar's **Remote locations** section, click **New remote location** → **Telegram**. There are three sign-in routes:
 
 - **Sign in with a QR code**: scan it with a phone that is already signed in, so you never type a phone number or verification code into omy. The code refreshes itself when it expires, and the interface makes that refresh visible. If your account has two-step verification enabled, omy asks for the cloud password at the point where the server requires it — accounts without it never see that step.
 - **Sign in with a phone number**: enter a number with its country code, submit Telegram's verification code, and enter the cloud password if two-step verification is enabled.
@@ -389,7 +389,7 @@ no server and only collects **references** to files you pick from real remotes
 (Telegram / WebDAV), letting you organize what you watch often across accounts and
 chats.
 
-- **Create**: in the sidebar "Remotes" area click "New virtual remote" and give it a name.
+- **Create**: at the bottom of the sidebar's "Remote locations" section, click "New remote location" → "Virtual remote", then give it a name.
 - **Add content**: right-click a file in a real remote (or select several) →
   "Add to virtual remote…". In the dialog, clicking a virtual remote's name adds
   to its **root** (files can live at the root — no folder needed first); click the

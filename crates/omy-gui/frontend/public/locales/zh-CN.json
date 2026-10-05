@@ -632,6 +632,13 @@
   "rplace": {
     "lock": "锁定",
     "title": "远程位置",
+    "new": "新建远程位置",
+    "new_webdav": "WebDAV",
+    "new_webdav_desc": "连接 NAS、网盘或其他 WebDAV 服务",
+    "new_telegram": "Telegram",
+    "new_telegram_desc": "登录账号，把群组、频道和私聊作为远程位置",
+    "new_virtual": "虚拟远程",
+    "new_virtual_desc": "新建本地收藏夹，整理来自不同远程的文件引用",
     "add": "连接远程位置",
     "name": "名称",
     "url": "服务器地址",

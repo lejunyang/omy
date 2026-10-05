@@ -3,7 +3,6 @@
 
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n';
-import * as api from '../api';
 import {
   leaveOverlays,
   state,
@@ -18,7 +17,6 @@ import {
   removeRemotePlace,
   openTransfers,
   activeLocation,
-  createVirtualPlace,
   promptTgUnlock,
   renameVirtualPlace,
   deleteVirtualPlace,
@@ -44,7 +42,7 @@ defineProps({
   mobile: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['pick', 'devices', 'navigate', 'lang', 'add-place', 'telegram']);
+const emit = defineEmits(['pick', 'devices', 'navigate', 'lang', 'new-remote']);
 
 /** 正在等用户在系统设置页里操作。 */
 const granting = ref(false);
@@ -253,16 +251,6 @@ async function goRemote(p) {
   emit('navigate');
 }
 
-/** 新建一个虚拟远程位置：弹名字→建→进入。虚拟位置复用 remotePlace 那套状态与
- *  云盘视图，所以进入方式和真实位置一样走 openPlaceBrowserAt。 */
-async function onNewVirtual() {
-  const name = window.prompt(i18n.t('virtual.name_prompt'));
-  if (name === null) return; // 取消
-  const id = await createVirtualPlace(name.trim());
-  if (id) await openPlaceBrowserAt(id);
-  emit('navigate');
-}
-
 /** 常用目录的标签要翻译，磁盘根用原名。
  *
  * `real_name` 优先：可移除卷（SD 卡、U 盘）的名字由系统给出，
@@ -371,10 +359,6 @@ function iconOf(place) {
            显示开口锁（可免密进），否则闭合锁（进时要密码）。 -->
       <span v-if="p.encrypted" class="vlock-badge" aria-hidden="true">{{ p.unlocked ? '🔓' : '🔒' }}</span>
     </button>
-    <button class="sitem" data-rp="add" @click="$emit('add-place')">
-      <span aria-hidden="true">➕</span>
-      <span class="stext">{{ i18n.t('rplace.add') }}</span>
-    </button>
     <!-- 虚拟远程位置：本地收藏夹式，只存对真实位置文件的引用，不连服务器。
          图标用 🗂️ 与真实位置的 ☁️ 区分，让用户一眼看出这是本地虚拟的。 -->
     <button
@@ -392,13 +376,11 @@ function iconOf(place) {
       <!-- 加密标记：已解锁是开口锁、未解锁是闭合锁，与真实位置口径一致 -->
       <span v-if="v.encrypted" class="vlock-badge" aria-hidden="true">{{ v.unlocked ? '🔓' : '🔒' }}</span>
     </button>
-    <button class="sitem" data-vp="new" @click="onNewVirtual">
+    <!-- 所有已存在的真实/虚拟位置之后只有一个新建入口，类型在下一层选择。 -->
+    <button class="sitem" data-rp="new" @click="$emit('new-remote')">
       <span aria-hidden="true">➕</span>
-      <span class="stext">{{ i18n.t('virtual.add') }}</span>
+      <span class="stext">{{ i18n.t('rplace.new') }}</span>
     </button>
-    <!-- Telegram 单独一个入口，不混进「连接远程位置」那个 WebDAV 表单：
-         它的登录方式完全不同（扫码，不是填地址和密码），塞进同一个表单
-         只能做成一个选了之后大半字段都灰掉的下拉，反而更难懂。 -->
     <!-- 传输管理与文件浏览并列，是一个顶层入口而非某个位置的子页：
          任务跨对话、跨位置，挂在某个位置下面用户切走就找不到了 -->
     <div class="sgrp">{{ i18n.t('nav.global') }}</div>
@@ -413,11 +395,6 @@ function iconOf(place) {
       <span v-if="activeTransfers" class="badge" data-side="xferbadge">
         {{ activeTransfers }}
       </span>
-    </button>
-
-    <button class="sitem" data-tg="entry" @click="$emit('telegram')">
-      <span aria-hidden="true">✈️</span>
-      <span class="stext">{{ i18n.t('tg.login_title') }}</span>
     </button>
 
     <div class="sgrp">{{ i18n.t('places.devices') }}</div>

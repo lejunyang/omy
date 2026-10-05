@@ -93,8 +93,8 @@ import {
 // 碰巧也能冒泡，但看声明就不知道这个组件会发什么，
 // 而且一旦事件名与原生事件撞上就会出问题
 const emit = defineEmits([
-  'open', 'close', 'pick', 'devices', 'lang', 'add',
-  'telegram', 'settings', 'lock', 'quick-unlock', 'need-unlock',]);
+  'open', 'close', 'pick', 'devices', 'lang', 'new-remote',
+  'settings', 'lock', 'quick-unlock', 'need-unlock',]);
 
 /** 当前位置元信息。 */
 const currentPlace = computed(() =>
@@ -1221,8 +1221,7 @@ function rowTitle(f) {
     @pick="$emit('pick')"
     @devices="$emit('devices')"
     @lang="$emit('lang')"
-    @add-place="$emit('add')"
-    @telegram="$emit('telegram')"
+    @new-remote="$emit('new-remote')"
     @settings="$emit('settings')"
     @lock="$emit('lock')"
     @quick-unlock="$emit('quick-unlock')"
@@ -1322,8 +1321,8 @@ function rowTitle(f) {
           <div class="icon" aria-hidden="true">☁️</div>
           <div class="title">{{ i18n.t('rplace.empty') }}</div>
           <div class="sub">{{ i18n.t('rplace.empty_hint') }}</div>
-          <button class="btn primary" style="margin-top: 12px" @click="$emit('add')">
-            {{ i18n.t('rplace.add') }}
+          <button class="btn primary" style="margin-top: 12px" @click="$emit('new-remote')">
+            {{ i18n.t('rplace.new') }}
           </button>
         </div>
 

@@ -295,7 +295,7 @@ describe('PlaceBrowser Telegram 全部缓存入口', () => {
 });
 
 describe('PlaceBrowser 远程位置空态', () => {
-  it('连接按钮通过 add 事件交给父组件打开表单', async () => {
+  it('新建按钮通过统一入口事件交给父组件选择远程类型', async () => {
     state.remotePlace = '';
     state.remotePlaces = [];
     state.remoteItems = [];
@@ -305,7 +305,7 @@ describe('PlaceBrowser 远程位置空态', () => {
     const add = w.find('.empty .btn.primary');
     expect(add.exists()).toBe(true);
     await add.trigger('click');
-    expect(w.emitted('add')).toHaveLength(1);
+    expect(w.emitted('new-remote')).toHaveLength(1);
   });
 });
 describe('PlaceBrowser 文件网格', () => {
