@@ -418,6 +418,12 @@ input {
   overflow: hidden;
 }
 
+/* 网格缩略图区空间充足，18px 的默认图标显得过小；文件和文件夹统一放大。 */
+.card .thumb > .app-icon {
+  width: 28px;
+  height: 28px;
+}
+
 .card .thumb img {
   width: 100%;
   height: 100%;
@@ -443,9 +449,14 @@ input {
   border: 1px solid var(--border);
 }
 
+.card:hover .thumb.dir {
+  /* hover 由卡片整体外框表达，内层再画一圈会形成双重方框。 */
+  border-color: transparent;
+}
+
 .card.sel .thumb.dir {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg2));
-  /* 选中态只由卡片整体的 accent 外框表达；内层再画一圈会像双重选中。 */
+  /* 选中态也只保留卡片整体的 accent 外框。 */
   border-color: transparent;
 }
 
@@ -515,9 +526,16 @@ input {
 }
 
 .lrow .ic {
-  width: 22px;
+  width: 24px;
   text-align: center;
   flex: 0 0 auto;
+}
+
+/* 列表仍保持紧凑，只比默认图标略大，避免挤压名称列。 */
+.lrow .ic.app-icon,
+.lrow .ic > .app-icon {
+  width: 20px;
+  height: 20px;
 }
 
 .lrow .nm {
