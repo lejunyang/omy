@@ -136,13 +136,12 @@ jobs:
           cache-key: test-android
 
       - name: 信任 osdk.toml 并安装 Rust
-        # Action 缓存曾恢复出一份不完整的 Rust：宿主编译器能运行，但 rustup
-        # manifest 和 Android target 都缺失。普通 install 只看完成标记，会直接
-        # 跳过；target add 又因 manifest 缺失无法修复。因此这里让 osdk 强制按
-        # osdk.toml 重建整套工具链，仍由它统一管理版本、组件、target 与镜像。
+        # osdk 安装并导出隔离的 Rust 工具链；Android 标准库随后通过这套工具链的
+        # rustup 显式补齐，避免依赖 `osdk install rust` 对配置 options 的继承语义。
         run: |
           osdk --yes trust osdk.toml
-          osdk -y install rust --force
+          osdk -y install rust
+          rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.98
 
       - uses: actions/setup-java@v6.0.0
         with:

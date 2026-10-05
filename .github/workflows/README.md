@@ -91,12 +91,9 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 `failed to find tool "aarch64-linux-android-clang"`，整个任务挂掉。
 
 所以两条流水线的 Android 任务都有一步指定交叉工具链，把
-`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线安装 Rust 时
-使用 `osdk install rust --force`：Action 缓存曾恢复出一份宿主编译器可运行、
-但 rustup manifest 与 Android target 都缺失的半成品；普通 install 只看完成
-标记会跳过，单独 target add 又无法在缺 manifest 时自修复。强制安装让 osdk
-按 `osdk.toml` 一次重建版本、clippy 与全部 target，仍不绕过它的隔离目录和
-镜像选择。
+`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线先用 osdk 安装
+并导出隔离的 Rust，再直接调用这套工具链的 `rustup target add` 补齐 aarch64 与
+armv7 标准库；这样不依赖 `osdk install rust` 对配置 options 的继承语义。
 
 三个易错点：
 
