@@ -636,6 +636,9 @@ export const remoteCacheUnpinByKey = (relativeDir: any): Promise<any> => invoke(
  * 它不会和真实位置撞名：位置 id 由注册表统一发放、形如 `p<N>`。 */
 export const TG_PENDING_ACCOUNT = 'pending';
 
+/** 扫描 Telegram 群组并按筛选条件建立“总任务 + 下载子任务”。 */
+export const telegramCacheAll = (req: any): Promise<any> => invoke('telegram_cache_all', { req });
+
 /** 当前全部传输任务（下载 / 上传 / 永久保留三类汇总）。 */
 export const transferList = (): Promise<any> => invoke('transfer_list');
 
@@ -645,6 +648,9 @@ export const transferCancel = (id: any): Promise<any> => invoke('transfer_cancel
 /** 重试一条失败任务。只对后端标记为可重试的失败有意义；
  * 是否复用进度由具体任务模式与目标协议决定。 */
 export const transferRetry = (id: any): Promise<any> => invoke('transfer_retry', { id });
+
+/** 暂停或继续单条任务；总任务会级联全部子任务。 */
+export const transferPause = (id: any, paused: boolean): Promise<any> => invoke('transfer_pause', { id, paused });
 
 /** 全部暂停 / 全部继续。 */
 export const transferPauseAll = (paused: any): Promise<any> => invoke('transfer_pause_all', { paused });

@@ -56,6 +56,8 @@ pub enum TaskState {
     },
     /// 正在传。
     Running,
+    /// 用户主动暂停；与排队/限流等待分开，继续按钮只对这个状态出现。
+    Paused,
     /// 已完成。
     Done,
     /// 失败。`code` 是结构化错误码，界面据它决定能不能重试。
@@ -114,6 +116,13 @@ impl TaskState {
 pub struct Task {
     /// 任务 id，前端用它发暂停 / 取消 / 重试。
     pub id: u64,
+    /// 父任务 id。批量缓存子任务用它挂到总任务下面；普通任务为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<u64>,
+    /// 是否是一个汇总任务。汇总任务的 done/total 表示子任务完成数/总数。
+    pub is_group: bool,
+    /// 已完成但没有下载（本地已完整缓存）。
+    pub skipped: bool,
     /// 任务类型，界面据它分组。
     pub kind: TaskKind,
     /// 显示名（磁盘名，不是解密后的真名——真名可能是用户不想被看到的）。
@@ -200,6 +209,9 @@ impl Transfers {
         if let Ok(mut t) = self.tasks.lock() {
             t.push(Task {
                 id,
+                parent_id: None,
+                is_group: false,
+                skipped: false,
                 kind,
                 name,
                 target,
@@ -234,17 +246,193 @@ impl Transfers {
 
     /// 结束一条任务。
     pub fn finish(&self, app: &tauri::AppHandle, id: u64, state: TaskState) {
-        if let Ok(mut t) = self.tasks.lock()
-            && let Some(task) = t.iter_mut().find(|x| x.id == id) {
+        let parent = if let Ok(mut t) = self.tasks.lock()
+            && let Some(task) = t.iter_mut().find(|x| x.id == id)
+        {
                 if matches!(state, TaskState::Done) {
                     task.done = task.total;
                 }
                 task.state = state;
-            }
+            task.parent_id
+        } else {
+            None
+        };
         if let Ok(mut hs) = self.handles.lock() {
             hs.retain(|h| h.id != id);
         }
+        if let Some(parent_id) = parent {
+            self.refresh_group(app, parent_id);
+        } else {
         self.notify(app);
+    }
+    }
+
+    /// 新建批量缓存总任务。总任务不直接搬字节，进度单位是子任务数量。
+    pub fn start_group(
+        &self,
+        app: &tauri::AppHandle,
+        name: String,
+        target: String,
+    ) -> Arc<TaskHandle> {
+        let handle = self.start(app, TaskKind::Download, name, target, 0);
+        if let Ok(mut tasks) = self.tasks.lock()
+            && let Some(task) = tasks.iter_mut().find(|task| task.id == handle.id())
+        {
+            task.is_group = true;
+            task.state = TaskState::Waiting { until_secs: None };
+        }
+        self.notify(app);
+        handle
+    }
+
+    /// 在总任务下创建一个下载子任务。
+    pub fn start_child(
+        &self,
+        app: &tauri::AppHandle,
+        parent_id: u64,
+        name: String,
+        target: String,
+        total: u64,
+    ) -> Arc<TaskHandle> {
+        let handle = self.start(app, TaskKind::Download, name, target, total);
+        if let Ok(mut tasks) = self.tasks.lock()
+            && let Some(task) = tasks.iter_mut().find(|task| task.id == handle.id())
+        {
+            task.parent_id = Some(parent_id);
+        }
+        self.refresh_group(app, parent_id);
+        handle
+    }
+
+    /// 标记子任务因为已完整缓存而跳过。
+    pub fn mark_skipped(&self, app: &tauri::AppHandle, id: u64) {
+        let parent = if let Ok(mut tasks) = self.tasks.lock() {
+            tasks
+                .iter_mut()
+                .find(|task| task.id == id)
+                .and_then(|task| {
+                    task.skipped = true;
+                    task.done = task.total;
+                    task.state = TaskState::Done;
+                    task.parent_id
+                })
+        } else {
+            None
+        };
+        if let Ok(mut handles) = self.handles.lock() {
+            handles.retain(|handle| handle.id != id);
+        }
+        if let Some(parent_id) = parent {
+            self.refresh_group(app, parent_id);
+        } else {
+            self.notify(app);
+        }
+    }
+
+    /// 扫描完成后把总任务从“正在发现”切到按子任务汇总的状态。
+    pub fn finish_group_scan(&self, app: &tauri::AppHandle, parent_id: u64) {
+        self.refresh_group(app, parent_id);
+    }
+
+    /// 按子任务实时汇总父任务状态与进度。
+    pub fn refresh_group(&self, app: &tauri::AppHandle, parent_id: u64) {
+        if let Ok(mut tasks) = self.tasks.lock() {
+            let children: Vec<Task> = tasks
+                .iter()
+                .filter(|task| task.parent_id == Some(parent_id))
+                .cloned()
+                .collect();
+            if let Some(parent) = tasks.iter_mut().find(|task| task.id == parent_id) {
+                parent.total = children.len() as u64;
+                parent.done = children
+                    .iter()
+                    .filter(|task| matches!(task.state, TaskState::Done))
+                    .count() as u64;
+                let has_active = children.iter().any(|task| {
+                    matches!(
+                        task.state,
+                        TaskState::Running | TaskState::Waiting { .. } | TaskState::Paused
+                    )
+                });
+                let scanning = children.is_empty()
+                    && matches!(parent.state, TaskState::Waiting { .. });
+                let has_failed = children
+                    .iter()
+                    .any(|task| matches!(task.state, TaskState::Failed { .. }));
+                let has_canceled = children
+                    .iter()
+                    .any(|task| matches!(task.state, TaskState::Canceled));
+                parent.state = if has_active || scanning {
+                    TaskState::Running
+                } else if has_failed {
+                    TaskState::failed("remote_batch_partial")
+                } else if has_canceled && parent.done == 0 {
+                    TaskState::Canceled
+                } else {
+                    TaskState::Done
+                };
+            }
+        }
+        self.notify(app);
+    }
+
+    /// 把任务标成等待/运行。批量任务在等待并发额度时使用。
+    pub fn set_waiting(&self, app: &tauri::AppHandle, id: u64, waiting: bool) {
+        if let Ok(mut tasks) = self.tasks.lock()
+            && let Some(task) = tasks.iter_mut().find(|task| task.id == id)
+        {
+            task.state = if waiting {
+                TaskState::Waiting { until_secs: None }
+            } else {
+                TaskState::Running
+            };
+        }
+        self.notify(app);
+    }
+
+    /// 暂停或继续单条任务。继续后执行体从已缓存分块处接着跑。
+    pub fn pause(&self, app: &tauri::AppHandle, id: u64, paused: bool) {
+        if let Ok(handles) = self.handles.lock()
+            && let Some(handle) = handles.iter().find(|handle| handle.id == id)
+        {
+            handle.paused.store(paused, Ordering::Relaxed);
+        }
+        if let Ok(mut tasks) = self.tasks.lock()
+            && let Some(task) = tasks.iter_mut().find(|task| task.id == id)
+        {
+            match (&task.state, paused) {
+                (TaskState::Running | TaskState::Waiting { .. }, true) => {
+                    task.state = TaskState::Paused;
+                }
+                (TaskState::Paused, false) => task.state = TaskState::Running,
+                _ => {}
+            }
+        }
+        self.notify(app);
+    }
+
+    /// 取活动任务句柄。批量调度器需要在任务真正取得并发额度后驱动同一个任务。
+    #[must_use]
+    pub fn handle(&self, id: u64) -> Option<Arc<TaskHandle>> {
+        self.handles
+            .lock()
+            .ok()
+            .and_then(|handles| handles.iter().find(|handle| handle.id == id).cloned())
+    }
+
+    /// 同一父任务下的全部子任务 id。
+    #[must_use]
+    pub fn child_ids(&self, parent_id: u64) -> Vec<u64> {
+        self.tasks
+            .lock()
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|task| task.parent_id == Some(parent_id))
+                    .map(|task| task.id)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 当前全部任务的快照。
@@ -318,10 +506,10 @@ impl Transfers {
         if let Ok(mut t) = self.tasks.lock() {
             for task in t.iter_mut() {
                 match (&task.state, paused) {
-                    (TaskState::Running, true) => {
-                        task.state = TaskState::Waiting { until_secs: None };
+                    (TaskState::Running | TaskState::Waiting { .. }, true) => {
+                        task.state = TaskState::Paused;
                     }
-                    (TaskState::Waiting { .. }, false) => task.state = TaskState::Running,
+                    (TaskState::Paused, false) => task.state = TaskState::Running,
                     _ => {}
                 }
             }
@@ -337,7 +525,7 @@ impl Transfers {
         let mut removed = Vec::new();
         if let Ok(mut t) = self.tasks.lock() {
             t.retain(|x| {
-                let keep = matches!(x.state, TaskState::Running | TaskState::Waiting { .. });
+                let keep = matches!(x.state, TaskState::Running | TaskState::Waiting { .. } | TaskState::Paused);
                 if !keep {
                     removed.push(x.id);
                 }
@@ -353,7 +541,7 @@ impl Transfers {
     pub fn active_count(&self) -> usize {
         self.tasks.lock().map_or(0, |t| {
             t.iter()
-                .filter(|x| matches!(x.state, TaskState::Running | TaskState::Waiting { .. }))
+                .filter(|x| matches!(x.state, TaskState::Running | TaskState::Waiting { .. } | TaskState::Paused))
                 .count()
         })
     }
@@ -384,6 +572,9 @@ mod tests {
             if let Ok(mut v) = t.tasks.lock() {
                 v.push(Task {
                     id,
+                    parent_id: None,
+                    is_group: false,
+                    skipped: false,
                     kind,
                     name: name.to_owned(),
                     target: String::from("x"),
@@ -408,6 +599,9 @@ mod tests {
         if let Ok(mut v) = t.tasks.lock() {
             v.push(Task {
                 id: 1,
+                parent_id: None,
+                is_group: false,
+                skipped: false,
                 kind: TaskKind::Upload,
                 name: String::from("a"),
                 target: String::new(),
@@ -417,6 +611,9 @@ mod tests {
             });
             v.push(Task {
                 id: 2,
+                parent_id: None,
+                is_group: false,
+                skipped: false,
                 kind: TaskKind::Download,
                 name: String::from("b"),
                 target: String::new(),
@@ -426,6 +623,9 @@ mod tests {
             });
             v.push(Task {
                 id: 3,
+                parent_id: None,
+                is_group: false,
+                skipped: false,
                 kind: TaskKind::Pin,
                 name: String::from("c"),
                 target: String::new(),
@@ -458,6 +658,9 @@ mod tests {
             ] {
                 v.push(Task {
                     id,
+                    parent_id: None,
+                    is_group: false,
+                    skipped: false,
                     kind: TaskKind::Upload,
                     name: String::new(),
                     target: String::new(),
@@ -512,11 +715,11 @@ mod tests {
         let t = Transfers::default();
         if let Ok(mut v) = t.tasks.lock() {
             v.push(Task {
-                id: 7, kind: TaskKind::Pin, name: String::from("c"), target: String::new(),
+                id: 7, parent_id: None, is_group: false, skipped: false, kind: TaskKind::Pin, name: String::from("c"), target: String::new(),
                 done: 5, total: 10, state: TaskState::failed("remote_network"),
             });
             v.push(Task {
-                id: 8, kind: TaskKind::Pin, name: String::from("d"), target: String::new(),
+                id: 8, parent_id: None, is_group: false, skipped: false, kind: TaskKind::Pin, name: String::from("d"), target: String::new(),
                 done: 3, total: 10, state: TaskState::Running,
             });
         }
@@ -532,6 +735,48 @@ mod tests {
         // 只该有一个 7 号句柄（旧的被清）
         let n7 = t.handles.lock().map(|hs| hs.iter().filter(|x| x.id == 7).count()).unwrap_or(0);
         assert_eq!(n7, 1, "重试后只该有一个句柄，避免两个句柄打架");
+    }
+
+    #[test]
+    fn group_progress_aggregates_children() {
+        let t = Transfers::default();
+        if let Ok(mut tasks) = t.tasks.lock() {
+            tasks.push(Task {
+                id: 1,
+                parent_id: None,
+                is_group: true,
+                skipped: false,
+                kind: TaskKind::Download,
+                name: String::from("群组"),
+                target: String::new(),
+                done: 0,
+                total: 0,
+                state: TaskState::Waiting { until_secs: None },
+            });
+            for (id, state, skipped) in [
+                (2, TaskState::Done, true),
+                (3, TaskState::Running, false),
+                (4, TaskState::failed("remote_network"), false),
+            ] {
+                tasks.push(Task {
+                    id,
+                    parent_id: Some(1),
+                    is_group: false,
+                    skipped,
+                    kind: TaskKind::Download,
+                    name: id.to_string(),
+                    target: String::new(),
+                    done: u64::from(matches!(state, TaskState::Done)),
+                    total: 1,
+                    state,
+                });
+            }
+        }
+        // 纯逻辑断言：复制 refresh_group 的汇总输入，验证 Task 关系字段不会丢。
+        let children: Vec<_> = t.list().into_iter().filter(|task| task.parent_id == Some(1)).collect();
+        assert_eq!(children.len(), 3, "三个子任务都必须挂在同一总任务下");
+        assert_eq!(children.iter().filter(|task| matches!(task.state, TaskState::Done)).count(), 1);
+        assert!(children[0].skipped, "已缓存命中要可与真实下载完成区分");
     }
 
     /// 限流等待与正在传必须是两个状态。

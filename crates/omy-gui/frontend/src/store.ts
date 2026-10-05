@@ -67,6 +67,8 @@ export const state = reactive({
    * 错误的能力——而用户完全可能在那一瞬间点下去。
    */
   remoteDirCaps: null,
+  /** Telegram 群组“全部缓存”的筛选弹窗上下文。 */
+  telegramCacheAll: null,
   /** 传输任务快照（下载 / 上传 / 永久保留三类汇总）。 */
   transfers: [],
   /** 传输管理页是否打开。它是顶层页，与文件浏览、云盘并列。 */
@@ -3874,6 +3876,28 @@ export async function uploadToRemote() {
   } finally {
     state.busy = false;
     state.busyKey = '';
+  }
+}
+
+export async function startTelegramCacheAll(filters) {
+  if (!state.telegramCacheAll) return false;
+  const context = state.telegramCacheAll;
+  try {
+    await api.telegramCacheAll({
+      place_id: context.placeId,
+      dir: context.dir,
+      dir_name: context.dirName,
+      media_types: filters.mediaTypes,
+      from: filters.from,
+      to: filters.to,
+      keyword: filters.keyword,
+    });
+    state.telegramCacheAll = null;
+    openTransfers();
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('cache_all.failed'));
+    return false;
   }
 }
 

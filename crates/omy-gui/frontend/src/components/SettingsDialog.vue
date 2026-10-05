@@ -764,6 +764,16 @@ async function openLogDir() {
               </div>
             </div>
 
+            <div class="row">
+              <label class="lb">{{ i18n.t('settings.transfer_concurrency') }}</label>
+              <div class="fld">
+                <select data-sf="transfer_concurrency" v-model.number="cfg.remote.transfer_concurrency">
+                  <option v-for="n in [1, 2, 3, 4, 6, 8]" :key="n" :value="n">{{ n }}</option>
+                </select>
+                <div class="desc">{{ i18n.t('settings.transfer_concurrency_desc') }}</div>
+              </div>
+            </div>
+
             <!-- 缓存内容较多，独立成二级页；这里只给一行摘要（对齐原型） -->
             <button class="subentry" type="button" data-sf="cache_entry" @click="openCachePane">
               <span class="se-ico" aria-hidden="true">🗄️</span>

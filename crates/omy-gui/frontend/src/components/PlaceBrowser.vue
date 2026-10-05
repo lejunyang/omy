@@ -584,9 +584,8 @@ function openMenuAt(f, x, y) {
   if (!menuable(f)) return;
   activeEntry.value = f;
   rmenu.value = { entry: f, x, y };
-  // 打开菜单时按需查该文件的密文缓存覆盖情况，查到有缓存块才让
-  // 「从缓存中移除」出现；不 await，菜单先弹，结果回来后响应式补项。
-  requestRemoteFileCache(f);
+  // 对话目录本身没有文件缓存状态；普通文件才按需查询。
+  if (!f.is_dir) requestRemoteFileCache(f);
 }
 
 /** 桌面右键。 */
@@ -645,6 +644,14 @@ function onEntryContext(f, ev) {
   ev.preventDefault();
   ev.stopPropagation();
   openMenuAt(f, ev.clientX, ev.clientY);
+}
+
+/** 移动端目录没有右键，给 Telegram 群组一个明确的更多按钮打开同一菜单。 */
+function onMobileMore(f, ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const rect = ev.currentTarget?.getBoundingClientRect?.();
+  openMenuAt(f, rect?.right || window.innerWidth - 12, rect?.bottom || 56);
 }
 
 /* 移动端长按：pointerdown 计时，移动超过容差取消，到点弹菜单。
@@ -740,6 +747,12 @@ const rmenuItems = computed(() => {
                  disabled: !canPasteVirtual() });
     items.push({ key: 'vdelete-ref', icon: '🗑️', label: i18n.t('virtual.menu_delete_ref'),
                  danger: true });
+    return items;
+  }
+  // Telegram 根目录里的对话右键可发起整群缓存；对话内部仍按文件菜单处理。
+  if (f.is_dir && f.is_conversation && isTelegram.value && !state.remoteDir) {
+    items.push({ key: 'open', icon: '💬', label: i18n.t('rplace.menu_open') });
+    items.push({ key: 'cache-all', icon: '⬇️', label: i18n.t('cache_all.menu') });
     return items;
   }
   // 虚拟位置里的**文件夹**：打开 / 重命名 / 粘贴进来 / 删除。
@@ -843,6 +856,12 @@ async function onMenuPick(key) {
   if (!f) return;
   if (key === 'open') {
     activate(f);
+  } else if (key === 'cache-all') {
+    state.telegramCacheAll = {
+      placeId: state.remotePlace,
+      dir: f.id,
+      dirName: displayName(f),
+    };
   } else if (key === 'decrypt-local') {
     await decryptRemoteToLocal(f);
   } else if (key === 'remove-cache') {
@@ -1677,6 +1696,13 @@ function rowTitle(f) {
               >{{ cacheMark(f).icon }}</span>
             </div>
             <div class="cname">{{ displayName(f) }}</div>
+            <button
+              v-if="isMobile && f.is_conversation"
+              type="button"
+              class="iconbtn rowmore"
+              :aria-label="i18n.t('nav.menu')"
+              @click="onMobileMore(f, $event)"
+            >⋮</button>
             <div class="cmeta">
               <!-- 目录这里留空：缩略图区已经有图标了，再放一个 📁 等于把同
                    一件事说两遍（实测卡片文本是「📁omytest📁」）。而且这一行
@@ -1721,6 +1747,13 @@ function rowTitle(f) {
           >
             <span class="ic">{{ icon(f) }}</span>
             <span class="nm">{{ displayName(f) }}</span>
+            <button
+              v-if="isMobile && f.is_conversation"
+              type="button"
+              class="iconbtn rowmore"
+              :aria-label="i18n.t('nav.menu')"
+              @click="onMobileMore(f, $event)"
+            >⋮</button>
             <span class="sz">
               <template v-if="!f.is_dir">{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</template>
             </span>
@@ -1981,6 +2014,18 @@ function rowTitle(f) {
 }
 .cmeta {
   font-size: 10.5px;
+}
+.rowmore {
+  position: absolute;
+  inset-inline-end: 5px;
+  inset-block-start: 5px;
+  min-width: 34px;
+  min-height: 34px;
+  z-index: 2;
+}
+.lrow .rowmore {
+  position: static;
+  margin-inline-start: auto;
 }
 
 /* ---------- 搜索栏 ----------

@@ -31,7 +31,13 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 }
 
 // 用 hoisted 持有同一份 state，让测试代码与被 mock 的 store 模块共享对象。
-const hst: { state: any } = vi.hoisted(() => ({ state: {} as any }));
+const hst: { state: any; mobile?: any } = vi.hoisted(() => ({ state: {} as any }));
+
+vi.mock('../viewport', async () => {
+  const { ref } = await import('vue');
+  hst.mobile = ref(false);
+  return { isMobile: hst.mobile, MOBILE_MAX: 768 };
+});
 
 vi.mock('../store.js', async () => {
   const { reactive, computed } = await import('vue');
@@ -61,6 +67,7 @@ vi.mock('../store.js', async () => {
     remoteRetrying: [],
     remoteSelected: [],
     remoteMessageSelected: [],
+    telegramCacheAll: null,
     remoteCacheStat: {},
     remoteDirCaps: { read: true, write: false },
     showThumbnails: true,
@@ -120,6 +127,7 @@ vi.mock('../store.js', async () => {
     clearRemoteMessageSelection: vi.fn(() => { hst.state.remoteMessageSelected = []; }),
     openTelegramForward: vi.fn(),
     openTelegramForwardFiles: vi.fn(),
+    openTransfers: vi.fn(),
     setGridLayout: noop,
     // 任务 #10 虚拟位置整理操作：组件引用了它们，mock 成空实现/常量。
     newVirtualFolderPrompt: noop,
@@ -217,6 +225,8 @@ beforeEach(() => {
     remoteItems: [],
     remoteSelected: [],
     remoteMessageSelected: [],
+    telegramCacheAll: null,
+    view: 'list',
     loadingNewer: false,
     locatingMsg: null,
     highlightMsg: null,
@@ -225,6 +235,63 @@ beforeEach(() => {
     hasNewerMessages: false,
   });
   vi.clearAllMocks();
+  hst.mobile.value = false;
+});
+
+describe('PlaceBrowser Telegram 全部缓存入口', () => {
+  function seedConversation() {
+    state.remoteDir = '';
+    state.remoteTab = 'media';
+    state.remoteViewMode = 'files';
+    state.remoteItems = [{
+      id: 'tg:-100',
+      name: '测试群',
+      real_name: null,
+      is_dir: true,
+      is_conversation: true,
+      is_encrypted: false,
+      unlocked: false,
+      probing: false,
+      probe_failed: false,
+      size: 0,
+      plaintext_size: 0,
+    }];
+  }
+
+  it('桌面右键群组可打开全部缓存弹窗', async () => {
+    seedConversation();
+    const w = mount(PlaceBrowser, {
+      global: { stubs: { WindowList: WindowListStub } },
+    });
+    await flushPromises();
+    await w.find('.lrow').trigger('contextmenu');
+    await nextTick();
+    const action = w.find('[data-mi="cache-all"]');
+    expect(action.exists()).toBe(true);
+    await action.trigger('click');
+    expect(state.telegramCacheAll).toMatchObject({
+      placeId: 'p1',
+      dir: 'tg:-100',
+      dirName: '测试群',
+    });
+  });
+
+  it('移动端更多按钮复用同一菜单并打开全部缓存弹窗', async () => {
+    seedConversation();
+    hst.mobile.value = true;
+    const w = mount(PlaceBrowser, {
+      global: { stubs: { WindowList: WindowListStub } },
+    });
+    await flushPromises();
+    const more = w.find('.rowmore');
+    expect(more.exists()).toBe(true);
+    await more.trigger('click');
+    await nextTick();
+    const action = w.find('[data-mi="cache-all"]');
+    expect(action.exists()).toBe(true);
+    await action.trigger('click');
+    expect(state.telegramCacheAll?.dir).toBe('tg:-100');
+  });
 });
 
 describe('PlaceBrowser 远程位置空态', () => {

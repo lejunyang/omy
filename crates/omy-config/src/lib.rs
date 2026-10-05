@@ -312,6 +312,11 @@ pub struct Remote {
     ///
     /// 这不是性能调参，是**风控边界**：调高容易被服务端限流甚至封禁。
     pub scan_concurrency: usize,
+    /// 全局同时下载的传输子任务数。
+    ///
+    /// 批量缓存会先创建总任务，再按这个上限并行执行文件子任务。与扫描并发分开：
+    /// 扫描只是取元数据，下载会持续占用带宽和 Telegram 请求配额。
+    pub transfer_concurrency: usize,
     /// 扫描时是否只看 `.omy` 扩展名。
     ///
     /// 为 `false` 时能识别伪装文件，但远程每个文件都要多一次请求。
@@ -414,6 +419,7 @@ impl Default for Remote {
             clear_cache_on_exit: false,
             cache_wifi_only: false,
             scan_concurrency: 8,
+            transfer_concurrency: 3,
             scan_omy_only: true,
             // Telegram 默认在每次建连时读取当前系统代理；手动地址是显式覆盖。
             telegram_proxy_mode: String::from("system"),
@@ -840,6 +846,7 @@ mod tests {
         let r = Remote::default();
         assert_eq!(r.cache_limit, 2 * 1024 * 1024 * 1024);
         assert_eq!(r.scan_concurrency, 8);
+        assert_eq!(r.transfer_concurrency, 3);
         assert!(r.scan_omy_only, "默认只扫 .omy，避免远程逐个探测");
         assert_eq!(r.telegram_proxy_mode, "system", "Telegram 默认跟随系统代理");
         assert!(r.telegram_proxy.is_empty(), "自动模式不应携带手动代理地址");

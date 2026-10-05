@@ -87,7 +87,7 @@ const vrmenu = ref(null);
  * 任务卡着。0 时整个角标不渲染，而不是显示一个「0」。 */
 const activeTransfers = computed(
   () => (state.transfers || []).filter(
-    (t) => t.state === 'running' || t.state === 'waiting',
+    (t) => t.parent_id == null && (t.state === 'running' || t.state === 'waiting' || t.state === 'paused'),
   ).length,
 );
 

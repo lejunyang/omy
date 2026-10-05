@@ -1021,6 +1021,50 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
     })
 }
 
+/// 批量缓存时从一条 Telegram 消息提取出的候选媒体。
+///
+/// 它比 [`MessageRow`] 多保留服务端文件名与类型，供后端直接创建下载子任务；
+/// 不把原始 `Message` 暴露到 GUI 层，避免上层依赖 grammers 的协议类型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheCandidate {
+    /// 稳定文件 id（`tg:<chat>:<message>`）。
+    pub id: String,
+    /// 服务端文件名。
+    pub name: String,
+    /// 原文件字节数。
+    pub size: u64,
+    /// 消息时间（Unix 秒）。
+    pub date: i64,
+    /// 消息正文或媒体说明，用于关键字交集过滤。
+    pub text: String,
+    /// 文件分类（media/file/audio/gif）。
+    pub media_tab: &'static str,
+}
+
+/// 批量缓存筛选条件。所有非空条件按交集匹配。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheFilter {
+    /// 允许的文件分类；空表示全部可下载媒体。
+    pub media_tabs: Vec<MediaTab>,
+    /// 起始时间（含）。
+    pub from: Option<i64>,
+    /// 截止时间（含）。
+    pub to: Option<i64>,
+    /// 消息关键字；空串表示不过滤。
+    pub keyword: String,
+}
+
+impl CacheFilter {
+    fn matches(&self, date: i64, text: &str, tab: MediaTab) -> bool {
+        let type_ok = self.media_tabs.is_empty() || self.media_tabs.contains(&tab);
+        let from_ok = self.from.is_none_or(|from| date >= from);
+        let to_ok = self.to.is_none_or(|to| date <= to);
+        let keyword = self.keyword.trim().to_lowercase();
+        let keyword_ok = keyword.is_empty() || text.to_lowercase().contains(&keyword);
+        type_ok && from_ok && to_ok && keyword_ok
+    }
+}
+
 /// 消息视图里的一条消息。
 ///
 /// 刻意**很窄**：只有「以文件为主线的消息视图」用得上的字段。
@@ -1592,6 +1636,69 @@ impl TelegramStore {
             .ok()
             .and_then(|p| p.get(&chat).copied())
             .ok_or_else(|| Error::NotFound(format!("未知对话：tg:{chat}")))
+    }
+
+    /// 按筛选条件扫描整个对话中的可下载媒体，供“全部缓存”建立任务清单。
+    ///
+    /// 所有条件在同一条消息上取交集；时间范围按消息时间判断，关键字只匹配消息
+    /// 正文/媒体说明。扫描按新到旧进行，遇到早于起始时间的消息即可提前结束。
+    /// 每发现一个候选就立即回调，上层可以逐渐创建子任务，而不是等整个群扫完才
+    /// 给用户反馈。
+    pub async fn scan_cache_candidates(
+        &self,
+        dir_id: &str,
+        filter: &CacheFilter,
+        on_candidate: &mut (dyn FnMut(CacheCandidate) -> bool + Send),
+    ) -> Result<usize> {
+        let chat = Conversation::parse_dir_id(dir_id)?;
+        let client = self.client()?;
+        let peer = self.peer_ref(chat).await?;
+        let mut it = client.iter_messages(peer);
+        let mut matched = 0usize;
+
+        loop {
+            let msg = match it.next().await {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(error) => return Err(map_rpc(&error)),
+            };
+            let date = msg.date().timestamp();
+            if filter.from.is_some_and(|from| date < from) {
+                break;
+            }
+            let Some(media) = msg.media() else { continue };
+            let Some(location) = media.to_raw_input_location() else {
+                continue;
+            };
+            let tab = media_tab_of(&media);
+            let text = msg.text().to_owned();
+            if !filter.matches(date, &text, tab) {
+                continue;
+            }
+
+            let id = TelegramId {
+                chat,
+                message: msg.id(),
+            }
+            .encode();
+            let size = media_size(&media);
+            let name = media_name(&media, msg.id());
+            if let Ok(mut cache) = self.media.lock() {
+                cache.insert(id.clone(), CachedMedia { location, size });
+            }
+            matched = matched.saturating_add(1);
+            if !on_candidate(CacheCandidate {
+                id,
+                name,
+                size,
+                date,
+                text,
+                media_tab: tab.key(),
+            }) {
+                break;
+            }
+        }
+        Ok(matched)
     }
 
     /// 列一个对话里带文件的消息。
@@ -3556,6 +3663,21 @@ mod tests {
                 .any(|attr| matches!(attr, tl::enums::DocumentAttribute::Animated)),
             "GIF 必须带 Animated 属性"
         );
+    }
+
+    /// 批量缓存筛选必须把类型、时间、关键字取交集，而不是任一命中就下载。
+    #[test]
+    fn cache_filter_combines_all_conditions() {
+        let filter = CacheFilter {
+            media_tabs: vec![MediaTab::Media, MediaTab::Audio],
+            from: Some(100),
+            to: Some(200),
+            keyword: String::from("report"),
+        };
+        assert!(filter.matches(150, "Weekly REPORT attached", MediaTab::Audio));
+        assert!(!filter.matches(99, "Weekly report", MediaTab::Audio), "早于范围不能命中");
+        assert!(!filter.matches(150, "Weekly report", MediaTab::File), "类型不符不能命中");
+        assert!(!filter.matches(150, "Weekly notes", MediaTab::Audio), "关键字不符不能命中");
     }
 
     /// 未知/缺省栏标识回落到文件栏，且只有链接栏走 collect_links。

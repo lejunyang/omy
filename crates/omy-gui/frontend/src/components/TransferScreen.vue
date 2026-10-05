@@ -31,7 +31,15 @@ const paused = ref(false);
 const tasks = computed(() => state.transfers || []);
 
 function isActive(t) {
-  return t.state === 'running' || t.state === 'waiting';
+  return t.state === 'running' || t.state === 'waiting' || t.state === 'paused';
+}
+
+function roots(items) {
+  return items.filter((task) => task.parent_id == null);
+}
+
+function childrenOf(parent) {
+  return shown.value.filter((task) => task.parent_id === parent.id);
 }
 
 const shown = computed(() => {
@@ -52,13 +60,13 @@ const groups = computed(() => {
     .map(([kind, label]) => ({
       kind,
       label,
-      items: shown.value.filter((t) => t.kind === kind),
+      items: roots(shown.value.filter((t) => t.kind === kind)),
     }))
     .filter((g) => g.items.length > 0);
 });
 
 const summary = computed(() => {
-  const all = tasks.value;
+  const all = roots(tasks.value);
   return {
     running: all.filter((t) => t.state === 'running').length,
     waiting: all.filter((t) => t.state === 'waiting').length,
@@ -74,6 +82,10 @@ function pct(t) {
 /** 状态文案。限流等待要带上秒数——「等待中」和「还要等 30 秒」
  *  对用户的意义完全不同，后者他知道该不该继续等。 */
 function stateText(t) {
+  if (t.skipped) return i18n.t('xfer.st_skipped');
+  if (t.is_group && t.total > 0) {
+    return `${i18n.t(`xfer.st_${t.state}`)} · ${t.done}/${t.total}`;
+  }
   if (t.state === 'waiting') {
     return t.until_secs
       ? i18n.t('xfer.st_waiting_secs', { n: t.until_secs })
@@ -164,6 +176,12 @@ async function retry(t) {
   await refresh();
 }
 
+async function toggleTaskPause(t) {
+  const next = t.state !== 'paused';
+  await api.transferPause(t.id, next).catch(() => {});
+  await refresh();
+}
+
 async function togglePauseAll() {
   paused.value = !paused.value;
   await api.transferPauseAll(paused.value).catch(() => {});
@@ -244,9 +262,9 @@ onBeforeUnmount(() => {
     <div v-else class="xlist">
       <template v-for="g in groups" :key="g.kind">
         <div class="tskgrp">{{ i18n.t(g.label) }}</div>
+        <div class="tasktree">
+        <template v-for="t in g.items" :key="t.id">
         <div
-          v-for="t in g.items"
-          :key="t.id"
           class="tsk"
           :data-st="t.state"
           :data-xf-task="t.id"
@@ -267,6 +285,13 @@ onBeforeUnmount(() => {
             <button
               v-if="isActive(t)"
               class="btn small"
+              data-xf="pause"
+              :title="i18n.t(t.state === 'paused' ? 'xfer.act_resume' : 'xfer.act_pause')"
+              @click="toggleTaskPause(t)"
+            >{{ t.state === 'paused' ? '▶' : 'Ⅱ' }}</button>
+            <button
+              v-if="isActive(t)"
+              class="btn small"
               data-xf="cancel"
               :title="i18n.t('xfer.act_cancel')"
               @click="cancel(t)"
@@ -283,6 +308,30 @@ onBeforeUnmount(() => {
               ↻
             </button>
           </div>
+        </div>
+        <div v-if="t.is_group && childrenOf(t).length" class="children" :data-xf-children="t.id">
+          <div
+            v-for="child in childrenOf(t)"
+            :key="child.id"
+            class="tsk child"
+            :data-st="child.state"
+            :data-xf-task="child.id"
+          >
+            <span aria-hidden="true">↳</span>
+            <div class="tskn">
+              <div class="tsknm">{{ child.name }}</div>
+              <div class="tsksrc">{{ child.target }}</div>
+            </div>
+            <div class="tskbarwrap"><div class="tskbar"><i :style="{ width: pct(child) + '%' }"></i></div></div>
+            <div class="tskv">{{ stateText(child) }}<template v-if="rateText(child)"> · {{ rateText(child) }}</template></div>
+            <div class="tskact">
+              <button v-if="isActive(child)" class="btn small" @click="toggleTaskPause(child)">{{ child.state === 'waiting' ? '▶' : 'Ⅱ' }}</button>
+              <button v-if="isActive(child)" class="btn small" @click="cancel(child)">✕</button>
+              <button v-else-if="canRetry(child)" class="btn small" @click="retry(child)">↻</button>
+            </div>
+          </div>
+        </div>
+        </template>
         </div>
       </template>
     </div>
@@ -322,6 +371,15 @@ onBeforeUnmount(() => {
   overflow: auto;
   flex: 1;
 }
+.children {
+  border-bottom: 1px solid var(--border);
+}
+.tsk.child {
+  padding-inline-start: calc(var(--sp) * 6);
+  background: var(--bg2);
+}
+.tsk.child:last-child { border-bottom: 0; }
+.tskact { display: flex; gap: 4px; justify-content: flex-end; }
 .tskgrp {
   padding: calc(var(--sp) * 2) calc(var(--sp) * 3) calc(var(--sp));
   font-size: 11px;

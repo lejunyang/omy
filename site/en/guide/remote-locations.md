@@ -119,6 +119,18 @@ Download and upload have different answers:
 - **The upload protocol is chunked, but current omy cannot continue an entire failed upload from chunks already accepted by Telegram.** The grammers upload API used by omy creates a new `file_id` for each call and does not expose the completed-part set, so retrying an upload to Telegram starts that upload again. Temporary uploaded parts are short-lived as well.
 - Memory mode keeps no source blocks, so a failed task reads the source again. Permanent-cache mode can avoid repeated downloading, but the destination upload still restarts.
 
+## Cache an entire Telegram group
+
+In a Telegram location's conversation list, right-click a group on desktop, or tap the group's More button on mobile, then choose **Cache all…**. The dialog can combine:
+
+- file types: photos and videos, audio, ordinary files, and GIFs (multi-select);
+- a time range: all time, the last 7 or 30 days, or custom inclusive dates;
+- a message keyword matched against the message text or media caption.
+
+All selected conditions are combined with **AND**. Confirming creates a global download parent task immediately; child file tasks appear progressively while history is scanned. Files already fully present in temporary cache or permanent storage are marked as skipped. The parent or any child can be paused, resumed, or cancelled; retryable failures can be retried individually or together from the parent. Downloads go to the temporary block cache governed by its size limit and LRU eviction—they are not silently promoted to permanent storage.
+
+Set the number of simultaneous child downloads under **Settings → Remote locations → Parallel downloads**. This is separate from the directory-scan concurrency setting; raising it consumes more bandwidth and increases the chance of Telegram rate limiting.
+
 ## Telegram
 
 Mount your Telegram conversations as a remote location: **each conversation is a directory**, and the documents, photos, and videos in it are the entries. `.omy` files are recognized, previewed, and streamed exactly as they are over WebDAV.
@@ -269,6 +281,7 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Telegram: custom app identity app-id-* (encrypted envelope) | ✅ | ✅ |
 | Telegram: per-place encrypt / unlock / lock / decrypt (offline) | ✅ | ✅ (offline) |
 | Telegram: forward targets / forward, server-side search, self-archive group | ✅ | ✅ (wired, not tested against a real account) |
+| Telegram: cache entire group, parent/child transfers, parallel downloads, pause/retry | ✅ (desktop and mobile) | N/A (requires a long-running global task and interactive transfer management) |
 | List directory `ls`, download `download`, cross-location ciphertext `copy` | ✅ | ✅ |
 | Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
 | `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |

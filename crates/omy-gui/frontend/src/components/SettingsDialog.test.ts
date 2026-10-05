@@ -15,6 +15,7 @@ const makeConfig = () => ({
     telegram_proxy: '',
     scan_omy_only: true,
     scan_concurrency: 8,
+    transfer_concurrency: 3,
     cache_limit: 2 * 1024 * 1024 * 1024,
     cache_dir: null,
     clear_cache_on_exit: false,
@@ -111,6 +112,19 @@ describe('SettingsDialog Telegram 全局代理', () => {
     expect(saved.remote.telegram_proxy).toBe('http://127.0.0.1:7897');
     expect(saved.remote.places).toEqual([]);
 
+    wrapper.unmount();
+  });
+
+  it('桌面远程设置可配置批量传输并发数', async () => {
+    const wrapper = mount(SettingsDialog);
+    await flushPromises();
+    await wrapper.find('[data-sp="remote"]').trigger('click');
+    const input = wrapper.find('[data-sf="transfer_concurrency"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue('6');
+    await wrapper.find('[data-si="close"]').trigger('click');
+    await flushPromises();
+    expect(h.configSet.mock.calls.at(-1)?.[0].remote.transfer_concurrency).toBe(6);
     wrapper.unmount();
   });
 
