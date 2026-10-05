@@ -31,7 +31,8 @@ import * as i18n from '../i18n';
 const props = defineProps({
   /** 目标条目，需要 path 与显示名。 */
   entry: { type: Object, required: true },
-  /** generate 或 estore，由调用方按用户点的菜单项决定。 */
+  /** generate 或
+estore，由调用方按用户点的菜单项决定。 */
   mode: { type: String, default: 'generate' },
   busy: { type: Boolean, default: false },
   error: { type: String, default: '' },
@@ -114,7 +115,7 @@ function onRestore() {
   <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
     <form class="dlg narrow recovery" @submit.prevent="generated ? $emit('done') : (mode === 'generate' ? onGenerate() : onRestore())">
       <h3>
-        {{ mode === 'generate' ? '🔐' : '🔓' }}
+        <AppIcon :name="mode === 'generate' ? 'folder-lock' : 'unlock'" />
         {{ i18n.t(generated ? 'recovery.generated_title' : titleKey) }}
       </h3>
 

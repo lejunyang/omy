@@ -93,9 +93,9 @@ const count = () => (state.addToVirtual?.items?.length || 0);
               :data-vp-root="p.id"
               @click="pick(p.id, '')"
             >
-              <span aria-hidden="true">🗂️</span>
+              <AppIcon name="archive" />
               <span class="stext">{{ p.name }}</span>
-              <span v-if="isPicked(p.id, '')" class="vp-check">✓</span>
+              <span v-if="isPicked(p.id, '')" class="vp-check"><AppIcon name="check" :size="14" /></span>
             </button>
             <button
               type="button"
@@ -103,7 +103,7 @@ const count = () => (state.addToVirtual?.items?.length || 0);
               :aria-expanded="p.expanded"
               :title="i18n.t('virtual.toggle_folders')"
               @click.stop="toggle(p)"
-            >{{ p.expanded ? '▼' : '▶' }}</button>
+            ><AppIcon :name="p.expanded ? 'chevronDown' : 'chevronRight'" /></button>
           </div>
           <!-- 展开后：只列真正的子文件夹，点一个选为目标 -->
           <template v-if="p.expanded && p.folders">
@@ -117,9 +117,9 @@ const count = () => (state.addToVirtual?.items?.length || 0);
               :data-vp-folder="p.id + '/' + f.id"
               @click="pick(p.id, f.id)"
             >
-              <span aria-hidden="true">📁</span>
+              <AppIcon name="folder" />
               <span class="stext">{{ f.name }}</span>
-              <span v-if="isPicked(p.id, f.id)" class="vp-check">✓</span>
+              <span v-if="isPicked(p.id, f.id)" class="vp-check"><AppIcon name="check" :size="14" /></span>
             </button>
             <div v-if="!p.folders.length" class="vp-nofolders">
               {{ i18n.t('virtual.no_subfolders') }}

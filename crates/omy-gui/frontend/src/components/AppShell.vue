@@ -74,7 +74,7 @@ onBeforeUnmount(unregisterBack);
       :aria-expanded="drawer"
       @click="drawer = !drawer"
     >
-      ☰
+      <AppIcon name="menu" />
     </button>
 
     <span v-if="!isMobile" class="brand">{{ i18n.t('app.name') }}</span>
@@ -98,7 +98,7 @@ onBeforeUnmount(unregisterBack);
       :title="i18n.t('unlock.quick_hint')"
       @click="emit('quick-unlock')"
     >
-      <span class="pill-ico" aria-hidden="true">{{ state.credentials > 0 ? '🔓' : '🔑' }}</span>
+      <span class="pill-ico" aria-hidden="true"><AppIcon :name="state.credentials > 0 ? 'unlock' : 'key'" /></span>
       <span class="pill-txt">{{
         state.credentials > 0
           ? i18n.tn('status.credentials', state.credentials)
@@ -115,7 +115,7 @@ onBeforeUnmount(unregisterBack);
         :aria-label="i18n.t('view.grid')"
         @click="setView('grid')"
       >
-        ⊞
+        <AppIcon name="grid" />
       </button>
       <button
         class="iconbtn"
@@ -125,7 +125,7 @@ onBeforeUnmount(unregisterBack);
         :aria-label="i18n.t('view.list')"
         @click="setView('list')"
       >
-        ☰
+        <AppIcon name="menu" />
       </button>
       <button
         class="iconbtn"
@@ -134,7 +134,7 @@ onBeforeUnmount(unregisterBack);
         data-tb="settings"
         @click="emit('settings')"
       >
-        ⚙️
+        <AppIcon name="settings" />
       </button>
     </template>
     <button
@@ -145,7 +145,7 @@ onBeforeUnmount(unregisterBack);
       :aria-label="i18n.t('status.lock_now')"
       @click="emit('lock')"
     >
-      🔒
+      <AppIcon name="lock" />
     </button>
   </div>
 
@@ -180,21 +180,21 @@ onBeforeUnmount(unregisterBack);
       :class="{ on: !state.placeBrowserOpen }"
       @click="emit('files')"
     >
-      <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
+      <AppIcon name="folder-open" />{{ i18n.t('nav.tab_files') }}
     </button>
     <button
       class="pnavi"
       :class="{ on: state.placeBrowserOpen }"
       @click="emit('places')"
     >
-      <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+      <AppIcon name="cloud" />{{ i18n.t('rplace.title') }}
     </button>
     <button class="pnavi" @click="emit('devices')">
-      <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
+      <AppIcon name="radio" />{{ i18n.t('nav.tab_devices') }}
       <span v-if="state.pairedCount" class="ndot"></span>
     </button>
     <button class="pnavi" @click="emit('settings')">
-      <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
+      <AppIcon name="settings" />{{ i18n.t('settings.title') }}
     </button>
   </nav>
 </template>

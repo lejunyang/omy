@@ -91,7 +91,7 @@ function submit() {
 
       <div class="filelist">
         <div v-for="t in targets.slice(0, 6)" :key="t.path" class="frow">
-          <span class="fn">{{ t.is_container ? '📦' : '📄' }} {{ t.name }}</span>
+          <span class="fn"><AppIcon :name="t.is_container ? 'package' : 'file'" /> {{ t.name }}</span>
           <span class="fs">{{ t.size == null ? '' : i18n.formatSize(t.size) }}</span>
         </div>
         <div v-if="targets.length > 6" class="frow more">
@@ -123,7 +123,7 @@ function submit() {
           </span>
         </label>
         <button type="button" class="btn small pickbtn" @click="choose">
-          📂 {{ i18n.t('restore.choose') }}
+          <AppIcon name="folder-open" /> {{ i18n.t('restore.choose') }}
         </button>
         <div v-if="pickError" class="ferr">{{ pickError }}</div>
         <div v-if="targetLabel" class="tpath">{{ targetLabel }}</div>

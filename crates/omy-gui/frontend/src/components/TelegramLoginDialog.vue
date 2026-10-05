@@ -704,17 +704,17 @@ onBeforeUnmount(() => {
              不是把手机号/tdata 藏成切换按钮——那样它们不是平等入口。 -->
         <div v-if="!method" class="methods" data-tg="methods">
           <button class="mcard" data-tg="m-qr" @click="method = 'qr'">
-            <span class="mi" aria-hidden="true">▦</span>
+            <AppIcon class="mi" name="qr" />
             <b>{{ i18n.t('tg.method_qr') }}</b>
             <span class="d">{{ i18n.t('tg.method_qr_desc') }}</span>
           </button>
           <button class="mcard" data-tg="m-phone" @click="startPhone">
-            <span class="mi" aria-hidden="true">📱</span>
+            <AppIcon class="mi" name="phone" />
             <b>{{ i18n.t('tg.method_phone') }}</b>
             <span class="d">{{ i18n.t('tg.method_phone_desc') }}</span>
           </button>
           <button v-if="!isAndroid" class="mcard" data-tg="m-tdata" @click="openTdata">
-            <span class="mi" aria-hidden="true">🖥️</span>
+            <AppIcon class="mi" name="monitor" />
             <b>{{ i18n.t('tg.method_tdata') }}</b>
             <span class="d">{{ i18n.t('tg.method_tdata_desc') }}</span>
           </button>
@@ -769,9 +769,10 @@ onBeforeUnmount(() => {
 
         <!-- 连通性自检。放在登录之前，把「连不上」的归因先定下来 -->
         <div v-if="method" class="conn" data-tg="conn" :data-st="connChecking ? 'checking' : (conn ? conn.status : 'idle')">
-          <span aria-hidden="true">{{
-            connChecking ? '⏳' : conn ? (conn.status === 'ok' ? '✓' : '⚠️') : '•'
-          }}</span>
+          <AppIcon
+            :name="connChecking ? 'loader' : conn ? (conn.status === 'ok' ? 'circle-check' : 'circle-alert') : 'circle'"
+            :class="{ spinning: connChecking }"
+          />
           <div class="cb" data-tg="conn-text">
             <template v-if="connChecking">{{ i18n.t('tg.conn_checking') }}</template>
             <template v-else-if="!conn">{{ i18n.t('tg.conn_idle') }}</template>
@@ -809,14 +810,14 @@ onBeforeUnmount(() => {
                「我还差几件事才能继续」。做成逐项打勾就一眼可见。 -->
           <div class="reqs" data-tg="td-reqs">
             <div class="req" :data-ok="tdRunning ? 0 : 1" data-req="running">
-              <span class="ri" aria-hidden="true">{{ tdRunning ? '✕' : '✓' }}</span>
+              <span class="ri" aria-hidden="true"><AppIcon :name="tdRunning ? 'close' : 'check'" :size="15" /></span>
               <span class="rt">
                 <b>{{ i18n.t(tdRunning ? 'tg.req_running_bad' : 'tg.req_running_ok') }}</b>
                 <span v-if="tdRunning" class="d">{{ i18n.t('tg.tdata_running') }}</span>
               </span>
             </div>
             <div class="req" :data-ok="tdPathOk ? 1 : 0" data-req="path">
-              <span class="ri" aria-hidden="true">{{ tdPathOk ? '✓' : '✕' }}</span>
+              <span class="ri" aria-hidden="true"><AppIcon :name="tdPathOk ? 'check' : 'close'" :size="15" /></span>
               <span class="rt">
                 <b>{{ i18n.t(tdPathOk ? 'tg.req_path_ok' : 'tg.req_path_bad') }}</b>
                 <span v-if="!tdPathOk" class="d">{{ i18n.t('tg.tdata_not_found') }}</span>

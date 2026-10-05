@@ -209,7 +209,7 @@ function submit() {
 
       <div class="filelist">
         <div v-for="t in targets.slice(0, 6)" :key="t.path" class="frow">
-          <span class="fn">{{ t.is_dir ? '📁' : '📄' }} {{ t.name }}</span>
+          <span class="fn"><AppIcon :name="t.is_dir ? 'folder' : 'file'" /> {{ t.name }}</span>
           <span class="fs">{{ t.size == null ? '' : i18n.formatSize(t.size) }}</span>
         </div>
         <div v-if="targets.length > 6" class="frow more">

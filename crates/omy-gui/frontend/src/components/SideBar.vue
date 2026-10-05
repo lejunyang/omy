@@ -308,7 +308,7 @@ function iconOf(place) {
       :title="p.path"
       @click="go(p.path)"
     >
-      <span aria-hidden="true">{{ iconOf(p) }}</span>
+      <AppIcon :name="iconOf(p)" />
       <span class="stext">{{ labelOf(p) }}</span>
     </button>
 
@@ -321,14 +321,14 @@ function iconOf(place) {
       :disabled="granting"
       @click="onGrant"
     >
-      <span aria-hidden="true">🔓</span>
+      <AppIcon name="unlock" />
       <span class="stext">
         {{ granting ? i18n.t('places.granting') : i18n.t('places.grant_storage') }}
       </span>
     </button>
 
     <button class="sitem" data-side="pick-folder" @click="$emit('pick')">
-      <span aria-hidden="true">➕</span>
+      <AppIcon name="plus" />
       <span class="stext">{{ i18n.t('nav.pick_folder') }}</span>
     </button>
 
@@ -347,7 +347,7 @@ function iconOf(place) {
       @click="goRemote(p)"
       @contextmenu.prevent="onPlaceContext(p, $event)"
     >
-      <span aria-hidden="true">☁️</span>
+      <AppIcon name="cloud" />
       <span class="stext">{{ p.name }}</span>
       <!-- 这里读的是位置级能力（上界），而不是目录级的有效能力——侧栏列的是
            位置，还没进任何目录，能拿到的只有上界。语义上也正好：上界都没有写
@@ -357,7 +357,7 @@ function iconOf(place) {
       <!-- Telegram 位置的加密标识：encrypted/unlocked 由后端列表一次性带出
            （读本地 session 文件头 + 当前会话 KEK，不连网）。unlocked 为真时
            显示开口锁（可免密进），否则闭合锁（进时要密码）。 -->
-      <span v-if="p.encrypted" class="vlock-badge" aria-hidden="true">{{ p.unlocked ? '🔓' : '🔒' }}</span>
+      <span v-if="p.encrypted" class="vlock-badge" aria-hidden="true"><AppIcon :name="p.unlocked ? 'unlock' : 'lock'" :size="14" /></span>
     </button>
     <!-- 虚拟远程位置：本地收藏夹式，只存对真实位置文件的引用，不连服务器。
          图标用 🗂️ 与真实位置的 ☁️ 区分，让用户一眼看出这是本地虚拟的。 -->
@@ -371,14 +371,14 @@ function iconOf(place) {
       @click="goRemote(v)"
       @contextmenu="onVirtualContext(v, $event)"
     >
-      <span aria-hidden="true">🗂️</span>
+      <AppIcon name="archive" />
       <span class="stext">{{ v.name }}</span>
       <!-- 加密标记：已解锁是开口锁、未解锁是闭合锁，与真实位置口径一致 -->
-      <span v-if="v.encrypted" class="vlock-badge" aria-hidden="true">{{ v.unlocked ? '🔓' : '🔒' }}</span>
+      <span v-if="v.encrypted" class="vlock-badge" aria-hidden="true"><AppIcon :name="v.unlocked ? 'unlock' : 'lock'" :size="14" /></span>
     </button>
     <!-- 所有已存在的真实/虚拟位置之后只有一个新建入口，类型在下一层选择。 -->
     <button class="sitem" data-rp="new" @click="$emit('new-remote')">
-      <span aria-hidden="true">➕</span>
+      <AppIcon name="plus" />
       <span class="stext">{{ i18n.t('rplace.new') }}</span>
     </button>
     <!-- 传输管理与文件浏览并列，是一个顶层入口而非某个位置的子页：
@@ -390,7 +390,7 @@ function iconOf(place) {
       data-side="transfers"
       @click="openTransfers(); emit('navigate')"
     >
-      <span aria-hidden="true">🔀</span>
+      <AppIcon name="transfers" />
       <span class="stext">{{ i18n.t('xfer.title') }}</span>
       <span v-if="activeTransfers" class="badge" data-side="xferbadge">
         {{ activeTransfers }}
@@ -402,7 +402,7 @@ function iconOf(place) {
     <!-- 已配对设备直接列出来，点一下打开面板。
          数量为 0 时也要有入口，否则用户找不到从哪开始配对 -->
     <button class="sitem" @click="$emit('devices')">
-      <span aria-hidden="true">📡</span>
+      <AppIcon name="radio" />
       <span class="stext">{{ i18n.t('device.manage') }}</span>
       <span v-if="state.pairedCount" class="badge">{{ state.pairedCount }}</span>
     </button>
@@ -412,7 +412,7 @@ function iconOf(place) {
       class="sitem sharing"
       @click="$emit('devices')"
     >
-      <span aria-hidden="true">🟢</span>
+      <AppIcon name="circle" />
       <span class="stext">{{ i18n.t('device.sharing_now') }}</span>
     </button>
   

@@ -18,17 +18,17 @@ const emit = defineEmits<{
       <div class="dh">{{ i18n.t('rplace.new') }}</div>
       <div class="methods">
         <button class="mcard" data-new-remote="webdav" @click="$emit('pick', 'webdav')">
-          <span class="mi" aria-hidden="true">☁️</span>
+          <AppIcon class="mi" name="cloud" />
           <b>{{ i18n.t('rplace.new_webdav') }}</b>
           <span class="d">{{ i18n.t('rplace.new_webdav_desc') }}</span>
         </button>
         <button class="mcard" data-new-remote="telegram" @click="$emit('pick', 'telegram')">
-          <span class="mi" aria-hidden="true">✈️</span>
+          <AppIcon class="mi" name="send" />
           <b>{{ i18n.t('rplace.new_telegram') }}</b>
           <span class="d">{{ i18n.t('rplace.new_telegram_desc') }}</span>
         </button>
         <button class="mcard" data-new-remote="virtual" @click="$emit('pick', 'virtual')">
-          <span class="mi" aria-hidden="true">🗂️</span>
+          <AppIcon class="mi" name="archive" />
           <b>{{ i18n.t('rplace.new_virtual') }}</b>
           <span class="d">{{ i18n.t('rplace.new_virtual_desc') }}</span>
         </button>

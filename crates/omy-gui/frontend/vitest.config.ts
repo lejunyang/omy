@@ -25,5 +25,7 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     include: ['src/**/*.test.ts'],
+    // 全局注册 AppIcon 等运行期组件（见文件内说明），禁止逐测试绕过
+    setupFiles: ['./vitest.setup.ts'],
   },
 });

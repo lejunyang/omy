@@ -460,7 +460,7 @@ const needsConvert = computed(() => proc.value !== 'none' && !converted.value);
 
           <div class="vscrub">
             <button class="btn icon" type="button" :title="i18n.t('video.play')" @click="togglePlay">
-              {{ playing ? '❚❚' : '▶' }}
+              <AppIcon :name="playing ? 'pause' : 'play'" />
             </button>
             <input
               class="slider"

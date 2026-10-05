@@ -100,7 +100,7 @@ onMounted(load);
         <div v-else-if="!visible.length" class="empty-target">{{ i18n.t('tg_forward.no_targets') }}</div>
         <label v-for="target in visible" v-else :key="target.dir_id" class="target-row">
           <input v-model="selected" type="radio" :value="target.dir_id" />
-          <span class="target-icon" aria-hidden="true">{{ icon(target.kind) }}</span>
+          <span class="target-icon" aria-hidden="true"><AppIcon :name="icon(target.kind)" /></span>
           <strong>{{ target.title }}</strong>
         </label>
       </div>

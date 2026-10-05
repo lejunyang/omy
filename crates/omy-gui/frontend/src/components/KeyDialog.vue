@@ -182,7 +182,7 @@ function submit() {
 <template>
   <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
     <form class="dlg narrow keymgmt" @submit.prevent="submit">
-      <h3>🔑 {{ i18n.t('keymgmt.title') }}</h3>
+      <h3><AppIcon name="key" /> {{ i18n.t('keymgmt.title') }}</h3>
 
       <div class="krow">
         <span class="klabel">{{ i18n.t('keymgmt.target') }}</span>

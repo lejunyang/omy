@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
         {{ i18n.t('rplace.open_editable') }}
       </button>
       <button id="pv-close" class="iconbtn" :aria-label="i18n.t('actions.close')" @click="$emit('close')">
-        ✕
+        <AppIcon name="close" />
       </button>
     </div>
     <div class="overlay-body">
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
       <div v-else class="overlay-msg">
         <p>{{ i18n.t('playback.cannot_preview') }}</p>
         <button v-if="plain" class="btn primary" @click="$emit('external')">
-          📤 {{ i18n.t('file.open_external') }}
+          <AppIcon name="external" /> {{ i18n.t('file.open_external') }}
         </button>
       </div>
     </div>

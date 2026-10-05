@@ -79,7 +79,7 @@ function icon(f) {
         :aria-label="i18n.t('remote.disconnect')"
         @click="disconnectRemote"
       >
-        ←
+        <AppIcon name="arrowLeft" />
       </button>
       <button
         class="crumbbtn"
@@ -87,11 +87,11 @@ function icon(f) {
         :aria-label="i18n.t('nav.reload')"
         @click="reloadRemote"
       >
-        ⟳
+        <AppIcon name="refresh" />
       </button>
 
       <nav class="crumbpath">
-        <span class="remotetag">🌐</span>
+        <AppIcon class="remotetag" name="globe" />
         <button class="crumbseg cur">{{ state.peer?.name || i18n.t('remote.unknown') }}</button>
         <span class="sep">·</span>
         <span class="addr">{{ state.peer?.addr }}</span>
@@ -101,19 +101,19 @@ function icon(f) {
         <!-- 共享是只读的，所以这里没有加密按钮。
              不是「禁用」而是根本不出现——放个灰按钮反而让人反复去点 -->
         <button v-if="lockedCount" class="btn small primary" @click="$emit('unlock')">
-          🔑 {{ i18n.t('remote.try_password') }}
+          <AppIcon name="key" /> {{ i18n.t('remote.try_password') }}
         </button>
       </div>
     </div>
 
     <div class="content">
       <div v-if="state.busy" class="empty">
-        <div class="icon" aria-hidden="true">⏳</div>
+        <div class="icon" aria-hidden="true"><AppIcon name="loader" /></div>
         <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
       </div>
 
       <div v-else-if="!visible.length" class="empty">
-        <div class="icon" aria-hidden="true">📭</div>
+        <div class="icon" aria-hidden="true"><AppIcon name="inbox" /></div>
         <div class="title">
           {{ state.remoteEntries.length ? i18n.t('view.no_match') : i18n.t('remote.empty') }}
         </div>
@@ -138,7 +138,7 @@ function icon(f) {
               alt=""
               loading="lazy"
             />
-            <span v-else aria-hidden="true">{{ icon(f) }}</span>
+            <AppIcon v-else :name="icon(f)" />
             <span v-if="f.tier && f.tier !== 'p1'" class="tier">{{ f.tier.toUpperCase() }}</span>
           </div>
           <div class="cname">
@@ -161,7 +161,7 @@ function icon(f) {
           @click="onEntryClick(f)"
           @keydown.enter.prevent="f.unlocked && $emit('open', f)"
         >
-          <span class="ic">{{ icon(f) }}</span>
+          <span class="ic"><AppIcon :name="icon(f)" /></span>
           <span class="nm">{{ f.unlocked ? f.name : i18n.t('file.locked_name') }}</span>
           <span class="sz">{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</span>
           <span class="tg">{{ f.unlocked ? (f.kind || '') : i18n.t('kind.encrypted') }}</span>
@@ -170,10 +170,10 @@ function icon(f) {
     </div>
 
     <div class="statusbar">
-      <span>🌐 {{ i18n.t('remote.connected_to', { name: state.peer?.name || '' }) }}</span>
+      <span><AppIcon name="globe" /> {{ i18n.t('remote.connected_to', { name: state.peer?.name || '' }) }}</span>
       <span>{{ i18n.tn('status.files', state.remoteEntries.length) }}</span>
-      <span v-if="openedCount">🔓 {{ i18n.tn('status.credentials', openedCount) }}</span>
-      <span v-if="lockedCount">🔒 {{ i18n.tn('status.locked_count', lockedCount) }}</span>
+      <span v-if="openedCount"><AppIcon name="unlock" /> {{ i18n.tn('status.credentials', openedCount) }}</span>
+      <span v-if="lockedCount"><AppIcon name="lock" /> {{ i18n.tn('status.locked_count', lockedCount) }}</span>
       <span class="spacer"></span>
       <span class="readonly">{{ i18n.t('remote.readonly') }}</span>
     </div>

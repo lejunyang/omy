@@ -10,6 +10,8 @@ title: Graphical interface
 
 The interface is a file browser rather than an "encryption tool": a location sidebar on the left, a list of entries on the right, double-click to enter or open (single tap on mobile).
 
+Interface icons are all vector icons, so they render consistently across Windows, Android and other platforms.
+
 **No password is needed to get in.** Opening the interface shows an ordinary browsing view, with `.omy` files marked as locked. You enter a password only when you want to see a file's contents, and other files in the same vault unlock automatically afterwards.
 
 Unlocked entries show the **decrypted original filename and thumbnail**, with a playback tier badge (⚡ / 🔄 / 🐌) in the corner, so it is immediately clear whether a video will play smoothly.

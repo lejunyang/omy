@@ -80,7 +80,9 @@ function close() {
           <h2>{{ i18n.t('cache_all.title') }}</h2>
           <p>{{ state.telegramCacheAll?.dirName }}</p>
         </div>
-        <button type="button" class="iconbtn" :aria-label="i18n.t('actions.close')" @click="close">✕</button>
+        <button type="button" class="iconbtn" :aria-label="i18n.t('actions.close')" @click="close">
+          <AppIcon name="close" />
+        </button>
       </header>
 
       <section>

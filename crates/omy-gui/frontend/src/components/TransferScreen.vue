@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="!shown.length" class="empty" data-xf="empty">
-      <div class="icon" aria-hidden="true">🔀</div>
+      <div class="icon" aria-hidden="true"><AppIcon name="transfers" /></div>
       <div class="title">{{ i18n.t('xfer.empty') }}</div>
       <div class="d">{{ i18n.t('xfer.empty_hint') }}</div>
     </div>
@@ -268,7 +268,7 @@ onBeforeUnmount(() => {
           :data-st="t.state"
           :data-xf-task="t.id"
         >
-          <span aria-hidden="true">{{ icon(t.kind) }}</span>
+          <AppIcon :name="icon(t.kind)" />
           <div class="tskn">
             <div class="tsknm">{{ t.name }}</div>
             <div class="tsksrc">{{ t.target }}</div>
@@ -287,7 +287,7 @@ onBeforeUnmount(() => {
               data-xf="pause"
               :title="i18n.t(t.state === 'paused' ? 'xfer.act_resume' : 'xfer.act_pause')"
               @click="toggleTaskPause(t)"
-            >{{ t.state === 'paused' ? '▶' : 'Ⅱ' }}</button>
+            ><AppIcon :name="t.state === 'paused' ? 'play' : 'pause'" /></button>
             <button
               v-if="isActive(t)"
               class="btn small"
@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
               :title="i18n.t('xfer.act_cancel')"
               @click="cancel(t)"
             >
-              ✕
+              <AppIcon name="close" />
             </button>
             <button
               v-else-if="canRetry(t)"
@@ -304,7 +304,7 @@ onBeforeUnmount(() => {
               :title="i18n.t('xfer.act_retry')"
               @click="retry(t)"
             >
-              ↻
+              <AppIcon name="retry" />
             </button>
           </div>
         </div>
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
             :data-st="child.state"
             :data-xf-task="child.id"
           >
-            <span aria-hidden="true">↳</span>
+            <span aria-hidden="true"><AppIcon name="cornerDownRight" /></span>
             <div class="tskn">
               <div class="tsknm">{{ child.name }}</div>
               <div class="tsksrc">{{ child.target }}</div>
@@ -324,9 +324,11 @@ onBeforeUnmount(() => {
             <div class="tskbarwrap"><div class="tskbar"><i :style="{ width: pct(child) + '%' }"></i></div></div>
             <div class="tskv">{{ stateText(child) }}<template v-if="rateText(child)"> · {{ rateText(child) }}</template></div>
             <div class="tskact">
-              <button v-if="isActive(child)" class="btn small" @click="toggleTaskPause(child)">{{ child.state === 'waiting' ? '▶' : 'Ⅱ' }}</button>
-              <button v-if="isActive(child)" class="btn small" @click="cancel(child)">✕</button>
-              <button v-else-if="canRetry(child)" class="btn small" @click="retry(child)">↻</button>
+              <button v-if="isActive(child)" class="btn small" @click="toggleTaskPause(child)"><AppIcon :name="child.state === 'paused' ? 'play' : 'pause'" /></button>
+              <button v-if="isActive(child)" class="btn small" @click="cancel(child)">
+          <AppIcon name="close" />
+        </button>
+              <button v-else-if="canRetry(child)" class="btn small" @click="retry(child)"><AppIcon name="retry" /></button>
             </div>
           </div>
         </div>

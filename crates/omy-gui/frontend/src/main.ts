@@ -11,6 +11,7 @@
 
 import { createApp } from 'vue';
 import App from './App.vue';
+import AppIcon from './components/AppIcon.vue';
 import * as api from './api';
 import * as i18n from './i18n';
 import { initTheme, syncThemeFromConfig } from './theme';
@@ -44,7 +45,9 @@ async function boot() {
   // 分页大小是编译期常量，启动时问一次即可
   void store.loadPageSize?.();
 
-  createApp(App).mount('#app');
+  const app = createApp(App);
+  app.component('AppIcon', AppIcon);
+  app.mount('#app');
 }
 
 boot();

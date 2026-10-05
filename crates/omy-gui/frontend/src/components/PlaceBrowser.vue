@@ -621,12 +621,12 @@ const cacheMarks = computed(() => {
                   title: i18n.t('rplace.mark_pinned') };
     } else if (st.fully_cached && st.total_blocks > 0) {
       // 整个文件都在本地：绿点
-      m[f.id] = { kind: 'cached', cls: 'cached', icon: '●',
+      m[f.id] = { kind: 'cached', cls: 'cached', icon: 'circle-check',
                   title: i18n.t('rplace.mark_cached') };
     } else if (st.cached_blocks > 0 && st.total_blocks > 0) {
       // 只缓存了一部分（大视频 seek 时下的那几块）：半实心点。
       // 与「整个都在」区分，是 pin 之前判断「断网还能不能完整打开」的依据。
-      m[f.id] = { kind: 'partial', cls: 'partial', icon: '◐',
+      m[f.id] = { kind: 'partial', cls: 'partial', icon: 'circle',
                   title: i18n.t('rplace.mark_partial', {
                     n: st.cached_blocks, total: st.total_blocks,
                   }) };
@@ -1236,7 +1236,7 @@ function rowTitle(f) {
         :aria-label="i18n.t('common.back')"
         @click="onBack"
       >
-        ←
+        <AppIcon name="arrowLeft" />
       </button>
       <button
         v-if="state.remotePlace"
@@ -1245,11 +1245,11 @@ function rowTitle(f) {
         :aria-label="i18n.t('nav.reload')"
         @click="reload"
       >
-        ⟳
+        <AppIcon name="refresh" />
       </button>
 
       <nav class="crumbpath">
-        <span class="remotetag" aria-hidden="true">☁️</span>
+        <AppIcon class="remotetag" name="cloud" />
         <template v-if="!state.remotePlace">
           <button class="crumbseg cur">{{ i18n.t('rplace.title') }}</button>
         </template>
@@ -1272,22 +1272,22 @@ function rowTitle(f) {
         <!-- 多选操作条：虚拟位置里勾选了条目后出现，批量剪切/复制/删除。 -->
         <template v-if="isVirtualPlace() && remoteSelectionActive()">
           <span class="selcount" data-pb-selcount>{{ i18n.tn('virtual.n_selected', state.remoteSelected.length, { n: state.remoteSelected.length }) }}</span>
-          <button class="btn small" @click="clipSelectedVirtual('cut')">✂️ {{ i18n.t('virtual.selection_cut') }}</button>
-          <button class="btn small" @click="clipSelectedVirtual('copy')">📋 {{ i18n.t('virtual.selection_copy') }}</button>
-          <button class="btn small danger" @click="onBatchDelete">🗑️ {{ i18n.t('virtual.selection_delete') }}</button>
+          <button class="btn small" @click="clipSelectedVirtual('cut')"><AppIcon name="scissors" /> {{ i18n.t('virtual.selection_cut') }}</button>
+          <button class="btn small" @click="clipSelectedVirtual('copy')"><AppIcon name="clipboard" /> {{ i18n.t('virtual.selection_copy') }}</button>
+          <button class="btn small danger" @click="onBatchDelete"><AppIcon name="trash" /> {{ i18n.t('virtual.selection_delete') }}</button>
           <button class="btn small" @click="clearRemoteSelection">{{ i18n.t('view.clear_selection') }}</button>
         </template>
         <template v-if="!isVirtualPlace() && remoteSelectionActive()">
           <span class="selcount">{{ i18n.tn('tg_forward.n_selected', state.remoteSelected.length, { count: state.remoteSelected.length }) }}</span>
           <button v-if="canForwardSelectedFiles" class="btn small" :disabled="state.remoteProtected" @click="forwardSelectedFiles">
-            ↗ {{ i18n.t('tg_forward.forward') }}
+            <AppIcon name="send" /> {{ i18n.t('tg_forward.forward') }}
           </button>
           <button class="btn small" @click="clearRemoteSelection">{{ i18n.t('view.clear_selection') }}</button>
         </template>
         <!-- 虚拟位置没有上传，但要能新建文件夹与粘贴剪贴板。 -->
         <template v-if="isVirtualPlace()">
           <button class="btn small" data-pb="vnew-folder" @click="newVirtualFolderPrompt">
-            📁 {{ i18n.t('virtual.new_folder') }}
+            <AppIcon name="folder" /> {{ i18n.t('virtual.new_folder') }}
           </button>
           <button
             class="btn small"
@@ -1295,7 +1295,7 @@ function rowTitle(f) {
             :disabled="!canPasteVirtual()"
             @click="pasteVirtualHere"
           >
-            📥 {{ i18n.t('virtual.menu_paste') }}
+            <AppIcon name="paste" /> {{ i18n.t('virtual.menu_paste') }}
           </button>
         </template>
         <!-- 上传按钮按**能力位图**出现，不给 Telegram 写特判。
@@ -1309,7 +1309,7 @@ function rowTitle(f) {
           :disabled="uploading"
           @click="doUpload"
         >
-          {{ uploading ? i18n.t('rplace.uploading') : '⬆️ ' + i18n.t('rplace.upload') }}
+          <AppIcon v-if="!uploading" name="upload" />{{ uploading ? i18n.t('rplace.uploading') : i18n.t('rplace.upload') }}
         </button>
       </div>
     </div>
@@ -1318,7 +1318,7 @@ function rowTitle(f) {
       <!-- 一、位置列表 -->
       <div v-if="!state.remotePlace" class="list">
         <div v-if="!state.remotePlaces.length" class="empty">
-          <div class="icon" aria-hidden="true">☁️</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="cloud" /></div>
           <div class="title">{{ i18n.t('rplace.empty') }}</div>
           <div class="sub">{{ i18n.t('rplace.empty_hint') }}</div>
           <button class="btn primary" style="margin-top: 12px" @click="$emit('new-remote')">
@@ -1334,7 +1334,7 @@ function rowTitle(f) {
           @dblclick="open(p)"
           @keydown.enter.prevent="open(p)"
         >
-          <span class="ic" aria-hidden="true">☁️</span>
+          <AppIcon class="ic" name="cloud" />
           <span class="nm">{{ p.name }}</span>
           <span class="tg">{{ kindLabel(p) }}</span>
           <span class="rowactions">
@@ -1349,7 +1349,7 @@ function rowTitle(f) {
               :title="i18n.t('rplace.rename')"
               @click.stop="rename(p)"
             >
-              ✎
+              <AppIcon name="pencil" />
             </button>
             <button
               class="iconbtn"
@@ -1358,7 +1358,7 @@ function rowTitle(f) {
               :title="hasLocalSession(p) ? i18n.t('rplace.detach') : i18n.t('rplace.remove')"
               @click.stop="remove(p)"
             >
-              ✕
+              <AppIcon name="close" />
             </button>
             <button
               v-if="hasLocalSession(p)"
@@ -1368,7 +1368,7 @@ function rowTitle(f) {
               :title="i18n.t('rplace.delete_account')"
               @click.stop="deleteAccount(p)"
             >
-              🗑️
+              <AppIcon name="trash" />
             </button>
           </span>
         </div>
@@ -1384,7 +1384,7 @@ function rowTitle(f) {
           :style="{ top: searchBarTop + 'px' }"
           data-pb="searchbar"
         >
-          <span aria-hidden="true">🔍</span>
+          <AppIcon name="search" />
           <input
             v-model="state.query"
             class="sinput"
@@ -1449,14 +1449,14 @@ function rowTitle(f) {
              所以读取与播放都正常，用 .d 这一档而不是 .warnbox——
              做成警告样式会让用户以为有什么坏了。 -->
         <div v-if="state.remoteProtected" class="d protnote" data-pb="protected">
-          🔒 {{ i18n.t('rplace.protected_note') }}
+          <AppIcon name="lock" /> {{ i18n.t('rplace.protected_note') }}
         </div>
         <div
           v-if="state.query.trim() && canServerSearch && state.searchMode === 'local'"
           class="banner info"
           data-tg="banner-local"
         >
-          <span aria-hidden="true">🔎</span>
+          <AppIcon name="search" />
           <div class="bx">{{ i18n.t('search.local_banner') }}</div>
         </div>
         <div
@@ -1464,13 +1464,13 @@ function rowTitle(f) {
           class="banner warn"
           data-tg="banner-server"
         >
-          <span aria-hidden="true">☁️</span>
+          <AppIcon name="cloud" />
           <div class="bx">
             {{ i18n.t('search.server_banner', { q: state.searchedQuery }) }}
           </div>
         </div>
         <div v-if="lockedOut > 0" class="banner info" data-tg="banner-locked">
-          <span aria-hidden="true">🔒</span>
+          <AppIcon name="lock" />
           <div class="bx">{{ i18n.tn('search.locked_out', lockedOut) }}</div>
         </div>
 
@@ -1480,20 +1480,20 @@ function rowTitle(f) {
           <div v-if="remoteMessageSelectionActive()" class="msg-selectbar">
             <span>{{ i18n.tn('tg_forward.n_selected', state.remoteMessageSelected.length, { count: state.remoteMessageSelected.length }) }}</span>
             <button class="btn small" :disabled="state.remoteProtected" @click="forwardSelectedMessages">
-              ↗ {{ i18n.t('tg_forward.forward') }}
+              <AppIcon name="send" /> {{ i18n.t('tg_forward.forward') }}
             </button>
             <button class="btn small" @click="clearRemoteMessageSelection">{{ i18n.t('view.clear_selection') }}</button>
           </div>
           <div v-if="state.loadingMessages" class="empty">
-            <div class="icon" aria-hidden="true">⏳</div>
+            <div class="icon" aria-hidden="true"><AppIcon name="loader" /></div>
             <div class="title">{{ i18n.t('msgs.loading') }}</div>
           </div>
           <div v-else-if="state.placeError" class="empty" data-tg="msg-error">
-            <div class="icon" aria-hidden="true">⚠️</div>
+            <div class="icon" aria-hidden="true"><AppIcon name="circle-alert" /></div>
             <div class="title">{{ state.placeError }}</div>
           </div>
           <div v-else-if="!state.remoteMessages.length" class="empty">
-            <div class="icon" aria-hidden="true">📭</div>
+            <div class="icon" aria-hidden="true"><AppIcon name="inbox" /></div>
             <div class="title">{{ i18n.t('msgs.empty') }}</div>
           </div>
           <div v-else class="msglist" data-tg="msglist">
@@ -1568,7 +1568,7 @@ function rowTitle(f) {
                     :data-tg-file="it.m.file_id"
                     @click="openFromMessage(it.m)"
                   >
-                    <span v-if="!it.m.thumb" aria-hidden="true">📎</span>
+                    <AppIcon v-if="!it.m.thumb" name="pin-file" />
                     <span v-else class="mfthumb" data-tg="msgthumb">
                       <img :src="thumbUrl(it.m.thumb)" alt="" loading="lazy" />
                       <i v-if="it.m.duration" class="mfdur" data-tg="msgdur">
@@ -1612,7 +1612,7 @@ function rowTitle(f) {
 
         <template v-else>
         <div v-if="state.searching" class="empty">
-          <div class="icon" aria-hidden="true">⏳</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="loader" /></div>
           <div class="title">{{ i18n.t('search.searching') }}</div>
         </div>
         <!-- 整屏「加载中」只在**手里一点内容都没有**时出现。
@@ -1628,7 +1628,7 @@ function rowTitle(f) {
         </div>
 
         <div v-else-if="state.placeError" class="empty">
-          <div class="icon" aria-hidden="true">⚠️</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="circle-alert" /></div>
           <div class="title">{{ state.placeError }}</div>
           <button class="btn" style="margin-top: 12px" @click="reload">
             {{ i18n.t('rplace.retry') }}
@@ -1636,7 +1636,7 @@ function rowTitle(f) {
         </div>
 
         <div v-else-if="!visible.length" class="empty">
-          <div class="icon" aria-hidden="true">📭</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="inbox" /></div>
           <div class="title">
             {{ emptyText }}
           </div>
@@ -1679,7 +1679,7 @@ function rowTitle(f) {
                 loading="lazy"
                 @error="onThumbError(f.thumb_token)"
               />
-              <span v-else aria-hidden="true">{{ icon(f) }}</span>
+              <AppIcon v-else :name="icon(f)" />
               <!-- 缓存标识。只画「永久」与「已缓存」两种：
                    半缓存画出来是噪音（用户对「缓存了 3/17 块」无法做
                    任何决定），而满屏小圆点会淹没那两个有意义的状态。
@@ -1692,7 +1692,7 @@ function rowTitle(f) {
                 :data-pb-cache="cacheMark(f).kind"
                 :title="cacheMark(f).title"
                 aria-hidden="true"
-              >{{ cacheMark(f).icon }}</span>
+              ><AppIcon :name="cacheMark(f).icon" :size="13" /></span>
             </div>
             <div class="cname">{{ displayName(f) }}</div>
             <button
@@ -1701,7 +1701,7 @@ function rowTitle(f) {
               class="iconbtn rowmore"
               :aria-label="i18n.t('nav.menu')"
               @click="onMobileMore(f, $event)"
-            >⋮</button>
+            ><AppIcon name="more" /></button>
             <div class="cmeta">
               <!-- 目录这里留空：缩略图区已经有图标了，再放一个 📁 等于把同
                    一件事说两遍（实测卡片文本是「📁omytest📁」）。而且这一行
@@ -1744,7 +1744,7 @@ function rowTitle(f) {
             @pointerup="onPointerUp"
             @pointercancel="onPointerUp"
           >
-            <span class="ic">{{ icon(f) }}</span>
+            <span class="ic"><AppIcon :name="icon(f)" /></span>
             <span class="nm">{{ displayName(f) }}</span>
             <button
               v-if="isMobile && f.is_conversation"
@@ -1752,7 +1752,7 @@ function rowTitle(f) {
               class="iconbtn rowmore"
               :aria-label="i18n.t('nav.menu')"
               @click="onMobileMore(f, $event)"
-            >⋮</button>
+            ><AppIcon name="more" /></button>
             <span class="sz">
               <template v-if="!f.is_dir">{{ i18n.formatSize(f.unlocked ? f.plaintext_size : f.size) }}</template>
             </span>
@@ -1795,12 +1795,12 @@ function rowTitle(f) {
 
     <div class="statusbar">
       <span v-if="state.remotePlace">
-        ☁️ {{ currentPlace?.name }}
+        <AppIcon name="cloud" /> {{ currentPlace?.name }}
       </span>
-      <span v-else>☁️ {{ i18n.t('rplace.title') }}</span>
+      <span v-else><AppIcon name="cloud" /> {{ i18n.t('rplace.title') }}</span>
       <span v-if="state.remotePlace">{{ i18n.tn('status.files', visible.length) }}</span>
-      <span v-if="state.remotePlace && unlockedCount > 0" data-stat="unlocked" :data-n="unlockedCount">🔓 {{ unlockedCount }}</span>
-      <span v-if="state.remotePlace && lockedCount > 0" data-stat="locked" :data-n="lockedCount">🔒 {{ lockedCount }}</span>
+      <span v-if="state.remotePlace && unlockedCount > 0" data-stat="unlocked" :data-n="unlockedCount"><AppIcon name="unlock" /> {{ unlockedCount }}</span>
+      <span v-if="state.remotePlace && lockedCount > 0" data-stat="locked" :data-n="lockedCount"><AppIcon name="lock" /> {{ lockedCount }}</span>
       <span class="spacer"></span>
       <span v-if="state.remotePlace" class="readonly">{{ capsLabel() }}</span>
     </div>

@@ -83,7 +83,7 @@ onMounted(() => {
   <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
     <form class="dlg narrow" @submit.prevent="submit">
       <h3>
-        <span aria-hidden="true">{{ mode === 'rename' ? '✏️' : '📁' }}</span>
+        <AppIcon :name="mode === 'rename' ? 'pencil' : 'folder'" />
         {{ i18n.t(mode === 'rename' ? 'ctx.rename' : 'ctx.new_folder') }}
       </h3>
 

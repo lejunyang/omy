@@ -34,7 +34,7 @@ function submit() {
 <template>
   <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
     <form class="dlg narrow" @submit.prevent="submit">
-      <h3>🔓 {{ i18n.t('rplace.unlock_title', { name }) }}</h3>
+      <h3><AppIcon name="unlock" /> {{ i18n.t('rplace.unlock_title', { name }) }}</h3>
       <div class="hint">{{ i18n.t('rplace.unlock_dialog_hint') }}</div>
 
       <div class="field">

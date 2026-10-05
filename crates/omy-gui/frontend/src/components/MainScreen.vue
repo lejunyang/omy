@@ -175,7 +175,7 @@ function onRowMenu(e, ev) {
           :aria-label="i18n.t('nav.up')"
           @click="goUp"
         >
-          ↑
+          <AppIcon name="upload" />
         </button>
         <button
           class="crumbbtn"
@@ -184,7 +184,7 @@ function onRowMenu(e, ev) {
           :aria-label="i18n.t('nav.reload')"
           @click="reload"
         >
-          ⟳
+          <AppIcon name="refresh" />
         </button>
 
         <nav class="crumbpath">
@@ -197,7 +197,7 @@ function onRowMenu(e, ev) {
               :class="{ cur: i === crumbs.length - 1, box: c.kind === 'container' }"
               @click="gotoCrumb(c)"
             >
-              <span v-if="c.kind === 'container'" aria-hidden="true">📦 </span>{{ c.name }}
+              <span v-if="c.kind === 'container'" aria-hidden="true"><AppIcon name="package" /> </span>{{ c.name }}
             </button>
           </template>
         </nav>
@@ -208,14 +208,14 @@ function onRowMenu(e, ev) {
             class="btn small primary"
             @click="$emit('encrypt')"
           >
-            🔒 {{ i18n.t('file.encrypt') }} ({{ encryptable.length }})
+            <AppIcon name="lock" /> {{ i18n.t('file.encrypt') }} ({{ encryptable.length }})
           </button>
           <button
             v-if="restorable.length"
             class="btn small"
             @click="$emit('restore')"
           >
-            📤 {{ i18n.t('file.restore') }} ({{ restorable.length }})
+            <AppIcon name="external" /> {{ i18n.t('file.restore') }} ({{ restorable.length }})
           </button>
           <button
             v-if="keyManageable"
@@ -223,7 +223,7 @@ function onRowMenu(e, ev) {
             :title="i18n.t('keymgmt.title')"
             @click="$emit('manage-key', keyManageable)"
           >
-            🔑 {{ i18n.t('keymgmt.title') }}
+            <AppIcon name="key" /> {{ i18n.t('keymgmt.title') }}
           </button>
           <button v-if="state.selected.length" class="btn small" @click="clearSelection">
             {{ i18n.t('view.clear_selection') }}
@@ -234,13 +234,13 @@ function onRowMenu(e, ev) {
       <div class="content">
         <!-- 还没选位置 -->
         <div v-if="!state.cwd" class="empty">
-          <div class="icon" aria-hidden="true">📂</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="folder-open" /></div>
           <div class="title">{{ i18n.t('view.start_title') }}</div>
           <div class="sub">{{ i18n.t('view.start_hint') }}</div>
         </div>
 
         <div v-else-if="state.busy" class="empty">
-          <div class="icon" aria-hidden="true">⏳</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="loader" /></div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
 
           <!-- 有进度才显示进度条：派生密钥等阶段拿不到百分比，
@@ -274,7 +274,7 @@ function onRowMenu(e, ev) {
              后者是位置本身为空。用 currentCount 而不是 state.entries，
              否则在容器里会拿外层磁盘目录的数量来做判断 -->
         <div v-else-if="!entriesWithMeta.length" class="empty">
-          <div class="icon" aria-hidden="true">📭</div>
+          <div class="icon" aria-hidden="true"><AppIcon name="inbox" /></div>
           <div class="title">
             {{ currentCount ? i18n.t('view.no_match') : i18n.t('view.empty_title') }}
           </div>
@@ -309,13 +309,13 @@ function onRowMenu(e, ev) {
             @pointercancel="onRowPointerUp"
             @keydown.enter.prevent="$emit('open', e)"
           >
-            <span class="ic">{{
+            <span class="ic"><AppIcon :name="
               e.is_dir
-                ? (e.is_encrypted_dir ? '🔐' : '📁')
+                ? (e.is_encrypted_dir ? 'folder-lock' : 'folder')
                 : e.is_encrypted
-                  ? (e.unlocked ? '🔓' : '🔒')
-                  : '📄'
-            }}</span>
+                  ? (e.unlocked ? 'unlock' : 'lock')
+                  : 'file'
+            " /></span>
             <span class="nm">
               {{ e.is_encrypted && !e.unlocked ? i18n.t('file.locked_name') : e.real_name || e.name }}
             </span>
@@ -337,11 +337,11 @@ function onRowMenu(e, ev) {
         <!-- 在容器里时说清这一点：列出来的名字是即时解密出来的，
              不是磁盘上的文件。少了这句，用户会以为这些文件就摆在硬盘上 -->
         <span v-if="state.container" class="cbadge">
-          📦 {{ i18n.t('container.subtitle') }}
+          <AppIcon name="package" /> {{ i18n.t('container.subtitle') }}
         </span>
         <span>{{ i18n.tn('status.files', currentCount) }}</span>
         <span v-if="encryptedCount">{{ i18n.tn('status.encrypted', encryptedCount) }}</span>
-        <span v-if="lockedCount">🔒 {{ i18n.tn('status.locked_count', lockedCount) }}</span>
+        <span v-if="lockedCount"><AppIcon name="lock" /> {{ i18n.tn('status.locked_count', lockedCount) }}</span>
         <span v-if="state.selected.length">
           {{ i18n.tn('status.selected', state.selected.length) }}
         </span>
@@ -359,6 +359,8 @@ function onRowMenu(e, ev) {
        错误若也自动消失就等于没报错——用户可能正低头看别处 -->
   <div v-if="state.error || state.notice" class="toast" :class="{ err: !!state.error }">
     <span>{{ state.error || state.notice }}</span>
-    <button class="iconbtn" @click="state.error = ''; clearNotice()">✕</button>
+    <button class="iconbtn" @click="state.error = ''; clearNotice()">
+          <AppIcon name="close" />
+        </button>
   </div>
 </template>

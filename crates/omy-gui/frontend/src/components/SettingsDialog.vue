@@ -526,7 +526,7 @@ async function openLogDir() {
           :aria-label="i18n.t('common.back')"
           @click="backMobile"
         >
-          ←
+          <AppIcon name="arrowLeft" />
         </button>
         <span class="sethn">{{ paneTitle }}</span>
         <button
@@ -536,7 +536,7 @@ async function openLogDir() {
           :aria-label="i18n.t('common.close')"
           @click="onClose"
         >
-          ✕
+          <AppIcon name="close" />
         </button>
       </div>
 
@@ -554,7 +554,7 @@ async function openLogDir() {
             :data-sp="p.key"
             @click="pane = p.key"
           >
-            <span aria-hidden="true">{{ p.icon }}</span>
+            <AppIcon :name="p.icon" />
             <span>{{ i18n.t(p.label) }}</span>
           </button>
         </nav>
@@ -606,7 +606,7 @@ async function openLogDir() {
 
           <div class="mgh">{{ i18n.t('settings.remote') }}</div>
           <button class="mrow" type="button" data-sp="telegram_proxy_mobile" @click="goMobile('remote')">
-            <span class="mri" aria-hidden="true">↗</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="send" /></span>
             <span class="mrt">{{ i18n.t('settings.telegram_proxy') }}</span>
             <span class="mrv">{{ cfg.remote.telegram_proxy_mode === 'manual'
               ? i18n.t('settings.telegram_proxy_manual')
@@ -614,13 +614,13 @@ async function openLogDir() {
             <span class="mra" aria-hidden="true">›</span>
           </button>
           <button class="mrow" type="button" data-sp="remote" @click="goMobile('remote')">
-            <span class="mri" aria-hidden="true">☁️</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="cloud" /></span>
             <span class="mrt">{{ i18n.t('settings.connected_places') }}</span>
             <span class="mrv">{{ remotePlaceCount }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
           <button class="mrow" type="button" data-sf="cache_entry" @click="openCachePane">
-            <span class="mri" aria-hidden="true">🗄️</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="database" /></span>
             <span class="mrt">{{ i18n.t('settings.cache_title') }}</span>
             <span class="mrv">{{ usedText }}</span>
             <span class="mra" aria-hidden="true">›</span>
@@ -628,30 +628,30 @@ async function openLogDir() {
 
           <div class="mgh">{{ i18n.t('settings.group_security') }}</div>
           <button class="mrow" type="button" data-sp="security" @click="goMobile('security')">
-            <span class="mri" aria-hidden="true">🔐</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="folder-lock" /></span>
             <span class="mrt">{{ i18n.t('settings.security') }}</span>
             <span class="mrv" v-if="cfg">{{ lockLabel(cfg.security.auto_lock_secs) }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
           <button class="mrow" type="button" data-sp="encrypt" @click="goMobile('encrypt')">
-            <span class="mri" aria-hidden="true">🔒</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="lock" /></span>
             <span class="mrt">{{ i18n.t('settings.encrypt_defaults') }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
           <button class="mrow" type="button" data-sp="devices" @click="goMobile('devices')">
-            <span class="mri" aria-hidden="true">📡</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="radio" /></span>
             <span class="mrt">{{ i18n.t('settings.devices') }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
 
           <div class="mgh">{{ i18n.t('settings.group_other') }}</div>
           <button class="mrow" type="button" data-sp="playback" @click="goMobile('playback')">
-            <span class="mri" aria-hidden="true">🎬</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="video" /></span>
             <span class="mrt">{{ i18n.t('settings.playback') }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
           <button class="mrow" type="button" data-sp="about" @click="goMobile('about')">
-            <span class="mri" aria-hidden="true">ℹ️</span>
+            <span class="mri" aria-hidden="true"><AppIcon name="help" /></span>
             <span class="mrt">{{ i18n.t('settings.about') }}</span>
             <span class="mrv">{{ aboutInfo.app_version }}</span>
             <span class="mra" aria-hidden="true">›</span>
@@ -776,7 +776,7 @@ async function openLogDir() {
 
             <!-- 缓存内容较多，独立成二级页；这里只给一行摘要（对齐原型） -->
             <button class="subentry" type="button" data-sf="cache_entry" @click="openCachePane">
-              <span class="se-ico" aria-hidden="true">🗄️</span>
+              <span class="se-ico" aria-hidden="true"><AppIcon name="database" /></span>
               <span class="se-body">
                 <span class="se-title">{{ i18n.t('settings.cache_title') }}</span>
                 <span class="se-desc">{{ cacheSummary }}</span>
@@ -798,7 +798,7 @@ async function openLogDir() {
                 :aria-label="i18n.t('common.back')"
                 @click="isMobile ? backMobile() : (pane = 'cache')"
               >
-                ←
+                <AppIcon name="arrowLeft" />
               </button>
               <span class="panetitle">{{ i18n.t('settings.pinned_title') }}</span>
             </div>
@@ -846,7 +846,7 @@ async function openLogDir() {
                 :aria-label="i18n.t('common.back')"
                 @click="pane = 'remote'"
               >
-                ←
+                <AppIcon name="arrowLeft" />
               </button>
               <span class="panetitle">{{ i18n.t('settings.cache_title') }}</span>
             </div>
@@ -1213,16 +1213,16 @@ async function openLogDir() {
            走 leaveTo 清干净移动导航状态再离开。 -->
       <nav v-if="isMobile" class="pnav setpnav">
         <button class="pnavi" type="button" data-si="nav-files" @click="leaveTo('files')">
-          <span aria-hidden="true">📂</span>{{ i18n.t('nav.tab_files') }}
+          <AppIcon name="folder-open" />{{ i18n.t('nav.tab_files') }}
         </button>
         <button class="pnavi" type="button" data-si="nav-places" @click="leaveTo('places')">
-          <span aria-hidden="true">☁️</span>{{ i18n.t('rplace.title') }}
+          <AppIcon name="cloud" />{{ i18n.t('rplace.title') }}
         </button>
         <button class="pnavi" type="button" data-si="nav-devices" @click="leaveTo('devices')">
-          <span aria-hidden="true">📡</span>{{ i18n.t('nav.tab_devices') }}
+          <AppIcon name="radio" />{{ i18n.t('nav.tab_devices') }}
         </button>
         <button class="pnavi on" type="button" data-si="nav-settings">
-          <span aria-hidden="true">⚙️</span>{{ i18n.t('settings.title') }}
+          <AppIcon name="settings" />{{ i18n.t('settings.title') }}
         </button>
       </nav>
     </div>

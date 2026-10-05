@@ -166,7 +166,7 @@ onBeforeUnmount(() => {
           :title="it.hint || ''"
           @click="pick(it)"
         >
-          <span class="mic" aria-hidden="true">{{ it.icon }}</span>
+          <span class="mic" aria-hidden="true"><AppIcon :name="it.icon" /></span>
           <span class="mit">
             <span class="mil">{{ it.label }}</span>
             <!-- 长说明放标签下方并与之左对齐：右侧只剩百来像素，

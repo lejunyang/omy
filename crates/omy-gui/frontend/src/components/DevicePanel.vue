@@ -195,10 +195,10 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
   <div class="overlay dlg-overlay" @click.self="$emit('close')">
     <div class="dlg wide">
       <h3>
-        📡 {{ i18n.t('device.title') }}
+        <AppIcon name="radio" /> {{ i18n.t('device.title') }}
         <span class="spacer"></span>
         <button class="iconbtn" :aria-label="i18n.t('actions.close')" @click="$emit('close')">
-          ✕
+          <AppIcon name="close" />
         </button>
       </h3>
 
@@ -265,11 +265,11 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
         <div class="sect">
           <div class="sect-h">
             <span>{{ i18n.t('device.paired_list') }}</span>
-            <button class="btn small" @click="startListen">➕ {{ i18n.t('device.pair_new') }}</button>
+            <button class="btn small" @click="startListen"><AppIcon name="plus" /> {{ i18n.t('device.pair_new') }}</button>
           </div>
           <div v-if="!paired.length" class="muted">{{ i18n.t('device.no_paired') }}</div>
           <div v-for="d in paired" :key="d.fingerprint" class="drow">
-            <span class="ic">{{ d.expired ? '⌛' : '💻' }}</span>
+            <span class="ic"><AppIcon :name="d.expired ? 'hourglass' : 'laptop'" /></span>
             <span class="nm">
               {{ d.name }}
               <code class="fp small">{{ d.fingerprint }}</code>
@@ -282,7 +282,7 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
               class="btn small primary"
               @click="$emit('connect', { fingerprint: d.fingerprint, addr: null })"
             >
-              🌐 {{ i18n.t('device.browse') }}
+              <AppIcon name="globe" /> {{ i18n.t('device.browse') }}
             </button>
             <button class="btn small" @click="revoke(d.fingerprint)">
               {{ i18n.t('device.revoke') }}
@@ -297,7 +297,7 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
           <div class="sect-h">
             <span>{{ i18n.t('device.nearby') }}</span>
             <button class="btn small" :disabled="scanning" @click="scan">
-              {{ scanning ? i18n.t('device.scanning') : '🔍 ' + i18n.t('device.scan') }}
+              <AppIcon :name="scanning ? 'loader' : 'search'" :class="{ spinning: scanning }" /> {{ scanning ? i18n.t('device.scanning') : i18n.t('device.scan') }}
             </button>
           </div>
           <div v-if="!found.length && !scanning" class="muted">{{ i18n.t('device.none_found') }}</div>
@@ -307,7 +307,7 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
             class="drow clickable"
             @click="useDevice(d)"
           >
-            <span class="ic">{{ d.paired ? '💻' : '❓' }}</span>
+            <span class="ic"><AppIcon :name="d.paired ? 'laptop' : 'help'" /></span>
             <span class="nm">
               {{ d.name }}
               <code class="fp small">{{ d.addr || d.fingerprint }}</code>
@@ -353,7 +353,7 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
           <div class="note if">{{ i18n.t('device.share_no_password') }}</div>
           <template v-if="share.running">
             <div class="drow">
-              <span class="ic">📡</span>
+              <AppIcon class="ic" name="radio" />
               <span class="nm">
                 {{ share.dir }}
                 <code class="fp small">
@@ -365,7 +365,7 @@ onBeforeUnmount(() => window.clearInterval(timer as unknown as number));
             <div v-if="!paired.length" class="note">{{ i18n.t('device.share_no_peer') }}</div>
           </template>
           <button v-else class="btn" :disabled="busy" @click="pickAndShare">
-            📂 {{ i18n.t('device.pick_share_dir') }}
+            <AppIcon name="folder-open" /> {{ i18n.t('device.pick_share_dir') }}
           </button>
         </div>
       </template>
