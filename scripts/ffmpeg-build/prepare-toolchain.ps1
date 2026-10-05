@@ -41,7 +41,7 @@ try {
     # Windows 同名命令），所以缺失往往意味着 expose 漏了，而不是包没装。
     $need = @(
         @('bash', '--version'), @('make', '--version'), @('sed', '--version'),
-        @('nasm', '-v'), @('pkg-config', '--version'),
+        @('nasm', '-v'), @('pkg-config', '--version'), @('bsdtar', '--version'),
         @('cmake', '--version'), @('ninja', '--version'),
         @('x86_64-w64-mingw32-gcc', '-dumpversion'),
         @('x86_64-w64-mingw32-nm', '--version')

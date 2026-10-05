@@ -55,6 +55,8 @@ CURL="$(pick_curl)"
 
 # 校验 SHA256 而不是只看文件在不在：上游 tarball 被替换过的事情发生过，
 # 而「体积对得上、内容被动过」是最难查的一类问题。
+# curl 的 --retry 只处理传输错误；CDN 偶尔会返回 200 但内容损坏，因此哈希失败
+# 也必须删除后重下。最终仍要求固定 SHA 完全匹配，不能把异常内容放行。
 fetch() {
   local url="$1" file="$2" want="$3"
   if [ -f "$file" ]; then
@@ -67,16 +69,22 @@ fetch() {
     echo "  校验和不符，重新下载: $(basename "$file")" >&2
     rm -f "$file"
   fi
-  echo "  下载 $(basename "$file") ..."
-  "$CURL" -fsSL --retry 3 -o "$file" "$url"
-  local got
-  got="$(sha256sum "$file" | cut -d' ' -f1)"
-  if [ "$got" != "$want" ]; then
-    echo "SHA256 不符：$(basename "$file")" >&2
-    echo "  期望 $want" >&2
-    echo "  实际 $got" >&2
-    exit 1
-  fi
+
+  local attempt got
+  for attempt in 1 2 3; do
+    echo "  下载 $(basename "$file")（第 ${attempt}/3 次）..."
+    "$CURL" -fsSL --retry 3 -o "$file" "$url"
+    got="$(sha256sum "$file" | cut -d' ' -f1)"
+    if [ "$got" = "$want" ]; then
+      return 0
+    fi
+    echo "  SHA256 不符（第 ${attempt}/3 次）：$(basename "$file")" >&2
+    echo "    期望 $want" >&2
+    echo "    实际 $got" >&2
+    rm -f "$file"
+  done
+  echo "连续 3 次下载均未得到锁定的源码，停止构建" >&2
+  exit 1
 }
 
 echo "=== 1/5 获取源码 ==="
@@ -88,31 +96,17 @@ fetch "https://zlib.net/fossils/zlib-${ZLIB_VER}.tar.gz" \
       "$SRC/zlib-${ZLIB_VER}.tar.gz" "$ZLIB_SHA256"
 
 # 解压必须在 POSIX 路径下进行：MSYS 的 tar 会把 "C:\..." 里的 C: 当成远程
-# 主机名，报 "Cannot connect to C: resolve failed"。
-#
-# 优先使用 bsdtar；conda 的 m2-base 并不保证提供这个命令，即使 osdk 的 expose
-# 列表声明了名字也可能没有实际文件。GitHub Windows runner 自带的 tar.exe 同样
-# 基于 libarchive，能直接解 .xz，且绝对路径不会被 MSYS 的 tar shim 截获。
-pick_tar() {
-  if command -v bsdtar >/dev/null 2>&1; then
-    command -v bsdtar
-  elif [ -x /c/Windows/System32/tar.exe ]; then
-    echo /c/Windows/System32/tar.exe
-  elif command -v tar >/dev/null 2>&1 && tar --version 2>&1 | grep -qi 'bsdtar\|libarchive'; then
-    command -v tar
-  else
-    return 1
-  fi
-}
-TAR="$(pick_tar)" || {
-  echo "找不到支持 .xz 的 libarchive/bsdtar；请使用 Windows 自带 tar.exe" >&2
+# 主机名，报 "Cannot connect to C: resolve failed"。bsdtar 由 osdk 管理的
+# conda:libarchive 提供，自带 lzma 支持，可直接处理 .xz 与 .gz。
+command -v bsdtar >/dev/null 2>&1 || {
+  echo "找不到 bsdtar；请先用 osdk 安装 conda:libarchive" >&2
   exit 1
 }
 
 cd "$SRC"
-[ -d "ffmpeg-${FFMPEG_VER}" ] || "$TAR" -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
-[ -d "libwebp-${WEBP_VER}" ]  || "$TAR" -xf "libwebp-${WEBP_VER}.tar.gz"
-[ -d "zlib-${ZLIB_VER}" ]     || "$TAR" -xf "zlib-${ZLIB_VER}.tar.gz"
+[ -d "ffmpeg-${FFMPEG_VER}" ] || bsdtar -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
+[ -d "libwebp-${WEBP_VER}" ]  || bsdtar -xf "libwebp-${WEBP_VER}.tar.gz"
+[ -d "zlib-${ZLIB_VER}" ]     || bsdtar -xf "zlib-${ZLIB_VER}.tar.gz"
 
 CFLAGS_COMMON="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -O2"
 

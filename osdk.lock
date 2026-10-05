@@ -79,3 +79,152 @@ version = "1.98"
 [platforms.macos-arm64.tools.rust.options]
 components = "clippy"
 targets = "x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"
+
+[platforms.windows-x64.tools.android-build-tools]
+request = "37"
+version = "37.0.0"
+
+[platforms.windows-x64.tools.android-build-tools.artifact]
+url = "https://dl.google.com/android/repository/build-tools_r37_windows.zip"
+file_name = "build-tools_r37_windows.zip"
+checksum = "sha1:e9c97e26b5b5678002e9d3fed632c841ae62d99f"
+
+[platforms.windows-x64.tools.android-cmdline-tools]
+request = "latest"
+version = "23.0"
+
+[platforms.windows-x64.tools.android-cmdline-tools.artifact]
+url = "https://dl.google.com/android/repository/commandlinetools-win-16111833_latest.zip"
+file_name = "commandlinetools-win-16111833_latest.zip"
+checksum = "sha1:57d04f2d75eb8e8fffc5000a987e5de4b5a63e9d"
+
+[platforms.windows-x64.tools.android-emulator]
+request = "37"
+version = "37.2.12"
+
+[platforms.windows-x64.tools.android-ndk]
+request = "29"
+version = "29.0.14206865"
+
+[platforms.windows-x64.tools.android-ndk.artifact]
+url = "https://dl.google.com/android/repository/android-ndk-r29-windows.zip"
+file_name = "android-ndk-r29-windows.zip"
+checksum = "sha1:ab3bb30fbb9e6903666d60c55d11e78b04e07472"
+
+[platforms.windows-x64.tools.android-platform-tools]
+request = "37"
+version = "37.0.1"
+
+[platforms.windows-x64.tools.android-platform-tools.artifact]
+url = "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip"
+file_name = "platform-tools_r37.0.1-win.zip"
+checksum = "sha1:e03e78b1d80b396f1c3358e31251cb31740e1110"
+
+[platforms.windows-x64.tools.android-platforms]
+request = "=android-36"
+version = "android-36"
+
+[platforms.windows-x64.tools.android-platforms.artifact]
+url = "https://dl.google.com/android/repository/platform-36_r02.zip"
+file_name = "platform-36_r02.zip"
+checksum = "sha1:2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576"
+
+[platforms.windows-x64.tools.android-system-images]
+request = "android-35;google_apis;x86_64"
+version = "android-35;google_apis;x86_64"
+
+[platforms.windows-x64.tools.android-system-images.artifact]
+url = "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip"
+file_name = "x86_64-35_r09.zip"
+checksum = "sha1:0103e6dab21290c4b9d16550a3ce99476f884eef"
+
+[platforms.windows-x64.tools."conda:cmake"]
+request = "4"
+version = "4.4.4"
+
+[platforms.windows-x64.tools."conda:gcc_win-64"]
+request = "16"
+version = "16.2.0"
+
+[platforms.windows-x64.tools."conda:gcc_win-64".conda]
+closure = "blake3:fc2a7390c3196d84d01f1ec346d93efef81fb7befc243f6af1c1beffdf0bd789"
+packages = 25
+
+[platforms.windows-x64.tools."conda:libarchive"]
+request = "3.8.9"
+version = "3.8.9"
+
+[platforms.windows-x64.tools."conda:libarchive".conda]
+closure = "blake3:45db956dab86e54437da2cb29d1ddf1a330bded86ad345474f132a3d6baf48ce"
+packages = 17
+
+[platforms.windows-x64.tools."conda:m2-base"]
+request = "2022"
+version = "2022.6.1"
+
+[platforms.windows-x64.tools."conda:m2-base".options]
+with = "m2-make,m2-diffutils,m2-pkg-config"
+
+[platforms.windows-x64.tools."conda:m2-base".conda]
+closure = "blake3:464c5df166d04aa3a87bf5dc18a6f295fd3759945d1c3f6d2cf4bc0b73ef9669"
+packages = 75
+
+[platforms.windows-x64.tools."conda:nasm"]
+request = "2.16"
+version = "2.16.3"
+
+[platforms.windows-x64.tools."conda:nasm".conda]
+closure = "blake3:06355fdab1707faa27c86f18df9fd95a7a6ec45c4e3ecabed51fe529de234c33"
+packages = 5
+
+[platforms.windows-x64.tools."conda:ninja"]
+request = "1"
+version = "1.13.2"
+
+[platforms.windows-x64.tools."conda:ninja".conda]
+closure = "blake3:ed5710780df41d797269921935040e454aff71805c05446a7e319b8ce48e62e5"
+packages = 5
+
+[platforms.windows-x64.tools.java]
+request = "21"
+version = "21.0.12.1+1"
+
+[platforms.windows-x64.tools.java.options]
+distribution = "temurin"
+java-version = "21.0.12.1+1"
+package-type = "jdk"
+
+[platforms.windows-x64.tools.java.artifact]
+url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip"
+file_name = "OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip"
+checksum = "sha256:f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e"
+
+[platforms.windows-x64.tools.node]
+request = "22"
+version = "22.23.3"
+
+[platforms.windows-x64.tools.node.options]
+arch = "x64"
+corepack = "false"
+
+[platforms.windows-x64.tools.node.artifact]
+url = "https://nodejs.org/dist/v22.23.3/node-v22.23.3-win-x64.zip"
+file_name = "node-v22.23.3-win-x64.zip"
+checksum = "sha256:2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+
+[platforms.windows-x64.tools.pnpm]
+request = "9"
+version = "9.15.9"
+
+[platforms.windows-x64.tools.pnpm.artifact]
+url = "https://registry.npmmirror.com/pnpm/-/pnpm-9.15.9.tgz"
+file_name = "pnpm-9.15.9.tgz"
+checksum = "sha512:68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
+
+[platforms.windows-x64.tools.rust]
+request = "1.98"
+version = "1.98"
+
+[platforms.windows-x64.tools.rust.options]
+components = "clippy"
+targets = "x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"

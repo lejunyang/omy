@@ -69,7 +69,7 @@ jobs:
           osdk --yes trust osdk.toml
           # 显式列出配方实际使用的工具。特别是不要退回裸 `osdk install`：
           # 它会下载约 1 GiB 的 Google Android system image，曾静默卡满 6 小时。
-          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base
+          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base conda:libarchive
 
       - name: 构建
         shell: pwsh

@@ -167,7 +167,7 @@ jobs:
           osdk --yes trust osdk.toml
           # 这里只构建 Windows FFmpeg；裸 `osdk install` 会连 Android 模拟器与
           # system image 一起装，首次发布因此卡在 Google 镜像下载整整 6 小时。
-          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base
+          osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base conda:libarchive
 
       - name: 构建内置 FFmpeg
         shell: pwsh

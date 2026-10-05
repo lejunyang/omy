@@ -45,12 +45,16 @@ android-system-images = "android-35;google_apis;x86_64"
 node = "22"
 pnpm = "9"
 android-platforms = "=android-36"
+"conda:libarchive" = "3.8.9"
 
 [settings.shims.tools."conda:m2-base"]
-expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee", "tar", "bsdtar", "gzip", "gunzip", "sha256sum", "curl", "nproc", "stat"]
+expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee", "tar", "gzip", "gunzip", "sha256sum", "curl", "nproc", "stat"]
 
 [settings.shims.tools."conda:gcc_win-64"]
 expose = ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++", "x86_64-w64-mingw32-ar", "x86_64-w64-mingw32-as", "x86_64-w64-mingw32-nm", "x86_64-w64-mingw32-ranlib", "x86_64-w64-mingw32-strip", "x86_64-w64-mingw32-objdump", "x86_64-w64-mingw32-windres", "x86_64-w64-mingw32-ld", "x86_64-w64-mingw32-dlltool"]
+
+[settings.shims.tools."conda:libarchive"]
+expose = ["bsdtar"]
 
 # Linux 宿主系统开发包。osdk 只负责声明与检查（osdk pkg status / plan），
 # 安装由 osdk pkg apply 打印命令、用宿主包管理器执行，osdk 自己不提权。
