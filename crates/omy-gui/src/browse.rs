@@ -54,10 +54,10 @@ pub struct DirEntry {
     pub entry_id: Option<String>,
     /// 扩展名（小写，不含点），用于选图标。
     pub ext: Option<String>,
-    /// 未加密文件的访问 token，用于应用内预览与「用系统程序打开」。
+    /// 本地文件或目录的访问 token。
     ///
-    /// 目录为 `None`。加密文件也给 token——「在文件管理器中显示」
-    /// 对加密文件同样适用，那个操作不需要解密。
+    /// 文件用于应用内预览、系统打开与「在文件管理器中显示」；目录只用于
+    /// 「在文件管理器中显示」。加密文件也给 token——定位不需要解密。
     pub token: Option<String>,
     /// 未加密文件的预览类别（`image` / `video` / `audio` / `text` / `other`）。
     ///
@@ -184,6 +184,9 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
             // 廉价判定：只看后缀与字符集，不尝试解密。目录多的时候
             // 逐个解密会让列目录明显变慢，而解名放到后面统一做
             let enc_dir = omy_core::dirname::looks_encrypted(&name);
+            // 目录同样登记受控 token：右键“在文件管理器中显示”必须能定位
+            // 文件夹。仍然不把路径交给 WebView，未知 token 继续由后端拒绝。
+            let token = state.plain.register(&path);
             dirs.push(DirEntry {
                 path: path.to_string_lossy().into_owned(),
                 name,
@@ -194,7 +197,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
                 real_name: None,
                 entry_id: None,
                 ext: None,
-                token: None,
+                token,
                 preview: None,
                 mime: None,
                 is_container: false,
@@ -818,6 +821,30 @@ mod tests {
         assert!(entry.is_dir, "加密目录必须仍然是目录");
         assert!(!entry.is_encrypted, "目录本身没有密文内容");
         assert!(entry.is_encrypted_dir, "但要标出它是加密目录");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listed_directories_receive_reveal_tokens() {
+        let root = std::env::temp_dir().join(format!(
+            "omy-browse-dir-token-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let child = root.join("folder");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let state = std::sync::Arc::new(crate::state::AppState::new());
+        let entries = list_dir(&root, &state).unwrap();
+        let folder = entries
+            .iter()
+            .find(|entry| entry.path == child.to_string_lossy())
+            .expect("新建目录必须出现在列表里");
+        let token = folder.token.as_deref().expect(
+            "目录必须登记 token，否则右键“在文件管理器中显示”会静默无效",
+        );
+        assert_eq!(state.plain.resolve(token), Some(child.clone()));
 
         let _ = std::fs::remove_dir_all(&root);
     }

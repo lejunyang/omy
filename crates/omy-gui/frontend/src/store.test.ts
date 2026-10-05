@@ -13,7 +13,7 @@
  * 后端通信全部 mock：这层测的是前端自己的编排（拉不拉、怎么合、开关怎么置），
  * 不是网络。消息行只取用到的字段（message），按 (对话,消息) 唯一即可。
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // 固定 mock 的 api：每个用例再按需改返回值。remoteMessagesAround 返回的窗口
 // 必须与后端新契约一致——rows 降序、带 has_older/has_newer。
@@ -46,6 +46,7 @@ vi.mock('./api.js', () => ({
   remotePlaceList: vi.fn(),
   remoteCopy: vi.fn(),
   remoteUpload: vi.fn(),
+  revealInFolder: vi.fn(),
   telegramForwardMessages: vi.fn(),
   // 加密虚拟位置时收集同密码 vault 的探测命令（mock，绝不出网）
   vaultParamsOf: vi.fn(),
@@ -87,6 +88,10 @@ import {
   openTelegramForward,
   openTelegramForwardFiles,
   confirmTelegramForward,
+  openContextMenu,
+  closeContextMenu,
+  ctxItems,
+  revealEntry,
 } from './store';
 
 /** 造一条只带消息号的消息行（store 合并/排序只依赖 message）。 */
@@ -119,6 +124,35 @@ function resetMessagesView() {
 }
 
 beforeEach(resetMessagesView);
+
+describe('本地条目在文件管理器中显示', () => {
+  afterEach(() => closeContextMenu());
+
+  it('文件夹带扫描 token 时菜单可用并调用同一后端定位命令', async () => {
+    const folder = { path: 'C:\\work\\docs', name: 'docs', is_dir: true, token: 'dir-token' };
+    state.container = null;
+    state.entries = [folder];
+    state.selected = [folder.path];
+    vi.mocked(api.revealInFolder).mockResolvedValue(undefined);
+    openContextMenu({ entry: folder, x: 0, y: 0 });
+
+    const reveal = ctxItems.value.find((item) => item.key === 'reveal');
+    // 不这样会怎样：菜单看得到但点击后 revealEntry 因无 token 直接返回，用户只觉得没反应。
+    expect(reveal?.disabled).toBe(false);
+    expect(await revealEntry(folder)).toBe(true);
+    expect(api.revealInFolder).toHaveBeenCalledWith('dir-token');
+  });
+
+  it('异常缺少 token 时明确禁用而不是允许无效点击', () => {
+    const folder = { path: 'C:\\work\\docs', name: 'docs', is_dir: true, token: null };
+    state.container = null;
+    state.entries = [folder];
+    state.selected = [folder.path];
+    openContextMenu({ entry: folder, x: 0, y: 0 });
+
+    expect(ctxItems.value.find((item) => item.key === 'reveal')?.disabled).toBe(true);
+  });
+});
 
 describe('locateMessage — 已在消息时间线上的内联跳转', () => {
   it('目标已在列表：不发请求、不置整屏 loading，只短暂置 locatingMsg 并高亮', async () => {

@@ -10,13 +10,16 @@ describe('本地文件导航与目录视觉', () => {
     expect(upButton).not.toContain('<AppIcon name="upload" />');
   });
 
-  it('未选中文件夹使用中性底色，蓝色只属于真实选中态', () => {
+  it('文件夹缩略图不重复绘制选中边框', () => {
     const css = readFileSync('src/styles/app.css', 'utf8');
     const directoryRule = css.match(/\.card \.thumb\.dir\s*\{[^}]*\}/s)?.[0] || '';
     const selectedRule = css.match(/\.card\.sel \.thumb\.dir\s*\{[^}]*\}/s)?.[0] || '';
     // 不这样会怎样：所有目录都带 accent 蓝底，看起来像整页已进入批量选择。
     expect(directoryRule).toContain('background: var(--bg2)');
     expect(directoryRule).not.toContain('var(--accent)');
-    expect(selectedRule).toContain('var(--accent)');
+    // 真正选中时外层 `.card.sel` 已有 accent 边框，内层再画会变成双重选中框。
+    expect(selectedRule).toContain('background: color-mix');
+    expect(selectedRule).toContain('border-color: transparent');
+    expect(selectedRule).not.toMatch(/border-color:[^;]*var\(--accent\)/);
   });
 });

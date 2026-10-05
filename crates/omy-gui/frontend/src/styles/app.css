@@ -445,7 +445,8 @@ input {
 
 .card.sel .thumb.dir {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg2));
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  /* 选中态只由卡片整体的 accent 外框表达；内层再画一圈会像双重选中。 */
+  border-color: transparent;
 }
 
 .tier {

@@ -392,7 +392,7 @@ export const listFileAssociations = (): Promise<any> => invoke('list_file_associ
 export const clearFileAssociation = (extension: string): Promise<any> =>
   invoke('clear_file_association', { extension });
 
-/** 在系统文件管理器里定位一个文件。加密文件也适用。 */
+/** 在系统文件管理器里定位一个本地文件或文件夹。加密条目也适用。 */
 export const revealInFolder = (token: any): Promise<any> => invoke('reveal_in_folder', { token });
 
 /* ---------------- 设置 ---------------- */

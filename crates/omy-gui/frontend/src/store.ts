@@ -447,7 +447,7 @@ export async function openWithSystem(entry, chooseApplication = false) {
   }
 }
 
-/** 在系统文件管理器里定位。 */
+/** 在系统文件管理器里定位本地文件或文件夹。 */
 export async function revealEntry(entry) {
   if (!entry?.token) return false;
   try {
@@ -778,12 +778,14 @@ export const ctxItems = computed(() => {
 
   items.push({ key: 'sep' });
 
-  // 「在文件管理器中显示」需要后端给的 token，锁定的加密文件没有
+  // 「在文件管理器中显示」只接受后端扫描时登记的受控 token。
+  // 文件与目录都应有 token；若旧数据或异常条目缺失，直接禁用而不是点后静默无反应。
+  const cannotReveal = many || !e.token;
   items.push({
     key: 'reveal',
     icon: '📍',
     label: t('ctx.reveal'),
-    disabled: many,
+    disabled: cannotReveal,
     hint: many ? t('ctx.single_only') : '',
   });
 

@@ -34,7 +34,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
 | Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
 | Password management | Add key slots, change passwords, re-encrypt |
-| Context menu | Open, open with another app, reveal in file manager, password management and move to trash; PC uses the native Windows picker, Android uses a native app list |
+| Context menu | Open, open with another app, reveal a file or folder in the file manager, password management and move to trash; PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
 | Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
