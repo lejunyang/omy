@@ -2557,6 +2557,9 @@ pub async fn telegram_cache_all(
     Ok(parent_id)
 }
 
+// Rust 1.99 将 fetch_update 改名为 try_update，但后者到 1.95 才稳定；
+// 本仓库 MSRV 是 1.88，因此只能在这个兼容点继续使用旧名。
+#[allow(deprecated)]
 fn pump_cache_batches(
     app: tauri::AppHandle,
     reg: Arc<PlaceRegistry>,

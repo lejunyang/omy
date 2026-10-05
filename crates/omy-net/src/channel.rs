@@ -360,8 +360,8 @@ mod tests {
     #[tokio::test]
     async fn correct_key_succeeds() {
         let (cli, srv) = pair().await;
-        assert!(!cli.peer_public().is_empty());
-        assert!(!srv.peer_public().is_empty());
+        assert_eq!(cli.peer_public().len(), 32, "客户端应记录服务端的静态公钥");
+        assert_eq!(srv.peer_public().len(), 32, "服务端应记录客户端的静态公钥");
     }
 
     /// 单个会话承载多轮请求（连接复用）。

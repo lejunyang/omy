@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(s.devices().len(), 1);
         assert!(!s.revoke(&[1u8; 32]), "重复吊销应返回 false");
         s.revoke_all();
-        assert!(s.devices().is_empty());
+        assert_eq!(s.devices().len(), 0);
     }
 
     #[test]

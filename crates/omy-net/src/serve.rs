@@ -657,7 +657,7 @@ mod tests {
         assert!(share.is_empty());
         let srv = Server::new(share);
         match srv.handle(&Request::List) {
-            Response::ListOk { entries } => assert!(entries.is_empty()),
+            Response::ListOk { entries } => assert_eq!(entries.len(), 0),
             other => panic!("空目录应返回空列表，实际 {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&d);

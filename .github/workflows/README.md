@@ -91,7 +91,14 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 `failed to find tool "aarch64-linux-android-clang"`，整个任务挂掉。
 
 所以两条流水线的 Android 任务都有一步指定交叉工具链，把
-`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。三个易错点：
+`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线安装 Rust 时
+使用 `osdk install rust --force`：Action 缓存曾恢复出一份宿主编译器可运行、
+但 rustup manifest 与 Android target 都缺失的半成品；普通 install 只看完成
+标记会跳过，单独 target add 又无法在缺 manifest 时自修复。强制安装让 osdk
+按 `osdk.toml` 一次重建版本、clippy 与全部 target，仍不绕过它的隔离目录和
+镜像选择。
+
+三个易错点：
 
 - API 级别要和 `gen/android/app/build.gradle.kts` 的 `minSdk`（当前 24）一致。
   用更高的级别会让 `.so` 在低版本系统上加载失败，而那只有真机能发现。

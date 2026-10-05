@@ -576,7 +576,7 @@ mod tests {
             ErrCode::Revoked,
         ] {
             assert_eq!(ErrCode::from_u8(c as u8), Some(c));
-            assert!(!c.as_str().is_empty());
+            assert_ne!(c.as_str(), "");
         }
     }
 
