@@ -87,16 +87,32 @@ fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/li
 fetch "https://zlib.net/fossils/zlib-${ZLIB_VER}.tar.gz" \
       "$SRC/zlib-${ZLIB_VER}.tar.gz" "$ZLIB_SHA256"
 
-# 解压必须在 POSIX 路径下进行：msys 的 tar 会把 "C:\..." 里的 C: 当成远程
+# 解压必须在 POSIX 路径下进行：MSYS 的 tar 会把 "C:\..." 里的 C: 当成远程
 # 主机名，报 "Cannot connect to C: resolve failed"。
 #
-# 用 bsdtar 而不是 tar：m2-base 的 GNU tar 解 .xz 时要外部调 xz，而 m2-base
-# 里没有 xz，报 "xz: Cannot exec"。想补 conda:m2-xz 又会撞 msys2-conda-epoch
-# 版本冲突装不上。bsdtar 自带 lzma 支持，一个命令解决三种格式。
+# 优先使用 bsdtar；conda 的 m2-base 并不保证提供这个命令，即使 osdk 的 expose
+# 列表声明了名字也可能没有实际文件。GitHub Windows runner 自带的 tar.exe 同样
+# 基于 libarchive，能直接解 .xz，且绝对路径不会被 MSYS 的 tar shim 截获。
+pick_tar() {
+  if command -v bsdtar >/dev/null 2>&1; then
+    command -v bsdtar
+  elif [ -x /c/Windows/System32/tar.exe ]; then
+    echo /c/Windows/System32/tar.exe
+  elif command -v tar >/dev/null 2>&1 && tar --version 2>&1 | grep -qi 'bsdtar\|libarchive'; then
+    command -v tar
+  else
+    return 1
+  fi
+}
+TAR="$(pick_tar)" || {
+  echo "找不到支持 .xz 的 libarchive/bsdtar；请使用 Windows 自带 tar.exe" >&2
+  exit 1
+}
+
 cd "$SRC"
-[ -d "ffmpeg-${FFMPEG_VER}" ] || bsdtar -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
-[ -d "libwebp-${WEBP_VER}" ]  || bsdtar -xf "libwebp-${WEBP_VER}.tar.gz"
-[ -d "zlib-${ZLIB_VER}" ]     || bsdtar -xf "zlib-${ZLIB_VER}.tar.gz"
+[ -d "ffmpeg-${FFMPEG_VER}" ] || "$TAR" -xf "ffmpeg-${FFMPEG_VER}.tar.xz"
+[ -d "libwebp-${WEBP_VER}" ]  || "$TAR" -xf "libwebp-${WEBP_VER}.tar.gz"
+[ -d "zlib-${ZLIB_VER}" ]     || "$TAR" -xf "zlib-${ZLIB_VER}.tar.gz"
 
 CFLAGS_COMMON="-B${SYSROOT}/usr/lib -I${SYSROOT}/usr/include -O2"
 

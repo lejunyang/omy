@@ -55,6 +55,8 @@ bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-b
 ```
 
 Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml` 提供。
+源码解压优先使用 `bsdtar`；若 `m2-base` 没有实际提供该命令，脚本会使用
+Windows 自带、同样基于 libarchive 且支持 `.xz` 的 `System32\\tar.exe`。
 
 ### Linux
 

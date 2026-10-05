@@ -176,7 +176,10 @@ composite Action 安装 osdk，并缓存 Action 管理的 data/cache 目录。Ac
 
 Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根目录信任 `osdk.toml`，
 按任务显式安装工具。Windows 只装 FFmpeg 配方使用的五个 conda 工具，Linux 只装
-`conda:nasm`。不要把它改回无参数的 `osdk install`：根配置还声明了本地 Android E2E
+`conda:nasm`。Windows 解压源码时脚本优先找 `bsdtar`，但 `m2-base` 的实际
+安装内容并不保证含它；缺失时改用 runner 自带、同样基于 libarchive 的
+`System32\\tar.exe`，不能只因为 shim 配置声明了 `bsdtar` 就假定命令存在。
+不要把工具安装改回无参数的 `osdk install`：根配置还声明了本地 Android E2E
 所需的 emulator 与 `android-35;google_apis;x86_64` system image；FFmpeg 任务不使用它们，
 但全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
 最终被 GitHub 取消。Windows FFmpeg job 另设 90 分钟上限，保证类似的上游静默阻塞能
