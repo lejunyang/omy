@@ -175,7 +175,7 @@ function onRowMenu(e, ev) {
           :aria-label="i18n.t('nav.up')"
           @click="goUp"
         >
-          <AppIcon name="upload" />
+          <AppIcon name="arrowLeft" />
         </button>
         <button
           class="crumbbtn"
