@@ -136,12 +136,18 @@ jobs:
           cache-key: test-android
 
       - name: 信任 osdk.toml 并安装 Rust
-        # osdk 安装并导出隔离的 Rust 工具链；Android 标准库随后通过这套工具链的
-        # rustup 显式补齐，避免依赖 `osdk install rust` 对配置 options 的继承语义。
+        # osdk 的 Rust 使用 $OSDK_DATA_DIR 下的隔离 rustup/cargo home；runner 自带
+        # rustup 默认写 ~/.rustup，命令虽成功，后续 osdk cargo 仍看不到 target。
+        # 因此给 rustup 显式绑定同一目录，并在本步验证安装结果。
         run: |
           osdk --yes trust osdk.toml
           osdk -y install rust
+          export RUSTUP_HOME="$OSDK_DATA_DIR/rustup"
+          export CARGO_HOME="$OSDK_DATA_DIR/cargo"
           rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.98
+          installed="$(rustup target list --installed --toolchain 1.98)"
+          grep -qx 'aarch64-linux-android' <<<"$installed"
+          grep -qx 'armv7-linux-androideabi' <<<"$installed"
 
       - uses: actions/setup-java@v6.0.0
         with:

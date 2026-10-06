@@ -92,8 +92,10 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 
 所以两条流水线的 Android 任务都有一步指定交叉工具链，把
 `CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线先用 osdk 安装
-并导出隔离的 Rust，再直接调用这套工具链的 `rustup target add` 补齐 aarch64 与
-armv7 标准库；这样不依赖 `osdk install rust` 对配置 options 的继承语义。
+Rust，再调用 `rustup target add` 补齐 aarch64 与 armv7 标准库。这里必须显式把
+`RUSTUP_HOME` / `CARGO_HOME` 指向 `$OSDK_DATA_DIR/rustup` 与 `cargo`：runner
+自带的 rustup 默认写 `~/.rustup`，命令会显示成功，但后续 osdk cargo 使用隔离目录，
+仍会报找不到 Android 的 `core`。安装后同一步检查 target 列表，避免再次假绿。
 
 三个易错点：
 
