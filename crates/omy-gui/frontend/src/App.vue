@@ -818,6 +818,17 @@ function onEntryMenu(payload) {
   openContextMenu(payload);
 }
 
+/** 移动端底部弹层的标题：多选时说数量，单选时说名字。
+ *  锁定的加密文件不显示磁盘名（那是一串无意义的随机名），用占位名，
+ *  与卡片上的显示保持一致，避免在菜单里泄露比卡片更多的信息。 */
+const ctxTitle = computed(() => {
+  const e = ctxMenu.entry;
+  if (!e) return '';
+  if (state.selected.length > 1) return i18n.tn('status.selected', state.selected.length);
+  if (e.is_encrypted && !e.unlocked) return i18n.t('file.locked_name');
+  return e.real_name || e.name || '';
+});
+
 /** 菜单项被点。
  *
  * 先关菜单再执行：删除会触发 reload，列表重排后菜单会悬在一个已经不存在
@@ -1301,6 +1312,7 @@ onBeforeUnmount(() => {
       :items="ctxItems"
       :x="ctxMenu.x"
       :y="ctxMenu.y"
+      :title="ctxTitle"
       @pick="onCtxPick"
       @close="closeContextMenu"
     />

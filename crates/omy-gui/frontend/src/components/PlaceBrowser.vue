@@ -483,6 +483,58 @@ async function rename(p) {
   await renameTelegramPlace(p.id, next);
 }
 
+/* ---- 移动端位置列表：整行单击进入，其余操作收进底部弹层 ----
+ *
+ * 桌面行尾并排四个按钮（进入/改名/移除/删除账号），在手机上每个只剩
+ * 二十来像素宽，而且「移除」与「删除账号」紧挨着，误触代价很大。手机上
+ * 只留一个「更多」按钮，弹层里逐项写明后果（与侧栏右键菜单同一套文案）。 */
+const placeMenu = ref<{ place: any; x: number; y: number } | null>(null);
+
+const placeMenuItems = computed(() => {
+  const p = placeMenu.value?.place;
+  if (!p) return [];
+  const tg = hasLocalSession(p);
+  const items: any[] = [{ key: 'open', label: i18n.t('rplace.enter'), icon: 'folder-open' }];
+  if (tg) items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: 'pencil' });
+  items.push({ key: 'sep' });
+  items.push({
+    key: 'detach',
+    label: tg ? i18n.t('rplace.detach') : i18n.t('rplace.remove'),
+    icon: 'minus',
+    note: tg ? i18n.t('rplace.detach_note') : undefined,
+  });
+  if (tg) {
+    items.push({
+      key: 'delacct',
+      label: i18n.t('rplace.delete_account'),
+      icon: 'trash',
+      danger: true,
+      note: i18n.t('rplace.delete_account_note'),
+    });
+  }
+  return items;
+});
+
+function openPlaceMenu(p, ev: MouseEvent) {
+  placeMenu.value = { place: p, x: ev.clientX, y: ev.clientY };
+}
+
+async function onPlaceMenuPick(key: string) {
+  const p = placeMenu.value?.place;
+  placeMenu.value = null;
+  if (!p) return;
+  if (key === 'open') await open(p);
+  else if (key === 'rename') await rename(p);
+  else if (key === 'detach') await remove(p);
+  else if (key === 'delacct') await deleteAccount(p);
+}
+
+/** 位置行的单击：移动端直接进入（触屏没有双击），桌面不响应——
+ *  桌面靠双击或行尾的「进入」按钮，单击进入会让人在想改名时误入。 */
+function onPlaceRowClick(p) {
+  if (isMobile.value) void open(p);
+}
+
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
 function onEntryClick(f, ev?) {
   activeEntry.value = f;
@@ -1218,6 +1270,8 @@ function rowTitle(f) {
        整个消失，用户没法在位置之间切换，只能先退回去。 -->
   <AppShell
     :search="false"
+    :title="currentPlace?.name || i18n.t('rplace.title')"
+    tab="places"
     @pick="$emit('pick')"
     @devices="$emit('devices')"
     @lang="$emit('lang')"
@@ -1316,7 +1370,7 @@ function rowTitle(f) {
 
     <div class="content" ref="contentEl" @contextmenu="onBlankContext">
       <!-- 一、位置列表 -->
-      <div v-if="!state.remotePlace" class="list">
+      <div v-if="!state.remotePlace" class="list anim-in">
         <div v-if="!state.remotePlaces.length" class="empty">
           <div class="icon" aria-hidden="true"><AppIcon name="cloud" /></div>
           <div class="title">{{ i18n.t('rplace.empty') }}</div>
@@ -1327,17 +1381,34 @@ function rowTitle(f) {
         </div>
 
         <div
-          v-for="p in state.remotePlaces"
+          v-for="(p, pi) in state.remotePlaces"
           :key="p.id"
           class="lrow placerow"
+          :class="{ mob: isMobile }"
+          :style="{ '--i': pi }"
           tabindex="0"
+          @click="onPlaceRowClick(p)"
           @dblclick="open(p)"
           @keydown.enter.prevent="open(p)"
         >
-          <AppIcon class="ic" name="cloud" />
-          <span class="nm">{{ p.name }}</span>
-          <span class="tg">{{ kindLabel(p) }}</span>
-          <span class="rowactions">
+          <span class="placeic" :class="'k-' + p.kind"><AppIcon :name="p.kind === 'telegram' ? 'send' : 'cloud'" /></span>
+          <span class="placetext">
+            <span class="nm">{{ p.name }}</span>
+            <span v-if="isMobile" class="placesub">{{ kindLabel(p) }}<template v-if="p.encrypted"> · <AppIcon :name="p.unlocked ? 'unlock' : 'lock'" :size="12" /></template></span>
+          </span>
+          <span v-if="!isMobile" class="tg">{{ kindLabel(p) }}</span>
+          <!-- 移动端：只留一个「更多」，操作进底部弹层（理由见 placeMenu） -->
+          <span v-if="isMobile" class="rowactions">
+            <button
+              class="iconbtn"
+              :data-pb-more="p.id"
+              :aria-label="i18n.t('rplace.menu_open')"
+              @click.stop="openPlaceMenu(p, $event)"
+            >
+              <AppIcon name="more" />
+            </button>
+          </span>
+          <span v-else class="rowactions">
             <button class="btn small" :data-pb-enter="p.id" @click.stop="open(p)">
               {{ i18n.t('rplace.enter') }}
             </button>
@@ -1812,6 +1883,7 @@ function rowTitle(f) {
         :items="rmenuItems"
         :x="rmenu.x"
         :y="rmenu.y"
+        :title="rmenu.entry?.real_name || rmenu.entry?.name || ''"
         @pick="onMenuPick"
         @close="rmenu = null"
       />
@@ -1822,6 +1894,7 @@ function rowTitle(f) {
         :items="msgMenuItems"
         :x="msgMenu.x"
         :y="msgMenu.y"
+        :title="msgMenu.m ? '#' + msgMenu.m.message : ''"
         @pick="onMenuPick"
         @close="msgMenu = null"
       />
@@ -1834,6 +1907,17 @@ function rowTitle(f) {
         :y="blankMenu.y"
         @pick="onBlankMenuPick"
         @close="blankMenu = null"
+      />
+    </Transition>
+    <Transition name="menu">
+      <ContextMenu
+        v-if="placeMenu"
+        :items="placeMenuItems"
+        :x="placeMenu.x"
+        :y="placeMenu.y"
+        :title="placeMenu.place.name"
+        @pick="onPlaceMenuPick"
+        @close="placeMenu = null"
       />
     </Transition>
   </div>
@@ -2100,6 +2184,29 @@ function rowTitle(f) {
 /* 位置行：让操作按钮靠右排成一组 */
 .placerow {
   cursor: pointer;
+}
+/* 位置图标放进一个色块：桌面上与普通列表行对齐（20px 方块内），
+   手机上放大成 44px 圆角块（见 mobile.css） */
+.placeic {
+  width: 24px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+}
+.placetext {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.placesub {
+  font-size: 12px;
+  color: var(--fg2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 /* 删除账号不可撤销，要和旁边的「移除」在视觉上区分开——
    两个相邻的灰图标，点错的代价却差很远 */

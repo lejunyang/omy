@@ -86,7 +86,7 @@ vi.mock('../store.js', async () => {
     locateMessage: vi.fn(),
     loadMoreMessages: vi.fn(),
     loadNewerMessages: vi.fn(),
-    openRemotePlace: noop,
+    openRemotePlace: vi.fn(),
     leaveRemotePlace: noop,
     reloadRemoteDir: noop,
     enterRemoteDir: noop,
@@ -176,7 +176,7 @@ const WindowListStub = defineComponent({
 });
 
 import PlaceBrowser from './PlaceBrowser.vue';
-import { state, locateMessage } from '../store';
+import { state, locateMessage, openRemotePlace } from '../store';
 
 /** 同一天的三条消息：纯文本、带引用、带文件。date 取当前秒保证归一组。 */
 function seedMessages() {
@@ -415,5 +415,66 @@ describe('PlaceBrowser 消息时间线', () => {
     const group = w.find('[data-tg="msggroup"]');
     // 初始测量值为 0 时是 '0px'；关键是绑定存在、是个像素值而不是无样式。
     expect(group.attributes('style')).toMatch(/top:\s*\d+(\.\d+)?px/);
+  });
+});
+
+describe('PlaceBrowser 位置列表的移动端交互', () => {
+  beforeEach(() => {
+    // 位置列表是「未进入任何位置」时的那一屏
+    state.remotePlace = '';
+    state.remotePlaces = [
+      { id: 'p1', kind: 'telegram', name: 'TG' },
+      { id: 'w1', kind: 'webdav', name: 'NAS' },
+    ];
+  });
+
+  it('移动端单击位置行直接进入', async () => {
+    hst.mobile.value = true;
+    const w = mountView();
+    await flushPromises();
+    await w.findAll('.placerow')[1].trigger('click');
+    // 不这样会怎样：触屏上没有双击，位置行点了没反应，只能去找行尾的小按钮。
+    expect(openRemotePlace).toHaveBeenCalledWith('w1');
+  });
+
+  it('桌面单击位置行不进入（双击才进入）', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.findAll('.placerow')[0].trigger('click');
+    // 不这样会怎样：桌面上想点行尾「改名」时手一偏落在行上，就被带进了位置。
+    expect(openRemotePlace).not.toHaveBeenCalled();
+    await w.findAll('.placerow')[0].trigger('dblclick');
+    expect(openRemotePlace).toHaveBeenCalledWith('p1');
+  });
+
+  it('移动端行尾只有「更多」，点它不会顺带进入位置', async () => {
+    hst.mobile.value = true;
+    const w = mountView();
+    await flushPromises();
+    const row = w.findAll('.placerow')[0];
+    // 不这样会怎样：四个按钮挤在手机行尾，「移除」与「删除账号」紧挨着极易误触。
+    expect(row.find('[data-pb-delacct]').exists()).toBe(false);
+    expect(row.find('[data-pb-detach]').exists()).toBe(false);
+    await row.find('[data-pb-more="p1"]').trigger('click');
+    // 不这样会怎样：「更多」的点击冒泡到行上，弹层还没出来人已经进了位置。
+    expect(openRemotePlace).not.toHaveBeenCalled();
+  });
+
+  it('「更多」弹层按位置类型给出操作，删除账号只属于 Telegram', async () => {
+    hst.mobile.value = true;
+    const w = mount(PlaceBrowser, { global: { stubs: { WindowList: WindowListStub } } });
+    await flushPromises();
+    await w.find('[data-pb-more="p1"]').trigger('click');
+    await nextTick();
+    const tgKeys = w.findAll('.ctxmenu [data-mi]').map((n) => n.attributes('data-mi'));
+    expect(tgKeys).toEqual(['open', 'rename', 'detach', 'delacct']);
+    // 关掉再开 WebDAV 那一行
+    await w.find('.ctxlayer').trigger('contextmenu');
+    await flushPromises();
+    await w.find('[data-pb-more="w1"]').trigger('click');
+    await nextTick();
+    const davKeys = w.findAll('.ctxmenu [data-mi]').map((n) => n.attributes('data-mi'));
+    // 不这样会怎样：WebDAV 也出现「删除账号」，用户以为会删掉网盘上的东西。
+    expect(davKeys).toEqual(['open', 'detach']);
   });
 });

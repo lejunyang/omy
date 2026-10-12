@@ -94,4 +94,28 @@ describe('ContextMenu', () => {
       HTMLElement.prototype.getBoundingClientRect = proto;
     }
   });
+
+  it('移动端：底部弹层带标题与拖拽条，且不读触发坐标', async () => {
+    hv.mobile.value = true;
+    const w = mountMenu({ title: '海边日落.jpg' });
+    await flushPromises();
+    const el = w.find('.ctxmenu');
+    expect(el.classes()).toContain('mobile');
+    // 不这样会怎样：弹层从屏幕底部升起、离手指很远，没有标题就不知道
+    // 菜单针对的是哪一项，容易对错的文件执行删除。
+    expect(w.find('.sheet-title').text()).toBe('海边日落.jpg');
+    expect(w.find('.sheet-grip').exists()).toBe(true);
+    // 内联坐标只属于桌面浮层；弹层带着它会被 left/top 拽离底部
+    expect(el.attributes('style') || '').not.toContain('left:');
+    w.unmount();
+  });
+
+  it('桌面不渲染弹层头部', async () => {
+    const w = mountMenu({ title: 'x' });
+    await flushPromises();
+    // 不这样会怎样：桌面右键菜单顶部多出一条拖拽条和标题，白占两行。
+    expect(w.find('.sheet-title').exists()).toBe(false);
+    expect(w.find('.sheet-grip').exists()).toBe(false);
+    w.unmount();
+  });
 });

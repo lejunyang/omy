@@ -6,7 +6,7 @@
  * 面包屑 + 内容区 + 状态栏。
  */
 
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
@@ -37,6 +37,21 @@ import EntryCard from './EntryCard.vue';
  * 与桌面共用这一个组件，只换外壳（外壳本身在 AppShell 里）。
  * 复制成两个组件的话，列表渲染、搜索、进度、统计会分叉，修一边漏一边。
  */
+
+/** 移动端顶栏标题：当前目录（或容器内目录）的名字。
+ *  取面包屑最后一段，与桌面面包屑的「当前」段是同一个来源。 */
+const mobileTitle = computed(() => {
+  const last = crumbs.value[crumbs.value.length - 1];
+  return last ? last.name : '';
+});
+
+/** 移动端顶栏副标题：条目数与加密数，替代桌面的状态栏。 */
+const mobileSubtitle = computed(() => {
+  if (!state.cwd) return '';
+  const parts = [i18n.tn('status.files', currentCount.value)];
+  if (lockedCount.value) parts.push(i18n.tn('status.locked_count', lockedCount.value));
+  return parts.join(' · ');
+});
 
 
 /** 进度百分比，取整。
@@ -165,6 +180,9 @@ function onRowMenu(e, ev) {
 
 <template>
   <AppShell
+    :title="mobileTitle"
+    :subtitle="mobileSubtitle"
+    tab="files"
     @pick="$emit('pick')"
     @devices="$emit('devices')"
     @lang="$emit('lang')"
@@ -175,8 +193,8 @@ function onRowMenu(e, ev) {
     @lock="$emit('lock')"
     @quick-unlock="$emit('quick-unlock')"
   >
-    <div class="main">
-      <div class="crumb">
+    <div class="main" :class="{ mob: isMobile }">
+      <div class="crumb" :class="{ mob: isMobile }">
         <button
           class="crumbbtn"
           :disabled="!state.cwd && !state.container"
@@ -186,7 +204,10 @@ function onRowMenu(e, ev) {
         >
           <AppIcon name="arrowLeft" />
         </button>
+        <!-- 刷新按钮只在桌面显示：手机这一行要留给面包屑与视图切换，
+             而本地目录每次进入都会重新读取，手机上很少需要原地刷新 -->
         <button
+          v-if="!isMobile"
           class="crumbbtn"
           :disabled="!state.cwd && !state.container"
           :title="i18n.t('nav.reload')"
@@ -211,7 +232,22 @@ function onRowMenu(e, ev) {
           </template>
         </nav>
 
-        <div class="vtoggle">
+        <!-- 移动端：视图切换收成一个按钮放在面包屑尾部。桌面上它在顶栏，
+             手机顶栏留给标题与搜索 -->
+        <button
+          v-if="isMobile"
+          class="crumbbtn"
+          data-tb="view-toggle"
+          :title="state.view === 'grid' ? i18n.t('view.list') : i18n.t('view.grid')"
+          :aria-label="state.view === 'grid' ? i18n.t('view.list') : i18n.t('view.grid')"
+          @click="setView(state.view === 'grid' ? 'list' : 'grid')"
+        >
+          <AppIcon :name="state.view === 'grid' ? 'list' : 'grid'" />
+        </button>
+
+        <!-- 桌面工具条。移动端改为底部浮动的选择操作条（见下方 .selbar），
+             挤在面包屑行里的话按钮只剩几个像素宽 -->
+        <div v-if="!isMobile" class="vtoggle">
           <button
             v-if="encryptable.length"
             class="btn small primary"
@@ -346,7 +382,9 @@ function onRowMenu(e, ev) {
         </div>
       </div>
 
-      <div class="statusbar" :class="{ mob: isMobile }">
+      <!-- 状态栏只在桌面显示。手机上文件数挪到顶栏副标题，选择数由底部
+           操作条显示——三处都放会把本就不高的屏幕再吃掉一行 -->
+      <div v-if="!isMobile" class="statusbar">
         <!-- 在容器里时说清这一点：列出来的名字是即时解密出来的，
              不是磁盘上的文件。少了这句，用户会以为这些文件就摆在硬盘上 -->
         <span v-if="state.container" class="cbadge">
@@ -362,6 +400,50 @@ function onRowMenu(e, ev) {
         <span v-if="totalSize">{{ i18n.t('status.total_size', { size: i18n.formatSize(totalSize) }) }}</span>
       </div>
     </div>
+
+    <!-- 移动端选择操作条：长按进入多选后从底部升起，替代桌面面包屑行里的
+         工具按钮。浮在底栏之上而不是替换底栏：用户在多选中途仍可能切 tab，
+         隐藏导航会让人以为被困在了多选模式里 -->
+    <Transition name="selbar">
+      <div v-if="isMobile && state.selected.length" class="selbar" role="toolbar">
+        <button class="iconbtn" :aria-label="i18n.t('view.clear_selection')" @click="clearSelection">
+          <AppIcon name="close" />
+        </button>
+        <span class="selbar-count">{{ i18n.tn('status.selected', state.selected.length) }}</span>
+        <span class="spacer"></span>
+        <button
+          v-if="state.selected.length < entriesWithMeta.length"
+          class="selbar-act"
+          @click="selectAll"
+        >
+          <AppIcon name="check" /><span>{{ i18n.t('view.select_all') }}</span>
+        </button>
+        <button v-if="encryptable.length" class="selbar-act pri" @click="$emit('encrypt')">
+          <AppIcon name="lock" /><span>{{ i18n.t('file.encrypt') }}</span>
+        </button>
+        <button v-if="restorable.length" class="selbar-act" @click="$emit('restore')">
+          <AppIcon name="external" /><span>{{ i18n.t('file.restore') }}</span>
+        </button>
+        <button v-if="keyManageable" class="selbar-act" @click="$emit('manage-key', keyManageable)">
+          <AppIcon name="key" /><span>{{ i18n.t('keymgmt.title') }}</span>
+        </button>
+      </div>
+    </Transition>
+
+    <!-- 移动端「打开文件夹」悬浮按钮。桌面上它在侧栏里；手机侧栏收进了抽屉，
+         这是首次使用时唯一的起点，藏两层太深。多选时让位给操作条 -->
+    <Transition name="fab">
+      <button
+        v-if="isMobile && !state.selected.length"
+        class="fab"
+        data-tb="fab-pick"
+        :aria-label="i18n.t('nav.pick_folder')"
+        :title="i18n.t('nav.pick_folder')"
+        @click="$emit('pick')"
+      >
+        <AppIcon name="plus" :size="24" :stroke-width="2.2" />
+      </button>
+    </Transition>
   </AppShell>
 
   <!-- 移动端底部导航：文件 / 远程 / 设备 / 设置。

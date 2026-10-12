@@ -308,6 +308,10 @@ body {
   opacity: 0;
   transform: scale(0.96);
 }
+.menu-leave-to .ctxmenu.mobile {
+  opacity: 1;
+  transform: translateY(100%);
+}
 .menu-leave-to.ctxlayer.mobile {
   background-color: transparent;
 }
@@ -2030,12 +2034,14 @@ input {
     width: 240px;
     flex-basis: 240px;
     transform: translateX(-105%);
-    transition: transform 0.22s ease;
+    /* 时长与曲线见 mobile.css 的抽屉一节 */
+    transition: transform var(--dur-4) var(--ease-out);
     box-shadow: 2px 0 16px rgb(0 0 0 / 35%);
   }
 
   .side.drawer.open {
-    transform: translateX(0);
+    /* --drawer-dx 是左滑收起时的跟手位移（AppShell 写入），平时为 0 */
+    transform: translateX(var(--drawer-dx, 0px));
   }
 
   /* 遮罩：点空白收起抽屉。移动端没有 Esc */
@@ -2463,24 +2469,10 @@ input {
 }
 
 /* 移动端：手指目标要够大。44px 是触摸目标的通用下限，
-   桌面的 12.5px 行高在手机上会频繁点错行 */
+   桌面的 12.5px 行高在手机上会频繁点错行。
+   底部弹层（.ctxmenu.mobile）的版式在 mobile.css，不受断点限制：
+   Android 平板宽度超过 768px 时也用弹层（见 ContextMenu 的 modalMode） */
 @media (max-width: 768px) {
-  .ctxlayer.mobile {
-    display: grid;
-    place-items: center;
-    padding: max(env(safe-area-inset-top, 0px), 24px) 16px
-      calc(env(safe-area-inset-bottom, 0px) + 16px);
-    background: rgb(0 0 0 / 48%);
-  }
-
-  .ctxmenu.mobile {
-    position: relative;
-    inset: auto;
-    width: min(86vw, 360px);
-    min-width: 0;
-    max-height: min(72vh, 560px);
-  }
-
   .ctxmenu .mi {
     padding: calc(var(--sp) * 3) calc(var(--sp) * 3);
     font-size: 14px;

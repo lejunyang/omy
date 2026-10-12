@@ -422,6 +422,7 @@ function iconOf(place) {
       :items="rmenuItems"
       :x="rmenu.x"
       :y="rmenu.y"
+      :title="rmenu.place.name"
       @pick="onPlaceMenuPick"
       @close="rmenu = null"
     />
@@ -432,6 +433,7 @@ function iconOf(place) {
       :items="vrmenuItems"
       :x="vrmenu.x"
       :y="vrmenu.y"
+      :title="vrmenu.place.name"
       @pick="onVirtualMenuPick"
       @close="vrmenu = null"
     />

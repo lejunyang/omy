@@ -210,6 +210,8 @@ onBeforeUnmount(() => {
        修过一次（远程位置那条）。 -->
   <AppShell
     :search="false"
+    :title="i18n.t('xfer.title')"
+    tab="none"
     @pick="emit('pick')"
     @devices="emit('devices')"
     @lang="emit('lang')"

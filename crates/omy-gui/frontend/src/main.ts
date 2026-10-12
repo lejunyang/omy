@@ -18,6 +18,8 @@ import { initTheme, syncThemeFromConfig } from './theme';
 import * as store from './store';
 import { state } from './store';
 import './styles/app.css';
+// 必须在 app.css 之后：同特异性的移动端规则要盖过桌面规则（见文件头）
+import './styles/mobile.css';
 
 async function boot() {
   // 浏览器里跑 `pnpm dev` 预览界面时换上假数据（见 dev-mock.ts）。

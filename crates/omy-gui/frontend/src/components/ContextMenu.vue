@@ -37,6 +37,9 @@ const props = defineProps({
   /** 触发位置（视口坐标）。 */
   x: { type: Number, required: true },
   y: { type: Number, required: true },
+  /** 移动端底部弹层的标题（通常是被操作条目的名字）。
+   *  弹层从屏幕底部升起、离手指很远，没有标题的话用户不确定菜单针对的是哪一项。 */
+  title: { type: String, default: '' },
 });
 
 const emit = defineEmits<{
@@ -120,9 +123,10 @@ onMounted(async () => {
   const el = menu.value;
   if (!el) return;
   if (modalMode.value) {
-    // 移动端是居中模态，不读触发坐标；CSS 用 transform 精确居中。
+    // 移动端是底部弹层，不读触发坐标。
+    // 不自动聚焦第一项：触屏上焦点环会让第一项看起来像「已被选中」，
+    // 而且会唤起某些 WebView 的选中高亮。
     pos.value = { left: 0, top: 0 };
-    (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus();
     return;
   }
   const r = el.getBoundingClientRect();
@@ -166,6 +170,12 @@ onBeforeUnmount(() => {
       :style="modalMode ? undefined : { left: pos.left + 'px', top: pos.top + 'px', '--origin': origin }"
       @click.stop
     >
+      <!-- 移动端底部弹层的头部：拖拽条只是视觉提示「这是一块可以收起的面板」，
+           标题说明菜单针对哪一项（弹层离手指很远，没有它容易误以为点错了条目） -->
+      <template v-if="modalMode">
+        <div class="sheet-grip" aria-hidden="true"></div>
+        <div v-if="title" class="sheet-title">{{ title }}</div>
+      </template>
       <template v-for="(g, gi) in groups" :key="gi">
         <div v-if="gi > 0" class="msep"></div>
         <button

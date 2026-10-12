@@ -1,0 +1,695 @@
+/* omy 移动端外观（≤768px，以及 Android 上不论宽度的触屏弹层）
+ *
+ * # 为什么单独成文件
+ *
+ * app.css 已经接近三千行，桌面与移动规则交错，改一处要翻好几屏才能确认没有
+ * 被后面的规则盖住。移动端这次整体重做，集中在这里：在 app.css **之后**
+ * 引入（main.ts），同特异性时这里胜出。
+ *
+ * # 断点
+ *
+ * 768px 与 src/viewport.ts 的 MOBILE_MAX、app.css 里的 @media 一致，
+ * **改断点时三处一起改**。
+ *
+ * 由 v-if="isMobile" 渲染的元素（.pnav、.selbar、.fab、.mtitle）不再套
+ * 媒体查询——JS 已经保证它们只在移动端存在，样式再判一次是重复的真相源。
+ * 而依赖 class 切换的（.ctxmenu.mobile）同理，只认 class。
+ */
+
+/* ---------- 底部导航 ----------
+ * 选中项上方有一枚胶囊形高亮，切换时用 transform 滑过去而不是闪现：
+ * 指示器的位置由 .pnav 上的 --tab 决定（AppShell 不需要写 JS，
+ * :has() 根据哪一项 .on 算出序号）。 */
+.pnav {
+  height: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px));
+  padding-block-end: max(env(safe-area-inset-bottom, 0px), 16px);
+  padding-inline: 8px;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  border-block-start: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  --tab: -1;
+}
+
+.pnav:has(> .pnavi:nth-child(1).on) { --tab: 0; }
+.pnav:has(> .pnavi:nth-child(2).on) { --tab: 1; }
+.pnav:has(> .pnavi:nth-child(3).on) { --tab: 2; }
+.pnav:has(> .pnavi:nth-child(4).on) { --tab: 3; }
+
+/* 指示器：四等分里的一格，居中放一枚 56×30 的胶囊 */
+.pnav::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 7px;
+  inset-inline-start: calc(8px + (100% - 16px) / 4 * var(--tab) + ((100% - 16px) / 4 - 56px) / 2);
+  width: 56px;
+  height: 30px;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  opacity: 1;
+  transition:
+    inset-inline-start var(--dur-4) var(--ease-spring),
+    opacity var(--dur-2) ease;
+  pointer-events: none;
+}
+
+/* 没有任何一项选中（如传输页）时指示器淡出，而不是停在上一个位置 */
+.pnav:not(:has(> .pnavi.on))::before {
+  opacity: 0;
+}
+
+.body.mob {
+  padding-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px));
+}
+
+.pnavi {
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding-block-start: 10px;
+  justify-content: flex-start;
+}
+
+.pnavi > .app-icon {
+  width: 22px;
+  height: 22px;
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+
+.pnavi.on {
+  color: var(--fg);
+}
+
+.pnavi.on > .app-icon {
+  color: var(--accent);
+  transform: translateY(-1px) scale(1.06);
+}
+
+.pnavi:active > .app-icon {
+  transform: scale(0.88);
+}
+
+.ndot {
+  inset-block-start: 9px;
+  inset-inline-start: calc(50% + 10px);
+  width: 8px;
+  height: 8px;
+  box-shadow: 0 0 0 2px var(--bg2);
+}
+
+/* ---------- 抽屉 ---------- */
+@media (max-width: 768px) {
+  .side.drawer {
+    width: min(300px, 84vw);
+    flex-basis: auto;
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 3) calc(var(--sp) * 8);
+    border-inline-end: 0;
+    border-start-end-radius: 20px;
+    border-end-end-radius: 20px;
+    box-shadow: 8px 0 32px rgb(0 0 0 / 40%);
+  }
+
+  /* 跟手拖动时关掉过渡，否则抽屉会「追着」手指慢半拍 */
+  .side.drawer.dragging {
+    transition: none;
+  }
+
+  .side.drawer .sitem {
+    height: 46px;
+    border-radius: 23px;
+    padding-inline: calc(var(--sp) * 4);
+    font-size: 14.5px;
+    gap: calc(var(--sp) * 3.5);
+  }
+
+  .side.drawer .sitem > .app-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .side.drawer .sgrp {
+    padding: calc(var(--sp) * 4) calc(var(--sp) * 4) calc(var(--sp) * 1.5);
+    font-size: 12px;
+  }
+
+  /* 打开时条目从左侧依次滑入。只在 .open 的那一刻挂动画：
+     收起再打开时节点没有重建，靠切换 .open 类重新触发 */
+  .side.drawer.open > .sitem,
+  .side.drawer.open > .sgrp {
+    animation: omy-drawer-item var(--dur-4) var(--ease-out) backwards;
+  }
+  .side.drawer.open > :nth-child(1) { animation-delay: 40ms; }
+  .side.drawer.open > :nth-child(2) { animation-delay: 55ms; }
+  .side.drawer.open > :nth-child(3) { animation-delay: 70ms; }
+  .side.drawer.open > :nth-child(4) { animation-delay: 85ms; }
+  .side.drawer.open > :nth-child(5) { animation-delay: 100ms; }
+  .side.drawer.open > :nth-child(6) { animation-delay: 115ms; }
+  .side.drawer.open > :nth-child(7) { animation-delay: 130ms; }
+  .side.drawer.open > :nth-child(8) { animation-delay: 145ms; }
+  .side.drawer.open > :nth-child(n + 9) { animation-delay: 160ms; }
+
+  .scrim {
+    background: rgb(0 0 0 / 52%);
+  }
+}
+
+@keyframes omy-drawer-item {
+  from { opacity: 0; transform: translateX(-16px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 顶栏 ---------- */
+@keyframes omy-search-in {
+  from { opacity: 0; transform: scaleX(0.92); transform-origin: right center; }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 768px) {
+  .titlebar.mob {
+    gap: calc(var(--sp) * 1);
+    background: var(--bg);
+    border-block-end-color: transparent;
+  }
+
+  .titlebar.mob .iconbtn {
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+  }
+
+  .titlebar.mob .search {
+    height: 38px;
+    border-radius: 19px;
+    padding-inline: calc(var(--sp) * 4);
+    font-size: 15px;
+    animation: omy-search-in var(--dur-2) var(--ease-out) backwards;
+  }
+
+  .titlebar.mob .pill {
+    height: 32px;
+    width: 32px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 16px;
+  }
+}
+
+.mtitle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.2;
+  padding-inline-start: 2px;
+}
+
+.titlebar.searching .mtitle {
+  display: none;
+}
+
+.mtitle-main {
+  font-size: 18px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mtitle-sub {
+  font-size: 11.5px;
+  color: var(--fg2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 路径条 ----------
+ * 面包屑在手机上改成一条轻量的胶囊路径：返回与视图切换是两个圆按钮，
+ * 中间路径可横向滑动，当前段用底色标出。 */
+.crumb.mob {
+  height: 46px;
+  flex-basis: 46px;
+  padding-inline: calc(var(--sp) * 2.5);
+  border-block-end: 0;
+  gap: calc(var(--sp) * 1.5);
+}
+
+.crumb.mob .crumbbtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  border: 0;
+  background: var(--bg2);
+  color: var(--fg);
+}
+
+.crumb.mob .crumbseg {
+  padding: 5px 11px;
+  border-radius: 15px;
+  font-size: 13px;
+}
+
+.crumb.mob .crumbseg.cur {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--fg);
+}
+
+/* ---------- 文件网格与列表 ---------- */
+.main.mob .content {
+  padding: calc(var(--sp) * 1) calc(var(--sp) * 3) 104px;
+}
+
+.main.mob .grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--sp) * 3);
+}
+
+.main.mob .card {
+  position: relative;
+  padding: 0;
+  border-radius: 16px;
+  background: var(--bg2);
+  border: 1px solid transparent;
+}
+
+.main.mob .card .thumb {
+  height: auto;
+  aspect-ratio: 4 / 3;
+  border-radius: 16px 16px 0 0;
+}
+
+.main.mob .card .thumb > .app-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.main.mob .card .thumb.dir {
+  border: 0;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg3));
+  color: var(--accent);
+}
+
+.main.mob .card .cname {
+  margin-block-start: 9px;
+  padding-inline: 11px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.main.mob .card .cmeta {
+  padding: 1px 11px 11px;
+}
+
+.main.mob .card.sel {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg2));
+}
+
+.main.mob .card.sel .thumb.dir {
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg3));
+}
+
+/* 选中角标：手机上没有悬停也没有 Ctrl，选中态要一眼看清 */
+.main.mob .card.sel::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 9px;
+  inset-inline-end: 9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-solid);
+  box-shadow: 0 0 0 2px var(--bg2);
+  animation: omy-check-in var(--dur-3) var(--ease-spring) backwards;
+}
+
+/* 角标里的对勾用伪元素边框画出来，避免引入 data URI
+   （CSP 下 style-src 对 data: 的态度在各 WebView 上不一致，见 vite.config） */
+.main.mob .card.sel::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 15px;
+  inset-inline-end: 17px;
+  width: 6px;
+  height: 11px;
+  border: solid #fff;
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+  animation: omy-fade-in var(--dur-2) ease 80ms backwards;
+}
+
+@keyframes omy-check-in {
+  from { transform: scale(0.3); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.main.mob .list {
+  gap: 2px;
+}
+
+.main.mob .lrow {
+  min-height: 60px;
+  border-block-end: 0;
+  border-radius: 14px;
+  padding-inline: calc(var(--sp) * 2);
+  gap: calc(var(--sp) * 3);
+}
+
+.main.mob .lrow .ic {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+  color: var(--fg2);
+  transition: background-color var(--dur-2) ease, color var(--dur-2) ease;
+}
+
+.main.mob .lrow .nm {
+  font-size: 14.5px;
+}
+
+.main.mob .lrow.sel {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.main.mob .lrow.sel .ic {
+  background: var(--accent-solid);
+  color: #fff;
+}
+
+/* 触屏按下反馈：没有 hover，按下时给一个即时的底色 */
+.main.mob .lrow:active {
+  background: var(--bg2);
+}
+
+/* ---------- 远程位置列表 ---------- */
+.lrow.placerow.mob {
+  min-height: 68px;
+  margin-block-end: 8px;
+  padding: 10px 6px 10px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--bg2);
+  gap: 12px;
+}
+
+.lrow.placerow.mob:active {
+  background: var(--bg3);
+}
+
+.lrow.placerow.mob .placeic {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg3));
+  color: var(--accent);
+}
+
+.lrow.placerow.mob .placeic.k-telegram {
+  background: color-mix(in srgb, #2aabee 18%, var(--bg3));
+  color: #2aabee;
+}
+
+.lrow.placerow.mob .nm {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* ---------- 选择操作条 ---------- */
+.selbar {
+  position: fixed;
+  z-index: 32;
+  inset-inline: 10px;
+  inset-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px) + 10px);
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 6px 4px;
+  border-radius: 18px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+}
+
+.selbar-count {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding-inline-start: 2px;
+}
+
+.selbar-act {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 52px;
+  height: 44px;
+  padding-inline: 6px;
+  border-radius: 12px;
+  font-size: 11px;
+  color: var(--fg);
+  transition: background-color var(--dur-1) ease, transform var(--dur-1) ease;
+}
+
+.selbar-act:active {
+  transform: scale(0.92);
+  background: var(--bg2);
+}
+
+.selbar-act.pri {
+  background: var(--accent-solid);
+  color: #fff;
+}
+
+.selbar-enter-active {
+  transition:
+    transform var(--dur-4) var(--ease-spring),
+    opacity var(--dur-2) ease;
+}
+.selbar-leave-active {
+  transition:
+    transform var(--dur-2) var(--ease-in),
+    opacity var(--dur-2) var(--ease-in);
+}
+.selbar-enter-from,
+.selbar-leave-to {
+  transform: translateY(24px) scale(0.96);
+  opacity: 0;
+}
+
+/* ---------- 悬浮按钮 ---------- */
+.fab {
+  position: fixed;
+  z-index: 31;
+  inset-inline-end: 18px;
+  inset-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px) + 18px);
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-solid);
+  color: #fff;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent-solid) 45%, transparent), 0 2px 6px rgb(0 0 0 / 30%);
+  transition: transform var(--dur-2) var(--ease-spring);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.fab:active {
+  transform: scale(0.9);
+}
+
+.fab-enter-active {
+  transition:
+    transform var(--dur-4) var(--ease-spring),
+    opacity var(--dur-2) ease;
+}
+.fab-leave-active {
+  transition:
+    transform var(--dur-2) var(--ease-in),
+    opacity var(--dur-2) var(--ease-in);
+}
+.fab-enter-from,
+.fab-leave-to {
+  transform: scale(0.4) rotate(-45deg);
+  opacity: 0;
+}
+
+/* ---------- 底部弹层（长按菜单） ----------
+ * 原先是屏幕正中的小卡片：离拇指远，标题缺失，看不出针对哪一项。
+ * 改为从底部升起的弹层，带拖拽条与标题，选项行高 52px。 */
+.ctxlayer.mobile {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+  background: rgb(0 0 0 / 50%);
+  animation: omy-fade-in var(--dur-2) var(--ease-out) backwards;
+  transition: background-color var(--dur-2) ease;
+}
+
+.ctxmenu.mobile {
+  position: relative;
+  inset: auto;
+  width: min(100%, 560px);
+  min-width: 0;
+  max-height: min(78vh, 640px);
+  padding: 6px 10px calc(max(env(safe-area-inset-bottom, 0px), 16px) + 8px);
+  border: 0;
+  border-radius: 24px 24px 0 0;
+  background: var(--bg2);
+  box-shadow: 0 -10px 40px rgb(0 0 0 / 40%);
+  transform-origin: bottom center;
+  animation: omy-sheet-in var(--dur-4) var(--ease-out) backwards;
+}
+
+.sheet-grip {
+  width: 38px;
+  height: 4px;
+  margin: 4px auto 10px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.sheet-title {
+  padding: 2px 12px 10px;
+  margin-block-end: 4px;
+  border-block-end: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctxmenu.mobile .mi {
+  min-height: 52px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 15px;
+  gap: calc(var(--sp) * 3.5);
+}
+
+.ctxmenu.mobile .mi:active:not(:disabled) {
+  background: var(--bg3);
+}
+
+.ctxmenu.mobile .mic {
+  width: 22px;
+}
+
+.ctxmenu.mobile .mic > .app-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.ctxmenu.mobile .msep {
+  margin: 6px 12px;
+}
+
+/* 弹层离场：整块沉回底部，不做淡出——向下收回是「放下」这个手势的自然结果 */
+.menu-leave-active .ctxmenu.mobile {
+  transition: transform var(--dur-3) var(--ease-in);
+}
+
+/* ---------- 弹窗 ----------
+ * 移动端对话框改为底部弹层形态：拇指够得到确认按钮，键盘弹出时也不会
+ * 把对话框顶出屏幕顶部。 */
+@media (max-width: 768px) {
+  /* .dlg-overlay 同时带着 .overlay（flex-direction: column），
+     所以「贴底」要用 justify-content，align-items 管的是水平方向 */
+  .dlg-overlay {
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: stretch;
+    padding: max(env(safe-area-inset-top, 0px), 24px) 0 0;
+  }
+
+  .dlg-overlay > .dlg,
+  .dlg-overlay > form.dlg,
+  .dlg,
+  .dlg.wide,
+  .dlg.narrow,
+  .dlg.keymgmt {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100% - 12px);
+    border-radius: 24px 24px 0 0;
+    border-inline: 0;
+    border-block-end: 0;
+    padding: 22px 18px calc(max(env(safe-area-inset-bottom, 0px), 16px) + 14px);
+  }
+
+  .dlg-overlay > .dlg,
+  .dlg-overlay > form.dlg {
+    animation: omy-sheet-in var(--dur-4) var(--ease-out) backwards;
+  }
+
+  /* 弹层顶部的拖拽条只是视觉提示，用伪元素画，不改各对话框模板 */
+  .dlg-overlay > .dlg::before,
+  .dlg-overlay > form.dlg::before {
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    margin: -10px auto 14px;
+    border-radius: 2px;
+    background: var(--border);
+  }
+
+  .dlg h3 {
+    font-size: 17px;
+  }
+
+  /* 底部按钮撑满并加高：确认/取消是弹层里最常点的东西 */
+  .dlg .acts {
+    gap: 10px;
+  }
+
+  .dlg .acts .btn {
+    flex: 1;
+    justify-content: center;
+    height: 46px;
+    border-radius: 14px;
+    font-size: 15px;
+  }
+
+  .dlg .field input[type='text'],
+  .dlg .field input[type='password'] {
+    height: 44px;
+    border-radius: 12px;
+    font-size: 15px;
+  }
+
+  /* 视频对话框仍是整屏，不套弹层圆角 */
+  .dlg-overlay > .dlg.vdlg {
+    border-radius: 0;
+    padding: 0;
+    max-height: 100%;
+  }
+  .dlg-overlay > .dlg.vdlg::before {
+    display: none;
+  }
+
+  /* 提示条贴在底栏之上 */
+  .toast {
+    inset-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px) + 14px);
+    border-radius: 16px;
+    padding-block: 10px;
+  }
+}
+
+/* 预览层顶栏在手机上用渐变而不是实色条，图片可以铺到顶部 */
+@media (max-width: 768px) {
+  .overlay:not(.dlg-overlay) .overlay-bar {
+    background: linear-gradient(rgb(0 0 0 / 70%), transparent);
+  }
+}
