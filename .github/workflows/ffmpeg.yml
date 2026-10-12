@@ -70,6 +70,21 @@ jobs:
           # 显式列出配方实际使用的工具。特别是不要退回裸 `osdk install`：
           # 它会下载约 1 GiB 的 Google Android system image，曾静默卡满 6 小时。
           osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base conda:libarchive
+          # 把 osdk 的 shim 目录放进后续步骤的 PATH。
+          #
+          # Action 的环境导出在 runner.temp 里执行，那时还没装任何工具，导不出
+          # shim 目录；于是构建步骤里的 `bash` 是 Git Bash，osdk.toml 里 expose 的
+          # bsdtar / make / x86_64-w64-mingw32-gcc / nasm 一个都找不到。报错只说
+          # 「找不到 bsdtar」，是因为它恰好是脚本里第一个检查的命令。
+          # 不用 `osdk hook-env` 在仓库根导出：根配置声明了本任务不装的 Android
+          # system image，hook-env 会因「未安装」直接报错。
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Join-Path $env:OSDK_DATA_DIR 'shims') -Encoding utf8
+
+      - name: 确认构建所需命令均可用
+        shell: pwsh
+        # 与本地同一份检查：缺哪个命令在这里一次列全，而不是让构建脚本走到一半
+        # 才报第一个缺失项
+        run: pwsh -File scripts/ffmpeg-build/prepare-toolchain.ps1
 
       - name: 构建
         shell: pwsh

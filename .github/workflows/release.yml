@@ -168,6 +168,13 @@ jobs:
           # 这里只构建 Windows FFmpeg；裸 `osdk install` 会连 Android 模拟器与
           # system image 一起装，首次发布因此卡在 Google 镜像下载整整 6 小时。
           osdk -y install conda:gcc_win-64 conda:nasm conda:cmake conda:ninja conda:m2-base conda:libarchive
+          # shim 目录要显式进 PATH，否则构建步骤的 bash 是 Git Bash，
+          # 找不到 bsdtar / make / mingw gcc。理由见 ffmpeg.yml 同名步骤。
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Join-Path $env:OSDK_DATA_DIR 'shims') -Encoding utf8
+
+      - name: 确认 FFmpeg 构建所需命令均可用
+        shell: pwsh
+        run: pwsh -File scripts/ffmpeg-build/prepare-toolchain.ps1
 
       - name: 构建内置 FFmpeg
         shell: pwsh
