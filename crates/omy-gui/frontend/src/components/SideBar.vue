@@ -416,22 +416,26 @@ function iconOf(place) {
       <span class="stext">{{ i18n.t('device.sharing_now') }}</span>
     </button>
   
-  <ContextMenu
-    v-if="rmenu"
-    :items="rmenuItems"
-    :x="rmenu.x"
-    :y="rmenu.y"
-    @pick="onPlaceMenuPick"
-    @close="rmenu = null"
-  />
-  <ContextMenu
-    v-if="vrmenu"
-    :items="vrmenuItems"
-    :x="vrmenu.x"
-    :y="vrmenu.y"
-    @pick="onVirtualMenuPick"
-    @close="vrmenu = null"
-  />
+  <Transition name="menu">
+    <ContextMenu
+      v-if="rmenu"
+      :items="rmenuItems"
+      :x="rmenu.x"
+      :y="rmenu.y"
+      @pick="onPlaceMenuPick"
+      @close="rmenu = null"
+    />
+  </Transition>
+  <Transition name="menu">
+    <ContextMenu
+      v-if="vrmenu"
+      :items="vrmenuItems"
+      :x="vrmenu.x"
+      :y="vrmenu.y"
+      @pick="onVirtualMenuPick"
+      @close="vrmenu = null"
+    />
+  </Transition>
 </aside>
 </template>
 

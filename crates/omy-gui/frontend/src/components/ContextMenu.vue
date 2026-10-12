@@ -48,21 +48,29 @@ const menu = useTemplateRef('menu');
 /** 实际渲染位置。先按触发点摆，测到尺寸后再夹进视口。 */
 const modalMode = computed(() => isAndroid || isMobile.value);
 const pos = ref({ left: props.x, top: props.y });
+/** 尚未量完尺寸：此时菜单隐身，避免先在越界位置闪一帧再跳回来。 */
+const measuring = ref(!modalMode.value);
+/** 展开的锚点角。菜单翻到光标左/上方时，从对应的那一角长出来。 */
+const origin = ref('top left');
 
 /** 只显示分隔线之间真正有内容的段。
  *
  * 直接渲染传进来的数组会在「某一段全部不可用」时留下两条相邻的分隔线，
  * 或者菜单以分隔线开头/结尾。
+ *
+ * 顺带给每项编一个跨段的序号 `seq`，用于错峰浮现：CSS 的 nth-child 会把分隔线
+ * 也数进去，分组后序号会断。
  */
 const groups = computed(() => {
-  const out: MenuItem[][] = [];
-  let cur: MenuItem[] = [];
+  const out: (MenuItem & { seq: number })[][] = [];
+  let cur: (MenuItem & { seq: number })[] = [];
+  let seq = 0;
   for (const it of props.items) {
     if (it.key === 'sep') {
       if (cur.length) out.push(cur);
       cur = [];
     } else {
-      cur.push(it);
+      cur.push({ ...it, seq: seq++ });
     }
   }
   if (cur.length) out.push(cur);
@@ -121,17 +129,23 @@ onMounted(async () => {
   const margin = 8;
   let left = props.x;
   let top = props.y;
+  let fromRight = false;
+  let fromBottom = false;
   // 右/下越界时翻到触发点的另一侧，而不是简单减去溢出量——
   // 后者会让菜单盖住用户刚点的那个条目
   if (left + r.width + margin > window.innerWidth) {
     left = Math.max(margin, props.x - r.width);
+    fromRight = true;
   }
   if (top + r.height + margin > window.innerHeight) {
     top = Math.max(margin, props.y - r.height);
+    fromBottom = true;
   }
   pos.value = { left, top };
+  origin.value = `${fromBottom ? 'bottom' : 'top'} ${fromRight ? 'right' : 'left'}`;
+  measuring.value = false;
   // 聚焦第一项可用项，让键盘能接着操作
-  (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus();
+  (el.querySelector<HTMLElement>('.mi:not([disabled])'))?.focus({ preventScroll: true });
 });
 
 onBeforeUnmount(() => {
@@ -147,9 +161,9 @@ onBeforeUnmount(() => {
     <div
       ref="menu"
       class="ctxmenu"
-      :class="{ mobile: modalMode }"
+      :class="{ mobile: modalMode, measuring }"
       role="menu"
-      :style="modalMode ? undefined : { left: pos.left + 'px', top: pos.top + 'px' }"
+      :style="modalMode ? undefined : { left: pos.left + 'px', top: pos.top + 'px', '--origin': origin }"
       @click.stop
     >
       <template v-for="(g, gi) in groups" :key="gi">
@@ -164,6 +178,7 @@ onBeforeUnmount(() => {
           type="button"
           :disabled="it.disabled"
           :title="it.hint || ''"
+          :style="{ '--i': it.seq }"
           @click="pick(it)"
         >
           <span class="mic" aria-hidden="true"><AppIcon :name="it.icon" /></span>

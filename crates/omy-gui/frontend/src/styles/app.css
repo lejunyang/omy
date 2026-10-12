@@ -34,6 +34,23 @@
   --r-l: 12px;
   /* 基准单位 4px，所有间距是它的倍数 */
   --sp: 4px;
+
+  /* ---- 动效令牌 ----
+   * 所有过渡只从这里取值，不在组件里写死毫秒数与曲线：
+   * 时长分档是为了「同类动作同样快」——弹窗比菜单慢一拍、比整页切换快一拍，
+   * 各写各的就会出现菜单比弹窗还慢这种节奏错乱。
+   * 进入用减速曲线（快出慢停，元素「落定」），离开用加速曲线并且更短：
+   * 关闭是用户已经做完决定，拖着动画只会让人觉得卡。 */
+  --dur-1: 90ms;   /* 悬停、按压反馈 */
+  --dur-2: 160ms;  /* 菜单、提示条、小浮层 */
+  --dur-3: 220ms;  /* 对话框、抽屉 */
+  --dur-4: 320ms;  /* 整屏切换、底部弹层 */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* 轻微回弹只给「弹出」类元素（菜单、底部弹层），不要用在位移很长的整页上：
+     长距离回弹会显得晃 */
+  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --shadow-pop: 0 12px 36px rgb(0 0 0 / 38%), 0 2px 8px rgb(0 0 0 / 22%);
 }
 
 :root[data-theme='light'] {
@@ -74,11 +91,18 @@ body {
   overflow: hidden;
 }
 
-/* 尊重系统的减少动效设置（文档 §8） */
+/* 尊重系统的减少动效设置（文档 §8）。
+   不只把时长压到 0：关键帧里的位移/缩放也要拿掉，否则某些 WebView 在
+   0.01ms 里仍会闪一下起始帧。保留透明度变化——它不引起前庭不适，
+   且能让「出现/消失」仍有可感知的边界。 */
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -86,6 +110,206 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* ===================== 动效 =====================
+ *
+ * # 两类写法，按元素的挂载方式选
+ *
+ * 1. 进场：弹层组件都是 `v-if` 挂载，挂载那一刻 CSS animation 就会跑。
+ *    直接给根节点挂 @keyframes，不必把二十多个 v-if 逐个包进 <Transition>。
+ * 2. 离场：`v-if` 卸载时节点立刻消失，CSS 做不了离场。需要离场的
+ *    （提示条、抽屉遮罩、右键菜单）在模板里用 <Transition name="…">，
+ *    对应的 *-leave-* 类写在本节。
+ *
+ * # 不动 transform 的元素
+ *
+ * `.ctxmenu` 桌面态靠 left/top 定位、`.side.drawer` 靠 transform 收起：
+ * 它们的动画只用不冲突的属性（菜单用 transform 不影响 left/top；抽屉沿用
+ * 原有 transition），不要给它们另加会覆盖 transform 的关键帧。
+ *
+ * # 列表进场只给本地网格
+ *
+ * 远程位置的列表由 virtua 窗口化，滚动时行节点不断回收再挂载——给那里的
+ * .card / .lrow 挂进场动画会在每次滚动时闪一遍。所以下面的错峰进场只
+ * 作用于 `.anim-in` 容器（MainScreen 在换目录时才给它换 key）。 */
+
+@keyframes omy-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes omy-pop-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes omy-menu-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes omy-rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes omy-sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+@keyframes omy-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 遮罩：所有模态共用。只淡入不位移——遮罩没有方向感，
+   移动它只会让人看到边缘扫过屏幕 */
+.dlg-overlay,
+.mask {
+  animation: omy-fade-in var(--dur-2) var(--ease-out) backwards;
+}
+
+/* 对话框本体：轻微上浮 + 缩放，比遮罩晚 30ms 起，视线先被压暗再被引到中心 */
+.dlg-overlay > .dlg,
+.dlg-overlay > form.dlg,
+.mask > .dlg,
+.mask > .setdlg,
+.mask > .cacheall {
+  animation: omy-pop-in var(--dur-3) var(--ease-out) 30ms backwards;
+}
+
+/* 预览层：黑底先出，内容稍后放大落定，像相册打开一张照片 */
+.overlay:not(.dlg-overlay) {
+  animation: omy-fade-in var(--dur-2) var(--ease-out) backwards;
+}
+
+.overlay:not(.dlg-overlay) .overlay-body > * {
+  animation: omy-pop-in var(--dur-4) var(--ease-out) 60ms backwards;
+}
+
+/* 加载图标：原先是静止的沙漏/圆圈，看起来像卡死 */
+.empty .icon > .app-icon.lucide-loader-circle,
+.empty .icon > .lucide-loader-circle {
+  animation: omy-spin 0.9s linear infinite;
+}
+
+/* 空状态与起始页：整块淡入上浮，避免目录切换时空白页「啪」地出现 */
+.content > .empty {
+  animation: omy-rise-in var(--dur-3) var(--ease-out) backwards;
+}
+
+/* 读目录的加载态推迟 180ms 才露面：本地目录通常几十毫秒就读完，
+   立即显示的话每次进目录都会闪一下转圈，比没有加载态更显得卡。
+   带进度条的长任务（加密/还原）不推迟——那时用户在等，要立刻看到反馈 */
+.content > .empty.busy:not(.instant) {
+  animation-delay: 180ms;
+}
+
+/* 本地网格/列表换目录时的错峰进场。
+   只前 24 项错峰：再往后的已经在首屏之外，继续延迟只会让滚到底部的人
+   看到条目还在「慢慢长出来」。延迟上限约 24 × 14ms ≈ 330ms */
+.anim-in > * {
+  animation: omy-rise-in var(--dur-3) var(--ease-out) backwards;
+}
+.anim-in > *:nth-child(-n + 24) {
+  animation-delay: calc(var(--i, 0) * 14ms);
+}
+
+/* 按压反馈：所有可点的块状元素统一缩一点点。
+   用 :active 而不是 JS，不会和长按/双击判定互相干扰 */
+.btn,
+.iconbtn,
+.crumbbtn,
+.pill,
+.sitem,
+.pnavi,
+.card,
+.mi {
+  transition:
+    background-color var(--dur-1) ease,
+    border-color var(--dur-1) ease,
+    color var(--dur-1) ease,
+    box-shadow var(--dur-2) ease,
+    transform var(--dur-1) ease,
+    opacity var(--dur-1) ease;
+}
+
+.btn:active:not(:disabled),
+.iconbtn:active,
+.crumbbtn:active:not(:disabled),
+.pill:active {
+  transform: scale(0.95);
+}
+
+.card:active {
+  transform: scale(0.98);
+}
+
+/* 卡片悬停抬起：桌面上提示「这一项可以操作」。
+   只在真正支持悬停的指针上生效——触屏的 :hover 会粘住，点过一次卡片就
+   一直浮着 */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+    transform: translateY(-1px);
+  }
+  .card:active {
+    transform: translateY(0) scale(0.98);
+  }
+}
+
+/* 缩略图加载完成后淡入，而不是从空白跳成图片 */
+.card .thumb img {
+  animation: omy-fade-in var(--dur-3) ease backwards;
+}
+
+/* ---- <Transition> 离场类（见本节开头说明） ---- */
+
+/* 提示条：从底部升起，离开时下沉并淡出 */
+.toast-enter-active {
+  animation: omy-rise-in var(--dur-3) var(--ease-spring) backwards;
+}
+.toast-leave-active {
+  transition:
+    opacity var(--dur-2) var(--ease-in),
+    transform var(--dur-2) var(--ease-in);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* 通用淡入淡出（遮罩、抽屉背板） */
+.fade-enter-active {
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.fade-leave-active {
+  transition: opacity var(--dur-2) var(--ease-in);
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* 右键菜单离场：比进场快，用户已经做完选择。
+   离场期间不再接收点击：否则 90ms 内的第二次点击会落在正在消失的
+   关闭层上，被吞掉 */
+.menu-leave-active {
+  pointer-events: none;
+  transition: background-color var(--dur-1) var(--ease-in);
+}
+.menu-leave-active .ctxmenu {
+  transition:
+    opacity var(--dur-1) var(--ease-in),
+    transform var(--dur-1) var(--ease-in);
+}
+.menu-leave-to .ctxmenu {
+  opacity: 0;
+  transform: scale(0.96);
+}
+.menu-leave-to.ctxlayer.mobile {
+  background-color: transparent;
 }
 
 button {
@@ -383,7 +607,6 @@ input {
   border-radius: var(--r-m);
   overflow: hidden;
   cursor: pointer;
-  transition: 0.15s;
   border: 1px solid transparent;
   padding: calc(var(--sp));
   text-align: start;
@@ -669,7 +892,6 @@ input {
   display: inline-flex;
   align-items: center;
   gap: calc(var(--sp) * 1.5);
-  transition: 0.15s;
   white-space: nowrap;
 }
 
@@ -2148,10 +2370,28 @@ input {
   border: 1px solid var(--border);
   border-radius: var(--r-m);
   background: var(--bg2);
-  box-shadow: 0 8px 28px rgb(0 0 0 / 38%);
+  box-shadow: var(--shadow-pop);
   /* 菜单项多时也不该顶出屏幕 */
   max-height: 80vh;
   overflow-y: auto;
+  /* 从触发点那一角展开：origin 由组件按翻转方向写入 --origin，
+     菜单翻到光标左上方时就从右下角长出来，视觉上始终「从手指处冒出」 */
+  transform-origin: var(--origin, top left);
+  animation: omy-menu-in var(--dur-2) var(--ease-spring) backwards;
+}
+
+/* 测量尺寸前先隐身：首帧按光标坐标摆放、量完再翻转，不隐身的话
+   靠右下角右键时能看到菜单先出现在屏幕外侧、再跳回来 */
+.ctxmenu.measuring {
+  visibility: hidden;
+  animation: none;
+}
+
+/* 菜单项依次浮现。序号由组件写进 --i（分隔线不计数，所以不用
+   nth-child），只错开前 12 项，总时长不超过一次弹出 */
+.ctxmenu .mi {
+  animation: omy-fade-in var(--dur-2) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 12) * 16ms);
 }
 
 .ctxmenu .mi {

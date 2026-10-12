@@ -87,6 +87,15 @@ const entriesWithMeta = computed(() =>
   }),
 );
 
+/** 「当前在哪」的唯一标识，供列表进场动画判断是否换了位置。
+ *  容器内要带上容器 id 与内部路径：只用 cwd 的话，在容器里逐层进出时
+ *  cwd 不变，动画不会重播，层级切换就没有视觉反馈。 */
+const locationKey = computed(() =>
+  state.container
+    ? `${state.cwd}#${state.container.entryId}/${state.container.cwd}`
+    : String(state.cwd),
+);
+
 function onSelect(entry, ev) {
   toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
 }
@@ -239,7 +248,7 @@ function onRowMenu(e, ev) {
           <div class="sub">{{ i18n.t('view.start_hint') }}</div>
         </div>
 
-        <div v-else-if="state.busy" class="empty">
+        <div v-else-if="state.busy" class="empty busy" :class="{ instant: !!state.progress }">
           <div class="icon" aria-hidden="true"><AppIcon name="loader" /></div>
           <div class="title">{{ i18n.t(state.busyKey || 'busy.loading') }}</div>
 
@@ -281,24 +290,28 @@ function onRowMenu(e, ev) {
           <div v-if="!currentCount" class="sub">{{ i18n.t('view.empty_hint') }}</div>
         </div>
 
-        <div v-else-if="state.view === 'grid'" class="grid">
+        <!-- key 绑定当前位置：换目录时整块重建，错峰进场动画（.anim-in）才会
+             重新播放；同目录里的刷新、选择变化不换 key，不会每点一下就闪一遍 -->
+        <div v-else-if="state.view === 'grid'" :key="'g:' + locationKey" class="grid anim-in">
           <EntryCard
-            v-for="e in entriesWithMeta"
+            v-for="(e, i) in entriesWithMeta"
             :key="e.path"
             :entry="e"
             :selected="state.selected.includes(e.path)"
+            :style="{ '--i': i }"
             @open="$emit('open', e)"
             @select="onSelect(e, $event)"
             @menu="$emit('menu', $event)"
           />
         </div>
 
-        <div v-else class="list">
+        <div v-else :key="'l:' + locationKey" class="list anim-in">
           <div
-            v-for="e in entriesWithMeta"
+            v-for="(e, i) in entriesWithMeta"
             :key="e.path"
             class="lrow"
             :class="{ sel: state.selected.includes(e.path) }"
+            :style="{ '--i': i }"
             tabindex="0"
             @dblclick="$emit('open', e)"
             @click="onRowClick(e, $event)"
@@ -357,10 +370,13 @@ function onRowMenu(e, ev) {
        所以在设置里放在最上面。 -->
   <!-- 提示条：成功提示会自动消失，错误留到用户主动关掉。
        错误若也自动消失就等于没报错——用户可能正低头看别处 -->
-  <div v-if="state.error || state.notice" class="toast" :class="{ err: !!state.error }">
-    <span>{{ state.error || state.notice }}</span>
-    <button class="iconbtn" @click="state.error = ''; clearNotice()">
-          <AppIcon name="close" />
-        </button>
-  </div>
+  <Transition name="toast">
+    <div v-if="state.error || state.notice" class="toast" :class="{ err: !!state.error }" role="status">
+      <AppIcon :name="state.error ? 'circle-alert' : 'circle-check'" />
+      <span>{{ state.error || state.notice }}</span>
+      <button class="iconbtn" :aria-label="i18n.t('actions.close')" @click="state.error = ''; clearNotice()">
+        <AppIcon name="close" />
+      </button>
+    </div>
+  </Transition>
 </template>

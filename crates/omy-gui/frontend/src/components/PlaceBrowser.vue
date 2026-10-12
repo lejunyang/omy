@@ -1805,30 +1805,37 @@ function rowTitle(f) {
       <span v-if="state.remotePlace" class="readonly">{{ capsLabel() }}</span>
     </div>
 
-    <ContextMenu
-      v-if="rmenu"
-      :items="rmenuItems"
-      :x="rmenu.x"
-      :y="rmenu.y"
-      @pick="onMenuPick"
-      @close="rmenu = null"
-    />
-    <ContextMenu
-      v-if="msgMenu"
-      :items="msgMenuItems"
-      :x="msgMenu.x"
-      :y="msgMenu.y"
-      @pick="onMenuPick"
-      @close="msgMenu = null"
-    />
-    <ContextMenu
-      v-if="blankMenu"
-      :items="blankMenuItems"
-      :x="blankMenu.x"
-      :y="blankMenu.y"
-      @pick="onBlankMenuPick"
-      @close="blankMenu = null"
-    />
+    <!-- Transition 只为离场动画，见 app.css 的「动效」一节 -->
+    <Transition name="menu">
+      <ContextMenu
+        v-if="rmenu"
+        :items="rmenuItems"
+        :x="rmenu.x"
+        :y="rmenu.y"
+        @pick="onMenuPick"
+        @close="rmenu = null"
+      />
+    </Transition>
+    <Transition name="menu">
+      <ContextMenu
+        v-if="msgMenu"
+        :items="msgMenuItems"
+        :x="msgMenu.x"
+        :y="msgMenu.y"
+        @pick="onMenuPick"
+        @close="msgMenu = null"
+      />
+    </Transition>
+    <Transition name="menu">
+      <ContextMenu
+        v-if="blankMenu"
+        :items="blankMenuItems"
+        :x="blankMenu.x"
+        :y="blankMenu.y"
+        @pick="onBlankMenuPick"
+        @close="blankMenu = null"
+      />
+    </Transition>
   </div>
   </AppShell>
 </template>

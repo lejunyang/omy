@@ -151,11 +151,13 @@ onBeforeUnmount(unregisterBack);
 
   <div class="body" :class="{ mob: isMobile }">
     <!-- 抽屉遮罩：移动端没有 Esc 键，没有它抽屉只能靠汉堡键关 -->
-    <div
-      v-if="isMobile && drawer"
-      class="scrim"
-      @click="drawer = false"
-    ></div>
+    <Transition name="fade">
+      <div
+        v-if="isMobile && drawer"
+        class="scrim"
+        @click="drawer = false"
+      ></div>
+    </Transition>
 
     <SideBar
       :class="{ drawer: isMobile, open: drawer }"

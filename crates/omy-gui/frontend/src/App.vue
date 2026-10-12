@@ -1294,14 +1294,17 @@ onBeforeUnmount(() => {
     @generate="onRecoveryGenerate"
     @restore="onRecoveryRestore"
   />
-  <ContextMenu
-    v-if="ctxMenu.entry"
-    :items="ctxItems"
-    :x="ctxMenu.x"
-    :y="ctxMenu.y"
-    @pick="onCtxPick"
-    @close="closeContextMenu"
-  />
+  <!-- Transition 只为离场：v-if 卸载时节点立刻消失，CSS 做不了退出动画 -->
+  <Transition name="menu">
+    <ContextMenu
+      v-if="ctxMenu.entry"
+      :items="ctxItems"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      @pick="onCtxPick"
+      @close="closeContextMenu"
+    />
+  </Transition>
 
   <NameDialog
     v-if="nameDlg"
