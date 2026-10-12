@@ -20,6 +20,14 @@ import { state } from './store';
 import './styles/app.css';
 
 async function boot() {
+  // 浏览器里跑 `pnpm dev` 预览界面时换上假数据（见 dev-mock.ts）。
+  // DEV 常量让生产构建把整个分支连同动态 import 一起删掉；再判一次
+  // __TAURI_INTERNALS__，保证 `cargo run` 的真窗口永远走真后端。
+  if (import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)) {
+    const { installMockIpc } = await import('./dev-mock');
+    installMockIpc();
+  }
+
   initTheme();
 
   state.streamBase = await api.streamBase().catch(() => 'omystream://localhost');
