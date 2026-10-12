@@ -91,11 +91,14 @@ pnpm 版本固定为 `9.15.1`（与本机一致），不写 `latest`：
 `failed to find tool "aarch64-linux-android-clang"`，整个任务挂掉。
 
 所以两条流水线的 Android 任务都有一步指定交叉工具链，把
-`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线先用 osdk 安装
-Rust，再调用 `rustup target add` 补齐 aarch64 与 armv7 标准库。这里必须显式把
-`RUSTUP_HOME` / `CARGO_HOME` 指向 `$OSDK_DATA_DIR/rustup` 与 `cargo`：runner
-自带的 rustup 默认写 `~/.rustup`，命令会显示成功，但后续 osdk cargo 使用隔离目录，
-仍会报找不到 Android 的 `core`。安装后同一步检查 target 列表，避免再次假绿。
+`CC_<target>` / `AR_<target>` 指到真实存在的 wrapper。测试流水线用 osdk 安装
+Rust（按 `osdk.toml` 一次装好 clippy 与全部交叉目标），**之后所有 cargo 都写成
+`osdk -q exec --tool rust -- cargo ...`**：runner 自带的 `~/.cargo/bin/cargo`
+（rustup stable，只有宿主目标）在 PATH 上排在前面，直接写 `cargo` 用的就是它，
+报找不到 Android 的 `core`——而 osdk 的安装日志明明显示 target「up to date」。
+曾经只给 `rustup target add` 那一行设 `RUSTUP_HOME`，cargo 本身没换，仍然失败。
+安装后同一步用 `osdk exec` 检查 target 列表，避免再次假绿。发布流水线的 macOS
+任务同理。
 
 三个易错点：
 

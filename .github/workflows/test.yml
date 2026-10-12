@@ -136,16 +136,25 @@ jobs:
           cache-key: test-android
 
       - name: 信任 osdk.toml 并安装 Rust
-        # osdk 的 Rust 使用 $OSDK_DATA_DIR 下的隔离 rustup/cargo home；runner 自带
-        # rustup 默认写 ~/.rustup，命令虽成功，后续 osdk cargo 仍看不到 target。
-        # 因此给 rustup 显式绑定同一目录，并在本步验证安装结果。
+        # `osdk install rust` 按 osdk.toml 把 1.98 + clippy + 全部交叉目标装进
+        # $OSDK_DATA_DIR 下的隔离 rustup/cargo home。
+        #
+        # # 后续步骤为什么一律写 `osdk exec --tool rust -- cargo`
+        #
+        # 装完之后 PATH 上排第一的仍是 runner 自带的 ~/.cargo/bin/cargo
+        # （rustup stable，只有宿主目标）：Action 的环境导出发生在本步之前，
+        # 那时还没有 rust 可导出。直接写 `cargo` 用的就是那一套，报
+        # `can't find crate for core` / `aarch64-linux-android target may not be
+        # installed`——而安装日志明明显示 target「up to date」，极具迷惑性。
+        # 上一版只给 `rustup target add` 那一行设了 RUSTUP_HOME，cargo 本身没变，
+        # 所以照样失败。经由 osdk exec 才能保证 cargo、rustc、clippy 来自同一份
+        # 隔离工具链；CC_* / LINKER 等环境变量会原样透传。
+        #
+        # 本步顺带校验 target 确实装上，避免再次「安装成功、编译失败」。
         run: |
           osdk --yes trust osdk.toml
           osdk -y install rust
-          export RUSTUP_HOME="$OSDK_DATA_DIR/rustup"
-          export CARGO_HOME="$OSDK_DATA_DIR/cargo"
-          rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.98
-          installed="$(rustup target list --installed --toolchain 1.98)"
+          installed="$(osdk -q exec --tool rust -- rustup target list --installed)"
           grep -qx 'aarch64-linux-android' <<<"$installed"
           grep -qx 'armv7-linux-androideabi' <<<"$installed"
 
@@ -233,13 +242,17 @@ jobs:
         #
         # omy-gui 不在这里：它的 Android 版要走 gradle + tauri 打包，
         # 不是 cargo 单独能编的，放在发布流水线里做。
+        #
+        # cargo 经由 osdk exec 调起，理由见「信任 osdk.toml 并安装 Rust」一步。
         run: >
-          cargo build -p omy-core -p omy-media -p omy-net -p omy-cli
+          osdk -q exec --tool rust -- cargo build
+          -p omy-core -p omy-media -p omy-net -p omy-cli
           --target aarch64-linux-android
 
       - name: 交叉编译（armv7）
         run: >
-          cargo build -p omy-core -p omy-media -p omy-net -p omy-cli
+          osdk -q exec --tool rust -- cargo build
+          -p omy-core -p omy-media -p omy-net -p omy-cli
           --target armv7-linux-androideabi
 
       - name: clippy（Android 目标）
@@ -248,13 +261,15 @@ jobs:
         #
         # --all-targets 包含测试代码：平台相关的缺陷常常先出现在测试里
         run: >
-          cargo clippy -p omy-core -p omy-media -p omy-net -p omy-cli
+          osdk -q exec --tool rust -- cargo clippy
+          -p omy-core -p omy-media -p omy-net -p omy-cli
           --all-targets --target aarch64-linux-android -- -D warnings
 
       - name: 单元测试（在宿主上跑）
         # 交叉编译产物没法在 runner 上执行，所以逻辑测试仍在 x86_64 上跑。
-        # 这一步保证「代码逻辑没坏」，上面几步保证「能为 Android 编出来」
-        run: cargo test -p omy-core
+        # 这一步保证「代码逻辑没坏」，上面几步保证「能为 Android 编出来」。
+        # 同样走 osdk exec：与上面几步用同一版本编译，避免复用不同工具链的产物
+        run: osdk -q exec --tool rust -- cargo test -p omy-core
 
   # ---- 前端与文档：与平台无关 ----
 

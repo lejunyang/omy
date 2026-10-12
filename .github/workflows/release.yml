@@ -422,9 +422,16 @@ jobs:
         # universal 的，osdk install rust 装工具链时按 osdk.toml
         # [tools].rust.targets 一并装好 aarch64/x86_64-apple-darwin，
         # 不再单独 rustup target add。
+        #
+        # 但装完后 PATH 上的 cargo 仍是 runner 自带那份（只有宿主目标），
+        # 所以下面的 cargo 一律经 `osdk exec --tool rust` 调起，理由详见
+        # test.yml Android 任务的同名步骤。
         run: |
           osdk --yes trust osdk.toml
           osdk -y install rust
+          installed="$(osdk -q exec --tool rust -- rustup target list --installed)"
+          grep -qx 'aarch64-apple-darwin' <<<"$installed"
+          grep -qx 'x86_64-apple-darwin' <<<"$installed"
 
       # omy-gui 的 build.rs 需要 pnpm，理由见 build-windows
       - uses: actions/setup-node@v6.0.0
@@ -461,10 +468,10 @@ jobs:
           bash scripts/ffmpeg-build/verify.sh "$PWD/dist-ffmpeg-x86_64"
 
       - name: 构建 Apple Silicon
-        run: cargo build --release -p omy-cli -p omy-gui --target aarch64-apple-darwin
+        run: osdk -q exec --tool rust -- cargo build --release -p omy-cli -p omy-gui --target aarch64-apple-darwin
 
       - name: 构建 Intel（交叉编译）
-        run: cargo build --release -p omy-cli -p omy-gui --target x86_64-apple-darwin
+        run: osdk -q exec --tool rust -- cargo build --release -p omy-cli -p omy-gui --target x86_64-apple-darwin
 
       - name: 打包
         run: |
