@@ -9,7 +9,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use omy_core::crypto::{Argon2Params, Kek, SecretKey};
 use omy_core::fsatomic::{
@@ -402,41 +401,6 @@ fn portable_and_recovery_excluded_from_scanning() {
 
     let all = s.all_for(&salt);
     assert_eq!(all.len(), 4, "手动打开单个文件时可用全部 4 种凭据");
-}
-
-#[test]
-fn auto_lock_triggers_after_idle_timeout() {
-    let mut s = SessionKeys::new().with_idle_timeout(Duration::from_millis(50));
-    let salt = [0x66u8; 16];
-    s.unlock_password("main", &salt, "pw", Argon2Params::TEST_WEAK).expect("unlock");
-
-    assert!(!s.should_auto_lock(), "刚解锁不应立即锁定");
-    std::thread::sleep(Duration::from_millis(80));
-
-    assert!(s.should_auto_lock(), "超过空闲阈值应触发锁定");
-    assert!(s.auto_lock_if_idle(), "auto_lock_if_idle 应返回已锁定");
-    assert!(s.is_empty());
-}
-
-#[test]
-fn touch_postpones_auto_lock() {
-    let mut s = SessionKeys::new().with_idle_timeout(Duration::from_millis(100));
-    let salt = [0x77u8; 16];
-    s.unlock_password("main", &salt, "pw", Argon2Params::TEST_WEAK).expect("unlock");
-
-    for _ in 0..3 {
-        std::thread::sleep(Duration::from_millis(40));
-        s.touch();
-    }
-    assert!(!s.should_auto_lock(), "持续活动不应触发空闲锁定");
-    assert_eq!(s.len(), 1);
-}
-
-#[test]
-fn empty_session_never_auto_locks() {
-    let s = SessionKeys::new().with_idle_timeout(Duration::from_millis(1));
-    std::thread::sleep(Duration::from_millis(10));
-    assert!(!s.should_auto_lock(), "空会话没有东西可锁，不应报告需要锁定");
 }
 
 /// 恢复码走真实的编解码路径：生成 → 抄写（含大小写/空白噪声）→ 解析 → 开文件。

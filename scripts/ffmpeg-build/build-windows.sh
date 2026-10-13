@@ -3,14 +3,15 @@
 #
 # 前置条件：项目根目录的 osdk.toml 已 trust，工具链由它提供（不需要 MSYS2）。
 # 用法：
-#   SYSROOT=... bash scripts/ffmpeg-build/build-windows.sh
+#   pwsh -File scripts/ffmpeg-build/prepare-toolchain.ps1 -Build
 #
 # 产物只有一份，包含 omy 需要的全部解码能力（含 H.264 / HEVC）。曾经按专利
 # 风险分过两档，现已取消，理由见 configure-flags.sh 顶部。
 #
 # 注意：本脚本内**不调用 osdk**。嵌套的 osdk 会尝试交互提示并卡在等 stdin 上
 # （实测挂了 18 分钟只烧掉 4.8 CPU 秒，看起来像死锁）。所以工具路径必须由外层
-# 的 prepare-toolchain.ps1 算好后通过环境变量传入。
+# 的 prepare-toolchain.ps1 用 osdk exec 传入真实工具路径与 SYSROOT；不能只加 shims
+# 目录，后续 cd 到 /tmp 时 shim 会因找不到项目配置而失去工具版本选择。
 
 set -euo pipefail
 
@@ -159,7 +160,12 @@ cd "$BLD"
 export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$ZLIB/share/pkgconfig"
 
 # < /dev/null：不给 configure 任何标准输入，避免它在某些探测分支里等输入
-"$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null
+if ! "$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null; then
+  # configure 的通用提示会把解释器、编译器或链接器错误都说成 /tmp 不可执行；
+  # CI runner 随即销毁，必须把实际探测日志带出来才能定位后续构建失败。
+  tail -n 80 "$BLD/ffbuild/config.log" >&2
+  exit 1
+fi
 
 make -j"$(nproc)"
 
