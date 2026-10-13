@@ -41,7 +41,7 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 
 The WebDAV server must support HTTP Range for random reads, playback, and chunked downloads. If it ignores Range and returns 200, omy reads only a bounded prefix at offset zero; a nonzero offset reports unsupported instead of downloading the entire file for a seek. Malformed or incomplete 206 responses fail explicitly.
 
-WebDAV streaming uploads complete only after the source stream matches the declared length and the server reports success. Locations supporting rename and delete upload a temporary object before committing the final name. A cancelled source stream, disconnect, or commit failure triggers best-effort cleanup; cleanup failures report possible residue. Local source files and the source objects of remote copies are retained.
+WebDAV streaming uploads complete only after the source stream matches the declared length and the server reports success. Locations supporting rename and delete upload a temporary object before committing the final name. A cancelled source stream, disconnect, or commit failure triggers best-effort cleanup; cleanup failures report possible residue. The GUI’s local batch uploads use the same bounded commit path and report each file’s outcome separately. Local source files and the source objects of remote copies are retained.
 
 WebDAV file paths are relative to the configured server root. Unicode, spaces, and characters such as `#` and `%` are encoded consistently for reads, writes, rename, and delete. Download redirects apply only to the current request; temporary signature parameters do not replace the stable file identity used by bookmarks or caches.
 

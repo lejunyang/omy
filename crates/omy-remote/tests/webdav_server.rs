@@ -1005,3 +1005,59 @@ async fn chinese_reserved_paths_roundtrip_all_dav_verbs() {
     assert!(root.join("中文 #%").is_dir(), "目录名字也要原样保存");
     server.shutdown().await;
 }
+
+/// 不这样会怎样：生产者取消只断开读流，上传侧可能仍改名或残留半文件。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_upload_stream_cleans_up_without_committing() {
+    struct Interrupted {
+        bytes: std::io::Cursor<Vec<u8>>,
+        observed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl tokio::io::AsyncRead for Interrupted {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            out: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            if this.bytes.position() == this.bytes.get_ref().len() as u64 {
+                this.observed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "源任务取消",
+                )));
+            }
+            tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut this.bytes), cx, out)
+        }
+    }
+    let root = unique_dir("cancelled_upload");
+    let server = spawn_server(root.clone(), None).await;
+    let store = store_for(&server.base_url(), "", "", true);
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = Interrupted {
+        bytes: std::io::Cursor::new(b"partial".to_vec()),
+        observed: Arc::clone(&observed),
+    };
+    let error = commit_upload(
+        &store,
+        store.capabilities(),
+        "",
+        "final.txt",
+        100,
+        Box::new(reader),
+        None,
+    )
+    .await
+    .expect_err("取消读流不能被当成完整上传");
+    assert!(
+        observed.load(std::sync::atomic::Ordering::Relaxed),
+        "必须真实走到源取消分支"
+    );
+    assert!(!error.residue, "可定位的部分上传必须清理");
+    assert!(
+        store.list("").await.expect("取消后列目录").is_empty(),
+        "取消不能留下临时对象或最终对象"
+    );
+    server.shutdown().await;
+}
