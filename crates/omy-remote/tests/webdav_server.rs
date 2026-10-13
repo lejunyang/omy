@@ -926,3 +926,41 @@ async fn sparse_large_file_seek_reads_only_tail() {
     );
     server.shutdown().await;
 }
+
+/// 不这样会怎样：长度不符/读流取消后的半文件会被改名成最终名，本地源可能丢失。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_stream_length_keeps_source_and_cleans_temporary_upload() {
+    let root = unique_dir("failed_stream");
+    let local = unique_dir("upload_source");
+    let source = local.join("中文源.txt");
+    let bytes = b"source-must-stay";
+    std::fs::write(&source, bytes).expect("本地源");
+    let server = spawn_server(root.clone(), None).await;
+    let store = store_for(&server.base_url(), "", "", true);
+    for declared in [3, bytes.len() as u64 + 1] {
+        let reader = tokio::fs::File::open(&source).await.expect("打开本地源");
+        let error = commit_upload(&store, store.capabilities(), "", "final.txt", declared, Box::new(reader), None)
+            .await.expect_err("不匹配的源长度不能成功");
+        assert!(!error.residue, "可精确删除的临时对象必须清理干净");
+        assert!(!root.join("final.txt").exists(), "失败不能落最终名");
+        assert!(store.list("").await.expect("失败后列目录").is_empty(), "失败不能残留临时名");
+        assert_eq!(std::fs::read(&source).expect("源仍在"), bytes, "上传失败不得删除或修改本地源");
+    }
+    server.shutdown().await;
+    let _ = std::fs::remove_dir_all(local);
+}
+
+/// 不这样会怎样：保留最后一个字节的 EOF 校验会在空文件/单字节边界丢字节。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_upload_handles_empty_and_one_byte_sources() {
+    let root = unique_dir("small_upload");
+    let server = spawn_server(root.clone(), None).await;
+    let store = store_for(&server.base_url(), "", "", true);
+    for bytes in [b"".as_slice(), b"x".as_slice()] {
+        let entry = commit_upload(&store, store.capabilities(), "", "small.txt", bytes.len() as u64,
+            Box::new(std::io::Cursor::new(bytes.to_vec())), None).await.expect("完整边界上传");
+        assert_eq!(entry.size, Some(bytes.len() as u64), "大小与源一致");
+        assert_eq!(std::fs::read(root.join("small.txt")).expect("最终文件"), bytes, "不能丢最后一个字节");
+    }
+    server.shutdown().await;
+}

@@ -350,3 +350,17 @@ async fn http_and_dav_server_failures_are_retryable() {
         );
     }
 }
+
+/// 不这样会怎样：服务端抢先回 201，源流尚未完整发送就被标成上传成功。
+#[tokio::test]
+async fn premature_upload_success_does_not_commit_unread_source() {
+    let f = fixture(response(201, "Content-Length: 0\r\n", ""), false).await;
+    let (_writer, reader) = tokio::io::duplex(64);
+    assert!(
+        f.store
+            .write_stream("/", "f", 3, Box::new(reader))
+            .await
+            .is_err(),
+        "响应成功还必须确认源流完整，不能把空的远端对象标成完成"
+    );
+}

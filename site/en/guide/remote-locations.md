@@ -41,6 +41,8 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 
 The WebDAV server must support HTTP Range for random reads, playback, and chunked downloads. If it ignores Range and returns 200, omy reads only a bounded prefix at offset zero; a nonzero offset reports unsupported instead of downloading the entire file for a seek. Malformed or incomplete 206 responses fail explicitly.
 
+WebDAV streaming uploads complete only after the source stream matches the declared length and the server reports success. Locations supporting rename and delete upload a temporary object before committing the final name. A cancelled source stream, disconnect, or commit failure triggers best-effort cleanup; cleanup failures report possible residue. Local source files and the source objects of remote copies are retained.
+
 ## Android: opening WebDAV files in other apps
 
 On Android, the preview panel for a WebDAV file offers two explicit actions:

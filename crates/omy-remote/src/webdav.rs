@@ -23,6 +23,12 @@
 //! 我们用到的子集小得多（列目录 + Range 读 + 整文件写），但仍保留
 //! [`Vendor`]，把差异集中在一处而不是散落到调用点。
 
+use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -30,7 +36,7 @@ use reqwest::header::{
     ACCEPT_ENCODING, ALLOW, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG,
     HeaderMap, HeaderValue, IF_MATCH, IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
 };
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tokio_util::io::ReaderStream;
 
 use crate::store::{Entry, RemoteStore};
@@ -600,13 +606,27 @@ impl RemoteStore for WebDavStore {
         dir_id: &str,
         name: &str,
         size: u64,
-        reader: Box<dyn AsyncRead + Unpin + Send>,
+        mut reader: Box<dyn AsyncRead + Unpin + Send>,
     ) -> Result<Entry> {
         if !self.cfg.writable {
             return Err(Error::Unsupported("write"));
         }
         let path = join(dir_id, name);
-        let stream = ReaderStream::new(reader);
+        // Content-Length 只是传输上限：HTTP 栈会截断过长的流，且服务端可能提前
+        // 回成功。必须自己验证源 EOF，再允许最后一个字节进入请求体。
+        if size == 0 {
+            let mut byte = [0u8; 1];
+            if reader.read(&mut byte).await? != 0 {
+                return Err(Error::Protocol("上传源超过声明长度".into()));
+            }
+        }
+        let verified = Arc::new(AtomicBool::new(size == 0));
+        let stream = ReaderStream::new(ExactUploadReader {
+            inner: reader,
+            remaining: size,
+            last: None,
+            verified: Arc::clone(&verified),
+        });
         let body = reqwest::Body::wrap_stream(stream);
         let mut req = self
             .http
@@ -616,9 +636,15 @@ impl RemoteStore for WebDavStore {
         if let Some(a) = self.auth_header() {
             req = req.header(AUTHORIZATION, a);
         }
-        let resp = req.send().await.map_err(|e| Error::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
             return Err(Self::map_status(resp.status(), &path));
+        }
+        if !verified.load(Ordering::Acquire) {
+            return Err(Error::Protocol("服务端在上传源完整发送前返回成功".into()));
         }
         Ok(Entry {
             id: path,
@@ -664,6 +690,81 @@ impl RemoteStore for WebDavStore {
             thumb: None,
             media_tab: None,
         })
+    }
+}
+
+/// 保留最后一个字节直到 EOF 已确认，既不全量缓冲，也不让过长流被 HTTP 截成成功。
+struct ExactUploadReader {
+    inner: Box<dyn AsyncRead + Unpin + Send>,
+    remaining: u64,
+    last: Option<u8>,
+    verified: Arc<AtomicBool>,
+}
+
+impl AsyncRead for ExactUploadReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if buf.remaining() == 0 || this.verified.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
+        }
+        if this.remaining > 1 {
+            let limit = (this.remaining - 1).min(buf.remaining() as u64) as usize;
+            let mut read_buf = ReadBuf::new(&mut buf.initialize_unfilled()[..limit]);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {}
+            }
+            let count = read_buf.filled().len();
+            if count == 0 {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "上传源短于声明长度",
+                )));
+            }
+            this.remaining -= count as u64;
+            buf.advance(count);
+            return Poll::Ready(Ok(()));
+        }
+        if this.remaining == 1 {
+            let mut byte = [0u8; 1];
+            let mut read_buf = ReadBuf::new(&mut byte);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {}
+            }
+            let Some(&last) = read_buf.filled().first() else {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "上传源短于声明长度",
+                )));
+            };
+            this.last = Some(last);
+            this.remaining = 0;
+        }
+        let mut extra = [0u8; 1];
+        let mut read_buf = ReadBuf::new(&mut extra);
+        match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Ok(())) => {}
+        }
+        if !read_buf.filled().is_empty() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "上传源超过声明长度",
+            )));
+        }
+        if let Some(last) = this.last.take() {
+            buf.put_slice(&[last]);
+        }
+        this.verified.store(true, Ordering::Release);
+        Poll::Ready(Ok(()))
     }
 }
 
