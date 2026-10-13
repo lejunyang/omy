@@ -91,12 +91,8 @@ jobs:
         run: |
           $out = Join-Path $PWD 'dist-ffmpeg'
           New-Item -ItemType Directory -Path $out -Force | Out-Null
-          $gcc = (osdk -q where conda:gcc_win-64).Trim() -split "`r?`n" | Select-Object -First 1
-          $posix = ($gcc -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
-          $env:SYSROOT = $posix + '/Library/x86_64-w64-mingw32/sysroot'
           $env:OMY_FF_OUT = ($out -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
-          bash scripts/ffmpeg-build/build-windows.sh
-          if ($LASTEXITCODE -ne 0) { throw "构建失败（退出码 $LASTEXITCODE）" }
+          & scripts/ffmpeg-build/prepare-toolchain.ps1 -Build
 
       - name: 校验产物
         shell: pwsh
