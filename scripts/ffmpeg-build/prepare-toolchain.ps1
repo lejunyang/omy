@@ -1,4 +1,4 @@
-# 准备 FFmpeg 构建所需的工具链，并算出 build-windows.sh 需要的 SYSROOT。
+# 准备 FFmpeg 工具链；加 -Build 时用同一份环境执行 Windows 构建。
 #
 # 为什么要有这层：build-windows.sh 内部**不能**调用 osdk。嵌套的 osdk 会尝试
 # 交互提示并卡在等 stdin 上（实测挂了 18 分钟只烧掉 4.8 CPU 秒，看起来像死锁，
@@ -6,9 +6,11 @@
 #
 # 用法：
 #   pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
-#   # 然后按它打印的命令跑 build-windows.sh
+#   pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1 -Build
 #
 # 本脚本兼容 PowerShell 5.1，但仓库约定用 pwsh 7 执行（见 AGENTS.md）。
+param([switch]$Build)
+
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -88,12 +90,28 @@ try {
         Write-Output '  警告：未找到 crt2.o，链接会失败'
     }
 
+    # shim 只按当前目录找版本；切到 /tmp 后根目录的探测结果就不再有效。
+    # 在根目录一次性选定真实工具路径，make 子进程也继承，不依赖 shim 重查配置。
+    # 只兑现 FFmpeg 工具，继承 m2-base 的 with，不安装无关 Android system image。
+    $env:SYSROOT = $sysroot
+    # conda MSYS 的 /tmp 中嵌套执行 shebang 脚本会报 bad interpreter；
+    # configure 自己建议指定 TMPDIR，使用本仓库可写的构建目录。
+    $tmp = Join-Path $repo 'target\ffmpeg-tmp'
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $env:TMPDIR = ($tmp -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+    $script = if ($Build) { 'build-windows.sh' } else { 'check-windows-tools.sh' }
+    & osdk exec --no-deps `
+        -t conda:gcc_win-64 -t conda:nasm -t conda:cmake `
+        -t conda:ninja -t conda:m2-base -t conda:libarchive `
+        -- bash "scripts/ffmpeg-build/$script"
+    if ($LASTEXITCODE -ne 0) { throw "FFmpeg 工具检查或构建失败（退出码 $LASTEXITCODE）" }
+    if ($Build) { return }
+
     Write-Output ''
     Write-Output '=== 下一步 ==='
     Write-Output '在项目根目录执行：'
     Write-Output ''
-    Write-Output ("  `$env:SYSROOT='" + $sysroot + "'")
-    Write-Output '  bash scripts/ffmpeg-build/build-windows.sh'
+    Write-Output '  pwsh -File scripts/ffmpeg-build/prepare-toolchain.ps1 -Build'
     Write-Output ''
 } finally {
     Pop-Location

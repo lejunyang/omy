@@ -477,7 +477,12 @@ impl SessionKeys {
     /// 是否已达到空闲锁定阈值。
     #[must_use]
     pub fn should_auto_lock(&self) -> bool {
-        !self.cache.is_empty() && self.idle_for() >= self.idle_timeout
+        self.should_auto_lock_for_idle(self.idle_for())
+    }
+
+    // 把阈值判定与真实时钟分开，测试无需假定共享 runner 会在几十毫秒内调度。
+    fn should_auto_lock_for_idle(&self, idle: Duration) -> bool {
+        !self.cache.is_empty() && idle >= self.idle_timeout
     }
 
     /// 若已空闲超时则锁定，返回是否执行了锁定。
@@ -530,4 +535,55 @@ pub fn kek_from_recovery_words(words: &[&str]) -> Result<Kek> {
     key.copy_from_slice(&out);
     out.zeroize();
     Ok(Kek::from_key(SecretKey::from_bytes(key)))
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    fn keyed_session() -> SessionKeys {
+        let mut session = SessionKeys::new();
+        let salt = core::array::from_fn(|i| (i as u8).wrapping_mul(7) ^ 0x66);
+        let key = core::array::from_fn(|i| (i as u8).wrapping_mul(11) ^ 0x3D);
+        session.insert_kek("main", CredentialKind::Vault, &salt,
+            Kek::from_key(SecretKey::from_bytes(key)));
+        session
+    }
+
+    #[test]
+    fn auto_lock_triggers_after_idle_timeout() {
+        let mut session = keyed_session().with_idle_timeout(Duration::MAX);
+        assert!(!session.auto_lock_if_idle(), "未超时不能清掉仍在使用的密钥");
+        let timeout = Duration::from_millis(50);
+        session = session.with_idle_timeout(timeout);
+        assert!(!session.should_auto_lock_for_idle(Duration::from_millis(49)),
+            "阈值前一毫秒仍不应锁定，不能提前清除密钥");
+        assert!(session.should_auto_lock_for_idle(timeout),
+            "恰好达到阈值就应锁定，不能把 >= 写成 >");
+        session.last_activity = Instant::now().checked_sub(timeout).expect("过去的活动时间");
+        assert!(session.should_auto_lock(), "真实时钟也必须使用空闲判定，不能忽略活动时间");
+        assert!(session.auto_lock_if_idle(), "超时后必须实际执行锁定");
+        assert!(session.is_empty(), "锁定必须清除缓存，不能只返回成功");
+    }
+
+    #[test]
+    fn touch_postpones_auto_lock() {
+        let mut session = keyed_session().with_idle_timeout(Duration::from_millis(100));
+        let old = Instant::now().checked_sub(Duration::from_secs(1)).expect("过去的活动时间");
+        session.last_activity = old;
+        assert!(session.should_auto_lock(), "过期的活动时间应触发锁定，否则测试没有覆盖延期");
+        session.touch();
+        assert!(session.last_activity > old, "touch 必须更新活动时间，不能只是保留缓存");
+        assert!(!session.should_auto_lock_for_idle(Duration::from_millis(99)),
+            "刷新后的阈值前仍可继续使用密钥");
+        assert_eq!(session.len(), 1, "活动只推迟锁定，不应丢弃已有凭据");
+    }
+
+    #[test]
+    fn empty_session_never_auto_locks() {
+        let mut session = SessionKeys::new().with_idle_timeout(Duration::ZERO);
+        assert!(!session.should_auto_lock_for_idle(Duration::MAX),
+            "即使已超时，空缓存也不应报告需要锁定");
+        assert!(!session.auto_lock_if_idle(), "空会话不能报告执行了锁定");
+    }
 }

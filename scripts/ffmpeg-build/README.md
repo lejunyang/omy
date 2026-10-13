@@ -43,12 +43,11 @@ NSS 等已知坑），libwebp/zlib 已嵌入，`ldd` 看不到它们；macOS 版
 ### Windows
 
 ```powershell
-# 1. 确认工具链（会打印下一步要用的 SYSROOT）
+# 1. 确认工具链（含仓库外临时目录及 make 子进程）
 pwsh -File scripts\ffmpeg-build\prepare-toolchain.ps1
 
-# 2. 按它打印的命令构建
-$env:SYSROOT='...'
-bash scripts/ffmpeg-build/build-windows.sh
+# 2. 从仓库配置选定工具环境并构建
+pwsh -File scripts/ffmpeg-build/prepare-toolchain.ps1 -Build
 
 # 3. 校验产物
 bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-build/out
@@ -56,6 +55,8 @@ bash scripts/ffmpeg-build/verify.sh /c/Users/LJY/AppData/Local/Temp/omy-ffmpeg-b
 
 Windows 上**不需要安装 MSYS2**，工具链全部由根目录的 `osdk.toml` 提供。
 源码解压使用 `conda:libarchive` 提供的 `bsdtar`，也由 osdk 安装和暴露。
+构建入口用 `osdk exec` 传入真实工具路径，避免构建切换到 `/tmp` 后 shim
+找不到仓库的版本选择；直接调用 Bash 脚本仅适用于已传入完整工具环境的场景。
 
 ### Linux
 
@@ -95,10 +96,11 @@ bash scripts/ffmpeg-build/verify.sh /tmp/omy-ffmpeg-build/out arm64
 | `VERSION` | 三个上游库的版本与 SHA256，每两行一组 |
 | `configure-flags.sh` | 组件配方（三平台共用，由 `FF_TARGET` 区分） |
 | `build-windows.sh` | 下载校验、编 zlib 与 libwebp、交叉编 FFmpeg |
+| `check-windows-tools.sh` | 在项目树外验证工具及 make 子进程仍可用 |
 | `build-linux.sh` | 下载校验、编 zlib 与 libwebp、原生编 FFmpeg |
 | `build-macos.sh` | 下载校验、编 zlib 与 libwebp、编 FFmpeg（`ARCH=arm64/x86_64`） |
 | `verify.sh` | 校验许可证边界、随包 LGPL/SOURCE、外部依赖、macOS 架构一致性、逐项复查组件 |
-| `prepare-toolchain.ps1` | 检查工具链并算出 `SYSROOT`（仅 Windows） |
+| `prepare-toolchain.ps1` | 检查 Windows 工具环境，`-Build` 时传入 `SYSROOT` 并构建 |
 
 ## 为什么必须跑 verify.sh
 
