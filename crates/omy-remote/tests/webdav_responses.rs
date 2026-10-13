@@ -25,15 +25,7 @@ async fn fixture(response: String, keep_open: bool) -> Fixture {
     let (send, request) = oneshot::channel();
     let task = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("接请求");
-        let mut request = Vec::new();
-        loop {
-            let byte = socket.read_u8().await.expect("请求头");
-            request.push(byte);
-            if request.ends_with(b"\r\n\r\n") {
-                break;
-            }
-        }
-        let _ = send.send(String::from_utf8(request).expect("HTTP 头"));
+        let _ = send.send(request_head(&mut socket).await);
         // 客户端可在读头后立即拒绝，服务端写失败也是预期的取消行为。
         let _ = socket.write_all(response.as_bytes()).await;
         if keep_open {
@@ -54,6 +46,17 @@ async fn fixture(response: String, keep_open: bool) -> Fixture {
         request,
         task,
     }
+}
+
+async fn request_head(socket: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    loop {
+        request.push(socket.read_u8().await.expect("请求头"));
+        if request.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(request).expect("HTTP 头")
 }
 
 fn response(status: u16, headers: &str, body: &str) -> String {
@@ -362,5 +365,69 @@ async fn premature_upload_success_does_not_commit_unread_source() {
             .await
             .is_err(),
         "响应成功还必须确认源流完整，不能把空的远端对象标成完成"
+    );
+}
+
+/// 不这样会怎样：302 的短期下载 URL 被记成文件身份，第二次读还会使用过期签名。
+#[tokio::test]
+async fn rotating_redirect_urls_are_resolved_from_stable_path_each_time() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("随机端口");
+    let address = listener.local_addr().expect("地址");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for step in 0..4 {
+            let (mut socket, _) = listener.accept().await.expect("下一请求");
+            requests.push(request_head(&mut socket).await);
+            let reply = if step % 2 == 0 {
+                response(
+                    302,
+                    &format!(
+                        "Location: /download?token={}\r\nContent-Length: 0\r\n",
+                        step / 2
+                    ),
+                    "",
+                )
+            } else {
+                response(
+                    206,
+                    "Content-Range: bytes 0-2/3\r\nContent-Length: 3\r\n",
+                    "abc",
+                )
+            };
+            socket.write_all(reply.as_bytes()).await.expect("响应");
+        }
+        requests
+    });
+    let store = WebDavStore::new(WebDavConfig {
+        base_url: format!("http://{address}/"),
+        ..WebDavConfig::default()
+    })
+    .expect("客户端");
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .read_range("/stable/file.omy", 0, 3)
+                .await
+                .expect("重定向范围读取"),
+            b"abc",
+            "签名变化不应改变对象字节"
+        );
+    }
+    let requests = task.await.expect("请求留痕");
+    assert!(
+        requests[0].starts_with("GET /stable/file.omy ")
+            && requests[2].starts_with("GET /stable/file.omy "),
+        "每次都从稳定路径重新解析下载地址"
+    );
+    assert!(
+        requests[1].starts_with("GET /download?token=0 ")
+            && requests[3].starts_with("GET /download?token=1 "),
+        "每次必须使用新签名"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|s| s.to_ascii_lowercase().contains("range: bytes=0-2\r\n")),
+        "重定向不能丢失范围头"
     );
 }

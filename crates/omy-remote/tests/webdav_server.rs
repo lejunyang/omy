@@ -964,3 +964,44 @@ async fn exact_upload_handles_empty_and_one_byte_sources() {
     }
     server.shutdown().await;
 }
+
+/// 不这样会怎样：PROPFIND 的 /dav/ 前缀被再次拼接，目录自身泄漏且文件打不开。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nonroot_base_lists_relative_identity_and_reads_chinese_paths() {
+    let root = unique_dir("nonroot_base");
+    std::fs::create_dir_all(root.join("dav")).expect("服务端子根");
+    let name = "中文 空格#%.txt";
+    std::fs::write(root.join("dav").join(name), b"source").expect("文件");
+    let server = spawn_server(root, None).await;
+    let store = store_for(&format!("{}dav/", server.base_url()), "", "", true);
+    let entries = store.list("").await.expect("子根列目录");
+    assert_eq!(entries.len(), 1, "自身条目不能被误列成子目录");
+    assert_eq!(entries[0].id, format!("/{name}"), "条目身份必须相对于位置根，不能重复包含 /dav");
+    assert_eq!(store.read_range(&entries[0].id, 1, 3).await.expect("按条目读"), b"our", "按列表身份读取同一对象");
+    server.shutdown().await;
+}
+
+/// 不这样会怎样：中文 MOVE 返回 400，#/?/% 被当作 URL 语义而读写或清理错对象。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chinese_reserved_paths_roundtrip_all_dav_verbs() {
+    let root = unique_dir("chinese_verbs");
+    let server = spawn_server(root.clone(), None).await;
+    let store = store_for(&server.base_url(), "", "", true);
+    let dir = store.create_dir("", "中文 #%").await.expect("建特殊字符目录");
+    let bytes = b"upload-complete";
+    let entry = commit_upload(&store, store.capabilities(), &dir.id, "文件 #%.omy", bytes.len() as u64,
+        Box::new(std::io::Cursor::new(bytes.to_vec())), None).await.expect("临时名上传再 MOVE");
+    assert_eq!(store.read_range(&entry.id, 0, bytes.len() as u64).await.expect("读回"), bytes,
+        "特殊字符必须保持原名，不能改变目标路径");
+    let listed = store.list(&dir.id).await.expect("列中文目录");
+    assert_eq!(listed.len(), 1, "成功后不能留下临时名或自身条目");
+    assert_eq!(listed[0].id, entry.id, "列表与上传返回同一个稳定身份");
+    store.write(&dir.id, "普通写 #%.txt", b"plain").await.expect("非流式 PUT 同样要编码");
+    store.delete(&store.child_id(&dir.id, "普通写 #%.txt").expect("路径身份")).await.expect("DELETE 同样要编码");
+    store.rename(&entry.id, "改名 #%.omy").await.expect("MOVE 源目标都要编码");
+    let renamed = store.child_id(&dir.id, "改名 #%.omy").expect("改名身份");
+    store.delete(&renamed).await.expect("删特殊字符文件");
+    assert!(store.list(&dir.id).await.expect("清空目录").is_empty(), "删除必须命中同一个对象");
+    assert!(root.join("中文 #%").is_dir(), "目录名字也要原样保存");
+    server.shutdown().await;
+}

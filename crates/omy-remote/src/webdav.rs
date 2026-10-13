@@ -209,12 +209,33 @@ impl WebDavStore {
         if rel.is_empty() {
             return format!("{base}/");
         }
-        let encoded = rel
-            .split('/')
-            .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string())
-            .collect::<Vec<_>>()
-            .join("/");
+        let encoded = encode_path(rel);
         format!("{base}/{encoded}")
+    }
+
+    /// href 是服务器 URL 路径，Entry.id 则必须相对于位置根；否则 /dav 会拼两次。
+    fn id_from_href(&self, href: &str) -> Result<String> {
+        let mut base = url::Url::parse(&self.cfg.base_url)
+            .map_err(|e| Error::Protocol(format!("地址无法解析：{e}")))?;
+        let root = percent_decode(base.path()).trim_end_matches('/').to_owned();
+        // 根配置常省略末尾斜杠，相对 href 仍应在这个目录内解析。
+        base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
+        let target = base
+            .join(href)
+            .map_err(|e| Error::Protocol(format!("href 无法解析：{e}")))?;
+        if target.origin() != base.origin() {
+            return Err(Error::Protocol("href 指向其它服务器".into()));
+        }
+        let path = percent_decode(target.path());
+        let rel = path
+            .strip_prefix(&root)
+            .filter(|p| p.is_empty() || p.starts_with('/'))
+            .ok_or_else(|| Error::Protocol("href 不在配置的位置根目录内".into()))?;
+        Ok(if rel.is_empty() {
+            "/".into()
+        } else {
+            rel.to_owned()
+        })
     }
 
     /// 认证头。空用户名时不加。
@@ -428,7 +449,7 @@ impl RemoteStore for WebDavStore {
         let path = if dir_id.is_empty() { "/" } else { dir_id };
         let items = self
             .dav
-            .list(path, reqwest_dav::Depth::Number(1))
+            .list(&encode_path(path), reqwest_dav::Depth::Number(1))
             .await
             .map_err(map_dav_err)?;
 
@@ -437,7 +458,7 @@ impl RemoteStore for WebDavStore {
         for it in items {
             match it {
                 reqwest_dav::list_cmd::ListEntity::File(f) => {
-                    let href = decode_href(&f.href);
+                    let href = self.id_from_href(&f.href)?;
                     // PROPFIND Depth:1 会把目录自身也列出来，跳过它，
                     // 否则每进一层目录都会多出一个指向自己的条目
                     if normalize(&href) == base_norm {
@@ -456,7 +477,7 @@ impl RemoteStore for WebDavStore {
                     });
                 }
                 reqwest_dav::list_cmd::ListEntity::Folder(d) => {
-                    let href = decode_href(&d.href);
+                    let href = self.id_from_href(&d.href)?;
                     if normalize(&href) == base_norm {
                         continue;
                     }
@@ -586,7 +607,7 @@ impl RemoteStore for WebDavStore {
         }
         let path = join(dir_id, name);
         self.dav
-            .put(&path, data.to_vec())
+            .put(&encode_path(&path), data.to_vec())
             .await
             .map_err(map_dav_err)?;
         Ok(Entry {
@@ -662,7 +683,7 @@ impl RemoteStore for WebDavStore {
         if !self.cfg.writable {
             return Err(Error::Unsupported("delete"));
         }
-        self.dav.delete(id).await.map_err(map_dav_err)
+        self.dav.delete(&encode_path(id)).await.map_err(map_dav_err)
     }
 
     async fn rename(&self, id: &str, new_name: &str) -> Result<()> {
@@ -671,7 +692,10 @@ impl RemoteStore for WebDavStore {
         }
         let parent = dirname(id);
         let target = join(&parent, new_name);
-        self.dav.mv(id, &target).await.map_err(map_dav_err)
+        self.dav
+            .mv(&encode_path(id), &encode_path(&target))
+            .await
+            .map_err(map_dav_err)
     }
 
     async fn create_dir(&self, parent_id: &str, name: &str) -> Result<Entry> {
@@ -679,7 +703,10 @@ impl RemoteStore for WebDavStore {
             return Err(Error::Unsupported("create_dir"));
         }
         let path = join(parent_id, name);
-        self.dav.mkcol(&path).await.map_err(map_dav_err)?;
+        self.dav
+            .mkcol(&encode_path(&path))
+            .await
+            .map_err(map_dav_err)?;
         Ok(Entry {
             id: path,
             name: name.to_owned(),
@@ -854,16 +881,16 @@ fn map_dav_err(e: reqwest_dav::Error) -> Error {
 
 /// 归一化路径，用于比较两个 href 是否指向同一处。
 fn normalize(p: &str) -> String {
-    let t = p.trim_matches('/');
-    percent_decode(t)
+    // Entry.id 与调用方路径都已解码，不能再把文件名字面的 %2F 误当斜杠。
+    p.trim_matches('/').to_owned()
 }
 
-/// href 里的路径是百分号编码的，要还原成可读名字。
-fn decode_href(href: &str) -> String {
-    let s = percent_decode(href);
-    // 服务端返回的 href 可能带前缀（如 /remote.php/dav/files/me/a.txt），
-    // 保留原样即可——它会被 url_for 重新编码后使用
-    s
+/// GET 和 DAV 动词共用编码规则，否则 MOVE 的 Destination 会带中文或 URL 分隔符。
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn percent_decode(s: &str) -> String {
@@ -1088,6 +1115,40 @@ mod tests {
         assert!(!u.contains("%2D") && !u.contains("%5F") && !u.contains("%2E"));
     }
 
+    /// 不这样会怎样：href 的短期签名混进对象身份，刷新后收藏与缓存认不出同一文件。
+    #[test]
+    fn href_identity_is_relative_and_excludes_transport_query() {
+        let s = store(false);
+        for (href, id) in [
+            ("/dav/%E4%B8%AD%E6%96%87%20%23%25.txt", "/中文 #%.txt"),
+            (
+                "https://dav.example.com/dav/file?token=old#download",
+                "/file",
+            ),
+            ("https://dav.example.com/dav/file?token=new", "/file"),
+            ("/dav/%252F", "/%2F"),
+            ("file.txt", "/file.txt"),
+            ("/dav/", "/"),
+        ] {
+            assert_eq!(
+                s.id_from_href(href).expect("位置根内 href"),
+                id,
+                "只解码一次并保留稳定相对身份"
+            );
+        }
+        for href in ["/dav-other/file", "https://other.example.com/dav/file"] {
+            assert!(
+                s.id_from_href(href).is_err(),
+                "不能把其它根或主机的地址猜成当前位置条目"
+            );
+        }
+        assert_eq!(
+            encode_path("/中文 #?%.txt"),
+            "/%E4%B8%AD%E6%96%87%20%23%3F%25.txt",
+            "所有 DAV 动词都要使用相同编码"
+        );
+    }
+
     /// 根路径要能正确拼出来。
     #[test]
     fn url_for_root() {
@@ -1143,7 +1204,12 @@ mod tests {
     #[test]
     fn normalize_identifies_same_path() {
         assert_eq!(normalize("/a/b/"), normalize("a/b"));
-        assert_eq!(normalize("/%E5%BD%B1%E8%A7%86/"), normalize("影视"));
+        assert_eq!(normalize("/影视/"), normalize("影视"));
+        assert_eq!(
+            normalize("/%2F/"),
+            "%2F",
+            "字面的百分号名字不能被再次解码成根目录"
+        );
     }
 
     /// 可写配置声明的能力要与实际一致。

@@ -43,6 +43,8 @@ The WebDAV server must support HTTP Range for random reads, playback, and chunke
 
 WebDAV streaming uploads complete only after the source stream matches the declared length and the server reports success. Locations supporting rename and delete upload a temporary object before committing the final name. A cancelled source stream, disconnect, or commit failure triggers best-effort cleanup; cleanup failures report possible residue. Local source files and the source objects of remote copies are retained.
 
+WebDAV file paths are relative to the configured server root. Unicode, spaces, and characters such as `#` and `%` are encoded consistently for reads, writes, rename, and delete. Download redirects apply only to the current request; temporary signature parameters do not replace the stable file identity used by bookmarks or caches.
+
 ## Android: opening WebDAV files in other apps
 
 On Android, the preview panel for a WebDAV file offers two explicit actions:
