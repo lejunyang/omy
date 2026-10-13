@@ -395,6 +395,8 @@ no server and only collects **references** to files you pick from real remotes
 (Telegram / WebDAV), letting you organize what you watch often across accounts and
 chats.
 
+Concurrent edits through the same shared virtual-collection registry are saved in order, so an older snapshot cannot overwrite entries saved later. Separate registry instances or omy processes writing the same collection file are currently not coordinated.
+
 - **Create**: at the bottom of the sidebar's "Remote locations" section, click "New remote location" → "Virtual remote", then give it a name.
 - **Add content**: right-click a file in a real remote (or select several) →
   "Add to virtual remote…". In the dialog, clicking a virtual remote's name adds
