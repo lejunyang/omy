@@ -39,6 +39,8 @@ Once inside, the app lists the directory and recognizes `.omy` files:
 - Besides the item count, the bottom status bar separately counts 🔓 unlocked and 🔒 still-locked (wrong or untried password) encrypted files in the current directory. The numbers update live as scanning progresses; entries still being identified are not counted yet;
 - Decryption happens locally. The server and the wire only ever see ciphertext, just like the [LAN sharing](lan-sharing) model: you must know the password yourself.
 
+The WebDAV server must support HTTP Range for random reads, playback, and chunked downloads. If it ignores Range and returns 200, omy reads only a bounded prefix at offset zero; a nonzero offset reports unsupported instead of downloading the entire file for a seek. Malformed or incomplete 206 responses fail explicitly.
+
 ## Android: opening WebDAV files in other apps
 
 On Android, the preview panel for a WebDAV file offers two explicit actions:

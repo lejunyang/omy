@@ -25,11 +25,11 @@
 
 use std::time::Duration;
 
-use reqwest::header::{
-    HeaderMap, HeaderValue, ALLOW, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_MATCH,
-    IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
-};
 use reqwest::StatusCode;
+use reqwest::header::{
+    ACCEPT_ENCODING, ALLOW, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG,
+    HeaderMap, HeaderValue, IF_MATCH, IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
+};
 use tokio::io::AsyncRead;
 use tokio_util::io::ReaderStream;
 
@@ -472,7 +472,13 @@ impl RemoteStore for WebDavStore {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let end = offset.saturating_add(len).saturating_sub(1);
+        let end = offset
+            .checked_add(len - 1)
+            .ok_or_else(|| Error::Protocol("Range 区间溢出".into()))?;
+        usize::try_from(len)
+            .ok()
+            .filter(|&n| n <= isize::MAX as usize)
+            .ok_or_else(|| Error::Protocol("Range 长度无法在本机表示".into()))?;
 
         let mut headers = HeaderMap::new();
         if let Some(a) = self.auth_header() {
@@ -482,8 +488,10 @@ impl RemoteStore for WebDavStore {
             return Err(Error::Protocol(String::from("非法的 Range 区间")));
         };
         headers.insert(RANGE, rv);
+        // Range 指向原始文件字节，压缩传输会改变偏移语义。
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
 
-        let resp = self
+        let mut resp = self
             .http
             .get(self.url_for(id))
             .headers(headers)
@@ -496,25 +504,65 @@ impl RemoteStore for WebDavStore {
             return Err(Self::map_status(status, id));
         }
 
-        // 服务端可以合法地忽略 Range（RFC 7233：MAY ignore），此时返回
-        // 200 和整个文件。不裁剪的话上层会把整文件当成一小段密文去解，
-        // 表现为「文件明明没坏却一直认证失败」——极难归因。
-        let ignored_range =
-            status != StatusCode::PARTIAL_CONTENT && resp.headers().get(CONTENT_RANGE).is_none();
-
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| Error::Network(e.to_string()))?;
-
-        if ignored_range {
-            let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            let want = usize::try_from(len).unwrap_or(usize::MAX);
-            let slice = body.get(start..).unwrap_or(&[]);
-            let take = slice.len().min(want);
-            return Ok(slice.get(..take).unwrap_or(&[]).to_vec());
+        if resp
+            .headers()
+            .get(CONTENT_ENCODING)
+            .is_some_and(|v| v != "identity")
+        {
+            return Err(Error::Protocol("Range 响应不能使用内容编码".into()));
         }
-        Ok(body.to_vec())
+        let partial = status == StatusCode::PARTIAL_CONTENT;
+        let expected = match status {
+            StatusCode::PARTIAL_CONTENT => {
+                let value = resp
+                    .headers()
+                    .get(CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| Error::Protocol("206 响应缺少 Content-Range".into()))?;
+                let expected = range_response_len(value, offset, end)?;
+                if resp.content_length().is_some_and(|n| n != expected) {
+                    return Err(Error::Protocol(
+                        "Content-Length 与 Content-Range 不符".into(),
+                    ));
+                }
+                expected
+            }
+            StatusCode::OK => {
+                if resp.headers().contains_key(CONTENT_RANGE) {
+                    return Err(Error::Protocol("200 响应含有 Content-Range".into()));
+                }
+                // 丢弃 offset 字节虽然省内存，但一次尾部 seek 仍要下载整个前缀。
+                // 只兼容起点为零的探测读取，随机读取必须明确拒绝而不能偷偷全量扫描。
+                if offset != 0 {
+                    return Err(Error::Unsupported("range_read"));
+                }
+                resp.content_length().map_or(len, |n| n.min(len))
+            }
+            _ => return Err(Error::Protocol(format!("Range 请求返回 HTTP {status}"))),
+        };
+        let mut body = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?
+        {
+            let remaining = expected - body.len() as u64;
+            if partial && chunk.len() as u64 > remaining {
+                return Err(Error::Protocol("206 响应体超过声明的区间".into()));
+            }
+            let take = chunk.len().min(remaining as usize);
+            body.try_reserve(take)
+                .map_err(|_| Error::Protocol("Range 缓冲区无法分配".into()))?;
+            body.extend_from_slice(&chunk[..take]);
+            if !partial && body.len() as u64 == expected {
+                // 不等待整文件 EOF；drop 响应会终止剩余传输。
+                return Ok(body);
+            }
+        }
+        if (partial || resp.content_length().is_some()) && body.len() as u64 != expected {
+            return Err(Error::Protocol("Range 响应体不完整".into()));
+        }
+        Ok(body)
     }
 
     fn child_id(&self, dir_id: &str, name: &str) -> Option<String> {
@@ -612,6 +660,34 @@ impl RemoteStore for WebDavStore {
             media_tab: None,
         })
     }
+}
+
+/// 先验证范围再消费响应体，防止错误偏移污染密文缓存，或把整文件伪装成 206。
+fn range_response_len(value: &str, offset: u64, requested_end: u64) -> Result<u64> {
+    let invalid = || Error::Protocol("Content-Range 与请求区间不符".into());
+    let rest = value.strip_prefix("bytes ").ok_or_else(invalid)?;
+    let (range, total) = rest.split_once('/').ok_or_else(invalid)?;
+    let (start, end) = range.split_once('-').ok_or_else(invalid)?;
+    let number = |s: &str| -> Result<u64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        s.parse().map_err(|_| invalid())
+    };
+    let start = number(start)?;
+    let end = number(end)?;
+    if start != offset || end < start || end > requested_end {
+        return Err(invalid());
+    }
+    if total != "*" {
+        let total = number(total)?;
+        if end >= total || (end < requested_end && end != total - 1) {
+            return Err(invalid());
+        }
+    }
+    end.checked_sub(start)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(invalid)
 }
 
 /// 这个地址是不是指向本机（或链路本地）。

@@ -898,3 +898,31 @@ fn opened_kek_unused() -> omy_core::crypto::Kek {
     omy_core::crypto::Kek::from_password(b"x", &salt, omy_core::crypto::Argon2Params::TEST_WEAK)
         .expect("派生占位 KEK")
 }
+
+/// 不这样会怎样：大文件尾部 seek 的 u64 偏移被截断，或实现偷偷从头下载。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sparse_large_file_seek_reads_only_tail() {
+    use std::io::{Seek, SeekFrom, Write};
+    let root = unique_dir("large_seek");
+    let offset = 8_589_934_592u64;
+    let tail: Vec<u8> = (0..12345).map(|i| (i % 251) as u8).collect();
+    let mut file = std::fs::File::create(root.join("large.bin")).expect("稀疏文件");
+    file.seek(SeekFrom::Start(offset)).expect("跳到 8 GiB");
+    file.write_all(&tail).expect("只写尾部");
+    drop(file);
+    let server = spawn_server(root, None).await;
+    let store = store_for(&server.base_url(), "", "", false);
+    let got = store
+        .read_range("/large.bin", offset, tail.len() as u64 + 100)
+        .await
+        .expect("尾部短读");
+    assert_eq!(got, tail, "服务端尾部裁剪后仍必须逐字节一致");
+    let records = server.snapshot();
+    assert_eq!(records.len(), 1, "seek 不能先偷偷请求文件头或前部块");
+    assert_eq!(
+        records[0].range.as_deref(),
+        Some("bytes=8589934592-8589947036"),
+        "偏移和终点不能缩成 u32"
+    );
+    server.shutdown().await;
+}
