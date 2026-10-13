@@ -357,6 +357,7 @@ impl WebDavStore {
             StatusCode::FORBIDDEN => Error::Forbidden,
             StatusCode::NOT_FOUND => Error::NotFound(what.to_owned()),
             StatusCode::TOO_MANY_REQUESTS => Error::RateLimited,
+            s if s.is_server_error() => Error::Network(format!("{what}: HTTP {s}")),
             s => Error::Protocol(format!("{what}: HTTP {s}")),
         }
     }
@@ -377,17 +378,21 @@ impl RemoteStore for WebDavStore {
             return Ok(upper);
         }
 
-        let mut req = self.http.request(reqwest::Method::OPTIONS, self.url_for(dir_id));
+        let mut req = self
+            .http
+            .request(reqwest::Method::OPTIONS, self.url_for(dir_id));
         if let Some(a) = self.auth_header() {
             req = req.header(AUTHORIZATION, a);
         }
-        let resp = match req.send().await {
-            Ok(resp) => resp,
-            // OPTIONS 是增强探测，不应让“不实现 OPTIONS 但实际可写”的服务器
-            // 整个变成只读；网络故障会在真正写入时按正常错误路径暴露。
-            Err(_) => return Ok(upper),
-        };
-        if matches!(resp.status(), StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED) {
+        // 只有明确“不支持 OPTIONS”才兼容回退；断线不能被解释为已确认可写。
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if matches!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+        ) {
             return Ok(upper);
         }
         if !resp.status().is_success() {
@@ -727,19 +732,22 @@ fn is_loopback_host(url: &url::Url) -> bool {
 
 /// 把 `reqwest_dav` 的错误映射成分类错误。
 fn map_dav_err(e: reqwest_dav::Error) -> Error {
-    // 该库把 HTTP 状态包在 Decode(StatusMismatched) 里，
-    // 取不到时退回网络错误——宁可少分类，也不要把认证失败报成别的
-    let s = e.to_string();
-    if s.contains("401") {
-        Error::Unauthorized
-    } else if s.contains("403") {
-        Error::Forbidden
-    } else if s.contains("404") {
-        Error::NotFound(s)
-    } else if s.contains("429") {
-        Error::RateLimited
-    } else {
-        Error::Network(s)
+    // 错误文本还带 URL/端口，搜“401”会把端口 40123 的断线错报为密码错误。
+    // 库已公开真实响应码，应按类型取值，XML 解码失败也不该无限网络重试。
+    let status = match &e {
+        reqwest_dav::Error::Decode(reqwest_dav::DecodeError::StatusMismatched(e)) => {
+            Some(e.response_code)
+        }
+        reqwest_dav::Error::Decode(reqwest_dav::DecodeError::Server(e)) => Some(e.response_code),
+        reqwest_dav::Error::Reqwest(e) => e.status().map(|s| s.as_u16()),
+        _ => None,
+    };
+    if let Some(status) = status.and_then(|s| StatusCode::from_u16(s).ok()) {
+        return WebDavStore::map_status(status, "WebDAV");
+    }
+    match e {
+        reqwest_dav::Error::Reqwest(e) => Error::Network(e.to_string()),
+        other => Error::Protocol(other.to_string()),
     }
 }
 
@@ -823,6 +831,21 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 不这样会怎样：错误文本里的 expected_code=401 会覆盖真实的 503。
+    #[test]
+    fn dav_status_uses_response_code_instead_of_matching_text() {
+        let error = reqwest_dav::Error::Decode(reqwest_dav::DecodeError::StatusMismatched(
+            reqwest_dav::StatusMismatchedError {
+                response_code: 503,
+                expected_code: 401,
+            },
+        ));
+        assert!(
+            matches!(map_dav_err(error), Error::Network(_)),
+            "应按真实 503 重试，不能弹登录"
+        );
+    }
 
     fn store(writable: bool) -> WebDavStore {
         WebDavStore::new(WebDavConfig {

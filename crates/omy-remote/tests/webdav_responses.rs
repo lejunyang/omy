@@ -276,3 +276,77 @@ async fn empty_and_overflow_ranges_do_not_send_requests() {
         "不可表示的缓冲长度必须提前拒绝"
     );
 }
+
+/// 不这样会怎样：网络故障被当成允许写入；只允许 PUT 的服务器却亮起删除按钮。
+#[tokio::test]
+async fn options_capabilities_only_narrow_and_network_failure_is_visible() {
+    let f = fixture(
+        response(
+            200,
+            "Allow: get, propfind, PUT\r\nContent-Length: 0\r\n",
+            "",
+        ),
+        false,
+    )
+    .await;
+    let caps = f.store.effective_capabilities("/").await.expect("有效能力");
+    assert!(caps.write && caps.range_read, "PUT 和已有读能力必须保留");
+    assert!(
+        !caps.delete && !caps.rename && !caps.create_dir && !caps.random_write,
+        "Allow 没列出的写能力不得伪造"
+    );
+    for status in [405, 501] {
+        let f = fixture(response(status, "Content-Length: 0\r\n", ""), false).await;
+        assert_eq!(
+            f.store
+                .effective_capabilities("/")
+                .await
+                .expect("不支持 OPTIONS 的兼容回退"),
+            f.store.capabilities(),
+            "明确不支持 OPTIONS 才能退回配置上界"
+        );
+    }
+    let f = fixture(String::new(), false).await;
+    assert!(
+        matches!(
+            f.store.effective_capabilities("/").await,
+            Err(Error::Network(_))
+        ),
+        "OPTIONS 断线不能当成已确认可写"
+    );
+    for status in [401, 403, 429, 503] {
+        let f = fixture(response(status, "Content-Length: 0\r\n", ""), false).await;
+        let error = f
+            .store
+            .effective_capabilities("/")
+            .await
+            .expect_err("权限/网络错误");
+        assert!(
+            matches!(
+                (status, error),
+                (401, Error::Unauthorized)
+                    | (403, Error::Forbidden)
+                    | (429, Error::RateLimited)
+                    | (503, Error::Network(_))
+            ),
+            "OPTIONS 也必须保留准确错误分类"
+        );
+    }
+}
+
+/// 不这样会怎样：503 被分成永久协议错误，GET/PROPFIND 无法走网络重试。
+#[tokio::test]
+async fn http_and_dav_server_failures_are_retryable() {
+    for status in [500, 502, 503, 504] {
+        let f = fixture(response(status, "Content-Length: 0\r\n", ""), false).await;
+        assert!(
+            matches!(f.store.read_range("/f", 0, 3).await, Err(Error::Network(_))),
+            "GET {status} 应允许网络重试"
+        );
+        let f = fixture(response(status, "Content-Length: 0\r\n", ""), false).await;
+        assert!(
+            matches!(f.store.list("/").await, Err(Error::Network(_))),
+            "PROPFIND {status} 应允许网络重试"
+        );
+    }
+}
