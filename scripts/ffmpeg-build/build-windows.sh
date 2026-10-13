@@ -160,9 +160,7 @@ cd "$BLD"
 export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$ZLIB/share/pkgconfig"
 
 # < /dev/null：不给 configure 任何标准输入，避免它在某些探测分支里等输入
-# 显式沿用受管 Bash，避免 configure 的 /bin/sh shebang 改变运行模式后，
-# 嵌套临时脚本在 conda MSYS 环境里报 bad interpreter（直接 sh 探测仍会通过）。
-if ! bash "$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null; then
+if ! "$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null; then
   # configure 的通用提示会把解释器、编译器或链接器错误都说成 /tmp 不可执行；
   # CI runner 随即销毁，必须把实际探测日志带出来才能定位后续构建失败。
   tail -n 80 "$BLD/ffbuild/config.log" >&2

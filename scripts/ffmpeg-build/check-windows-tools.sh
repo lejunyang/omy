@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 必须在项目树外检查：只在仓库根执行 --version 会漏掉切目录后 shim 丢失版本的回归。
 set -euo pipefail
-WORK="$(mktemp -d)"
+# TMPDIR 可以在仓库内，但工具选择回归仍必须切到仓库外，否则 shim 也会假通过。
+WORK="$(mktemp -d /tmp/omy-ffmpeg-tools.XXXXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 

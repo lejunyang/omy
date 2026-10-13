@@ -94,6 +94,11 @@ try {
     # 在根目录一次性选定真实工具路径，make 子进程也继承，不依赖 shim 重查配置。
     # 只兑现 FFmpeg 工具，继承 m2-base 的 with，不安装无关 Android system image。
     $env:SYSROOT = $sysroot
+    # conda MSYS 的 /tmp 中嵌套执行 shebang 脚本会报 bad interpreter；
+    # configure 自己建议指定 TMPDIR，使用本仓库可写的构建目录。
+    $tmp = Join-Path $repo 'target\ffmpeg-tmp'
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $env:TMPDIR = ($tmp -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
     $script = if ($Build) { 'build-windows.sh' } else { 'check-windows-tools.sh' }
     & osdk exec --no-deps `
         -t conda:gcc_win-64 -t conda:nasm -t conda:cmake `
