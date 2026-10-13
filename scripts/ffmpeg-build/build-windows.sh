@@ -163,7 +163,7 @@ export PKG_CONFIG_PATH="$WEBP/lib/pkgconfig:$ZLIB/share/pkgconfig"
 if ! "$SRC/ffmpeg-${FFMPEG_VER}/configure" --prefix="$OUT" "${FF_FLAGS[@]}" < /dev/null; then
   # configure 的通用提示会把解释器、编译器或链接器错误都说成 /tmp 不可执行；
   # CI runner 随即销毁，必须把实际探测日志带出来才能定位后续构建失败。
-  cat "$BLD/ffbuild/config.log" >&2
+  tail -n 80 "$BLD/ffbuild/config.log" >&2
   exit 1
 fi
 
