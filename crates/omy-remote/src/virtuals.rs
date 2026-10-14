@@ -428,7 +428,9 @@ impl VirtualCryptoError {
 /// `virtual-places.json`。测试与 CLI 脚本可用 [`VirtualRegistry::with_path`] 注入
 /// 隔离路径，不碰真实数据目录。
 ///
-/// 线程安全：内部 `Mutex`。GUI 以 `Arc<VirtualRegistry>` 持有，命令层共享。
+/// GUI 以 `Arc<VirtualRegistry>` 共享同一实例。内存修改由内部 Mutex 保护，
+/// 保存从取快照到提交串行化，避免旧快照最后写入而丢掉新修改。
+/// 此锁只协调同一实例，不协调同路径的其它注册表实例或其它进程。
 #[derive(Default)]
 pub struct VirtualRegistry {
     places: std::sync::Mutex<Vec<VirtualPlace>>,
@@ -439,7 +441,22 @@ pub struct VirtualRegistry {
     unlock: std::sync::Mutex<std::collections::HashMap<String, UnlockState>>,
     /// 落盘路径。`None` 表示纯内存、永不读写磁盘（测试用）。
     store: Option<PathBuf>,
+    /// 必须在取快照前拿锁并持有到提交，单独串行化 write_atomic 仍会写回旧快照。
+    save_serial: std::sync::Mutex<()>,
+    #[cfg(test)]
+    save_probe: std::sync::Mutex<Option<SaveProbe>>,
 }
+
+// 确定性回归要暂停快照并观察保存等待，不能靠 sleep 猜线程是否走到了竞态窗口。
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+enum SaveStage {
+    Snapshot(usize),
+    Waiting,
+}
+
+#[cfg(test)]
+type SaveProbe = std::sync::Arc<dyn Fn(SaveStage) + Send + Sync>;
 
 impl VirtualRegistry {
     /// 空注册表，落盘路径取默认数据目录下的 `virtual-places.json`。
@@ -451,6 +468,9 @@ impl VirtualRegistry {
             next_seq: std::sync::Mutex::new(0),
             unlock: std::sync::Mutex::new(std::collections::HashMap::new()),
             store,
+            save_serial: std::sync::Mutex::new(()),
+            #[cfg(test)]
+            save_probe: std::sync::Mutex::new(None),
         }
     }
 
@@ -476,7 +496,16 @@ impl VirtualRegistry {
         self.store.as_deref()
     }
 
+    #[cfg(test)]
+    fn probe_save(&self, stage: SaveStage) {
+        let probe = self.save_probe.lock().expect("保存探针锁").clone();
+        if let Some(probe) = probe {
+            probe(stage);
+        }
+    }
+
     /// 从磁盘载入。文件不存在当作空，不报错（首次运行）。
+    /// 用于初始化或停止修改后的重载，不提供与并发修改合并的事务语义。
     ///
     /// # Errors
     ///
@@ -546,10 +575,21 @@ impl VirtualRegistry {
     /// 序列化或写盘失败时返回。
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = self.store_path() else { return Ok(()) };
+        let _saving = match self.save_serial.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                self.probe_save(SaveStage::Waiting);
+                self.save_serial.lock().map_err(|e| std::io::Error::other(e.to_string()))?
+            }
+            Err(e) => return Err(std::io::Error::other(e.to_string())),
+        };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let list = self.places.lock().map(|p| p.clone()).unwrap_or_default();
+        #[cfg(test)]
+        self.probe_save(SaveStage::Snapshot(list.len()));
         let unlock = self.unlock.lock().ok();
         let mut stored: Vec<StoredPlace> = Vec::with_capacity(list.len());
         for vp in list {
@@ -1243,6 +1283,56 @@ mod tests {
         assert_eq!(reg.list().len(), 16, "落盘/重载后数量不丢: {:?}", ids);
         ids.clear();
         let _ = &ids;
+    }
+
+    /// 不这样会怎样：旧快照最后提交，把已经返回成功的新条目从磁盘抹掉。
+    /// 用通道安排两种实现的顺序：无锁时新保存先完成；串行化后释放旧保存再完成新保存。
+    #[test]
+    fn queued_save_cannot_overwrite_a_newer_committed_snapshot() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::thread;
+
+        let (registry, dir) = test_reg();
+        let first_id = registry.create("第一个".into());
+        let registry = Arc::new(registry);
+        let (events_tx, events_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        *registry.save_probe.lock().expect("探针锁") = Some(Arc::new(move |stage| {
+            events_tx.send(stage).expect("通知保存阶段");
+            if matches!(stage, SaveStage::Snapshot(1)) {
+                release_rx.lock().expect("屏障锁").recv().expect("释放旧快照");
+            }
+        }));
+
+        let old_registry = Arc::clone(&registry);
+        let old_save = thread::spawn(move || old_registry.save().expect("保存旧快照"));
+        assert!(matches!(events_rx.recv().expect("旧保存已取快照"), SaveStage::Snapshot(1)),
+            "必须真正暂停在只含旧条目的快照之后，否则不能复现覆盖");
+
+        let new_registry = Arc::clone(&registry);
+        let new_save = thread::spawn(move || new_registry.create("第二个".into()));
+        let second_id = match events_rx.recv().expect("新保存的实际进度") {
+            SaveStage::Snapshot(2) => {
+                // 原实现不串行化：确定让新快照先完整提交，然后旧快照覆盖它。
+                let id = new_save.join().expect("新保存结束");
+                release_tx.send(()).expect("释放旧保存");
+                id
+            }
+            SaveStage::Waiting => {
+                // 修复后新保存被挡在取快照之前；旧保存完成之后才准提交新快照。
+                release_tx.send(()).expect("释放旧保存");
+                new_save.join().expect("排队保存结束")
+            }
+            stage => panic!("未预期的保存阶段：{stage:?}"),
+        };
+        old_save.join().expect("旧保存结束");
+        *registry.save_probe.lock().expect("去掉探针") = None;
+        let reloaded = VirtualRegistry::with_path(dir.join("virtual-places.json"));
+        reloaded.load().expect("从真实磁盘重载");
+        assert_eq!(reloaded.list(), vec![(first_id, "第一个".into()), (second_id, "第二个".into())],
+            "旧保存不能覆盖后来已成功保存的条目，内存有两项不能掩盖磁盘只剩一项");
+        std::fs::remove_dir_all(dir).expect("清理测试目录");
     }
 
     /// id 序号在重载后继续递增，不复用已用号。

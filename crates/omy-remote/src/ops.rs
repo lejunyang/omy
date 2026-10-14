@@ -160,7 +160,8 @@ pub async fn cleanup_remote<S: RemoteStore + ?Sized>(
     let Some(id) = id else {
         return false;
     };
-    store.delete(id).await.is_ok()
+    // 未创建成功或已被服务端清掉的对象同样没有残留，404 不应误报清理失败。
+    matches!(store.delete(id).await, Ok(()) | Err(Error::NotFound(_)))
 }
 
 /// 提交一次上传：按能力选择「临时名 + rename」或「直接写」，任一步失败尽力清理。
@@ -535,6 +536,7 @@ mod tests {
         uploaded: std::sync::Mutex<Vec<String>>,
         /// 注入一次写入失败。
         fail_write: std::sync::atomic::AtomicBool,
+        missing_on_delete: std::sync::atomic::AtomicBool,
         caps: std::sync::Mutex<Capabilities>,
     }
 
@@ -565,6 +567,9 @@ mod tests {
         }
         async fn delete(&self, id: &str) -> Result<()> {
             self.deleted.lock().unwrap().push(id.to_owned());
+            if self.missing_on_delete.load(Ordering::Relaxed) {
+                return Err(Error::NotFound(id.into()));
+            }
             Ok(())
         }
         async fn rename(&self, id: &str, new_name: &str) -> Result<()> {
@@ -680,6 +685,17 @@ mod tests {
             1,
             "失败写入的临时对象应被删除"
         );
+    }
+
+    /// 不这样会怎样：失败 PUT 未生成对象、DELETE 回 404 时却提示需要手动清理。
+    #[tokio::test]
+    async fn failed_upload_without_remote_object_has_no_residue() {
+        let s = RecStore::writable();
+        s.fail_write.store(true, Ordering::Relaxed);
+        s.missing_on_delete.store(true, Ordering::Relaxed);
+        let error = commit_upload(&s, s.capabilities(), "/d", "a", 3, Box::new(&b"abc"[..]), None)
+            .await.expect_err("上传失败");
+        assert!(!error.residue, "不存在的对象不能被报成残留");
     }
 
     /// 不支持 rename 的 provider 走直接写：写入用最终名，不改名。

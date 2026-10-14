@@ -886,27 +886,28 @@ pub async fn remote_upload(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| String::from("file"));
 
-        let data = match tokio::fs::read(&path).await {
-            Ok(d) => d,
-            Err(e) => {
-                out.push(UploadOutcome {
-                    path: p,
-                    name,
-                    ok: false,
-                    id: None,
-                    error: Some(e.to_string()),
-                });
-                continue;
-            }
-        };
+        // 本地文件也走有界流和共享提交：整文件 read 会耗尽内存，直接 PUT
+        // 在失败时还会留下顶着最终名的半成品。错误仍逐文件返回，源文件保留。
+        let result = async {
+            let file = tokio::fs::File::open(&path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let size = file.metadata().await.map_err(|e| e.to_string())?.len();
+            omy_remote::commit_upload(
+                store.as_ref(), caps, &dir, &name, size, Box::new(file), None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        }
+        .await;
 
-        match store.write(&dir, &name, &data).await {
+        match result {
             Ok(entry) => {
                 crate::applog::info(
                     "upload",
                     &format!(
                         "place={place_id} ok size={} name={}",
-                        data.len(),
+                        entry.size.unwrap_or(0),
                         crate::applog::redact(&name)
                     ),
                 );

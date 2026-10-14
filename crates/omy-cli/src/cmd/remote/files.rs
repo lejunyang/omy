@@ -546,57 +546,61 @@ pub fn copy(ctx: &Ctx, a: &CopyArgs) -> Result<()> {
         .block_on(dst.effective_capabilities(&dst_dir))
         .map_err(|e| anyhow!("查询目标位置能力失败: {e}"))?;
 
-    // 有界流式：管道缓冲 64 KiB，上传消费得慢时读端会自然背压。
-    // dst 与目标路径 move 进 spawn 的上传任务（spawn 要求 'static），
-    // src/src_id 留在外层块做读循环；src_id 留一份给结束后的结果打印。
-    let src_id_for_report = src_id.clone();
-    // dst_dir/dst_name 要 move 进 spawn 的上传任务（'static），先转 owned。
-    let dst_dir_owned = dst_dir.clone();
-    let dst_name_owned = dst_name.clone();
-    let entry = rt.block_on(async move {
-        let (pipe_read, mut pipe_write) = tokio::io::duplex(64 * 1024);
-        let upload = tokio::spawn(async move {
-            // 走共享 commit_upload：临时名+rename+失败清理，与 upload 同一套。
-            match omy_remote::commit_upload(
-                &dst,
-                dst_caps,
-                &dst_dir_owned,
-                &dst_name_owned,
-                total,
-                Box::new(pipe_read),
-                None,
-            )
-            .await
-            {
-                Ok(e) => Ok(e),
-                // 读端先断/写失败时把底层错误与残留风险一并交回外层。
-                Err(c) => Err(anyhow!(c.to_string())),
-            }
-        });
-
-        let mut off = 0u64;
-        loop {
-            let want = CHUNK.min(total - off);
-            let buf = src.read_range(&src_id, off, want).await?;
-            if buf.is_empty() {
-                break;
-            }
-            off = off.saturating_add(buf.len() as u64);
-            tokio::io::AsyncWriteExt::write_all(&mut pipe_write, &buf).await?;
-        }
-        drop(pipe_write); // 关闭写端 = 通知上传 EOF
-
-        if off != total {
-            bail!("源文件 {src_id} 读取不完整：{off}/{total} 字节");
-        }
-        upload.await.map_err(|e| anyhow!("上传任务异常: {e}"))?
-    })?;
+    let entry = rt.block_on(copy_stream(
+        &src, &dst, &src_id, &dst_dir, &dst_name, total, dst_caps,
+    ))?;
 
     ctx.out.result(
-        &format!("已复制 {} → {}（{}）", src_id_for_report, entry.id, human_bytes(total)),
-        &json!({ "from": src_id_for_report, "to": entry.id, "bytes": total }),
+        &format!("已复制 {} → {}（{}）", src_id, entry.id, human_bytes(total)),
+        &json!({ "from": src_id, "to": entry.id, "bytes": total }),
     );
     Ok(())
+}
+
+/// 下载错误也要等待上传侧完成失败清理，不能丢掉任务句柄再销毁 runtime。
+async fn copy_stream<S: RemoteStore, T: RemoteStore>(
+    src: &S,
+    dst: &T,
+    src_id: &str,
+    dst_dir: &str,
+    dst_name: &str,
+    total: u64,
+    dst_caps: omy_remote::Capabilities,
+) -> Result<omy_remote::Entry> {
+    let (pipe_read, mut pipe_write) = tokio::io::duplex(64 * 1024);
+    let upload = omy_remote::commit_upload(
+        dst,
+        dst_caps,
+        dst_dir,
+        dst_name,
+        total,
+        Box::new(pipe_read),
+        None,
+    );
+    let produce = async move {
+        let mut off = 0u64;
+        while off < total {
+            let want = CHUNK.min(total - off);
+            let buf = src.read_range(src_id, off, want).await?;
+            if buf.is_empty() || buf.len() as u64 > want {
+                bail!("源文件 {src_id} 读取不完整：{off}/{total} 字节");
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut pipe_write, &buf).await?;
+            off += buf.len() as u64;
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+    // produce 的所有退出路径都会 drop 写端，upload 看到 EOF 后完成清理再返回。
+    let (committed, produced) = tokio::join!(upload, produce);
+    let entry = committed.map_err(|e| anyhow!(e.to_string()))?;
+    if let Err(error) = produced {
+        let cleaned = omy_remote::cleanup_remote(dst, dst_caps, Some(&entry.id)).await;
+        if !cleaned {
+            bail!("{error}（服务端可能残留未清理的半成品对象，请手动检查）");
+        }
+        return Err(error);
+    }
+    Ok(entry)
 }
 
 /// 连到位置并取该目录的「有效能力」。
@@ -813,6 +817,178 @@ pub fn decrypt(ctx: &Ctx, a: &DecryptArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct CopyStore {
+        bytes: Vec<u8>,
+        fail_read: bool,
+        fail_write: bool,
+        objects: std::sync::Mutex<Vec<String>>,
+        deleted: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl CopyStore {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                fail_read: false,
+                fail_write: false,
+                objects: std::sync::Mutex::new(Vec::new()),
+                deleted: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RemoteStore for CopyStore {
+        fn capabilities(&self) -> omy_remote::Capabilities {
+            omy_remote::Capabilities::cloud_writable()
+        }
+        fn describe(&self) -> String {
+            "copy-test".into()
+        }
+        async fn list(&self, _: &str) -> omy_remote::Result<Vec<omy_remote::Entry>> {
+            Ok(Vec::new())
+        }
+        async fn read_range(&self, _: &str, offset: u64, len: u64) -> omy_remote::Result<Vec<u8>> {
+            if self.fail_read && offset > 0 {
+                return Err(omy_remote::Error::Network("断线".into()));
+            }
+            Ok(self
+                .bytes
+                .get(offset as usize..(offset + len) as usize)
+                .unwrap_or_default()
+                .to_vec())
+        }
+        fn child_id(&self, dir: &str, name: &str) -> Option<String> {
+            Some(format!("{dir}/{name}"))
+        }
+        async fn write_stream(
+            &self,
+            dir: &str,
+            name: &str,
+            size: u64,
+            mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        ) -> omy_remote::Result<omy_remote::Entry> {
+            self.objects.lock().unwrap().push(format!("{dir}/{name}"));
+            if self.fail_write {
+                return Err(omy_remote::Error::Network("上传失败".into()));
+            }
+            let mut bytes = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut bytes).await?;
+            if bytes.len() as u64 != size {
+                return Err(omy_remote::Error::Protocol("源流取消".into()));
+            }
+            Ok(omy_remote::Entry {
+                id: format!("{dir}/{name}"),
+                name: name.into(),
+                is_dir: false,
+                size: Some(size),
+                mtime: None,
+                etag: None,
+                thumb: None,
+                media_tab: None,
+            })
+        }
+        async fn rename(&self, id: &str, name: &str) -> omy_remote::Result<()> {
+            let mut objects = self.objects.lock().unwrap();
+            objects.retain(|s| s != id);
+            objects.push(format!("/target/{name}"));
+            Ok(())
+        }
+        async fn delete(&self, id: &str) -> omy_remote::Result<()> {
+            // 必须跨一次 await，才能抓到“返回错误就抛弃清理任务”的回归。
+            tokio::task::yield_now().await;
+            self.deleted.lock().unwrap().push(id.into());
+            self.objects.lock().unwrap().retain(|s| s != id);
+            Ok(())
+        }
+    }
+
+    /// 不这样会怎样：下载断线后 runtime 提前销毁，临时对象清理 future 来不及执行。
+    #[tokio::test]
+    async fn copy_read_failure_waits_for_cleanup_and_keeps_source() {
+        let bytes: Vec<u8> = (0..CHUNK + 1).map(|i| (i % 251) as u8).collect();
+        let mut src = CopyStore::new(bytes.clone());
+        src.fail_read = true;
+        let dst = CopyStore::new(Vec::new());
+        assert!(
+            copy_stream(
+                &src,
+                &dst,
+                "/source",
+                "/target",
+                "final",
+                bytes.len() as u64,
+                dst.capabilities()
+            )
+            .await
+            .is_err(),
+            "断线不能报告成功"
+        );
+        assert!(
+            dst.objects.lock().unwrap().is_empty(),
+            "返回失败前必须删掉半成品"
+        );
+        assert_eq!(
+            dst.deleted.lock().unwrap().len(),
+            1,
+            "即使读侧先失败，也必须等待上传侧清理"
+        );
+        assert_eq!(src.bytes, bytes, "复制失败必须保留源数据");
+    }
+
+    /// 不这样会怎样：目标提前失败后读侧永远卡在满管道，CLI 不能退出。
+    #[tokio::test]
+    async fn copy_write_failure_closes_pipe_and_cleans_up() {
+        let src = CopyStore::new((0..CHUNK + 1).map(|i| (i % 251) as u8).collect());
+        let mut dst = CopyStore::new(Vec::new());
+        dst.fail_write = true;
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            copy_stream(
+                &src,
+                &dst,
+                "/source",
+                "/target",
+                "final",
+                src.bytes.len() as u64,
+                dst.capabilities(),
+            ),
+        )
+        .await;
+        assert!(
+            outcome.expect("失败时不能挂起").is_err(),
+            "上传失败必须返回错误"
+        );
+        assert!(
+            dst.objects.lock().unwrap().is_empty(),
+            "失败后临时对象必须清理"
+        );
+    }
+
+    /// 不这样会怎样：等待双方退出的编排改动可能把正常复制也判成取消。
+    #[tokio::test]
+    async fn copy_success_commits_final_identity() {
+        let src = CopyStore::new(b"abc".to_vec());
+        let dst = CopyStore::new(Vec::new());
+        let entry = copy_stream(
+            &src,
+            &dst,
+            "/source",
+            "/target",
+            "final",
+            3,
+            dst.capabilities(),
+        )
+        .await
+        .expect("正常复制");
+        assert_eq!(entry.id, "/target/final", "返回身份必须是已提交对象");
+        assert_eq!(
+            *dst.objects.lock().unwrap(),
+            vec!["/target/final"],
+            "成功只留下最终对象"
+        );
+        assert_eq!(src.bytes, b"abc", "复制成功仍保留源数据");
+    }
 
     /// 远程路径必须统一成绝对路径，且父子拆分正确。
     ///

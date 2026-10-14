@@ -23,14 +23,20 @@
 //! 我们用到的子集小得多（列目录 + Range 读 + 整文件写），但仍保留
 //! [`Vendor`]，把差异集中在一处而不是散落到调用点。
 
+use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use reqwest::header::{
-    HeaderMap, HeaderValue, ALLOW, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_MATCH,
-    IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
-};
 use reqwest::StatusCode;
-use tokio::io::AsyncRead;
+use reqwest::header::{
+    ACCEPT_ENCODING, ALLOW, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG,
+    HeaderMap, HeaderValue, IF_MATCH, IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
+};
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tokio_util::io::ReaderStream;
 
 use crate::store::{Entry, RemoteStore};
@@ -203,12 +209,33 @@ impl WebDavStore {
         if rel.is_empty() {
             return format!("{base}/");
         }
-        let encoded = rel
-            .split('/')
-            .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string())
-            .collect::<Vec<_>>()
-            .join("/");
+        let encoded = encode_path(rel);
         format!("{base}/{encoded}")
+    }
+
+    /// href 是服务器 URL 路径，Entry.id 则必须相对于位置根；否则 /dav 会拼两次。
+    fn id_from_href(&self, href: &str) -> Result<String> {
+        let mut base = url::Url::parse(&self.cfg.base_url)
+            .map_err(|e| Error::Protocol(format!("地址无法解析：{e}")))?;
+        let root = percent_decode(base.path()).trim_end_matches('/').to_owned();
+        // 根配置常省略末尾斜杠，相对 href 仍应在这个目录内解析。
+        base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
+        let target = base
+            .join(href)
+            .map_err(|e| Error::Protocol(format!("href 无法解析：{e}")))?;
+        if target.origin() != base.origin() {
+            return Err(Error::Protocol("href 指向其它服务器".into()));
+        }
+        let path = percent_decode(target.path());
+        let rel = path
+            .strip_prefix(&root)
+            .filter(|p| p.is_empty() || p.starts_with('/'))
+            .ok_or_else(|| Error::Protocol("href 不在配置的位置根目录内".into()))?;
+        Ok(if rel.is_empty() {
+            "/".into()
+        } else {
+            rel.to_owned()
+        })
     }
 
     /// 认证头。空用户名时不加。
@@ -357,6 +384,7 @@ impl WebDavStore {
             StatusCode::FORBIDDEN => Error::Forbidden,
             StatusCode::NOT_FOUND => Error::NotFound(what.to_owned()),
             StatusCode::TOO_MANY_REQUESTS => Error::RateLimited,
+            s if s.is_server_error() => Error::Network(format!("{what}: HTTP {s}")),
             s => Error::Protocol(format!("{what}: HTTP {s}")),
         }
     }
@@ -377,17 +405,21 @@ impl RemoteStore for WebDavStore {
             return Ok(upper);
         }
 
-        let mut req = self.http.request(reqwest::Method::OPTIONS, self.url_for(dir_id));
+        let mut req = self
+            .http
+            .request(reqwest::Method::OPTIONS, self.url_for(dir_id));
         if let Some(a) = self.auth_header() {
             req = req.header(AUTHORIZATION, a);
         }
-        let resp = match req.send().await {
-            Ok(resp) => resp,
-            // OPTIONS 是增强探测，不应让“不实现 OPTIONS 但实际可写”的服务器
-            // 整个变成只读；网络故障会在真正写入时按正常错误路径暴露。
-            Err(_) => return Ok(upper),
-        };
-        if matches!(resp.status(), StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED) {
+        // 只有明确“不支持 OPTIONS”才兼容回退；断线不能被解释为已确认可写。
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+        if matches!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+        ) {
             return Ok(upper);
         }
         if !resp.status().is_success() {
@@ -417,7 +449,7 @@ impl RemoteStore for WebDavStore {
         let path = if dir_id.is_empty() { "/" } else { dir_id };
         let items = self
             .dav
-            .list(path, reqwest_dav::Depth::Number(1))
+            .list(&encode_path(path), reqwest_dav::Depth::Number(1))
             .await
             .map_err(map_dav_err)?;
 
@@ -426,7 +458,7 @@ impl RemoteStore for WebDavStore {
         for it in items {
             match it {
                 reqwest_dav::list_cmd::ListEntity::File(f) => {
-                    let href = decode_href(&f.href);
+                    let href = self.id_from_href(&f.href)?;
                     // PROPFIND Depth:1 会把目录自身也列出来，跳过它，
                     // 否则每进一层目录都会多出一个指向自己的条目
                     if normalize(&href) == base_norm {
@@ -445,7 +477,7 @@ impl RemoteStore for WebDavStore {
                     });
                 }
                 reqwest_dav::list_cmd::ListEntity::Folder(d) => {
-                    let href = decode_href(&d.href);
+                    let href = self.id_from_href(&d.href)?;
                     if normalize(&href) == base_norm {
                         continue;
                     }
@@ -472,7 +504,13 @@ impl RemoteStore for WebDavStore {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let end = offset.saturating_add(len).saturating_sub(1);
+        let end = offset
+            .checked_add(len - 1)
+            .ok_or_else(|| Error::Protocol("Range 区间溢出".into()))?;
+        usize::try_from(len)
+            .ok()
+            .filter(|&n| n <= isize::MAX as usize)
+            .ok_or_else(|| Error::Protocol("Range 长度无法在本机表示".into()))?;
 
         let mut headers = HeaderMap::new();
         if let Some(a) = self.auth_header() {
@@ -482,8 +520,10 @@ impl RemoteStore for WebDavStore {
             return Err(Error::Protocol(String::from("非法的 Range 区间")));
         };
         headers.insert(RANGE, rv);
+        // Range 指向原始文件字节，压缩传输会改变偏移语义。
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
 
-        let resp = self
+        let mut resp = self
             .http
             .get(self.url_for(id))
             .headers(headers)
@@ -496,25 +536,65 @@ impl RemoteStore for WebDavStore {
             return Err(Self::map_status(status, id));
         }
 
-        // 服务端可以合法地忽略 Range（RFC 7233：MAY ignore），此时返回
-        // 200 和整个文件。不裁剪的话上层会把整文件当成一小段密文去解，
-        // 表现为「文件明明没坏却一直认证失败」——极难归因。
-        let ignored_range =
-            status != StatusCode::PARTIAL_CONTENT && resp.headers().get(CONTENT_RANGE).is_none();
-
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| Error::Network(e.to_string()))?;
-
-        if ignored_range {
-            let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            let want = usize::try_from(len).unwrap_or(usize::MAX);
-            let slice = body.get(start..).unwrap_or(&[]);
-            let take = slice.len().min(want);
-            return Ok(slice.get(..take).unwrap_or(&[]).to_vec());
+        if resp
+            .headers()
+            .get(CONTENT_ENCODING)
+            .is_some_and(|v| v != "identity")
+        {
+            return Err(Error::Protocol("Range 响应不能使用内容编码".into()));
         }
-        Ok(body.to_vec())
+        let partial = status == StatusCode::PARTIAL_CONTENT;
+        let expected = match status {
+            StatusCode::PARTIAL_CONTENT => {
+                let value = resp
+                    .headers()
+                    .get(CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| Error::Protocol("206 响应缺少 Content-Range".into()))?;
+                let expected = range_response_len(value, offset, end)?;
+                if resp.content_length().is_some_and(|n| n != expected) {
+                    return Err(Error::Protocol(
+                        "Content-Length 与 Content-Range 不符".into(),
+                    ));
+                }
+                expected
+            }
+            StatusCode::OK => {
+                if resp.headers().contains_key(CONTENT_RANGE) {
+                    return Err(Error::Protocol("200 响应含有 Content-Range".into()));
+                }
+                // 丢弃 offset 字节虽然省内存，但一次尾部 seek 仍要下载整个前缀。
+                // 只兼容起点为零的探测读取，随机读取必须明确拒绝而不能偷偷全量扫描。
+                if offset != 0 {
+                    return Err(Error::Unsupported("range_read"));
+                }
+                resp.content_length().map_or(len, |n| n.min(len))
+            }
+            _ => return Err(Error::Protocol(format!("Range 请求返回 HTTP {status}"))),
+        };
+        let mut body = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?
+        {
+            let remaining = expected - body.len() as u64;
+            if partial && chunk.len() as u64 > remaining {
+                return Err(Error::Protocol("206 响应体超过声明的区间".into()));
+            }
+            let take = chunk.len().min(remaining as usize);
+            body.try_reserve(take)
+                .map_err(|_| Error::Protocol("Range 缓冲区无法分配".into()))?;
+            body.extend_from_slice(&chunk[..take]);
+            if !partial && body.len() as u64 == expected {
+                // 不等待整文件 EOF；drop 响应会终止剩余传输。
+                return Ok(body);
+            }
+        }
+        if (partial || resp.content_length().is_some()) && body.len() as u64 != expected {
+            return Err(Error::Protocol("Range 响应体不完整".into()));
+        }
+        Ok(body)
     }
 
     fn child_id(&self, dir_id: &str, name: &str) -> Option<String> {
@@ -527,7 +607,7 @@ impl RemoteStore for WebDavStore {
         }
         let path = join(dir_id, name);
         self.dav
-            .put(&path, data.to_vec())
+            .put(&encode_path(&path), data.to_vec())
             .await
             .map_err(map_dav_err)?;
         Ok(Entry {
@@ -547,13 +627,27 @@ impl RemoteStore for WebDavStore {
         dir_id: &str,
         name: &str,
         size: u64,
-        reader: Box<dyn AsyncRead + Unpin + Send>,
+        mut reader: Box<dyn AsyncRead + Unpin + Send>,
     ) -> Result<Entry> {
         if !self.cfg.writable {
             return Err(Error::Unsupported("write"));
         }
         let path = join(dir_id, name);
-        let stream = ReaderStream::new(reader);
+        // Content-Length 只是传输上限：HTTP 栈会截断过长的流，且服务端可能提前
+        // 回成功。必须自己验证源 EOF，再允许最后一个字节进入请求体。
+        if size == 0 {
+            let mut byte = [0u8; 1];
+            if reader.read(&mut byte).await? != 0 {
+                return Err(Error::Protocol("上传源超过声明长度".into()));
+            }
+        }
+        let verified = Arc::new(AtomicBool::new(size == 0));
+        let stream = ReaderStream::new(ExactUploadReader {
+            inner: reader,
+            remaining: size,
+            last: None,
+            verified: Arc::clone(&verified),
+        });
         let body = reqwest::Body::wrap_stream(stream);
         let mut req = self
             .http
@@ -563,9 +657,15 @@ impl RemoteStore for WebDavStore {
         if let Some(a) = self.auth_header() {
             req = req.header(AUTHORIZATION, a);
         }
-        let resp = req.send().await.map_err(|e| Error::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
             return Err(Self::map_status(resp.status(), &path));
+        }
+        if !verified.load(Ordering::Acquire) {
+            return Err(Error::Protocol("服务端在上传源完整发送前返回成功".into()));
         }
         Ok(Entry {
             id: path,
@@ -583,7 +683,7 @@ impl RemoteStore for WebDavStore {
         if !self.cfg.writable {
             return Err(Error::Unsupported("delete"));
         }
-        self.dav.delete(id).await.map_err(map_dav_err)
+        self.dav.delete(&encode_path(id)).await.map_err(map_dav_err)
     }
 
     async fn rename(&self, id: &str, new_name: &str) -> Result<()> {
@@ -592,7 +692,10 @@ impl RemoteStore for WebDavStore {
         }
         let parent = dirname(id);
         let target = join(&parent, new_name);
-        self.dav.mv(id, &target).await.map_err(map_dav_err)
+        self.dav
+            .mv(&encode_path(id), &encode_path(&target))
+            .await
+            .map_err(map_dav_err)
     }
 
     async fn create_dir(&self, parent_id: &str, name: &str) -> Result<Entry> {
@@ -600,7 +703,10 @@ impl RemoteStore for WebDavStore {
             return Err(Error::Unsupported("create_dir"));
         }
         let path = join(parent_id, name);
-        self.dav.mkcol(&path).await.map_err(map_dav_err)?;
+        self.dav
+            .mkcol(&encode_path(&path))
+            .await
+            .map_err(map_dav_err)?;
         Ok(Entry {
             id: path,
             name: name.to_owned(),
@@ -612,6 +718,109 @@ impl RemoteStore for WebDavStore {
             media_tab: None,
         })
     }
+}
+
+/// 保留最后一个字节直到 EOF 已确认，既不全量缓冲，也不让过长流被 HTTP 截成成功。
+struct ExactUploadReader {
+    inner: Box<dyn AsyncRead + Unpin + Send>,
+    remaining: u64,
+    last: Option<u8>,
+    verified: Arc<AtomicBool>,
+}
+
+impl AsyncRead for ExactUploadReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if buf.remaining() == 0 || this.verified.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
+        }
+        if this.remaining > 1 {
+            let limit = (this.remaining - 1).min(buf.remaining() as u64) as usize;
+            let mut read_buf = ReadBuf::new(&mut buf.initialize_unfilled()[..limit]);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {}
+            }
+            let count = read_buf.filled().len();
+            if count == 0 {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "上传源短于声明长度",
+                )));
+            }
+            this.remaining -= count as u64;
+            buf.advance(count);
+            return Poll::Ready(Ok(()));
+        }
+        if this.remaining == 1 {
+            let mut byte = [0u8; 1];
+            let mut read_buf = ReadBuf::new(&mut byte);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {}
+            }
+            let Some(&last) = read_buf.filled().first() else {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "上传源短于声明长度",
+                )));
+            };
+            this.last = Some(last);
+            this.remaining = 0;
+        }
+        let mut extra = [0u8; 1];
+        let mut read_buf = ReadBuf::new(&mut extra);
+        match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Ok(())) => {}
+        }
+        if !read_buf.filled().is_empty() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "上传源超过声明长度",
+            )));
+        }
+        if let Some(last) = this.last.take() {
+            buf.put_slice(&[last]);
+        }
+        this.verified.store(true, Ordering::Release);
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// 先验证范围再消费响应体，防止错误偏移污染密文缓存，或把整文件伪装成 206。
+fn range_response_len(value: &str, offset: u64, requested_end: u64) -> Result<u64> {
+    let invalid = || Error::Protocol("Content-Range 与请求区间不符".into());
+    let rest = value.strip_prefix("bytes ").ok_or_else(invalid)?;
+    let (range, total) = rest.split_once('/').ok_or_else(invalid)?;
+    let (start, end) = range.split_once('-').ok_or_else(invalid)?;
+    let number = |s: &str| -> Result<u64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        s.parse().map_err(|_| invalid())
+    };
+    let start = number(start)?;
+    let end = number(end)?;
+    if start != offset || end < start || end > requested_end {
+        return Err(invalid());
+    }
+    if total != "*" {
+        let total = number(total)?;
+        if end >= total || (end < requested_end && end != total - 1) {
+            return Err(invalid());
+        }
+    }
+    end.checked_sub(start)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(invalid)
 }
 
 /// 这个地址是不是指向本机（或链路本地）。
@@ -651,34 +860,37 @@ fn is_loopback_host(url: &url::Url) -> bool {
 
 /// 把 `reqwest_dav` 的错误映射成分类错误。
 fn map_dav_err(e: reqwest_dav::Error) -> Error {
-    // 该库把 HTTP 状态包在 Decode(StatusMismatched) 里，
-    // 取不到时退回网络错误——宁可少分类，也不要把认证失败报成别的
-    let s = e.to_string();
-    if s.contains("401") {
-        Error::Unauthorized
-    } else if s.contains("403") {
-        Error::Forbidden
-    } else if s.contains("404") {
-        Error::NotFound(s)
-    } else if s.contains("429") {
-        Error::RateLimited
-    } else {
-        Error::Network(s)
+    // 错误文本还带 URL/端口，搜“401”会把端口 40123 的断线错报为密码错误。
+    // 库已公开真实响应码，应按类型取值，XML 解码失败也不该无限网络重试。
+    let status = match &e {
+        reqwest_dav::Error::Decode(reqwest_dav::DecodeError::StatusMismatched(e)) => {
+            Some(e.response_code)
+        }
+        reqwest_dav::Error::Decode(reqwest_dav::DecodeError::Server(e)) => Some(e.response_code),
+        reqwest_dav::Error::Reqwest(e) => e.status().map(|s| s.as_u16()),
+        _ => None,
+    };
+    if let Some(status) = status.and_then(|s| StatusCode::from_u16(s).ok()) {
+        return WebDavStore::map_status(status, "WebDAV");
+    }
+    match e {
+        reqwest_dav::Error::Reqwest(e) => Error::Network(e.to_string()),
+        other => Error::Protocol(other.to_string()),
     }
 }
 
 /// 归一化路径，用于比较两个 href 是否指向同一处。
 fn normalize(p: &str) -> String {
-    let t = p.trim_matches('/');
-    percent_decode(t)
+    // Entry.id 与调用方路径都已解码，不能再把文件名字面的 %2F 误当斜杠。
+    p.trim_matches('/').to_owned()
 }
 
-/// href 里的路径是百分号编码的，要还原成可读名字。
-fn decode_href(href: &str) -> String {
-    let s = percent_decode(href);
-    // 服务端返回的 href 可能带前缀（如 /remote.php/dav/files/me/a.txt），
-    // 保留原样即可——它会被 url_for 重新编码后使用
-    s
+/// GET 和 DAV 动词共用编码规则，否则 MOVE 的 Destination 会带中文或 URL 分隔符。
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEGMENT).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn percent_decode(s: &str) -> String {
@@ -747,6 +959,21 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 不这样会怎样：错误文本里的 expected_code=401 会覆盖真实的 503。
+    #[test]
+    fn dav_status_uses_response_code_instead_of_matching_text() {
+        let error = reqwest_dav::Error::Decode(reqwest_dav::DecodeError::StatusMismatched(
+            reqwest_dav::StatusMismatchedError {
+                response_code: 503,
+                expected_code: 401,
+            },
+        ));
+        assert!(
+            matches!(map_dav_err(error), Error::Network(_)),
+            "应按真实 503 重试，不能弹登录"
+        );
+    }
 
     fn store(writable: bool) -> WebDavStore {
         WebDavStore::new(WebDavConfig {
@@ -888,6 +1115,40 @@ mod tests {
         assert!(!u.contains("%2D") && !u.contains("%5F") && !u.contains("%2E"));
     }
 
+    /// 不这样会怎样：href 的短期签名混进对象身份，刷新后收藏与缓存认不出同一文件。
+    #[test]
+    fn href_identity_is_relative_and_excludes_transport_query() {
+        let s = store(false);
+        for (href, id) in [
+            ("/dav/%E4%B8%AD%E6%96%87%20%23%25.txt", "/中文 #%.txt"),
+            (
+                "https://dav.example.com/dav/file?token=old#download",
+                "/file",
+            ),
+            ("https://dav.example.com/dav/file?token=new", "/file"),
+            ("/dav/%252F", "/%2F"),
+            ("file.txt", "/file.txt"),
+            ("/dav/", "/"),
+        ] {
+            assert_eq!(
+                s.id_from_href(href).expect("位置根内 href"),
+                id,
+                "只解码一次并保留稳定相对身份"
+            );
+        }
+        for href in ["/dav-other/file", "https://other.example.com/dav/file"] {
+            assert!(
+                s.id_from_href(href).is_err(),
+                "不能把其它根或主机的地址猜成当前位置条目"
+            );
+        }
+        assert_eq!(
+            encode_path("/中文 #?%.txt"),
+            "/%E4%B8%AD%E6%96%87%20%23%3F%25.txt",
+            "所有 DAV 动词都要使用相同编码"
+        );
+    }
+
     /// 根路径要能正确拼出来。
     #[test]
     fn url_for_root() {
@@ -943,7 +1204,12 @@ mod tests {
     #[test]
     fn normalize_identifies_same_path() {
         assert_eq!(normalize("/a/b/"), normalize("a/b"));
-        assert_eq!(normalize("/%E5%BD%B1%E8%A7%86/"), normalize("影视"));
+        assert_eq!(normalize("/影视/"), normalize("影视"));
+        assert_eq!(
+            normalize("/%2F/"),
+            "%2F",
+            "字面的百分号名字不能被再次解码成根目录"
+        );
     }
 
     /// 可写配置声明的能力要与实际一致。
