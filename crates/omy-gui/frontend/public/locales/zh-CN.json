@@ -235,6 +235,23 @@
     "foot_frame": "封面帧 {{time}}",
     "foot_frame_auto": "封面帧自动选取（时长十分之一处）"
   },
+  "audio": {
+    "title": "音频预览",
+    "encrypted_hint": "按需解密播放，不生成明文副本",
+    "direct_hint": "直接播放，无需先下载完整文件",
+    "play": "播放",
+    "pause": "暂停",
+    "seek": "播放进度",
+    "speed": "倍速",
+    "volume": "音量",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "buffering": "正在缓冲…",
+    "paused": "已暂停",
+    "playing": "正在播放",
+    "failed": "播放失败",
+    "compatibility_hint": "当前 WebView 可能不支持此音频编码或容器，也可能是文件损坏。此版本不进行实时转码；可在加密前转换为兼容格式后重试。"
+  },
   "playback": {
     "tier_p1": "直通",
     "tier_p2": "转封装",

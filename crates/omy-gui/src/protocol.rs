@@ -40,7 +40,7 @@
 //! # 远端为什么能走同一条路
 //!
 //! `omy_core::payload::read_range` 取密文用的是一个**闭包**。
-//! 本地实现是「从已读入的字节里切一段」，远端实现是「发一条
+//! 本地实现是「按偏移 seek 取密文块」，远端实现是「发一条
 //! `Request::Read` 去对方那里取一段」——除此之外，解密、Range
 //! 处理、CORS、no-store 全都一模一样。
 //!
@@ -52,6 +52,7 @@ use crate::remote::RemoteSession;
 use crate::state::AppState;
 use omy_core::crypto::Kek;
 use omy_core::file::OpenedFile;
+use omy_core::source::{LocalFileSource, read_source_range};
 use std::sync::Arc;
 use tauri::http::{Method, Request, Response, StatusCode, header};
 
@@ -434,7 +435,7 @@ fn serve_container_item(
         return bare(StatusCode::FORBIDDEN);
     }
 
-    let Some((bytes, opened)) = open_for(state, &entry.path) else {
+    let Some((source, opened)) = open_for(state, &entry.path) else {
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
@@ -491,40 +492,9 @@ fn serve_container_item(
         (length, is_partial, end_inclusive)
     };
 
-    let cindex = opened.compression_index().unwrap_or_default();
-    let cindex = if cindex.is_empty() {
-        None
-    } else {
-        Some(cindex)
-    };
-
-    let header_len = u64::from(opened.header.header_len);
-    // 这一行就是「容器内单文件」与「整个文件」的**全部**区别：
-    // 把请求的偏移平移到该文件在载荷中的位置
+    // 与独立文件共用核心随机读取，压缩索引错误必须传播，不能默默当未压缩读。
     let payload_start = item.offset.saturating_add(start);
-
-    let data = match omy_core::payload::read_range(
-        &opened.header,
-        opened.payload_key(),
-        cindex.as_deref(),
-        payload_start,
-        length,
-        |payload_off, len| {
-            // 与 serve_file 相同的契约：read_range 给的是相对载荷起点的
-            // 偏移，取密文时要加回 header_len
-            let abs = payload_off.saturating_add(header_len);
-            let s = usize::try_from(abs).unwrap_or(usize::MAX);
-            let e = usize::try_from(abs.saturating_add(len)).unwrap_or(usize::MAX);
-            bytes
-                .get(s..e)
-                .map(<[u8]>::to_vec)
-                .ok_or(omy_core::Error::Truncated {
-                    context: "container item ciphertext fetch",
-                    need: e,
-                    got: bytes.len(),
-                })
-        },
-    ) {
+    let data = match read_source_range(&source, &opened, payload_start, length) {
         Ok(d) => d,
         Err(_) => return bare(StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -553,8 +523,9 @@ fn serve_container_item(
 /// 每次请求都重新打开是有意为之：不缓存 `OpenedFile` 意味着
 /// 不在内存里长期持有 payload key。代价是每次多一次 header 解析
 /// （微秒级，因为 KEK 已在会话里，不需要重跑 Argon2）。
-fn open_for(state: &Arc<AppState>, path: &str) -> Option<(Vec<u8>, OpenedFile)> {
-    let bytes = std::fs::read(path).ok()?;
+fn open_for(state: &Arc<AppState>, path: &str) -> Option<(LocalFileSource, OpenedFile)> {
+    // 头部与载荷分开读，避免长音频每次 seek 都重新把整个密文载入内存。
+    let bytes = crate::commands::read_header_area(std::path::Path::new(path)).ok()?;
     let h = omy_core::file::peek_header(&bytes).ok()?;
     let keks: Vec<Kek> = state.with_session(|s| {
         s.all_for(&h.vault_salt)
@@ -563,7 +534,7 @@ fn open_for(state: &Arc<AppState>, path: &str) -> Option<(Vec<u8>, OpenedFile)> 
             .collect()
     })?;
     let opened = omy_core::file::open(&bytes, &keks).ok()?;
-    Some((bytes, opened))
+    Some((LocalFileSource::open(path).ok()?, opened))
 }
 
 /// 返回文件正文，支持 Range。
@@ -572,7 +543,7 @@ fn serve_file(
     request: &Request<Vec<u8>>,
     entry: &crate::state::FileEntry,
 ) -> Response<Vec<u8>> {
-    let Some((bytes, opened)) = open_for(state, &entry.path) else {
+    let Some((source, opened)) = open_for(state, &entry.path) else {
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
@@ -600,8 +571,8 @@ fn serve_file(
         None => (0u64, total.saturating_sub(1), false),
     };
 
-    // 只对 Range 请求设上限。无 Range 的请求必须返回完整内容，
-    // 否则 200 响应与 Content-Length 不一致，播放器会认为文件被截断。
+    // Range 先截到响应上限；下面另为无 Range 的媒体首请求生成有界 206。
+    // 非媒体的完整 fetch 仍返回完整内容。
     let end_inclusive = if is_partial {
         end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
     } else {
@@ -609,41 +580,15 @@ fn serve_file(
     };
     let length = end_inclusive.saturating_sub(start).saturating_add(1);
 
-    // 压缩文件必须带上压缩索引，否则 read_range 无法把
-    // 明文偏移映射到压缩块——会读出错位的数据。
-    // core 对非压缩文件返回空 Vec，所以这里统一处理即可。
-    let cindex = opened.compression_index().unwrap_or_default();
-    let cindex = if cindex.is_empty() {
-        None
+    // 即使媒体首请求不带 Range，也不能把长音频全量解密到内存。
+    // 文本等 fetch 消费者仍需完整的 200；只给媒体作有界的 206。
+    let is_media = entry.mime.as_deref().is_some_and(|m| m.starts_with("audio/") || m.starts_with("video/"));
+    let (length, is_partial, end_inclusive) = if !is_partial && is_media && length > MAX_SPAN {
+        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
     } else {
-        Some(cindex)
+        (length, is_partial, end_inclusive)
     };
-
-    // 关键契约：fetch_ct 收到的 off 是**相对载荷起点**的偏移，
-    // 不是文件绝对偏移——read_range 内部已经减掉了 header_len。
-    // 必须加回来才能正确索引整个文件。spike 里漏了这一步，
-    // 表现为 chunk 0 认证失败 → MEDIA_ERR_SRC_NOT_SUPPORTED。
-    let header_len = u64::from(opened.header.header_len);
-    let data = match omy_core::payload::read_range(
-        &opened.header,
-        opened.payload_key(),
-        cindex.as_deref(),
-        start,
-        length,
-        |payload_off, len| {
-            let abs = payload_off.saturating_add(header_len);
-            let s = usize::try_from(abs).unwrap_or(usize::MAX);
-            let e = usize::try_from(abs.saturating_add(len)).unwrap_or(usize::MAX);
-            bytes
-                .get(s..e)
-                .map(<[u8]>::to_vec)
-                .ok_or(omy_core::Error::Truncated {
-                    context: "omystream ciphertext fetch",
-                    need: e,
-                    got: bytes.len(),
-                })
-        },
-    ) {
+    let data = match read_source_range(&source, &opened, start, length) {
         Ok(d) => d,
         Err(_) => return bare(StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -734,7 +679,7 @@ fn serve_thumb(state: &Arc<AppState>, entry: &crate::state::FileEntry) -> Respon
 ///
 /// # 与本地版的唯一区别
 ///
-/// 取密文的闭包：本地从已读入的 `bytes` 里切片，这里发
+/// 取密文的闭包：本地按偏移 seek 读取，这里发
 /// `Request::Read` 去对方那里取。Range 处理、`MAX_SPAN` 截断、
 /// 416、CORS、`no-store` 全部相同——**这些行为不能有两套实现**，
 /// 否则远端会悄悄退化成「能播但拖不动」。
@@ -1578,6 +1523,56 @@ mod tests {
         )
         .unwrap_or_else(|_| unreachable!("部分读取应当成功"));
         assert_eq!(mid, vec![0xCC; 16], "从中间读也必须落在 c.bin 内");
+    }
+
+    /// 用真实协议响应验证，不复制被测的区间算法；否则实现失效时测试仍会绿。
+    #[test]
+    fn encrypted_audio_range_is_bounded_and_matches_plaintext() -> Result<(), Box<dyn std::error::Error>> {
+        use omy_core::crypto::{Kek, SecretKey};
+        use omy_core::file::{EncryptOptions, RandomMaterial, encrypt};
+        use omy_core::session::CredentialKind;
+        let state = Arc::new(AppState::new());
+        let salt = core::array::from_fn(|i| (i as u8).wrapping_mul(13));
+        let kek = Kek::from_key(SecretKey::from_bytes(core::array::from_fn(|i| (i as u8).wrapping_mul(7) ^ 0x3D)));
+        let plain: Vec<u8> = (0..MAX_SPAN + 131_072).map(|i| (i % 251) as u8).collect();
+        for compress in [false, true] {
+            let opts = EncryptOptions { compress, filename: Some("track.mp3".into()), ..EncryptOptions::default() };
+            let enc = encrypt(&plain, &[kek.duplicate()], &salt, &opts, &RandomMaterial::generate())?;
+            let path = std::env::temp_dir().join(format!("omy-audio-{}.omy", uuid::Uuid::new_v4()));
+            std::fs::write(&path, &enc.bytes)?;
+            let entry = crate::state::FileEntry {
+                id: "audio-test".into(), path: path.to_string_lossy().into_owned(), name: "track.mp3".into(),
+                unlocked: true, size: Some(plain.len() as u64), encrypted_size: enc.bytes.len() as u64,
+                kind: Some("audio".into()), mime: Some("audio/mpeg".into()), tier: None, tier_reason: None,
+                duration_ms: None, width: None, height: None, has_thumbnail: false, needs_transcode: false,
+                credential: None, is_container: false,
+            };
+            state.with_session(|s| s.insert_kek("audio", CredentialKind::Vault, &salt, kek.duplicate()));
+            state.set_files(vec![entry.clone()]);
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let req = Request::builder().uri("/file/audio-test").body(Vec::new())?;
+                let response = serve_file(&state, &req, &entry);
+                // 不这样会怎样：不带 Range 的首请求又全量解密长音频。
+                assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "媒体首请求应有界响应");
+                assert_eq!(response.body().len() as u64, MAX_SPAN, "首请求不得越过响应上限");
+                assert_eq!(response.body(), plain.get(..MAX_SPAN as usize).ok_or("slice")?, "首段必须是原始音频字节");
+                let req = Request::builder().uri("/file/audio-test").header(header::RANGE, "bytes=65530-65600").body(Vec::new())?;
+                let response = serve_file(&state, &req, &entry);
+                // 不这样会怎样：跨块 seek 拿到错位密文，播放器只报格式不支持。
+                assert_eq!(response.body(), plain.get(65530..65601).ok_or("slice")?, "跨块 Range 必须逐字节匹配");
+                assert_eq!(response.headers().get(header::CONTENT_TYPE).and_then(|x| x.to_str().ok()), Some("audio/mpeg"), "音频不能伪装成视频 MIME");
+                assert!(response.headers().get(header::CACHE_CONTROL).and_then(|x| x.to_str().ok()).is_some_and(|s| s.contains("no-store")), "不这样 WebView 可能把解密内容缓存到磁盘");
+                // 文本 fetch 不能因媒体保护被截短。
+                let mut text_entry = entry.clone();
+                text_entry.mime = Some("text/plain".into());
+                let req = Request::builder().uri("/file/audio-test").body(Vec::new())?;
+                assert_eq!(serve_file(&state, &req, &text_entry).body(), &plain, "非媒体的完整 fetch 不能回归");
+                Ok(())
+            })();
+            std::fs::remove_file(path)?;
+            result?;
+        }
+        Ok(())
     }
 
     #[test]

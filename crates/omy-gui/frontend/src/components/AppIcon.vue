@@ -85,6 +85,8 @@ import {
   X,
   Zap,
   Camera,
+  Volume2,
+  VolumeX,
 } from '@lucide/vue';
 
 const props = withDefaults(defineProps<{
@@ -170,6 +172,8 @@ const icons: Record<string, Component> = {
   close: X, '✕': X,
   fast: Zap, '⚡': Zap,
   camera: Camera, '📷': Camera,
+  volume: Volume2,
+  'volume-off': VolumeX,
   archiveFile: FileArchive, '🗜️': FileArchive,
   inbox: Inbox, '📭': Inbox,
   info: Info, 'ℹ️': Info,

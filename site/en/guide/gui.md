@@ -21,7 +21,12 @@ Unlocked entries show the **decrypted original filename and thumbnail**, with a 
 Opening an unlocked media file previews it in place:
 
 - **Video**: scrub the timeline with a preview of the target frame, adjust volume and playback speed, or jump 10 seconds backward/forward. On mobile, swipe to seek with a frame preview and hold for 2× playback. Timeline thumbnails are generated in memory on demand; nothing is decrypted to disk first
-- **Images, audio, text**: displayed inline
+- **Audio**: double-click an unlocked audio file on desktop or tap it on mobile to open the player. It shows the name, format, duration and buffered ranges, with play/pause, seeking, 10-second jumps, 0.5–2× speed, volume and mute. Closing, switching files or locking stops playback and releases media buffers
+- **Images and text**: displayed inline
+
+Audio uses the same Range path as video to read and decrypt on demand, without making a plaintext copy first. Local standalone files and container entries no longer read the entire ciphertext into memory per request; local audio/video responses are capped at 2 MiB even for an initial request without Range. Common MP3, M4A/M4B, WAV, FLAC, Ogg/Opus and AAC files can be played directly when the current WebView supports their codecs and containers.
+
+Direct playback needs no FFmpeg. This version does not wire up real-time audio remuxing or transcoding. Unsupported formats such as WMA report an error with a retry action; convert them to a compatible format before encryption. Audio does not force Android into landscape, and no full-file waveform decoding, lyrics or playlist is introduced.
 
 Everything travels over the custom `omystream://` protocol, so plaintext is never written to disk. The security precondition for this path was established by measurement: the response headers must include `Cache-Control: no-store` and friends, or the WebView may cache decrypted data on disk.
 

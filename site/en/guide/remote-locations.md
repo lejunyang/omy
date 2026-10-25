@@ -294,7 +294,7 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Remote single-file `decrypt` streamed down-and-decrypt to local | ✅ | ✅ |
 | Remote cache: status / clear temporary blocks / keep complete original files / stop keeping | ✅ | ✅ |
 | Virtual locations (favorites) place / folder / ref / encrypt / lock / unlock | ✅ | ✅ (offline) |
-| Preview / stream video & images, incremental scan, thumbnails | ✅ | N/A (GUI-only) |
+| Preview / stream video, audio & images, incremental scan, thumbnails | ✅ | N/A (GUI-only; the audio player and scrubber do not apply to a terminal) |
 | Transfer manager page, resuming a failed transfer | ✅ | N/A (CLI is a short-lived process) |
 | Broadcast-channel message view, sponsored-message stance, in-place preview/source-jump from a reference | ✅ (read-only) | N/A (GUI event stream / interaction) |
 

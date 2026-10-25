@@ -235,6 +235,23 @@
     "foot_frame": "Cover frame {{time}}",
     "foot_frame_auto": "Cover frame chosen automatically (one tenth in)"
   },
+  "audio": {
+    "title": "Audio preview",
+    "encrypted_hint": "Decrypt on demand, without a plaintext copy",
+    "direct_hint": "Play directly, without downloading the complete file first",
+    "play": "Play",
+    "pause": "Pause",
+    "seek": "Playback position",
+    "speed": "Speed",
+    "volume": "Volume",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "buffering": "Buffering…",
+    "paused": "Paused",
+    "playing": "Playing",
+    "failed": "Playback failed",
+    "compatibility_hint": "This WebView may not support the audio codec or container, or the file may be damaged. This version does not transcode in real time; convert to a compatible format before encrypting and try again."
+  },
   "playback": {
     "tier_p1": "Direct",
     "tier_p2": "Remux",

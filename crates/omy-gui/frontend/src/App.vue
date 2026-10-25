@@ -352,6 +352,7 @@ async function onOpenPlace(f) {
         name: r.name || f.real_name || f.name,
         kind: r.kind || 'other',
         mime: r.mime || '',
+        isEncrypted: !r.not_encrypted,
         placeId: openPlace,
         remotePath: openId,
         remoteSize: size,

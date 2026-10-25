@@ -22,6 +22,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
 import { playing } from '../autolock';
 import OmyVideoPlayer from './OmyVideoPlayer.vue';
+import OmyAudioPlayer from './OmyAudioPlayer.vue';
 import * as i18n from '../i18n';
 import {
   fileUrl,
@@ -99,12 +100,6 @@ function onVideoPause() {
   playing.value = false;
 }
 
-/** 把原生音频错误码翻译成人话。视频错误由 OmyVideoPlayer 透传。 */
-function onMediaError() {
-  const code = (media.value as HTMLMediaElement | null)?.error?.code ?? 0;
-  mediaError.value = i18n.te(`media_error_${code}`, i18n.te('preview_failed'));
-}
-
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close');
 }
@@ -119,13 +114,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
-  // 音频仍使用原生控件；视频的释放由 OmyVideoPlayer 自己负责。
-  const el = media.value as HTMLMediaElement | null;
-  if (el && kind.value === 'audio') {
-    el.pause();
-    el.removeAttribute('src');
-    el.load();
-  }
+  // 音视频的暂停与缓冲释放由各自播放器负责。
   // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
   // 自动锁定就永远不会触发——那等于这个功能默默失效了
   playing.value = false;
@@ -159,19 +148,16 @@ onBeforeUnmount(() => {
         @pause="onVideoPause"
       />
 
-      <audio
+      <OmyAudioPlayer
         v-else-if="kind === 'audio'"
-        id="pv"
-        ref="media"
         :src="src"
-        controls
+        :name="file.name"
+        :mime="file.mime"
+        :encrypted="!plain && !(place && file.isEncrypted === false)"
         autoplay
-        crossorigin="anonymous"
         @play="onVideoPlay"
         @pause="onVideoPause"
-        @ended="onVideoPause"
-        @error="onMediaError"
-      ></audio>
+      />
 
       <!-- SVG 也走 <img>：浏览器的受限模式会禁掉其中的脚本。
            绝不用 v-html 插入 SVG——那等于执行未知代码 -->

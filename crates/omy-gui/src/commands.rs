@@ -406,7 +406,7 @@ fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
 /// 让扫描器能先取出 `header_len` 再决定读多少。两段读之后耗时与文件
 /// 大小**彻底无关**（实测小文件与 4 MiB 文件都是 0.09 ms/文件），
 /// 不必再赌某个常量对将来的缩略图尺寸够不够大。
-fn read_header_area(p: &Path) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_header_area(p: &Path) -> std::io::Result<Vec<u8>> {
     let off = omy_core::header::HEADER_LEN_FIELD_OFFSET;
     let head = read_prefix(p, off.saturating_add(4))?;
     let Some(field) = head

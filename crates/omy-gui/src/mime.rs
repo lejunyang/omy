@@ -161,11 +161,13 @@ pub fn video_mime(ext: &str) -> Option<&'static str> {
 pub fn audio_mime(ext: &str) -> Option<&'static str> {
     Some(match ext {
         "mp3" => "audio/mpeg",
-        "m4a" | "aac" => "audio/mp4",
+        "m4a" | "m4b" => "audio/mp4",
+        // 裸 AAC 是 ADTS，不是 MP4；混用 MIME 会让 WebView 选错解复用器。
+        "aac" => "audio/aac",
         "flac" => "audio/flac",
         "wav" => "audio/wav",
         "ogg" | "oga" => "audio/ogg",
-        "opus" => "audio/opus",
+        "opus" => "audio/ogg; codecs=opus",
         "wma" => "audio/x-ms-wma",
         _ => return None,
     })
@@ -282,6 +284,23 @@ mod tests {
         for s in ["srt", "vtt", "ass", "ssa"] {
             let (k, _) = by_extension(&format!("movie.{s}"));
             assert_eq!(k, kind::TEXT, "{s} 应可作为文本预览");
+        }
+    }
+
+    #[test]
+    fn audio_extensions_keep_the_real_container_mime() {
+        // 不这样会怎样：ADTS 被送进 MP4 解复用器、Ogg Opus 被当成裸编码，点开即失败。
+        for (name, expected) in [
+            ("a.mp3", "audio/mpeg"),
+            ("a.m4a", "audio/mp4"),
+            ("book.m4b", "audio/mp4"),
+            ("a.AAC", "audio/aac"),
+            ("a.opus", "audio/ogg; codecs=opus"),
+            ("a.flac", "audio/flac"),
+            ("a.wav", "audio/wav"),
+            ("a.oga", "audio/ogg"),
+        ] {
+            assert_eq!(by_extension(name), (kind::AUDIO, expected.to_owned()), "{name} 的类型或 MIME 不匹配，WebView 会选错解码路径");
         }
     }
 
