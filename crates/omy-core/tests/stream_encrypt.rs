@@ -124,3 +124,44 @@ fn folder_index_is_finalized_after_payload() {
     );
     assert!(r.is_err(), "定稿长度与占位不同必须报错");
 }
+
+/// 流式打包 + 流式加密，与内存打包 + 内存加密逐字节相同。
+///
+/// 不这样会怎样：流式路径的文件顺序、偏移或逐文件哈希与内存路径不一致，
+/// 产物照样能打开，但容器里的文件会张冠李戴或校验失败。
+#[test]
+fn streamed_folder_matches_packed_folder() {
+    let root = std::env::temp_dir().join(format!("omy-stream-pack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let src = root.join("相册");
+    std::fs::create_dir_all(src.join("子目录")).unwrap();
+    std::fs::create_dir_all(src.join("空目录")).unwrap();
+    std::fs::write(src.join("a.txt"), data(3000)).unwrap();
+    std::fs::write(src.join("子目录").join("b.bin"), data(MIN_CHUNK_SIZE as usize * 2 + 5)).unwrap();
+    std::fs::write(src.join("z.empty"), b"").unwrap();
+
+    let packed = omy_core::pack::pack_folder(&src, None).unwrap();
+    let opts = EncryptOptions {
+        chunk_size: MIN_CHUNK_SIZE,
+        argon2: Argon2Params::TEST_WEAK,
+        folder_index: Some(packed.index.encode()),
+        ..EncryptOptions::default()
+    };
+    let fek = Fek::random();
+    let mem = encrypt_with_fek(&packed.payload, &[kek()], &salt(), &opts, &rnd(1), &fek).unwrap();
+
+    let plan = omy_core::pack::plan_folder(&src).unwrap();
+    assert_eq!(plan.total_size, packed.payload.len() as u64);
+    let mut reader = plan.reader();
+    let hashes = reader.hashes();
+    let stream_opts = EncryptOptions { folder_index: Some(plan.placeholder_index().unwrap()), ..opts.clone() };
+    let mut out = Cursor::new(Vec::new());
+    encrypt_stream_with_fek(
+        &mut reader, plan.total_size, &[kek()], &salt(), &stream_opts, &rnd(1), &fek,
+        &mut out, None,
+        Some(&mut || Ok(plan.finish(&hashes.borrow())?.encode())),
+    )
+    .unwrap();
+    assert_eq!(out.into_inner(), mem.bytes);
+    let _ = std::fs::remove_dir_all(&root);
+}

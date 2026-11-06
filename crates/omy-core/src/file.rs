@@ -426,6 +426,18 @@ fn seal_header(
 /// 与已写出的载荷错位。
 pub type FinalizeFolderIndex<'a> = &'a mut dyn FnMut() -> Result<Vec<u8>>;
 
+/// 流式加密的结果。
+#[derive(Debug, Clone)]
+pub struct StreamedFile {
+    /// 解析好的固定头。
+    pub header: FixedHeader,
+    /// 完整头部字节（含 MAC）。调用方据此做写盘后的自检（例如按密码重新打开），
+    /// 不必再从磁盘读回。
+    pub head: Vec<u8>,
+    /// 写出的总字节数（头部 + 载荷）。
+    pub len: u64,
+}
+
 /// 流式加密：从 `input` 读恰好 `plaintext_len` 字节明文，把完整的 omy 文件写进 `out`。
 ///
 /// 与 [`encrypt_with_progress`] 产出**逐字节相同**的文件（给定相同 FEK 与随机材料
@@ -454,7 +466,7 @@ pub fn encrypt_stream<R: std::io::Read, W: std::io::Write + std::io::Seek>(
     out: &mut W,
     progress: Option<payload::ProgressFn<'_>>,
     finalize_folder_index: Option<FinalizeFolderIndex<'_>>,
-) -> Result<FixedHeader> {
+) -> Result<StreamedFile> {
     if keks.is_empty() {
         return Err(Error::TooManySlots { got: 0, max: SLOT_COUNT });
     }
@@ -491,7 +503,7 @@ pub fn encrypt_stream_with_fek<R: std::io::Read, W: std::io::Write + std::io::Se
     out: &mut W,
     progress: Option<payload::ProgressFn<'_>>,
     finalize_folder_index: Option<FinalizeFolderIndex<'_>>,
-) -> Result<FixedHeader> {
+) -> Result<StreamedFile> {
     use std::io::SeekFrom;
     if opts.chunk_size == 0 {
         return Err(Error::MalformedHeader { reason: "chunk_size must not be zero" });
@@ -558,7 +570,7 @@ pub fn encrypt_stream_with_fek<R: std::io::Read, W: std::io::Write + std::io::Se
     out.write_all(&head).map_err(Error::Io)?;
     out.seek(SeekFrom::Start(end)).map_err(Error::Io)?;
     out.flush().map_err(Error::Io)?;
-    Ok(header)
+    Ok(StreamedFile { header, head, len: end.saturating_sub(base) })
 }
 
 /// 用指定的填充字节构建 slot 区，供确定性复现使用。
