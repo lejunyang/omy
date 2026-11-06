@@ -117,7 +117,19 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             continue;
         }
 
-        let data = read_possibly_sharded(ctx, f, a.ignore_missing_shards)?;
+        // 普通文件只读头部，载荷按窗口从磁盘解密：原来整个密文读进内存再
+        // 整份解密，几 GB 的文件峰值内存是文件大小的两倍以上。分片输入仍在
+        // 内存里合并（少见路径，且合并本身需要全部分片）
+        let (data, source): (Vec<u8>, Box<dyn omy_core::source::BlockSource>) =
+            if shard_path(f, 0).exists() {
+                let all = read_possibly_sharded(ctx, f, a.ignore_missing_shards)?;
+                let src = omy_core::source::MemorySource::new(&all)?;
+                (all, Box::new(src))
+            } else {
+                let head = omy_core::scan::read_header_area(f)
+                    .with_context(|| format!("读取 {} 失败", f.display()))?;
+                (head, Box::new(omy_core::source::LocalFileSource::open(f)?))
+            };
         let h = omy_core::file::peek_header(&data)?;
 
         // 每个文件的 vault_salt 可能不同，故按文件派生 KEK。
@@ -131,8 +143,9 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
         if opened.is_container() {
             let idx = opened.folder_index()?;
-            let plain = opened.decrypt_all(&data)?;
             if a.verify_only {
+                // 校验 = 全部块认证 + 内容哈希，不必留下明文
+                omy_core::source::decrypt_to_sink(&*source, &opened, &mut |_| Ok(()), None)?;
                 ctx.out.success(&format!(
                     "{} {}（容器，{} 个条目）",
                     t("ok.verified"),
@@ -148,32 +161,38 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
                 continue;
             }
             let target = container_target(f, a)?;
-            let report = extract_container(ctx, &idx, &plain, &target)?;
+            let report = extract_container(ctx, &idx, &*source, &opened, &target)?;
             results.push(report);
             continue;
         }
 
-        let plain = opened.decrypt_all(&data)?;
+        let size = opened.header.plaintext_size;
 
         if a.verify_only {
+            omy_core::source::decrypt_to_sink(&*source, &opened, &mut |_| Ok(()), None)?;
             ctx.out.success(&format!(
                 "{} {}（{}）",
                 t("ok.verified"),
                 f.display(),
-                human_bytes(plain.len() as u64)
+                human_bytes(size)
             ));
             results.push(json!({
                 "input": f.display().to_string(),
                 "verified": true,
-                "plaintext_size": plain.len(),
+                "plaintext_size": size,
             }));
             continue;
         }
 
         if a.stdout {
-            std::io::stdout()
-                .write_all(&plain)
-                .context("写入标准输出失败")?;
+            let mut out = std::io::stdout().lock();
+            omy_core::source::decrypt_to_sink(
+                &*source,
+                &opened,
+                &mut |b| out.write_all(b).map_err(omy_core::Error::Io),
+                None,
+            )
+            .context("解密到标准输出失败")?;
             continue;
         }
 
@@ -184,19 +203,22 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
                 .unwrap_or_else(|| String::from("decrypted"))
         });
         let out_path = resolve_output(f, &name, a)?;
-        omy_core::fsatomic::write_atomic(&out_path, &plain)?;
+        // 原子写：哈希校验通过才提交，失败时不留半个文件
+        let mut writer = omy_core::fsatomic::AtomicWriter::create(&out_path)?;
+        omy_core::source::decrypt_to_sink(&*source, &opened, &mut |b| writer.write_all(b), None)?;
+        writer.commit()?;
 
         ctx.out.success(&format!(
             "{} {} → {}（{}）",
             t("ok.decrypted"),
             f.display(),
             out_path.display(),
-            human_bytes(plain.len() as u64)
+            human_bytes(size)
         ));
         results.push(json!({
             "input": f.display().to_string(),
             "output": out_path.display().to_string(),
-            "plaintext_size": plain.len(),
+            "plaintext_size": size,
         }));
     }
 
@@ -397,10 +419,16 @@ fn read_head(p: &Path, n: usize) -> Result<Vec<u8>> {
 fn extract_container(
     ctx: &Ctx<'_>,
     idx: &omy_core::container::ContainerIndex,
-    payload: &[u8],
+    source: &dyn omy_core::source::BlockSource,
+    opened: &omy_core::file::OpenedFile,
     target: &Path,
 ) -> Result<serde_json::Value> {
-    let rep = omy_core::unpack::extract_container(idx, payload, target)?;
+    // 按条目区间从密文直接解密写盘，内存占用与容器大小无关
+    let rep = omy_core::unpack::extract_container_with(
+        idx,
+        &mut |off, len| omy_core::source::read_source_range(source, opened, off, len),
+        target,
+    )?;
 
     // 同 encrypt：没有链接就不提，免得每次都多一句「0 个符号链接」
     let links = if rep.links > 0 {

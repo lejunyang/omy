@@ -72,6 +72,39 @@ pub fn extract_container(
     payload: &[u8],
     target: &Path,
 ) -> Result<ExtractReport> {
+    extract_container_with(
+        idx,
+        &mut |off, len| {
+            let start = usize::try_from(off).unwrap_or(usize::MAX);
+            let end = start.saturating_add(usize::try_from(len).unwrap_or(usize::MAX));
+            // 归到 MalformedHeader 而不是载荷类错误：容器索引在头部
+            // TLV 里，「区间超出载荷」说明索引本身不对
+            payload.get(start..end).map(<[u8]>::to_vec).ok_or(Error::MalformedHeader {
+                reason: "container entry payload range out of bounds",
+            })
+        },
+        target,
+    )
+}
+
+/// 每次从载荷里取多少明文。足够大以摊薄解密开销，又小到与文件大小无关。
+pub const STREAM_WINDOW: u64 = 4 * 1024 * 1024;
+
+/// 与 [`extract_container`] 相同，但按需读取载荷区间，而不是要求整份明文在内存里。
+///
+/// `read(offset, len)` 返回容器明文载荷中 `[offset, offset + len)` 的字节，
+/// 调用方通常用 [`crate::source::read_source_range`] 直接从密文按块解密。
+/// 每个条目按 [`STREAM_WINDOW`] 分段写盘，内存占用与容器大小无关——原来
+/// 要先把整个容器解密进内存，几十 GB 的文件夹在手机上根本还原不了。
+///
+/// # Errors
+///
+/// 与 [`extract_container`] 一致；`read` 的错误原样返回。
+pub fn extract_container_with(
+    idx: &ContainerIndex,
+    read: &mut dyn FnMut(u64, u64) -> Result<Vec<u8>>,
+    target: &Path,
+) -> Result<ExtractReport> {
     let root = target.join(sanitize_filename(&idx.root));
     std::fs::create_dir_all(&root).map_err(Error::Io)?;
 
@@ -110,24 +143,7 @@ pub fn extract_container(
                     // 父目录可能因为改名而与上面建的那个不同名，补一次
                     std::fs::create_dir_all(parent).ok();
                 }
-                let start = usize::try_from(e.offset).unwrap_or(usize::MAX);
-                let len = usize::try_from(e.size).unwrap_or(0);
-                let end = start.saturating_add(len);
-                // 归到 MalformedHeader 而不是载荷类错误：容器索引在头部
-                // TLV 里，「区间超出载荷」说明索引本身不对
-                let bytes = payload.get(start..end).ok_or(Error::MalformedHeader {
-                    reason: "container entry payload range out of bounds",
-                })?;
-
-                // 逐文件哈希校验：容器里某个文件坏了要能精确指出是哪个。
-                // 整体 AEAD 已经保证了完整性，但它只能说「这个容器坏了」
-                if let Some(expect) = &e.hash {
-                    let actual = crate::util::blake2b_256(bytes);
-                    if &actual != expect {
-                        return Err(Error::ContentHashMismatch);
-                    }
-                }
-                std::fs::write(&p, bytes).map_err(Error::Io)?;
+                write_entry(&p, e.offset, e.size, e.hash.as_ref(), read)?;
                 files = files.saturating_add(1);
             }
             EntryKind::Symlink | EntryKind::Dir => {}
@@ -221,6 +237,53 @@ pub fn extract_container(
         skipped,
         metadata,
     })
+}
+
+/// 把一个容器条目分段写到 `path`，边写边算哈希。
+///
+/// 逐文件哈希校验：容器里某个文件坏了要能精确指出是哪个。整体 AEAD 已经
+/// 保证了完整性，但它只能说「这个容器坏了」。流式写入时哈希要到最后才知道，
+/// 所以不匹配时删掉已写出的文件再报错，不留半成品。
+fn write_entry(
+    path: &Path,
+    offset: u64,
+    size: u64,
+    expect: Option<&[u8; 32]>,
+    read: &mut dyn FnMut(u64, u64) -> Result<Vec<u8>>,
+) -> Result<()> {
+    use blake2::digest::{Digest, consts::U32};
+    use std::io::Write as _;
+
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(Error::Io)?);
+    let mut hasher = blake2::Blake2b::<U32>::new();
+    let mut done = 0u64;
+    let result = (|| {
+        while done < size {
+            let n = size.saturating_sub(done).min(STREAM_WINDOW);
+            let bytes = read(offset.saturating_add(done), n)?;
+            if bytes.len() as u64 != n {
+                return Err(Error::MalformedHeader {
+                    reason: "container entry payload range out of bounds",
+                });
+            }
+            hasher.update(&bytes);
+            out.write_all(&bytes).map_err(Error::Io)?;
+            done = done.saturating_add(n);
+        }
+        out.flush().map_err(Error::Io)?;
+        if let Some(expect) = expect {
+            let actual: [u8; 32] = hasher.clone().finalize().into();
+            if &actual != expect {
+                return Err(Error::ContentHashMismatch);
+            }
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        drop(out);
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 /// 创建一个符号链接，`target` 是链接内容，`link` 是要创建的路径。

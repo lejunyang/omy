@@ -223,7 +223,9 @@ fn restore_one(
     req: &DecryptRequest,
     progress: Option<(&tauri::AppHandle, usize, usize)>,
 ) -> Result<RestoredItem, String> {
-    let data = std::fs::read(src).map_err(|_| String::from("read_failed"))?;
+    // 只读头部、载荷按窗口从磁盘取：原来整个密文读进内存再整份解密，
+    // 几 GB 的文件峰值内存是文件大小的两倍以上，手机上直接被系统杀掉
+    let data = omy_core::scan::read_header_area(src).map_err(|_| String::from("read_failed"))?;
     let header =
         omy_core::file::peek_header(&data).map_err(|_| String::from("not_an_omy_file"))?;
 
@@ -242,6 +244,8 @@ fn restore_one(
     }
 
     let opened = omy_core::file::open(&data, &keks).map_err(|_| String::from("locked"))?;
+    let source =
+        omy_core::source::LocalFileSource::open(src).map_err(|_| String::from("read_failed"))?;
 
     // 目标目录：未指定则用加密文件所在目录，与 CLI 不带 --output-dir 一致
     let target = match &req.target_dir {
@@ -262,36 +266,31 @@ fn restore_one(
     // 事件，IPC 开销反而拖慢解密
     let mut last_pct = u8::MAX;
     let total = header.plaintext_size;
-    let plain = {
-        let mut cb = |done: u64, _t: u64| {
-            let Some((app, pos, total_files)) = progress else {
-                return;
-            };
-            let pct = done
-                .saturating_mul(100)
-                .checked_div(total)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(100);
-            if pct == last_pct {
-                return;
-            }
-            last_pct = pct;
-            let _ = app.emit(
-                DECRYPT_PROGRESS_EVENT,
-                DecryptProgress {
-                    index: pos,
-                    total_files,
-                    name: name_for_event.clone(),
-                    done,
-                    total,
-                },
-            );
+    let size = total;
+    let mut cb = |done: u64, _t: u64| {
+        let Some((app, pos, total_files)) = progress else {
+            return;
         };
-        opened
-            .decrypt_all_with_progress(&data, Some(&mut cb))
-            .map_err(|_| String::from("decrypt_failed"))?
+        let pct = done
+            .saturating_mul(100)
+            .checked_div(total)
+            .and_then(|v| u8::try_from(v).ok())
+            .unwrap_or(100);
+        if pct == last_pct {
+            return;
+        }
+        last_pct = pct;
+        let _ = app.emit(
+            DECRYPT_PROGRESS_EVENT,
+            DecryptProgress {
+                index: pos,
+                total_files,
+                name: name_for_event.clone(),
+                done,
+                total,
+            },
+        );
     };
-    let size = plain.len() as u64;
 
     if opened.is_container() {
         let idx = opened
@@ -303,8 +302,23 @@ fn restore_one(
             return Err(String::from("target_exists"));
         }
         // 落盘与元数据还原都在 core，与 CLI 共用同一份实现
-        let rep = omy_core::unpack::extract_container(&idx, &plain, &target)
-            .map_err(|_| String::from("extract_failed"))?;
+        // 按条目区间从密文直接解密写盘，不经过整份明文。进度按已写出的
+        // 容器载荷字节报
+        let mut written = 0u64;
+        let rep = omy_core::unpack::extract_container_with(
+            &idx,
+            &mut |off, len| {
+                let b = omy_core::source::read_source_range(&source, &opened, off, len)?;
+                written = written.saturating_add(b.len() as u64);
+                cb(written, total);
+                Ok(b)
+            },
+            &target,
+        )
+        .map_err(|e| match e {
+            omy_core::Error::ContentHashMismatch => String::from("decrypt_failed"),
+            _ => String::from("extract_failed"),
+        })?;
         return Ok(RestoredItem {
             source: src.to_string_lossy().into_owned(),
             output: rep.root.to_string_lossy().into_owned(),
@@ -334,8 +348,21 @@ fn restore_one(
     if !req.overwrite && out_path.exists() {
         return Err(String::from("target_exists"));
     }
-    omy_core::fsatomic::write_atomic(&out_path, &plain)
+    // 原子写：先写临时文件，内容哈希校验通过才提交。校验失败或中途出错时
+    // 临时文件随 writer 丢弃，目标位置不会出现半个文件
+    let mut writer = omy_core::fsatomic::AtomicWriter::create(&out_path)
         .map_err(|_| String::from("write_failed"))?;
+    let mut write_err = false;
+    omy_core::source::decrypt_to_sink(
+        &source,
+        &opened,
+        &mut |b| {
+            writer.write_all(b).inspect_err(|_| write_err = true)
+        },
+        Some(&mut cb),
+    )
+    .map_err(|_| String::from(if write_err { "write_failed" } else { "decrypt_failed" }))?;
+    writer.commit().map_err(|_| String::from("write_failed"))?;
 
     Ok(RestoredItem {
         source: src.to_string_lossy().into_owned(),
