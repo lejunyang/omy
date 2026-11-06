@@ -491,7 +491,7 @@ fn recovery_tree(ctx: &Ctx<'_>, a: &RecoveryArgs) -> Result<()> {
 
     // 尽早验密码：让用户看完一长串恢复码再被告知「密码不对」很糟。
     // 拿样本文件试，成本是一次小文件读取
-    let sample_data = std::fs::read(&sample)
+    let sample_data = omy_core::scan::read_header_area(&sample)
         .with_context(|| format!("读取 {} 失败", sample.display()))?;
     omy_core::file::open(&sample_data, &[old_kek.duplicate()])
         .context("现有密码不正确（用树里的一个文件验证过）")?;
@@ -591,7 +591,7 @@ fn restore_tree(ctx: &Ctx<'_>, a: &RestoreArgs) -> Result<()> {
     let reco_kek = code.to_kek(&h.vault_salt);
 
     // 校验和过了只说明「没抄错」，不说明「属于这棵树」。真去解一次
-    let sample_data = std::fs::read(&sample)
+    let sample_data = omy_core::scan::read_header_area(&sample)
         .with_context(|| format!("读取 {} 失败", sample.display()))?;
     omy_core::file::open(&sample_data, &[reco_kek.duplicate()]).context(
         "这串词本身没有抄错，但它打不开这棵树——可能属于另一个库，或属于更早生成的一份",
@@ -921,7 +921,7 @@ fn device_add(
     // from_password 只是算出一把 KEK，不校验它对不对——密码错了要到
     // 后面 rewrite 时才暴露。而那时硬件密钥已经造好了：TPM 里留下一把
     // 永远用不到的密钥，用户还白按了一次指纹。实测确认过这一幕
-    let sample_data = std::fs::read(sample)
+    let sample_data = omy_core::scan::read_header_area(sample)
         .with_context(|| format!("读取 {} 失败", sample.display()))?;
     omy_core::file::open(&sample_data, &[cur.duplicate()])
         .context("这个密码打不开该文件")?;
@@ -1575,7 +1575,7 @@ fn modify_tree(ctx: &Ctx<'_>, a: &SlotArgs, op: Op) -> Result<()> {
 
     // 尽早验密码：让用户白输一遍新密码再报「旧密码不对」是很糟的体验。
     // 拿样本文件试，成本是一次小文件读取
-    let sample_data = std::fs::read(&sample)
+    let sample_data = omy_core::scan::read_header_area(&sample)
         .with_context(|| format!("读取 {} 失败", sample.display()))?;
     omy_core::file::open(&sample_data, &[old_kek.duplicate()])
         .context("现有密码不正确（用树里的一个文件验证过）")?;
