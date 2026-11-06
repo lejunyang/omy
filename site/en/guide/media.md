@@ -117,6 +117,8 @@ omy encrypt --no-moov-cache movie.mp4     # skip caching the MP4 moov box
 
 Both trade a little header size for responsiveness; keep the defaults unless header size matters to you.
 
+Encryption and decryption are streamed: plaintext is read from disk and ciphertext written chunk by chunk, so memory use does not grow with file size, and phones can handle multi-GB videos and folders. Files over 256 MiB are probed from their first 32 MiB plus the MP4 moov; media metadata and the moov cache are produced as usual, but a very large MP4 whose moov sits at the end has no decodable early frames, so no thumbnail is generated (the CLI prints a warning).
+
 ## Playing from the command line
 
 The CLI has no built-in player, but it can pipe to an external one without plaintext landing on disk:
