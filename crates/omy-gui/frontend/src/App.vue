@@ -1148,19 +1148,39 @@ function onKey(e) {
     if (dispatchBack('escape')) e.preventDefault();
     return;
   }
+  const mod = e.ctrlKey || e.metaKey;
+  // 按 toLowerCase 比较：开着大写锁定时 e.key 是 'L' / 'A'
+  const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
   // Ctrl/Cmd+L 锁定（文档 §8）
-  if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+  if (mod && key === 'l') {
     e.preventDefault();
     if (state.credentials > 0) doLock();
     return;
   }
-  // Ctrl/Cmd+A 全选
-  if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !previewEntry.value) {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Ctrl/Cmd+A 全选：只在本地文件列表就是最上层时生效。
+  // 原来只排除了加密文件预览——开着明文预览、任何对话框、远程位置或传输页时
+  // 按 Ctrl+A，会把**看不见的**本地列表整个选中，随后的删除就作用在它们身上
+  if (mod && key === 'a') {
+    if (isEditable(document.activeElement)) return;
+    if (!localListOnTop()) return;
     e.preventDefault();
     selectAll();
   }
+}
+
+/** 焦点在可编辑控件里时，快捷键让给浏览器（输入框里 Ctrl+A 是选中文字）。 */
+function isEditable(el: Element | null) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || (el as HTMLElement).isContentEditable;
+}
+
+/** 本地文件列表是不是最上层：没有切到别的整屏视图，也没有任何浮层盖着。
+ *  浮层按结构类名判断——对话框、预览、菜单、设置都挂在这几个根类上。 */
+function localListOnTop() {
+  if (state.placeBrowserOpen || state.transfersOpen || state.remoteMode) return false;
+  return !document.querySelector('.overlay, .mask, .ctxlayer');
 }
 
 /** 回到前台时重查存储权限。
