@@ -1350,6 +1350,7 @@ onBeforeUnmount(() => {
 
   <MainScreen
     v-else
+    @new-folder="nameDlg = { mode: 'newfolder', initial: '', path: '' }"
     @open="onOpen"
     @menu="onEntryMenu"
     @encrypt="openEncryptDialog"

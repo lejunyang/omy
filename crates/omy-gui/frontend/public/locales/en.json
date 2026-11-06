@@ -33,7 +33,8 @@
     "menu": "Menu",
     "tab_files": "Files",
     "tab_devices": "Devices",
-    "global": "Global"
+    "global": "Global",
+    "new_title": "New"
   },
   "unlock": {
     "title": "Unlock",

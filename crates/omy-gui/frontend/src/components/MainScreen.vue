@@ -6,7 +6,7 @@
  * 面包屑 + 内容区 + 状态栏。
  */
 
-import { computed, watch, nextTick, useTemplateRef } from 'vue';
+import { ref, computed, watch, nextTick, useTemplateRef } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
@@ -32,6 +32,7 @@ import {
 } from '../store';
 import AppShell from './AppShell.vue';
 import EntryCard from './EntryCard.vue';
+import ContextMenu from './ContextMenu.vue';
 
 /* ---- 移动端 ----
  *
@@ -68,6 +69,28 @@ watch(
   { immediate: true },
 );
 
+/** 悬浮按钮的「新建」菜单是否打开。 */
+const fabMenu = ref(false);
+
+const fabItems = computed(() => [
+  { key: 'pick', icon: 'folder-open', label: i18n.t('nav.pick_folder') },
+  {
+    key: 'new-folder',
+    icon: 'plus',
+    label: i18n.t('ctx.new_folder'),
+    // 还没打开任何目录时无处可建
+    disabled: !state.cwd || !!state.container,
+  },
+  { key: 'new-remote', icon: 'cloud', label: i18n.t('rplace.new') },
+]);
+
+function onFabPick(key: string) {
+  fabMenu.value = false;
+  if (key === 'pick') emit('pick');
+  else if (key === 'new-folder') emit('new-folder');
+  else if (key === 'new-remote') emit('new-remote');
+}
+
 /** 进度百分比，取整。
  *
  * total 为 0（空文件）时直接算 100，避免除零得到 NaN——
@@ -81,6 +104,7 @@ const progPercent = computed(() => {
 });
 
 const emit = defineEmits([
+  'new-folder',
   'open',
   'menu',
   'encrypt',
@@ -445,12 +469,26 @@ function onRowMenu(e, ev) {
         v-if="isMobile && !state.selected.length"
         class="fab"
         data-tb="fab-pick"
-        :aria-label="i18n.t('nav.pick_folder')"
-        :title="i18n.t('nav.pick_folder')"
-        @click="$emit('pick')"
+        :aria-label="i18n.t('nav.new_title')"
+        :title="i18n.t('nav.new_title')"
+        @click="fabMenu = true"
       >
         <AppIcon name="plus" :size="24" :stroke-width="2.2" />
       </button>
+    </Transition>
+
+    <!-- 悬浮按钮的「新建」菜单。原来它只做「打开文件夹」，可「+」读起来是
+         「新建」——想建文件夹、加远程位置的人点进去却弹出目录选择器 -->
+    <Transition name="menu">
+      <ContextMenu
+        v-if="fabMenu"
+        :items="fabItems"
+        :x="0"
+        :y="0"
+        :title="i18n.t('nav.new_title')"
+        @pick="onFabPick"
+        @close="fabMenu = false"
+      />
     </Transition>
   </AppShell>
 

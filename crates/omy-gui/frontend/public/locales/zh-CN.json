@@ -33,7 +33,8 @@
     "menu": "菜单",
     "tab_files": "文件",
     "tab_devices": "设备",
-    "global": "全局"
+    "global": "全局",
+    "new_title": "新建"
   },
   "unlock": {
     "title": "解锁",
