@@ -1390,8 +1390,12 @@ export async function gotoCrumb(c) {
 
 /* ---------------- 选择 ---------------- */
 
+/** 区间选择的起点：最近一次普通点击或 Ctrl 点击的条目。 */
+let selectAnchor: string | null = null;
+
 /** 切换单项选中。 */
 export function toggleSelect(path, additive) {
+  selectAnchor = path;
   if (!additive) {
     state.selected = state.selected.includes(path) && state.selected.length === 1 ? [] : [path];
     return;
@@ -1399,6 +1403,44 @@ export function toggleSelect(path, additive) {
   const i = state.selected.indexOf(path);
   if (i >= 0) state.selected.splice(i, 1);
   else state.selected.push(path);
+}
+
+/** Shift 点击：选中从起点到这一项之间的全部（按当前显示顺序）。
+ *
+ * 原来 Shift 与 Ctrl 一样只是加选一项，想选一段连续文件只能逐个点。
+ * 没有起点时退化为单选。 */
+export function selectRange(path) {
+  const list = visibleEntries.value.map((e) => e.path);
+  const a = selectAnchor ? list.indexOf(selectAnchor) : -1;
+  const b = list.indexOf(path);
+  if (a < 0 || b < 0) {
+    toggleSelect(path, false);
+    return;
+  }
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  state.selected = list.slice(lo, hi + 1);
+}
+
+/** 键盘移动「当前项」：选中相邻的条目（Shift 时扩展区间）。返回新的当前项路径。 */
+export function moveSelection(delta: number, extend: boolean) {
+  const list = visibleEntries.value.map((e) => e.path);
+  if (!list.length) return null;
+  const cur = state.selected.length ? state.selected[state.selected.length - 1] : null;
+  const i = cur ? list.indexOf(cur) : -1;
+  const j = Math.min(list.length - 1, Math.max(0, i < 0 ? 0 : i + delta));
+  const target = list[j];
+  if (extend) {
+    if (!selectAnchor) selectAnchor = cur || target;
+    const a = list.indexOf(selectAnchor);
+    const [lo, hi] = a < j ? [a, j] : [j, a];
+    state.selected = list.slice(lo, hi + 1);
+    // 把「当前项」放到末尾，下一次移动从它出发
+    state.selected = state.selected.filter((p) => p !== target).concat(target);
+  } else {
+    selectAnchor = target;
+    state.selected = [target];
+  }
+  return target;
 }
 
 /** 全选当前可见项。 */

@@ -25,6 +25,7 @@ import {
   goUp,
   reload,
   toggleSelect,
+  selectRange,
   selectAll,
   clearSelection,
   clearNotice,
@@ -185,7 +186,8 @@ const locationKey = computed(() =>
 );
 
 function onSelect(entry, ev) {
-  toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (ev.shiftKey) selectRange(entry.path);
+  else toggleSelect(entry.path, ev.ctrlKey || ev.metaKey);
 }
 
 /** 列表行的点击。移动端单击即打开，与网格卡片保持一致——
@@ -199,7 +201,8 @@ function onRowClick(entry, ev) {
     emit('open', entry);
     return;
   }
-  toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (ev.shiftKey) selectRange(entry.path);
+  else toggleSelect(entry.path, ev.ctrlKey || ev.metaKey);
 }
 
 /** 列表行移动端长按：进入多选（加选第一项）。网格卡片由 EntryCard 内部处理，
@@ -439,6 +442,7 @@ function onRowMenu(e, ev) {
             :key="e.path"
             class="lrow"
             :class="{ sel: state.selected.includes(e.path) }"
+            :data-path="e.path"
             :style="{ '--i': i }"
             tabindex="0"
             @dblclick="$emit('open', e)"

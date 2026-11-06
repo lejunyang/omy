@@ -66,6 +66,7 @@ import {
   closePlaceBrowser,
   leaveOverlays,
   selectAll,
+  moveSelection,
   visibleEntries,
   enrich,
   encryptable,
@@ -130,6 +131,7 @@ import AskDialog from './components/AskDialog.vue';
 import { askConfirm, askText } from './ask';
 import { initAutoLock, configureAutoLock } from './autolock';
 import { registerMobileBack, dispatchBack, type BackSource } from './mobile-platform';
+import { isMobile } from './viewport';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
@@ -1266,7 +1268,58 @@ function onKey(e) {
     if (!localListOnTop()) return;
     e.preventDefault();
     selectAll();
+    return;
   }
+  onListKey(e);
+}
+
+/** 桌面键盘操作本地列表：方向键移动当前项（Shift 扩展选择），Enter 打开，
+ *  Delete 移到回收站（Shift+Delete 永久删除，带确认），F2 重命名。
+ *
+ * 原来只能用鼠标：选中、打开、删除、改名全要点，键盘用户无从下手。
+ * 只在本地列表位于最上层、焦点不在输入框时生效。 */
+function onListKey(e: KeyboardEvent) {
+  // 已被聚焦的卡片 / 行自己处理过（它们的 Enter 会打开自己），不再重复处理
+  if (e.defaultPrevented) return;
+  if (isMobile.value || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isEditable(document.activeElement) || !localListOnTop()) return;
+  const k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'ArrowLeft' || k === 'ArrowRight') {
+    const cols = state.view === 'grid' ? gridColumns() : 1;
+    const delta = k === 'ArrowLeft' ? -1 : k === 'ArrowRight' ? 1 : k === 'ArrowUp' ? -cols : cols;
+    // 列表视图左右键不动（没有「左右」可言），留给浏览器
+    if (state.view !== 'grid' && (k === 'ArrowLeft' || k === 'ArrowRight')) return;
+    e.preventDefault();
+    const target = moveSelection(delta, e.shiftKey);
+    if (target) {
+      document
+        .querySelector(`[data-path="${CSS.escape(target)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }
+    return;
+  }
+  const current = state.entries.find((x) => x.path === state.selected[state.selected.length - 1])
+    || visibleEntries.value.find((x) => x.path === state.selected[state.selected.length - 1]);
+  if (!current) return;
+  if (k === 'Enter') {
+    e.preventDefault();
+    void onOpen(current);
+  } else if (k === 'Delete') {
+    e.preventDefault();
+    void deleteSelection(e.shiftKey || !trashSupported);
+  } else if (k === 'F2' && state.selected.length === 1 && !current.is_encrypted_dir && !current.in_container) {
+    e.preventDefault();
+    nameDlg.value = { mode: 'rename', initial: current.real_name || current.name, path: current.path };
+  }
+}
+
+/** 网格视图当前每行几列：数第一行有多少张卡片（与窗口宽度相关，不能写死）。 */
+function gridColumns() {
+  const cards = [...document.querySelectorAll('.grid > .card')] as HTMLElement[];
+  if (!cards.length) return 1;
+  const top = cards[0].offsetTop;
+  const n = cards.findIndex((c) => c.offsetTop !== top);
+  return n < 0 ? cards.length : Math.max(1, n);
 }
 
 /** 焦点在可编辑控件里时，快捷键让给浏览器（输入框里 Ctrl+A 是选中文字）。 */

@@ -39,6 +39,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
 | Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline; arrow keys, the side buttons or a horizontal swipe flip to the previous / next file in the folder; images support pinch zoom, double-click zoom and Ctrl + wheel |
 | Password management | Add key slots, change passwords, re-encrypt |
+| Keyboard (desktop) | Arrow keys move the current item, Shift + arrows or Shift + click selects a range; Enter opens, Delete moves to trash, Shift + Delete deletes permanently (with confirmation), F2 renames, Esc closes the topmost dialog or preview |
 | Sorting | Sort by name, size, modified time or type (folders always first); click a column header in list view; the choice is remembered on this device |
 | Context menu | Open, open with another app, reveal a file or folder in the file manager, password management, move to trash and permanent delete (asks for confirmation); PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
