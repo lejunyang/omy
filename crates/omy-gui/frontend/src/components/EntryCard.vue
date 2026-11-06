@@ -171,7 +171,7 @@ const tierTitle = computed(() => {
     @keydown.enter.prevent="$emit('open', entry)"
   >
     <div class="thumb dir" :class="'k-' + kind">
-      <AppIcon :name="icon" />
+      <AppIcon name="folder" />
       <!-- 加密目录挂一个角标而不是换成锁图标：它首先是个文件夹，
            「能像普通文件夹一样进」是这里要传达的第一件事 -->
       <span v-if="entry.is_encrypted_dir" class="encbadge" aria-hidden="true"><AppIcon name="lock" :size="13" /></span>

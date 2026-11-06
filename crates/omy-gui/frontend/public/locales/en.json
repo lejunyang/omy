@@ -95,7 +95,7 @@
     "restore_partial": "{{ok}} restored, {{failed}} failed: {{reason}}"
   },
   "file": {
-    "locked_name": "🔒 Encrypted",
+    "locked_name": "Encrypted",
     "locked_meta": "Password required",
     "unknown": "Unknown",
     "folder": "Folder",

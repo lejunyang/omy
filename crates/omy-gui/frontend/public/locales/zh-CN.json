@@ -95,7 +95,7 @@
     "restore_partial": "{{ok}} 项已还原，{{failed}} 项失败：{{reason}}"
   },
   "file": {
-    "locked_name": "🔒 加密文件",
+    "locked_name": "加密文件",
     "locked_meta": "密码未解锁",
     "unknown": "未知",
     "folder": "文件夹",
