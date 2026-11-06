@@ -472,7 +472,31 @@ async function onOpen(entry) {
   }
   unlockError.value = '';
   refreshDeviceKey();
+  // 记下用户想打开的是哪个：解锁成功后直接打开它。原来解锁完对话框一关就
+  // 停在列表上，文件只是换成了真名，用户还得再双击一次
+  pendingOpen.value = entry;
   showUnlock.value = true;
+}
+
+/** 解锁对话框是因为双击哪个锁定条目弹出的；null 表示不是从双击来的。 */
+const pendingOpen = ref(null);
+
+/** 顶栏「密码」胶囊打开解锁框：不是从双击来的，解锁后不自动打开任何东西。 */
+function openQuickUnlock() {
+  pendingOpen.value = null;
+  unlockError.value = '';
+  showUnlock.value = true;
+}
+
+/** 本地解锁成功后的收尾：打开当初双击的那个条目（若它确实被这次解开了）。 */
+async function afterLocalUnlock() {
+  const target = pendingOpen.value;
+  pendingOpen.value = null;
+  if (!target) return;
+  const fresh = state.entries.find((e) => e.path === target.path);
+  // 输入的密码可能解开了同目录的别的文件、却不是这一个：那就不打开，
+  // 列表上它仍是锁定，用户看得出来
+  if (fresh?.unlocked && fresh.entry_id) await openUnlocked(fresh);
 }
 
 /** 打开一个未加密文件。
@@ -671,6 +695,7 @@ async function selectPasswordManagerKey(entry: PasswordManagerCredential) {
     unlockError.value = '';
     passwordManagerEntries.value = [];
     await api.passwordManagerClear().catch(() => {});
+    await afterLocalUnlock();
   } else {
     passwordManagerError.value = state.error;
     state.error = '';
@@ -951,9 +976,11 @@ async function onUnlockSubmit({ password }) {
     ? await tryUnlockRemote(password)
     : await tryUnlock(password);
   if (ok) {
+    const wasRemote = unlockForRemote.value;
     showUnlock.value = false;
     unlockForRemote.value = false;
     unlockError.value = '';
+    if (!wasRemote) await afterLocalUnlock();
   } else {
     unlockError.value = state.error;
     // 错误已在对话框里显示，不用再占用底部提示条
@@ -1032,6 +1059,7 @@ function onOpenRemote(f) {
  * tryUnlock 内部分流到 tryUnlockRemotePlace。
  */
 function onRemotePlaceUnlock() {
+  pendingOpen.value = null;
   unlockForRemote.value = false;
   unlockError.value = '';
   refreshDeviceKey();
@@ -1040,6 +1068,7 @@ function onRemotePlaceUnlock() {
 
 /** 在远端视图里点「试密码」。 */
 function onRemoteUnlock() {
+  pendingOpen.value = null;
   unlockForRemote.value = true;
   unlockError.value = '';
   refreshDeviceKey();
@@ -1091,6 +1120,7 @@ async function onDeviceUnlock() {
   if (ok) {
     showUnlock.value = false;
     unlockError.value = '';
+    await afterLocalUnlock();
   } else {
     unlockError.value = state.error;
     // 错误已在对话框里显示，不用再占用底部提示条
@@ -1101,6 +1131,7 @@ async function onDeviceUnlock() {
 function onUnlockCancel() {
   showUnlock.value = false;
   unlockForRemote.value = false;
+  pendingOpen.value = null;
 }
 
 /** Android 返回键与桌面 Esc 只处理最上层；返回 true 才阻止 Activity 退出。
@@ -1297,7 +1328,7 @@ onBeforeUnmount(() => {
     @new-remote="showNewRemote = true"
     @settings="showSettings = true"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
     @files="closeTransfers()"
     @places="closeTransfers()"
   />
@@ -1313,7 +1344,7 @@ onBeforeUnmount(() => {
     @new-remote="showNewRemote = true"
     @settings="showSettings = true"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
   />
 
   <MainScreen
@@ -1324,7 +1355,7 @@ onBeforeUnmount(() => {
     @restore="showRestore = true"
     @manage-key="((keyError = ''), (keyTarget = $event))"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
     @pick="onPick"
     @lang="switchLanguage"
     @devices="showDevices = true"

@@ -8,7 +8,7 @@ title: Graphical interface
 
 ## It works like a file manager
 
-The interface is a file browser rather than an "encryption tool": a location sidebar on the left, a list of entries on the right, double-click to enter or open (single tap on mobile).
+The interface is a file browser rather than an "encryption tool": a location sidebar on the left, a list of entries on the right, double-click to enter or open (single tap on mobile). Opening a locked encrypted file asks for its password first and opens the file right after it unlocks, without a second click.
 
 Interface icons are all vector icons, so they render consistently across Windows, Android and other platforms.
 
