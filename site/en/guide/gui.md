@@ -39,7 +39,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
 | Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
 | Password management | Add key slots, change passwords, re-encrypt |
-| Context menu | Open, open with another app, reveal a file or folder in the file manager, password management and move to trash; PC uses the native Windows picker, Android uses a native app list |
+| Context menu | Open, open with another app, reveal a file or folder in the file manager, password management, move to trash and permanent delete (asks for confirmation); PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
 | Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
@@ -79,7 +79,7 @@ Dialogs, menus and list changes are animated; when the system's "reduce motion" 
 Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). On mobile, a single tap always opens a file or folder; only a long press enters or extends file selection, and an existing selection never changes what a tap means. So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
 :::
 
-Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is not offered.
+Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is greyed out with the reason shown; only permanent deletion (which asks for confirmation) is available.
 
 ### Storage access permission
 

@@ -899,9 +899,19 @@ async function onCtxPick(key) {
     case 'trash':
       await doDelete(true);
       break;
-    case 'delete':
-      await doDelete(false);
+    case 'delete': {
+      // 永久删除不进回收站、无法撤销，必须先确认。回收站那一项不问：它可以还原，
+      // 每次都问会把用户训练成闭眼点「确定」，反而让这里的确认失去作用
+      const n = state.selected.length;
+      const sure = await askConfirm({
+        title: i18n.tn('ctx.delete_confirm_title', n),
+        message: i18n.t('ctx.delete_confirm_msg'),
+        confirmLabel: i18n.t('ctx.delete'),
+        danger: true,
+      });
+      if (sure) await doDelete(false);
       break;
+    }
     case 'upload-to': {
       const entries = state.selected
         .map((path) => state.entries.find((item) => item.path === path))

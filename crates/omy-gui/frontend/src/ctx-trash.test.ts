@@ -1,0 +1,36 @@
+/**
+ * 右键菜单的「移到回收站」在没有系统回收站的平台上必须禁用。
+ *
+ * 不这样会怎样：Android 上点它只会报 trash_not_supported，紧挨着的「永久删除」
+ * 就成了唯一能用的删除——用户会以为两者一样，误删无法找回。
+ */
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+vi.mock('./api.js', () => ({ errCode: () => undefined, uiLog: vi.fn() }));
+
+async function trashItem() {
+  vi.resetModules();
+  const store = await import('./store');
+  store.state.entries = [{ path: '/d/a.txt', name: 'a.txt', is_dir: false, is_encrypted: false, token: 't' }];
+  store.state.selected = ['/d/a.txt'];
+  store.openContextMenu({ entry: store.state.entries[0], x: 0, y: 0 });
+  return store.ctxItems.value.find((it) => it.key === 'trash');
+}
+
+describe('回收站菜单项与平台能力', () => {
+  afterEach(() => {
+    delete (window as any).omyAndroid;
+  });
+
+  it('Android 上禁用并给出原因', async () => {
+    (window as any).omyAndroid = { setVideoLandscape() {} };
+    const it_ = await trashItem();
+    expect(it_?.disabled).toBe(true);
+    expect(it_?.hint).toBeTruthy();
+  });
+
+  it('桌面上可用', async () => {
+    const it_ = await trashItem();
+    expect(it_?.disabled).toBeFalsy();
+  });
+});

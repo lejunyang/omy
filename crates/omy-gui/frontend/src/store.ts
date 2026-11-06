@@ -29,6 +29,10 @@ import * as i18n from './i18n';
 import type { MessageRow, MessageWindow, RemoteEntry } from './types';
 import { theme } from './theme';
 import { askText, askPassword } from './ask';
+import { isAndroid } from './mobile-platform';
+
+/** 本平台有没有系统回收站。与后端 `move_to_trash` 的 cfg 对应：Android 没有。 */
+const trashSupported = !isAndroid;
 
 export const state = reactive({
   /** 当前目录路径。空串表示还在「起点」页。 */
@@ -774,7 +778,15 @@ export const ctxItems = computed(() => {
 
   items.push({ key: 'sep' });
 
-  items.push({ key: 'trash', icon: '🗑️', label: t('ctx.trash') });
+  // Android 没有系统回收站，后端会报 trash_not_supported。禁用并说明原因，
+  // 而不是留一个点了就报错的项——那会让紧挨着的「永久删除」看起来是唯一出路
+  items.push({
+    key: 'trash',
+    icon: '🗑️',
+    label: t('ctx.trash'),
+    disabled: !trashSupported,
+    hint: trashSupported ? '' : t('ctx.trash_unsupported'),
+  });
   items.push({ key: 'delete', icon: '⛔', label: t('ctx.delete'), danger: true });
 
   items.push({ key: 'sep' });

@@ -515,7 +515,11 @@
     "folder_created": "已创建文件夹",
     "trashed_n": "已移到回收站 {{n}} 项",
     "deleted_n": "已永久删除 {{n}} 项",
-    "delete_partial": "已删除 {{ok}} 项，{{bad}} 项失败"
+    "delete_partial": "已删除 {{ok}} 项，{{bad}} 项失败",
+    "delete_confirm_title_one": "永久删除这 1 项？",
+    "delete_confirm_title_other": "永久删除这 {{count}} 项？",
+    "delete_confirm_msg": "不会放进回收站，删除后无法恢复。",
+    "trash_unsupported": "这个平台没有系统回收站，只能永久删除"
   },
   "settings": {
     "title": "设置",

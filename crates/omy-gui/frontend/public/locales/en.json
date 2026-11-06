@@ -515,7 +515,11 @@
     "folder_created": "Folder created",
     "trashed_n": "Moved {{n}} item(s) to Trash",
     "deleted_n": "Permanently deleted {{n}} item(s)",
-    "delete_partial": "Deleted {{ok}}, failed {{bad}}"
+    "delete_partial": "Deleted {{ok}}, failed {{bad}}",
+    "delete_confirm_title_one": "Permanently delete this item?",
+    "delete_confirm_title_other": "Permanently delete these {{count}} items?",
+    "delete_confirm_msg": "They will not go to the recycle bin and cannot be recovered.",
+    "trash_unsupported": "This platform has no system recycle bin; only permanent deletion is available"
   },
   "settings": {
     "title": "Settings",
