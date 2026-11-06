@@ -265,7 +265,9 @@
     "cannot_preview": "This format cannot be previewed in the app",
     "loading": "Loading…",
     "rewind_10": "Rewind 10 seconds",
-    "forward_10": "Forward 10 seconds"
+    "forward_10": "Forward 10 seconds",
+    "prev_file": "Previous",
+    "next_file": "Next"
   },
   "view": {
     "grid": "Grid view",

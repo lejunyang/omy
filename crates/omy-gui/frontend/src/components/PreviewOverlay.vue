@@ -61,9 +61,130 @@ const props = defineProps({
    * 完全一致——这正是所有来源共用同一个 omystream 协议的目的。
    */
   place: { type: Boolean, default: false },
+  /** 同一目录里还有上一个 / 下一个可预览的文件（相册式翻看）。 */
+  hasPrev: { type: Boolean, default: false },
+  hasNext: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['close', 'external', 'external-readonly', 'external-edit']);
+const emit = defineEmits(['close', 'external', 'external-readonly', 'external-edit', 'prev', 'next']);
+
+/* ---- 相册式翻看与图片缩放 ----
+ *
+ * 原来预览只能看一个文件：看下一张照片得关掉、再在列表里找、再打开。
+ * 现在左右箭头键 / 两侧按钮 / 手机左右滑动切换同目录的上一个、下一个；
+ * 图片支持双指缩放、双击（双点）放大与拖动。
+ *
+ * 音视频不接管方向键：播放器自己用它们快进快退。 */
+const scale = ref(1);
+const tx = ref(0);
+const ty = ref(0);
+const imgStyle = computed(() => ({
+  transform: `translate(${tx.value}px, ${ty.value}px) scale(${scale.value})`,
+}));
+
+function resetZoom() {
+  scale.value = 1;
+  tx.value = 0;
+  ty.value = 0;
+}
+
+function clampScale(v: number) {
+  return Math.min(6, Math.max(1, v));
+}
+
+/** 正在按着的触点：id -> 坐标。两个触点时是双指缩放。 */
+const pointers = new Map<number, { x: number; y: number }>();
+let pinchStart = 0;
+let pinchScale = 1;
+let swipeStartX = 0;
+let swipeStartY = 0;
+let lastTap = 0;
+
+function dist() {
+  const [a, b] = [...pointers.values()];
+  return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+}
+
+function onPointerDown(ev: PointerEvent) {
+  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  if (pointers.size === 2) {
+    pinchStart = dist();
+    pinchScale = scale.value;
+  } else if (pointers.size === 1) {
+    swipeStartX = ev.clientX;
+    swipeStartY = ev.clientY;
+  }
+}
+
+function onPointerMove(ev: PointerEvent) {
+  const prev = pointers.get(ev.pointerId);
+  if (!prev) return;
+  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  if (pointers.size === 2 && pinchStart > 0 && kind.value === 'image') {
+    scale.value = clampScale(pinchScale * (dist() / pinchStart));
+    if (scale.value === 1) {
+      tx.value = 0;
+      ty.value = 0;
+    }
+  } else if (pointers.size === 1 && scale.value > 1) {
+    // 放大后单指拖动查看局部
+    tx.value += ev.clientX - prev.x;
+    ty.value += ev.clientY - prev.y;
+  }
+}
+
+function onPointerUp(ev: PointerEvent) {
+  const wasSingle = pointers.size === 1;
+  pointers.delete(ev.pointerId);
+  if (pointers.size < 2) pinchStart = 0;
+  // 音视频播放器自己用横向拖动调进度，不在上面翻页
+  if (!wasSingle || scale.value > 1 || kind.value === 'video' || kind.value === 'audio') return;
+  // 未放大时的水平快滑 = 翻页；竖向位移大的是滚动或误触，不算
+  const dx = ev.clientX - swipeStartX;
+  const dy = ev.clientY - swipeStartY;
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    if (dx < 0 && props.hasNext) emit('next');
+    else if (dx > 0 && props.hasPrev) emit('prev');
+  }
+}
+
+/** 双击（鼠标）/ 双点（触屏）在原尺寸与 2.5 倍之间切换。 */
+function toggleZoom() {
+  if (scale.value > 1) resetZoom();
+  else scale.value = 2.5;
+}
+
+function onImgPointerUp(ev: PointerEvent) {
+  if (ev.pointerType === 'mouse') return;
+  const now = performance.now();
+  if (now - lastTap < 300) {
+    toggleZoom();
+    lastTap = 0;
+  } else {
+    lastTap = now;
+  }
+}
+
+/** 桌面 Ctrl + 滚轮缩放（与浏览器、看图软件的习惯一致）。 */
+function onWheel(ev: WheelEvent) {
+  if (!ev.ctrlKey || kind.value !== 'image') return;
+  ev.preventDefault();
+  scale.value = clampScale(scale.value * (ev.deltaY < 0 ? 1.15 : 1 / 1.15));
+  if (scale.value === 1) resetZoom();
+}
+
+function onKey(ev: KeyboardEvent) {
+  if (kind.value === 'video' || kind.value === 'audio') return;
+  const t = ev.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (ev.key === 'ArrowRight' && props.hasNext) {
+    ev.preventDefault();
+    emit('next');
+  } else if (ev.key === 'ArrowLeft' && props.hasPrev) {
+    ev.preventDefault();
+    emit('prev');
+  }
+}
 
 const media = useTemplateRef('media');
 const text = ref('');
@@ -101,6 +222,7 @@ function onVideoPause() {
 }
 
 onMounted(() => {
+  document.addEventListener('keydown', onKey);
   if (kind.value === 'text') {
     text.value = i18n.t('playback.loading');
     loadText();
@@ -108,6 +230,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKey);
   // 音视频的暂停与缓冲释放由各自播放器负责。
   // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
   // 自动锁定就永远不会触发——那等于这个功能默默失效了
@@ -130,7 +253,15 @@ onBeforeUnmount(() => {
         <AppIcon name="close" />
       </button>
     </div>
-    <div class="overlay-body">
+    <div
+      class="overlay-body"
+      :class="{ 'pv-touch': kind === 'image' }"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+      @wheel="onWheel"
+    >
       <div v-if="mediaError" class="overlay-msg">{{ mediaError }}</div>
 
       <OmyVideoPlayer
@@ -159,9 +290,15 @@ onBeforeUnmount(() => {
         v-else-if="kind === 'image'"
         id="pv"
         ref="media"
+        class="pv-img"
+        :class="{ zoomed: scale > 1 }"
         :src="src"
         :alt="file.name"
+        :style="imgStyle"
         crossorigin="anonymous"
+        draggable="false"
+        @dblclick="toggleZoom"
+        @pointerup="onImgPointerUp"
       />
 
       <!-- {{ }} 是 textContent 语义，文件内容不会被当成 HTML 解析 -->
@@ -175,6 +312,26 @@ onBeforeUnmount(() => {
           <AppIcon name="external" /> {{ i18n.t('file.open_external') }}
         </button>
       </div>
+
+      <!-- 上一个 / 下一个。手机上也保留：滑动之外给一个看得见的入口 -->
+      <button
+        v-if="hasPrev"
+        class="pv-nav prev"
+        :aria-label="i18n.t('playback.prev_file')"
+        @click.stop="$emit('prev')"
+        @pointerdown.stop
+      >
+        <AppIcon name="arrowLeft" />
+      </button>
+      <button
+        v-if="hasNext"
+        class="pv-nav next"
+        :aria-label="i18n.t('playback.next_file')"
+        @click.stop="$emit('next')"
+        @pointerdown.stop
+      >
+        <AppIcon name="arrowLeft" />
+      </button>
     </div>
   </div>
 </template>

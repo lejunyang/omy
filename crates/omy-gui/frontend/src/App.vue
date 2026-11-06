@@ -66,6 +66,7 @@ import {
   closePlaceBrowser,
   leaveOverlays,
   selectAll,
+  visibleEntries,
   enrich,
   encryptable,
   restorable,
@@ -507,6 +508,7 @@ async function afterLocalUnlock() {
  */
 async function openPlain(entry) {
   if (!entry.token) return;
+  galleryPath.value = entry.path;
 
   // preview 由后端算好（`mime.rs`），前端不再按后缀猜。
   // 判定规则会随浏览器支持情况变化，散在两处早晚不一致
@@ -538,6 +540,7 @@ function openContainerItem(entry) {
     state.error = i18n.te('container_failed');
     return;
   }
+  galleryPath.value = entry.path;
   citemPreview.value = {
     id: entry.token,
     name: entry.name,
@@ -547,12 +550,48 @@ function openContainerItem(entry) {
 }
 
 async function openPreview(entry) {
+  galleryPath.value = entry.path;
   previewEntry.value = entry;
   // 媒体元信息按需补：预览时才需要 tier / 时长 / 尺寸
   if (entry.entry_id) {
     const updated = await enrich(entry.entry_id);
     if (updated) state.known[entry.path] = updated;
   }
+}
+
+/* ---------------- 相册式翻看 ----------------
+ *
+ * 预览里左右切换同一目录（或同一加密文件夹层级）的上一个 / 下一个可预览
+ * 文件。顺序与列表一致；目录、看不了的类型、锁着的加密文件、加密文件夹
+ * 本身都跳过——它们点开也不是「看下一张」。 */
+
+/** 当前预览对应的列表条目路径（本地明文、加密文件、容器内条目共用）。 */
+const galleryPath = ref<string | null>(null);
+
+function isGalleryItem(e) {
+  if (e.is_dir) return false;
+  if (e.in_container) return !!e.token && !!e.preview && e.preview !== 'other';
+  if (e.is_encrypted) return !!e.unlocked && !!e.entry_id && !e.is_container;
+  return !!e.token && !!e.preview && e.preview !== 'other';
+}
+
+const galleryItems = computed(() => visibleEntries.value.filter(isGalleryItem));
+const galleryIndex = computed(() =>
+  galleryItems.value.findIndex((e) => e.path === galleryPath.value),
+);
+const galleryHasPrev = computed(() => galleryIndex.value > 0);
+const galleryHasNext = computed(
+  () => galleryIndex.value >= 0 && galleryIndex.value < galleryItems.value.length - 1,
+);
+
+/** 切到相邻的一个：先关掉当前的本地预览，再按正常的「打开」流程打开。 */
+async function galleryStep(delta: number) {
+  const next = galleryItems.value[galleryIndex.value + delta];
+  if (!next) return;
+  previewEntry.value = null;
+  plainPreview.value = null;
+  citemPreview.value = null;
+  await onOpen(next);
 }
 
 async function tryRefreshThenPreview(entry) {
@@ -1498,7 +1537,11 @@ onBeforeUnmount(() => {
     v-if="previewFile"
     :key="previewFile.id"
     :file="previewFile"
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
     @close="previewEntry = null"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
   />
 
   <PreviewOverlay
@@ -1514,6 +1557,10 @@ onBeforeUnmount(() => {
     :key="'p' + plainPreview.id"
     :file="plainPreview"
     plain
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
     @close="plainPreview = null"
     @external="onPlainExternal"
   />
@@ -1526,6 +1573,10 @@ onBeforeUnmount(() => {
     :key="'c' + citemPreview.id"
     :file="citemPreview"
     in-container
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
     @close="citemPreview = null"
   />
 

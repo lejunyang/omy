@@ -37,7 +37,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Encrypt | Pick files or folders; set chunk size, KDF profile, thumbnails, original handling |
 | Decrypt / restore | Restore one or many to a chosen location |
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
-| Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
+| Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline; arrow keys, the side buttons or a horizontal swipe flip to the previous / next file in the folder; images support pinch zoom, double-click zoom and Ctrl + wheel |
 | Password management | Add key slots, change passwords, re-encrypt |
 | Context menu | Open, open with another app, reveal a file or folder in the file manager, password management, move to trash and permanent delete (asks for confirmation); PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
