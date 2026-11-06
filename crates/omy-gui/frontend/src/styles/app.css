@@ -2377,6 +2377,56 @@ input {
   margin-block-end: calc(var(--sp) * 3);
 }
 
+/* 加密对话框的高级选项折叠区 */
+.enc-adv {
+  margin-block: calc(var(--sp) * 3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  padding: 0 calc(var(--sp) * 3);
+}
+
+.enc-adv > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding-block: calc(var(--sp) * 3);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.enc-adv > summary::-webkit-details-marker {
+  display: none;
+}
+
+.enc-adv > summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-inline-end: 1.5px solid var(--fg2);
+  border-block-end: 1.5px solid var(--fg2);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-2) ease;
+  flex: none;
+  align-self: center;
+}
+
+.enc-adv[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.enc-adv-t {
+  white-space: nowrap;
+}
+
+.enc-adv-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
 /* 会作废其它密码的操作，按钮也要红：走到这一步时用户已经看过警示文字，
    但确认按钮和"添加密码"长得一样的话，手快点下去就没有第二次机会 */
 .btn.primary.danger,

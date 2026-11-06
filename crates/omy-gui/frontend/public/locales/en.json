@@ -160,7 +160,9 @@
     "slot_mode_deniable_desc": "Nobody can tell how many passwords this file has — not even you. Trade-off: removing a password later can only \"keep the current one and clear the rest\", which also wipes the recovery code",
     "slot_mode_managed": "Manageable",
     "slot_mode_managed_desc": "Shows what each slot is (password / recovery code / device) and lets you remove one precisely while keeping the others. Trade-off: anyone who can open the file can also see this list",
-    "slot_mode_permanent": "This choice cannot be changed after encryption — the mode lives in the file header, so switching means re-encrypting."
+    "slot_mode_permanent": "This choice cannot be changed after encryption — the mode lives in the file header, so switching means re-encrypting.",
+    "advanced": "Advanced options",
+    "advanced_sub": "File name, compression, thumbnail, strength… defaults are usually fine"
   },
   "video": {
     "title": "Video processing",
