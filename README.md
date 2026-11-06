@@ -4,7 +4,8 @@
 
 Rust + Tauri v2，覆盖 Windows / macOS / Linux / Android / iOS。
 
-> **当前状态**：设计阶段。设计文档已定稿，尚未开始实现。
+> **当前状态**：开发中，核心功能可用。Windows、Android 与 macOS（Apple Silicon）已真机实测；
+> Linux 与 macOS（Intel）只经 CI 编译验证；iOS 尚未构建。安装与使用见文档站 `site/`。
 
 ---
 
