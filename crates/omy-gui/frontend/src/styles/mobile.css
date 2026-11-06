@@ -422,6 +422,18 @@
   color: #2aabee;
 }
 
+/* 虚拟远程是本地的引用集合，用中性色块与真实云端位置区分 */
+.lrow.placerow.mob .placeic.k-virtual {
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg3));
+  color: var(--warn);
+}
+
+/* 新建入口：虚线框，读起来是「添加」而不是又一个已有位置 */
+.lrow.placerow.mob .placeic.k-add {
+  background: transparent;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
 .lrow.placerow.mob .nm {
   font-size: 15px;
   font-weight: 600;

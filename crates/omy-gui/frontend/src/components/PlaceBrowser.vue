@@ -172,6 +172,10 @@ const lockedCount = computed(
   () => visible.value.filter((f) => !f.is_dir && f.is_encrypted && !f.unlocked).length,
 );
 
+/** 虚拟远程列表。状态初值就是空数组，这里再兜一次 undefined：
+ *  旧快照或测试替身里没有这个字段时，位置列表不能整屏渲染失败。 */
+const virtualList = computed(() => state.virtualPlaces || []);
+
 /** 进入某个已保存位置。 */
 async function open(p) {
   await openRemotePlace(p.id);
@@ -1286,7 +1290,9 @@ function rowTitle(f) {
     @places="leaveToList"
   >
   <div class="main" data-ui="place-browser">
-    <div class="crumb">
+    <!-- 手机上位置列表那一层不要这一行：标题、底栏 tab 已经写着「远程位置」，
+         「回到本地」底栏也有，这一行只是第三遍重复 -->
+    <div v-if="state.remotePlace || !isMobile" class="crumb">
       <button
         class="crumbbtn"
         :title="i18n.t('common.back')"
@@ -1374,7 +1380,7 @@ function rowTitle(f) {
     <div class="content" ref="contentEl" @contextmenu="onBlankContext">
       <!-- 一、位置列表 -->
       <div v-if="!state.remotePlace" class="list anim-in">
-        <div v-if="!state.remotePlaces.length" class="empty">
+        <div v-if="!state.remotePlaces.length && !virtualList.length" class="empty">
           <div class="icon" aria-hidden="true"><AppIcon name="cloud" /></div>
           <div class="title">{{ i18n.t('rplace.empty') }}</div>
           <div class="sub">{{ i18n.t('rplace.empty_hint') }}</div>
@@ -1445,6 +1451,48 @@ function rowTitle(f) {
               <AppIcon name="trash" />
             </button>
           </span>
+        </div>
+
+        <!-- 虚拟远程（本地收藏夹式的引用集合）与真实位置一起列出。
+             原来这一页只列真实位置：手机上「远程位置」这个 tab 里看不到虚拟收藏，
+             只能从抽屉进；两者都没有时还会误报「还没有远程位置」 -->
+        <div
+          v-for="(v, vi) in virtualList"
+          :key="v.id"
+          class="lrow placerow"
+          :class="{ mob: isMobile }"
+          :style="{ '--i': state.remotePlaces.length + vi }"
+          :data-pb-virtual="v.id"
+          tabindex="0"
+          @click="onPlaceRowClick(v)"
+          @dblclick="open(v)"
+          @keydown.enter.prevent="open(v)"
+        >
+          <span class="placeic k-virtual"><AppIcon name="archive" /></span>
+          <span class="placetext">
+            <span class="nm">{{ v.name }}</span>
+            <span v-if="isMobile" class="placesub">{{ i18n.t('rplace.kind_virtual') }}<template v-if="v.encrypted"> · <AppIcon :name="v.unlocked ? 'unlock' : 'lock'" :size="12" /></template></span>
+          </span>
+          <span v-if="!isMobile" class="tg">{{ i18n.t('rplace.kind_virtual') }}</span>
+          <span v-if="!isMobile" class="rowactions">
+            <button class="btn small" @click.stop="open(v)">{{ i18n.t('rplace.enter') }}</button>
+          </span>
+        </div>
+
+        <!-- 列表不空时也要有新建入口：原来只有空状态里有按钮，手机上加第二个位置
+             得先打开抽屉才找得到 -->
+        <div
+          v-if="state.remotePlaces.length || virtualList.length"
+          class="lrow placerow addrow"
+          :class="{ mob: isMobile }"
+          data-pb="new-remote"
+          tabindex="0"
+          role="button"
+          @click="$emit('new-remote')"
+          @keydown.enter.prevent="$emit('new-remote')"
+        >
+          <span class="placeic k-add"><AppIcon name="plus" /></span>
+          <span class="placetext"><span class="nm">{{ i18n.t('rplace.new') }}</span></span>
         </div>
       </div>
 
@@ -1867,7 +1915,7 @@ function rowTitle(f) {
       </template>
     </div>
 
-    <div class="statusbar">
+    <div v-if="state.remotePlace || !isMobile" class="statusbar">
       <span v-if="state.remotePlace">
         <AppIcon name="cloud" /> {{ currentPlace?.name }}
       </span>
@@ -2197,6 +2245,13 @@ function rowTitle(f) {
   align-items: center;
   justify-content: center;
   color: var(--fg2);
+}
+/* 新建行：虚线与弱化色，读起来是「入口」而不是又一个已有位置 */
+.addrow .nm {
+  color: var(--fg2);
+}
+.addrow .placeic {
+  color: var(--accent);
 }
 .placetext {
   flex: 1;

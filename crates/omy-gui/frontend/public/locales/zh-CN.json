@@ -770,7 +770,8 @@
     "unlock_submit": "解锁",
     "unlock_wrong": "密码不对，请重试",
     "unlocked": "已解锁",
-    "locked_hint": "这个位置已加密，请输入密码解锁"
+    "locked_hint": "这个位置已加密，请输入密码解锁",
+    "kind_virtual": "虚拟远程"
   },
   "common": {
     "back": "返回",

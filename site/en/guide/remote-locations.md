@@ -397,7 +397,7 @@ chats.
 
 Concurrent edits through the same shared virtual-collection registry are saved in order, so an older snapshot cannot overwrite entries saved later. Separate registry instances or omy processes writing the same collection file are currently not coordinated.
 
-- **Create**: at the bottom of the sidebar's "Remote locations" section, click "New remote location" → "Virtual remote", then give it a name.
+- **Create**: at the bottom of the sidebar's "Remote locations" section, or at the end of the list on the "Remote locations" page, click "New remote location" → "Virtual remote", then give it a name. Virtual remotes are listed on the "Remote locations" page alongside real locations.
 - **Add content**: right-click a file in a real remote (or select several) →
   "Add to virtual remote…". In the dialog, clicking a virtual remote's name adds
   to its **root** (files can live at the root — no folder needed first); click the

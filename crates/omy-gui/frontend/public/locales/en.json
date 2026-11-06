@@ -770,7 +770,8 @@
     "unlock_submit": "Unlock",
     "unlock_wrong": "Wrong password, try again",
     "unlocked": "Unlocked",
-    "locked_hint": "This location is encrypted — enter the password to unlock"
+    "locked_hint": "This location is encrypted — enter the password to unlock",
+    "kind_virtual": "Virtual remote"
   },
   "common": {
     "back": "Back",
