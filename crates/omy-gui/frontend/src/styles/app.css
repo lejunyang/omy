@@ -3085,3 +3085,35 @@ html.omy-video-landscape .omy-video-player .xgplayer-controls {
 html.omy-video-landscape .omy-video-player xg-icon.omy-skip {
   display: none;
 }
+
+/* 拖放提示：铺满窗口的半透明层，中间一张提示卡。不拦截事件——拖放由
+   webview 层处理，这一层只是视觉反馈 */
+.drop-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, rgb(0 0 0 / 35%));
+  outline: 3px dashed var(--accent);
+  outline-offset: -14px;
+}
+
+.drop-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 26px;
+  border-radius: var(--r-l);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: var(--shadow-pop);
+}
+
+.drop-card .app-icon {
+  color: var(--accent);
+}

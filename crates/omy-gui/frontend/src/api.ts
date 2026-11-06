@@ -16,6 +16,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
 
 /** 从后端错误里取出错误码。
@@ -39,6 +40,18 @@ export const listPlaces = (): Promise<any> => invoke('list_places');
 
 /** 上一级目录。已在根时返回 null。 */
 export const parentOf = (path: any): Promise<any> => invoke('parent_of', { path });
+
+/** 系统文件拖进窗口的事件。`type` 为 enter / over / drop / leave，drop 时带 `paths`。 */
+export type FileDropEvent = { type: string; paths?: string[] };
+
+/** 订阅文件拖放。没有 Tauri webview（浏览器预览）时返回空操作。 */
+export async function onFileDrop(handler: (ev: FileDropEvent) => void): Promise<() => void> {
+  try {
+    return await getCurrentWebview().onDragDropEvent((e) => handler(e.payload as FileDropEvent));
+  } catch {
+    return () => {};
+  }
+}
 
 /* ---------------- 存储权限（安卓） ---------------- */
 

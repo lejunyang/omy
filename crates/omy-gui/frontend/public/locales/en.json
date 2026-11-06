@@ -1106,5 +1106,10 @@
     "type": "Type",
     "asc": "ascending",
     "desc": "descending"
+  },
+  "drop": {
+    "hint": "Drop to encrypt these files",
+    "mixed_dirs": "Drop files from a single folder at a time",
+    "nothing_to_encrypt": "Everything you dropped is already encrypted"
   }
 }

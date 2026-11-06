@@ -1382,6 +1382,16 @@ onMounted(async () => {
   await refreshDeviceOverview();
   await refreshPasswordManagerStatus();
 
+  // 拖放加密。移动端没有拖放，订阅了也收不到事件
+  api.onFileDrop((ev) => {
+    if (ev.type === 'enter' || ev.type === 'over') dropActive.value = true;
+    else if (ev.type === 'leave') dropActive.value = false;
+    else if (ev.type === 'drop') {
+      dropActive.value = false;
+      void onDropPaths(ev.paths || []);
+    }
+  }).then((un) => { unlistenDrop = un; });
+
   // 后端锁定（任何入口）都要清掉界面上的解密内容
   api.onSessionLocked(() => { void onSessionLocked(); })
     .then((un) => { unlistenLocked = un; })
@@ -1417,8 +1427,32 @@ async function applySettings() {
 /** session://locked 的取消订阅函数。 */
 let unlistenLocked: (() => void) | null = null;
 
+/* ---------------- 拖放加密（桌面） ----------------
+ *
+ * 把文件从系统文件管理器拖进窗口：定位到它们所在的目录、选中它们，并弹出
+ * 加密对话框。原来只能先在应用里找到那个目录再逐个选。 */
+const dropActive = ref(false);
+let unlistenDrop: (() => void) | null = null;
+
+async function onDropPaths(paths: string[]) {
+  if (!paths.length) return;
+  const parents = await Promise.all(paths.map((p) => api.parentOf(p).catch(() => null)));
+  const parent = parents[0];
+  // 只处理同一目录里的一批：选择是按当前目录列表算的，跨目录选不到
+  if (!parent || parents.some((p) => p !== parent)) {
+    state.error = i18n.t('drop.mixed_dirs');
+    return;
+  }
+  leaveOverlays();
+  if (state.cwd !== parent || state.container) await navigate(parent);
+  state.selected = paths.filter((p) => state.entries.some((e) => e.path === p));
+  if (encryptable.value.length) openEncryptDialog();
+  else setNotice(i18n.t('drop.nothing_to_encrypt'));
+}
+
 onBeforeUnmount(() => {
   unlistenLocked?.();
+  unlistenDrop?.();
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
   unregisterAndroidBack();
@@ -1715,6 +1749,13 @@ onBeforeUnmount(() => {
     @cancel="cancelVirtualUnlock"
     @submit="confirmVirtualUnlock"
   />
+
+  <!-- 拖放提示：文件拖到窗口上方时出现 -->
+  <Transition name="fade">
+    <div v-if="dropActive" class="drop-hint" aria-hidden="true">
+      <div class="drop-card"><AppIcon name="lock" :size="28" />{{ i18n.t('drop.hint') }}</div>
+    </div>
+  </Transition>
 
   <!-- 应用内确认 / 输入 / 密码框（替代 window.confirm / prompt），放最后保证在最上层 -->
   <AskDialog />
