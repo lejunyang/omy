@@ -142,3 +142,41 @@ describe('SettingsDialog Telegram 全局代理', () => {
     wrapper.unmount();
   });
 });
+
+describe('SettingsDialog 通用组', () => {
+  const fieldsIn = (w: ReturnType<typeof mount>, sel: string) =>
+    w.findAll(`${sel} select`).map((s) => ({
+      sf: (s.attributes('data-sf') || '').replace(/^m_/, ''),
+      options: s.findAll('option').map((o) => o.attributes('value')),
+    }));
+
+  it('桌面面板与移动端平铺列出同样的字段、同样的顺序与选项', async () => {
+    // 不这样会怎样：两处模板各写一份，曾经顺序就已经对不上；给一边加了
+    // 选项，另一边的用户永远选不到，也没有任何检查会报错
+    const desk = mount(SettingsDialog);
+    await flushPromises();
+    const deskFields = fieldsIn(desk, '[data-pane="general"]');
+    desk.unmount();
+
+    setTestMobile(true);
+    const mob = mount(SettingsDialog);
+    await flushPromises();
+    const mobFields = fieldsIn(mob, '.mlist .mqrow');
+    mob.unmount();
+
+    expect(deskFields.map((f) => f.sf)).toEqual(['language', 'theme', 'view', 'startup']);
+    expect(mobFields).toEqual(deskFields);
+  });
+
+  it('移动端改语言立即生效并写进配置', async () => {
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-sf="m_language"]').setValue('en');
+    // 不这样会怎样：两处共用一套字段后，语言若走了「只写配置」的分支，
+    // 界面要等重启才切过去，用户以为没选上
+    expect(w.emitted('lang')?.at(-1)).toEqual(['en']);
+    expect((w.find('[data-sf="m_language"]').element as HTMLSelectElement).value).toBe('en');
+    w.unmount();
+  });
+});

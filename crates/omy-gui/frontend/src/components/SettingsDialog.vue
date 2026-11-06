@@ -267,6 +267,60 @@ function onTheme(v) {
   setTheme(v);
 }
 
+/** 「通用」组的四个下拉框。桌面在右侧面板、移动端在主列表里平铺，
+ *  两处原来各写一份模板，顺序已经不一致了；加选项时只改一边也不会有
+ *  任何检查报错。现在两处都从这里渲染。 */
+interface GeneralField {
+  /** 也是 data-sf 的取值（移动端加 m_ 前缀，探针按它定位） */
+  key: 'language' | 'theme' | 'view' | 'startup';
+  label: string;
+  options: { value: string; label: string }[];
+}
+const generalFields = computed<GeneralField[]>(() => [
+  {
+    key: 'language',
+    label: 'settings.language',
+    options: [
+      { value: 'auto', label: i18n.t('settings.follow_system') },
+      // 语言名不翻译：切到看不懂的语言后，用户得能认出自己的那一项
+      { value: 'zh-CN', label: '简体中文' },
+      { value: 'en', label: 'English' },
+    ],
+  },
+  {
+    key: 'theme',
+    label: 'settings.theme',
+    options: [
+      { value: 'auto', label: i18n.t('settings.follow_system') },
+      { value: 'dark', label: i18n.t('settings.theme_dark') },
+      { value: 'light', label: i18n.t('settings.theme_light') },
+    ],
+  },
+  {
+    key: 'view',
+    label: 'settings.default_view',
+    options: [
+      { value: 'grid', label: i18n.t('view.grid') },
+      { value: 'list', label: i18n.t('view.list') },
+    ],
+  },
+  {
+    key: 'startup',
+    label: 'settings.startup',
+    options: [
+      { value: 'last', label: i18n.t('settings.startup_last') },
+      { value: 'home', label: i18n.t('settings.startup_home') },
+    ],
+  },
+]);
+
+/** 语言与主题要立即生效，其余只写回配置，随「保存」落盘。 */
+function setGeneral(key: GeneralField['key'], v: string) {
+  if (key === 'language') onLanguage(v);
+  else if (key === 'theme') onTheme(v);
+  else cfg.value.ui[key] = v;
+}
+
 /** 字节数转可读文本。 */
 function fmtBytes(n) {
   if (!n) return i18n.t('settings.cache_unlimited');
@@ -563,44 +617,15 @@ async function openLogDir() {
         <div v-if="isMobile && !mobilePane" class="mlist">
           <!-- 语言/主题原本在底栏一点即切，收进设置后必须在主页一层就够得到 -->
           <div class="mgh">{{ i18n.t('settings.general') }}</div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-language">{{ i18n.t('settings.language') }}</label>
+          <div v-for="f in generalFields" :key="f.key" class="mqrow">
+            <label class="mqlb" :for="`m-set-${f.key}`">{{ i18n.t(f.label) }}</label>
             <select
-              id="m-set-language"
-              data-sf="m_language"
-              :value="cfg.ui.language"
-              @change="onLanguage(($event.target as HTMLInputElement).value)"
+              :id="`m-set-${f.key}`"
+              :data-sf="`m_${f.key}`"
+              :value="cfg.ui[f.key]"
+              @change="setGeneral(f.key, ($event.target as HTMLSelectElement).value)"
             >
-              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-              <option value="zh-CN">简体中文</option>
-              <option value="en">English</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-theme">{{ i18n.t('settings.theme') }}</label>
-            <select
-              id="m-set-theme"
-              data-sf="m_theme"
-              :value="cfg.ui.theme"
-              @change="onTheme(($event.target as HTMLInputElement).value)"
-            >
-              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-              <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
-              <option value="light">{{ i18n.t('settings.theme_light') }}</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-view">{{ i18n.t('settings.default_view') }}</label>
-            <select id="m-set-view" data-sf="m_view" v-model="cfg.ui.view">
-              <option value="grid">{{ i18n.t('view.grid') }}</option>
-              <option value="list">{{ i18n.t('view.list') }}</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-startup">{{ i18n.t('settings.startup') }}</label>
-            <select id="m-set-startup" data-sf="m_startup" v-model="cfg.ui.startup">
-              <option value="last">{{ i18n.t('settings.startup_last') }}</option>
-              <option value="home">{{ i18n.t('settings.startup_home') }}</option>
+              <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </div>
 
@@ -666,34 +691,15 @@ async function openLogDir() {
         >
           <!-- 通用 -->
           <template v-if="(isMobile ? mobilePane : pane) === 'general'">
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.language') }}</label>
-              <select data-sf="language" :value="cfg.ui.language" @change="onLanguage(($event.target as HTMLInputElement).value)">
-                <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-                <option value="zh-CN">简体中文</option>
-                <option value="en">English</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.theme') }}</label>
-              <select data-sf="theme" :value="cfg.ui.theme" @change="onTheme(($event.target as HTMLInputElement).value)">
-                <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-                <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
-                <option value="light">{{ i18n.t('settings.theme_light') }}</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.startup') }}</label>
-              <select data-sf="startup" v-model="cfg.ui.startup">
-                <option value="last">{{ i18n.t('settings.startup_last') }}</option>
-                <option value="home">{{ i18n.t('settings.startup_home') }}</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.default_view') }}</label>
-              <select data-sf="view" v-model="cfg.ui.view">
-                <option value="grid">{{ i18n.t('view.grid') }}</option>
-                <option value="list">{{ i18n.t('view.list') }}</option>
+            <div v-for="f in generalFields" :key="f.key" class="row">
+              <label class="lb" :for="`set-${f.key}`">{{ i18n.t(f.label) }}</label>
+              <select
+                :id="`set-${f.key}`"
+                :data-sf="f.key"
+                :value="cfg.ui[f.key]"
+                @change="setGeneral(f.key, ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </div>
           </template>
