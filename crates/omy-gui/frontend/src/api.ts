@@ -253,6 +253,15 @@ export const unlockDirectory = (dir: any, password: any): Promise<any> => invoke
 /** 锁定。后端会清空文件列表与会话密钥。 */
 export const lock = (): Promise<any> => invoke('lock');
 
+/** 后端锁定完成后发出的事件，名字必须与 `commands::SESSION_LOCKED_EVENT` 一致。
+ *
+ * 锁定不一定由前端发起（自动锁定、其它入口），界面靠它统一清掉已解密的内容。 */
+export const SESSION_LOCKED_EVENT = 'session://locked';
+
+/** 订阅「会话已锁定」，返回取消订阅的函数。 */
+export const onSessionLocked = (handler: () => void): Promise<() => void> =>
+  listen(SESSION_LOCKED_EVENT, () => handler());
+
 /** 当前是否已解锁。 */
 export const isUnlocked = (): Promise<any> => invoke('is_unlocked');
 

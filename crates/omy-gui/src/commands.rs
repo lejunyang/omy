@@ -27,6 +27,7 @@ use crate::state::{AppState, FileEntry};
 use omy_core::scan::{ScanOptions, scan_dir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tauri::Emitter as _;
 use tauri::State;
 
 /// 返回给前端的结构化错误。
@@ -355,8 +356,18 @@ pub async fn lock(
     // 恰好也清了」是脆的——那条依赖没有任何断言守着，谁为了少查一次表把
     // 回查删掉，就静默破防。每一张能通向明文的表都自己清自己。
     place_containers.clear();
+    // 通知前端清掉界面上已解密的内容。
+    //
+    // 锁定可能不是前端发起的：自动锁定、将来的托盘菜单、CDP 调用都只到后端。
+    // 不发这个事件的话，后端已经锁了，屏幕上却还摆着解密出来的文件名、
+    // 缩略图和打开的预览——自动锁定防的正是「有人走到闲置的屏幕前」。
+    // 发送失败（窗口已关）不影响锁定本身，所以忽略结果。
+    let _ = app.emit(SESSION_LOCKED_EVENT, ());
     Ok(())
 }
+
+/// 锁定完成后发给前端的事件名，必须与前端 `api.SESSION_LOCKED_EVENT` 一致。
+pub const SESSION_LOCKED_EVENT: &str = "session://locked";
 
 /// 当前是否已解锁。
 #[tauri::command]

@@ -45,6 +45,7 @@ import {
   tryPasswordManagerUnlock,
   tryUnlock,
   lock,
+  applyLockedState,
   switchLanguage,
   applyLanguage,
   afterPlaceAdded,
@@ -953,6 +954,21 @@ async function onPick() {
 }
 
 async function doLock() {
+  closeDecryptedViews();
+  // 断开远端由**后端**的 lock 负责，这里不再重复调用。
+  // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
+  // 的调用会留下活连接——保证放在后端才成立，放在这里只是碰巧生效。
+  await lock();
+}
+
+/** 后端锁定（自动锁定或其它入口）之后的界面收尾。与 doLock 共用同一套关闭逻辑。 */
+async function onSessionLocked() {
+  closeDecryptedViews();
+  await applyLockedState();
+}
+
+/** 关掉所有显示解密内容的浮层。锁定的两条路径（主动 / 后端事件）都要走这里。 */
+function closeDecryptedViews() {
   previewEntry.value = null;
   remotePreview.value = null;
   // 明文预览也要关：后端 lock 会清空 token 表，
@@ -965,10 +981,10 @@ async function doLock() {
   // 云盘目录浏览本身保留——锁定后仍可看目录，只是文件显示为锁定、点不开
   placePreview.value = null;
   showDevices.value = false;
-  // 断开远端由**后端**的 lock 负责，这里不再重复调用。
-  // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
-  // 的调用会留下活连接——保证放在后端才成立，放在这里只是碰巧生效。
-  await lock();
+  // 密码管理、恢复码、解锁框里可能还摆着明文密码或恢复词，一并关掉
+  keyTarget.value = null;
+  recoveryDlg.value = null;
+  showUnlock.value = false;
 }
 
 /** 从设备面板发起连接。 */
@@ -1164,9 +1180,14 @@ onMounted(async () => {
   await refreshDeviceOverview();
   await refreshPasswordManagerStatus();
 
+  // 后端锁定（任何入口）都要清掉界面上的解密内容
+  api.onSessionLocked(() => { void onSessionLocked(); })
+    .then((un) => { unlistenLocked = un; })
+    .catch(() => { /* 没有事件通道时仍有 doLock 自己的清理 */ });
+
   // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
-  // 都是界面首屏需要的，不该为它推迟
-  initAutoLock();
+  // 都是界面首屏需要的，不该为它推迟。传入完整的锁定流程而不是只锁后端
+  initAutoLock(doLock);
   await applySettings();
   // 起始目录放最后：它依赖 places 已加载（home 模式）且只在启动时跑一次，
   // 设置保存触发的 applySettings 不应把用户拽回起始目录
@@ -1191,7 +1212,11 @@ async function applySettings() {
     // 配置读不出来就用内置默认值：这不该阻止应用启动
   }
 }
+/** session://locked 的取消订阅函数。 */
+let unlistenLocked: (() => void) | null = null;
+
 onBeforeUnmount(() => {
+  unlistenLocked?.();
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
   unregisterAndroidBack();

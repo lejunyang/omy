@@ -1828,9 +1828,43 @@ async function refreshKnown() {
  * 否则侧栏还挂着「已配对 3 台」的角标，而设备库其实已经锁上了。
  */
 export async function lock() {
-  await api.lock();
+  // 后端失败也要清界面：锁定的语义是「从现在起什么都看不到」，
+  // 后端报错时界面继续亮着解密内容是最糟的失败方式（fail-open）。
+  try {
+    await api.lock();
+  } finally {
+    await applyLockedState();
+  }
+}
+
+/** 正在进行的界面清理。后端的锁定事件与主动锁定可能同时触发，合并成一次。 */
+let lockTeardown: Promise<void> | null = null;
+
+/** 把界面切到「已锁定」：清凭据计数、解密出来的名字、容器与远程内容，再重载列表。
+ *
+ * 由两条路径调用：前端主动 `lock()`，以及后端的 `session://locked` 事件
+ * （自动锁定等不经过前端的锁定）。两者常常同时到达，所以并发调用共享同一次清理。 */
+export function applyLockedState(): Promise<void> {
+  if (!lockTeardown) {
+    lockTeardown = clearLockedState().finally(() => {
+      lockTeardown = null;
+    });
+  }
+  return lockTeardown;
+}
+
+async function clearLockedState() {
   state.credentials = 0;
   state.known = {};
+  // 先同步抹掉列表里已解密的字段，再等重载：重载要走 IPC，失败时 navigate
+  // 会保留旧列表——那份旧列表里正是解密出来的真名。
+  for (const e of state.entries) {
+    if (e.is_encrypted || e.is_encrypted_dir) {
+      e.unlocked = false;
+      e.real_name = null;
+    }
+  }
+  state.selected = [];
   state.pairedCount = 0;
   // 容器视图里列的是解密出来的文件名，锁定后不该继续可见。
   // 下面还有一道 watch 兜着，两道都要：这一行是主路径，
