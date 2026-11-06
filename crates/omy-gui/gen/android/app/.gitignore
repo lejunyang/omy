@@ -1,6 +1,8 @@
 /src/main/**/generated
 /src/main/jniLibs/**/*.so
 /src/main/assets/tauri.conf.json
+# Tauri 打包时把 vendor-ffmpeg 资源目录拷进来，每次 android build 都会重新生成
+/src/main/assets/ffmpeg/
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
