@@ -267,6 +267,35 @@ impl AtomicWriter {
     }
 }
 
+/// 标准 `Write`：让流式加密直接写进临时文件，提交前目标位置不受影响。
+impl std::io::Write for AtomicWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let f = self.file.as_mut().ok_or_else(|| {
+            std::io::Error::other("writer already committed or aborted")
+        })?;
+        let n = f.write(buf)?;
+        self.written = self.written.saturating_add(n as u64);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.as_mut().map_or(Ok(()), std::io::Write::flush)
+    }
+}
+
+/// 标准 `Seek`：流式加密写完载荷后要回到开头填写头部。
+///
+/// 注意 `written` 统计的是写入调用累计的字节数，seek 回去覆写头部会让它
+/// 大于文件长度；需要文件长度时以 `stream_position` / 元数据为准。
+impl std::io::Seek for AtomicWriter {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let f = self.file.as_mut().ok_or_else(|| {
+            std::io::Error::other("writer already committed or aborted")
+        })?;
+        f.seek(pos)
+    }
+}
+
 impl Drop for AtomicWriter {
     /// 未提交即析构 → 丢弃临时文件，避免留下垃圾。
     fn drop(&mut self) {

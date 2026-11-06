@@ -17,7 +17,7 @@
 
 use crate::commands::{CmdError, CmdResult, Shared};
 use omy_core::crypto::{Argon2Params, Kek};
-use omy_core::file::{EncryptOptions, RandomMaterial, encrypt_with_progress};
+use omy_core::file::{EncryptOptions, RandomMaterial};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{Emitter as _, State};
@@ -391,61 +391,60 @@ fn encrypt_one(
         return encrypt_one_as_tree(src, out_dir, keks, vault_salt, params, req);
     }
 
-    // 目录打包成容器：单文件读内容，目录走 pack_folder。
+    // 全程流式：明文从磁盘按块读、密文按块写进临时文件，内存占用与文件大小
+    // 无关。原来单文件整个读进内存、目录把所有文件拼成一个内存载荷，再在内存
+    // 里拼出整个密文——几 GB 的视频或文件夹峰值是文件大小的两倍以上，手机上
+    // 直接被系统杀掉。
     //
-    // 遍历逻辑在 `omy_core::pack`，与 CLI 共用同一份实现——
-    // 两个入口必须产出完全一样的容器，否则同一个目录在 CLI 和 GUI
-    // 加密会得到不同的结果，解密方还得猜是谁打的包。
-    let (data, folder_index, skipped) = if src.is_dir() {
-        let packed = omy_core::pack::pack_folder(src, None)
-            .map_err(|_| String::from("pack_failed"))?;
-        let skipped: Vec<String> = packed
-            .skipped
-            .iter()
-            .map(|sk| format!("{}: {}", sk.path, sk.reason.code()))
-            .collect();
-        (packed.payload, Some(packed.index.encode()), skipped)
-    } else {
-        // 视频处理产出了中间文件时读它，否则读源文件本身。
-        //
-        // 只换**内容**，不换文件名——下面的 `filename` 仍取自 `src`。
-        // 若连名字一起换，用户解密出来会得到 `.omytmp-1758….mp4`，
-        // 一个他从没见过、也看不出是什么的名字。
-        let read_from = converted_source(src, req);
-        let d = std::fs::read(&read_from).map_err(|_| String::from("read_failed"))?;
-        (d, None, Vec::new())
-    };
-    let original_size = data.len() as u64;
-
-    // 媒体附加信息：缩略图、媒体元信息、MP4 的 moov 副本。
-    //
-    // 只对单文件做。目录打包后的载荷是一个容器格式，整体既不是图片也不是
-    // 视频，探测它只会白起一个 ffprobe 进程。
-    //
-    // 不做这一步的后果是列表页永远没有缩略图——而且很难看出是这里漏了：
-    // 读取侧（thumbnail()、has_thumbnail）一直都在，只是永远读到空。
-    let prepared = if src.is_dir() {
-        omy_media::Prepared::default()
-    } else {
-        omy_media::prepare(&data, &media_prepare_options(req))
-    };
-
+    // 遍历逻辑在 `omy_core::pack`，与 CLI 共用同一份实现——两个入口必须产出
+    // 完全一样的容器，否则同一个目录在 CLI 和 GUI 加密会得到不同的结果。
     let filename = src
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| String::from("unnamed"));
+    let out_path = unique_output(out_dir, &filename, req);
+    let mut writer = omy_core::fsatomic::AtomicWriter::create(&out_path)
+        .map_err(|_| String::from("write_failed"))?;
+    let rnd = RandomMaterial::generate();
+
+    // 进度事件按**整百分比**节流。不节流的话，256 KiB 分块下加密 1 GB
+    // 要发四千多次事件，IPC 开销反而拖慢加密，进度条也会因为刷新过密而卡顿。
+    let mut last_pct = u8::MAX;
+    let mut emit_progress = |done: u64, total: u64| {
+        let Some((app, pos, total_files)) = progress else {
+            return;
+        };
+        // 空文件（total 为 0）算 100%：checked_div 在除数为 0 时
+        // 返回 None，正好用 unwrap_or 兜住，不必手写分支
+        let pct = done
+            .saturating_mul(100)
+            .checked_div(total)
+            .and_then(|v| u8::try_from(v).ok())
+            .unwrap_or(100);
+        if pct == last_pct {
+            return;
+        }
+        last_pct = pct;
+        // 发送失败就算了：前端没在听不代表加密该中断
+        let _ = app.emit(
+            ENCRYPT_PROGRESS_EVENT,
+            EncryptProgress {
+                index: pos,
+                total_files,
+                name: filename.clone(),
+                done,
+                total,
+            },
+        );
+    };
 
     let slot_dir = slot_directory_for(req);
-    let opts = EncryptOptions {
+    let base_opts = EncryptOptions {
         filename: req.encrypt_filename.then(|| filename.clone()),
         preserve_extension: req.preserve_extension,
         compress: req.compress,
         chunk_size: req.chunk_size,
-        folder_index,
         slot_directory: slot_dir,
-        thumbnail: prepared.thumbnail,
-        media_meta: prepared.media_meta,
-        moov_cache: prepared.moov_cache,
         // 必须显式传入！头部记录的 KDF 参数取自这里，而 KEK 是用
         // 外面那份 `params` 派生的。两者不一致时，解密方读头部按错误的
         // 参数派生，就得到一个**永远打不开这个文件的 KEK**——
@@ -460,50 +459,70 @@ fn encrypt_one(
         ..EncryptOptions::default()
     };
 
-    // 进度事件按**整百分比**节流。不节流的话，256 KiB 分块下加密 1 GB
-    // 要发四千多次事件，IPC 开销反而拖慢加密，进度条也会因为刷新过密而卡顿。
-    let mut last_pct = u8::MAX;
-    let total = data.len() as u64;
-    let enc = {
-        let mut cb = |done: u64, _t: u64| {
-            let Some((app, pos, total_files)) = progress else {
-                return;
-            };
-            // 空文件（total 为 0）算 100%：checked_div 在除数为 0 时
-            // 返回 None，正好用 unwrap_or 兜住，不必手写分支
-            let pct = done
-                .saturating_mul(100)
-                .checked_div(total)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(100);
-            if pct == last_pct {
-                return;
-            }
-            last_pct = pct;
-            // 发送失败就算了：前端没在听不代表加密该中断
-            let _ = app.emit(
-                ENCRYPT_PROGRESS_EVENT,
-                EncryptProgress {
-                    index: pos,
-                    total_files,
-                    name: filename.clone(),
-                    done,
-                    total,
-                },
-            );
-        };
-        encrypt_with_progress(
-            &data,
+    let (streamed, original_size, skipped) = if src.is_dir() {
+        let plan = omy_core::pack::plan_folder(src).map_err(|_| String::from("pack_failed"))?;
+        let skipped: Vec<String> = plan
+            .skipped
+            .iter()
+            .map(|sk| format!("{}: {}", sk.path, sk.reason.code()))
+            .collect();
+        let placeholder = plan.placeholder_index().map_err(|_| String::from("pack_failed"))?;
+        let mut reader = plan.reader();
+        let hashes = reader.hashes();
+        // 媒体附加信息只对单文件做：目录打包后的载荷是容器格式，整体既不是
+        // 图片也不是视频，探测它只会白起一个 ffprobe 进程
+        let opts = EncryptOptions { folder_index: Some(placeholder), ..base_opts };
+        let total = plan.total_size;
+        let streamed = omy_core::file::encrypt_stream(
+            &mut reader,
+            total,
             keks,
             vault_salt,
             &opts,
-            &RandomMaterial::generate(),
-            Some(&mut cb),
+            &rnd,
+            &mut writer,
+            Some(&mut emit_progress),
+            Some(&mut || Ok(plan.finish(&hashes.borrow())?.encode())),
         )
-        .map_err(|_| String::from("encrypt_failed"))?
+        .map_err(|_| String::from("encrypt_failed"))?;
+        (streamed, total, skipped)
+    } else {
+        // 视频处理产出了中间文件时读它，否则读源文件本身。
+        //
+        // 只换**内容**，不换文件名——`filename` 仍取自 `src`。
+        // 若连名字一起换，用户解密出来会得到 `.omytmp-1758….mp4`，
+        // 一个他从没见过、也看不出是什么的名字。
+        let read_from = converted_source(src, req);
+        // 媒体附加信息：缩略图、媒体元信息、MP4 的 moov 副本。不做这一步的
+        // 后果是列表页永远没有缩略图——而且很难看出是这里漏了：读取侧
+        // （thumbnail()、has_thumbnail）一直都在，只是永远读到空。
+        // prepare_file 对大文件只读有限的前缀与 moov，内存占用有上限
+        let prepared = omy_media::prepare_file(&read_from, &media_prepare_options(req));
+        let file = std::fs::File::open(&read_from).map_err(|_| String::from("read_failed"))?;
+        let total = file.metadata().map_err(|_| String::from("read_failed"))?.len();
+        let mut input = std::io::BufReader::with_capacity(1 << 20, file);
+        let opts = EncryptOptions {
+            thumbnail: prepared.thumbnail,
+            media_meta: prepared.media_meta,
+            moov_cache: prepared.moov_cache,
+            ..base_opts
+        };
+        let streamed = omy_core::file::encrypt_stream(
+            &mut input,
+            total,
+            keks,
+            vault_salt,
+            &opts,
+            &rnd,
+            &mut writer,
+            Some(&mut emit_progress),
+            None,
+        )
+        .map_err(|_| String::from("encrypt_failed"))?;
+        (streamed, total, Vec::new())
     };
 
-    // 写盘前自检：产物必须真的能用刚才那个密码打开。
+    // 提交前自检：产物必须真的能用刚才那个密码打开。
     //
     // 为什么值得多花这点时间：这条路径一旦出错，产出的是**永久无法
     // 恢复**的文件，而且当场看不出来——用户以为加密成功了，原文件
@@ -512,23 +531,20 @@ fn encrypt_one(
     // 曾经就有过一次：KEK 用用户选的档位派生，头部却写着 default 的
     // 参数，两边对不上。文件写得好好的，只是永远打不开。
     //
-    // 开销是一次 Argon2（几十到几百毫秒）。相比「文件打不开」这个
-    // 后果，这个代价完全可以接受——何况加密本身已经是重活了。
+    // 开销是一次 Argon2（几十到几百毫秒）。头部 MAC 与解包 FEK 只需要头部，
+    // 流式加密已经把头部字节交回来，不必从磁盘读回。
     //
     // 注意必须用 `open_with_password` 而不是复用手上的 `keks`：
     // 后者会跳过「按头部参数重新派生」这一步，恰好绕过要防的问题。
-    omy_core::file::open_with_password(&enc.bytes, req.password.as_bytes())
+    omy_core::file::open_with_password(&streamed.head, req.password.as_bytes())
         .map_err(|_| String::from("verify_failed"))?;
-
-    let out_path = unique_output(out_dir, &filename, req);
-    omy_core::fsatomic::write_atomic(&out_path, &enc.bytes)
-        .map_err(|_| String::from("write_failed"))?;
+    writer.commit().map_err(|_| String::from("write_failed"))?;
 
     Ok(EncryptedItem {
         source: src.to_string_lossy().into_owned(),
         output: out_path.to_string_lossy().into_owned(),
         original_size,
-        encrypted_size: enc.bytes.len() as u64,
+        encrypted_size: streamed.len,
         skipped,
     })
 }

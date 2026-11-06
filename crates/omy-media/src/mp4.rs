@@ -49,6 +49,49 @@ impl BoxRange {
     }
 }
 
+/// 在可 seek 的输入里扫描顶层 box，只读每个 box 的头部，不读内容。
+///
+/// 与 [`top_level_boxes`] 判定相同，但不要求数据在内存里：几 GB 的 MP4 也只
+/// 读几十个字节。用于在大文件里定位 `ftyp` / `moov`（moov 常在文件尾部）。
+///
+/// # Errors
+///
+/// 读取失败时返回 [`MediaError::Io`]。box 结构非法时停止扫描，返回已解析的部分。
+pub fn top_level_boxes_in<R: std::io::Read + std::io::Seek>(r: &mut R) -> Result<Vec<BoxRange>> {
+    use std::io::SeekFrom;
+    let total = r.seek(SeekFrom::End(0)).map_err(MediaError::Io)?;
+    let mut out = Vec::new();
+    let mut pos = 0u64;
+    while out.len() < MAX_BOXES && pos.saturating_add(BOX_HEADER) <= total {
+        r.seek(SeekFrom::Start(pos)).map_err(MediaError::Io)?;
+        let mut head = [0u8; 16];
+        let mut got = 0usize;
+        while got < head.len() {
+            let n = r.read(head.get_mut(got..).unwrap_or(&mut [])).map_err(MediaError::Io)?;
+            if n == 0 {
+                break;
+            }
+            got = got.saturating_add(n);
+        }
+        let Some(size32) = be_u32(&head) else { break };
+        let Some(kind) = head.get(4..8).and_then(|s| <[u8; 4]>::try_from(s).ok()) else { break };
+        let size = match size32 {
+            0 => total.saturating_sub(pos),
+            1 => match head.get(8..16).and_then(be_u64) {
+                Some(v) if got >= 16 => v,
+                _ => break,
+            },
+            n => u64::from(n),
+        };
+        if size < BOX_HEADER || pos.saturating_add(size) > total {
+            break;
+        }
+        out.push(BoxRange { offset: pos, size, kind });
+        pos = pos.saturating_add(size);
+    }
+    Ok(out)
+}
+
 /// 读取大端 u32。
 fn be_u32(b: &[u8]) -> Option<u32> {
     let arr: [u8; 4] = b.get(..4)?.try_into().ok()?;
@@ -957,5 +1000,28 @@ mod tests {
         let mut t = Vec::new();
         collect_offset_tables(&moov, 8, moov.len(), &mut t, 0);
         assert!(t.is_empty());
+    }
+
+    /// 按 seek 扫描与内存扫描结果一致，且能找到尾部的 moov。
+    ///
+    /// 不这样会怎样：大文件探测按 box 头 seek 定位 moov，偏移算错一位
+    /// 就会拷出半个 moov，探测结果与缓存的 moov 副本都是错的。
+    #[test]
+    fn boxes_in_reader_match_in_memory_and_find_tail_moov() {
+        fn bx(kind: &[u8; 4], body_len: usize) -> Vec<u8> {
+            let mut v = Vec::with_capacity(body_len + 8);
+            v.extend_from_slice(&u32::try_from(body_len + 8).unwrap_or(0).to_be_bytes());
+            v.extend_from_slice(kind);
+            v.extend((0..body_len).map(|i| (i % 251) as u8));
+            v
+        }
+        let mut file = bx(b"ftyp", 16);
+        file.extend(bx(b"mdat", 5000));
+        file.extend(bx(b"moov", 300));
+        let mem = top_level_boxes(&file).unwrap_or_default();
+        let seeked = top_level_boxes_in(&mut std::io::Cursor::new(&file)).unwrap_or_default();
+        assert_eq!(mem, seeked);
+        let moov = seeked.iter().find(|b| &b.kind == b"moov").copied();
+        assert_eq!(moov.map(|b| (b.offset, b.size)), Some((24 + 5008, 308)));
     }
 }
