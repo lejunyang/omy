@@ -961,7 +961,8 @@
     "st_skipped": "已缓存，已跳过",
     "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败",
     "speed": "{{rate}}/s",
-    "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
+    "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。",
+    "eta": "剩余 {{time}}"
   },
   "cache_all": {
     "menu": "全部缓存…",

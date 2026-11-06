@@ -163,6 +163,21 @@ async function cancel(t) {
   await refresh();
 }
 
+/** 已传 / 总量。分组任务的 done/total 是文件个数，不是字节，不显示。 */
+function bytesText(t) {
+  if (t.is_group || !t.total) return '';
+  return `${i18n.formatSize(t.done)} / ${i18n.formatSize(t.total)}`;
+}
+
+/** 预计剩余时间：按平滑后的速度估算，只对正在传的字节任务显示。
+ *  只有进度条看不出「还要等多久」，大文件上传时用户只能干等。 */
+function etaText(t) {
+  const bps = rates.value.get(t.id);
+  if (t.is_group || t.state !== 'running' || !bps || !t.total || t.done >= t.total) return '';
+  const ms = ((t.total - t.done) / bps) * 1000;
+  return i18n.t('xfer.eta', { time: i18n.formatDuration(ms) });
+}
+
 /** 这条失败任务能不能重试。后端在失败态里下发 retryable——界面不自己
  *  按错误码再推一遍，判据只该有一处。 */
 function canRetry(t) {
@@ -277,6 +292,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="tskbarwrap">
             <div class="tskbar"><i :style="{ width: pct(t) + '%' }"></i></div>
+            <div v-if="bytesText(t)" class="tskmeta" data-xf="bytes">
+              {{ bytesText(t) }}<template v-if="etaText(t)"> · {{ etaText(t) }}</template>
+            </div>
           </div>
           <div class="tskv" data-xf="state">
             {{ stateText(t) }}<template v-if="rateText(t)">
@@ -421,6 +439,16 @@ onBeforeUnmount(() => {
   height: 100%;
   background: var(--accent);
   transition: width 0.2s;
+}
+/* 等宽数字：每秒刷新时宽度不跳，行尾不会左右抖 */
+.tskmeta {
+  margin-top: 3px;
+  color: var(--fg2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tskv {
   color: var(--fg2);

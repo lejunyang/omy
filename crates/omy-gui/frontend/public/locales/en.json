@@ -961,7 +961,8 @@
     "st_skipped": "Already cached, skipped",
     "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed",
     "speed": "{{rate}}/s",
-    "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
+    "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling.",
+    "eta": "{{time}} left"
   },
   "cache_all": {
     "menu": "Cache all…",
