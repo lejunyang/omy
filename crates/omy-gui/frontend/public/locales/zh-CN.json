@@ -1097,5 +1097,14 @@
     "create": "新建群组",
     "create_hint": "创建一个初始成员只有你自己的 Telegram 超级群；创建后仍需点击转发确认。",
     "create_failed": "新建群组失败"
+  },
+  "sort": {
+    "title": "排序",
+    "name": "名称",
+    "size": "大小",
+    "modified": "修改时间",
+    "type": "类型",
+    "asc": "升序",
+    "desc": "降序"
   }
 }

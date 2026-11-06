@@ -81,6 +81,18 @@ pub struct DirEntry {
     /// `is_dir` 对它仍然是 `true`——前端已有的双击进目录逻辑要能直接复用，
     /// 否则就得为它写第二套打开逻辑。
     pub is_encrypted_dir: bool,
+    /// 修改时间（Unix 毫秒）。列表视图的「修改时间」列与按时间排序用；
+    /// 取不到时（部分虚拟文件系统）为 None，排序时排在最后。
+    pub modified: Option<u64>,
+}
+
+/// 元数据里的修改时间，换成 Unix 毫秒。
+fn modified_ms(md: &std::fs::Metadata) -> Option<u64> {
+    md.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
 }
 
 /// 浏览一个目录。
@@ -202,6 +214,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
                 mime: None,
                 is_container: false,
                 is_encrypted_dir: enc_dir,
+                modified: modified_ms(&md),
             });
             continue;
         }
@@ -244,6 +257,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
             mime,
             is_container: false,
             is_encrypted_dir: false,
+            modified: modified_ms(&md),
         });
     }
 
@@ -545,6 +559,7 @@ pub fn list_places(app: tauri::AppHandle) -> Vec<DirEntry> {
                     mime: None,
                     is_container: false,
                     is_encrypted_dir: false,
+                    modified: None,
                 });
             }
         }
@@ -672,6 +687,7 @@ fn android_entry(path: &Path, label: &str) -> DirEntry {
         mime: None,
         is_container: false,
         is_encrypted_dir: false,
+        modified: None,
     }
 }
 
@@ -699,6 +715,7 @@ fn drive_roots() -> Vec<DirEntry> {
                 mime: None,
                 is_container: false,
                 is_encrypted_dir: false,
+                modified: None,
             })
         })
         .collect()
@@ -726,6 +743,7 @@ fn drive_roots() -> Vec<DirEntry> {
         mime: None,
         is_container: false,
         is_encrypted_dir: false,
+        modified: None,
     }]
 }
 
@@ -804,6 +822,7 @@ mod tests {
             mime: None,
             is_container: false,
             is_encrypted_dir: true,
+            modified: None,
         };
         assert!(entry.is_dir, "加密目录必须仍然是目录");
         assert!(!entry.is_encrypted, "目录本身没有密文内容");

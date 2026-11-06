@@ -109,6 +109,9 @@ export const state = reactive({
   selected: [],
   /** 视图模式。 */
   view: 'grid',
+  /** 本地列表的排序：字段与方向。按观看者记在 localStorage（见 loadSort）。 */
+  sortKey: 'name' as SortKey,
+  sortDir: 'asc' as 'asc' | 'desc',
   /** 是否在列表中显示缩略图；由设置页 ui.thumbnails 驱动，App 启动/保存设置时同步。 */
   showThumbnails: true,
   /** 搜索词。 */
@@ -474,6 +477,70 @@ export function thumbUrl(id) {
  * 排序在后端已按自然序做过（目录在前）。这里只做搜索过滤，
  * 不重排——否则会和后端的顺序打架。
  */
+export type SortKey = 'name' | 'size' | 'modified' | 'type';
+
+const SORT_STORE_KEY = 'omy.sort';
+
+/** 读回上次的排序。读写都包在 try 里：隐私模式下 localStorage 可能直接抛错。 */
+export function loadSort() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SORT_STORE_KEY) || 'null');
+    if (raw && ['name', 'size', 'modified', 'type'].includes(raw.key)) {
+      state.sortKey = raw.key;
+      state.sortDir = raw.dir === 'desc' ? 'desc' : 'asc';
+    }
+  } catch {
+    /* 读不到就用默认的按名称升序 */
+  }
+}
+
+/** 设置排序；再点同一列切换升降序。 */
+export function setSort(key: SortKey) {
+  if (state.sortKey === key) {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.sortKey = key;
+    // 大小与时间默认从大 / 新到小 / 旧：找「最大的文件」「最近改过的」才是常见目的
+    state.sortDir = key === 'size' || key === 'modified' ? 'desc' : 'asc';
+  }
+  try {
+    localStorage.setItem(SORT_STORE_KEY, JSON.stringify({ key: state.sortKey, dir: state.sortDir }));
+  } catch {
+    /* 存不下只是下次不记得，不影响这次 */
+  }
+}
+
+/** 排序用的名字：已解锁的用真名，锁着的用磁盘名（不会泄露什么，只是让顺序稳定）。 */
+function sortName(e) {
+  return (e.real_name || e.name || '').toString();
+}
+
+function sortType(e) {
+  // 锁着的加密文件类型未知，排在所有类型之后
+  if (e.is_encrypted && !e.unlocked) return '￿';
+  const n = e.is_encrypted ? e.real_name || '' : e.name || '';
+  const i = n.lastIndexOf('.');
+  return i > 0 ? n.slice(i + 1).toLowerCase() : '';
+}
+
+/** 目录永远在前；同类之间按所选字段排，相同时按名称兜底，保证顺序稳定。 */
+function sortEntries(list) {
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  // 与界面语言一致的排序规则：中文按拼音，数字按数值（第2章在第10章之前）
+  const coll = i18n.collator();
+  const byName = (a, b) => coll.compare(sortName(a), sortName(b));
+  const cmp = (a, b) => {
+    if (!!a.is_dir !== !!b.is_dir) return a.is_dir ? -1 : 1;
+    let r = 0;
+    if (state.sortKey === 'size') r = (a.size ?? -1) - (b.size ?? -1);
+    else if (state.sortKey === 'modified') r = (a.modified ?? -1) - (b.modified ?? -1);
+    else if (state.sortKey === 'type') r = sortType(a).localeCompare(sortType(b));
+    else r = byName(a, b);
+    return r * dir || byName(a, b);
+  };
+  return [...list].sort(cmp);
+}
+
 export const visibleEntries = computed(() => {
   // 服务端搜索模式：列的是候选集，而不是当前目录。
   //
@@ -487,8 +554,10 @@ export const visibleEntries = computed(() => {
       ? containerEntries.value
       : state.entries;
   const q = state.query.trim().toLowerCase();
-  if (!q) return source;
-  return source.filter((e) => {
+  // 只有本地列表按用户选的字段排；远程服务端搜索结果保持服务端给的相关度顺序
+  const sorted = state.searchMode === 'server' && state.remotePlace ? source : sortEntries(source);
+  if (!q) return sorted;
+  return sorted.filter((e) => {
     // 锁定的加密文件与加密目录都没有可搜的名字，搜索时直接排除：
     // 用磁盘名去匹配等于拿 base32 密文当明文搜，还会泄露信息
     if ((e.is_encrypted || e.is_encrypted_dir) && !e.unlocked) return false;

@@ -1097,5 +1097,14 @@
     "create": "Create group",
     "create_hint": "Creates a Telegram supergroup whose only initial member is you. You still confirm forwarding afterward.",
     "create_failed": "Failed to create group"
+  },
+  "sort": {
+    "title": "Sort",
+    "name": "Name",
+    "size": "Size",
+    "modified": "Modified",
+    "type": "Type",
+    "asc": "ascending",
+    "desc": "descending"
   }
 }

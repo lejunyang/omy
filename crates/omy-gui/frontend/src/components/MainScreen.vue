@@ -29,6 +29,8 @@ import {
   clearSelection,
   clearNotice,
   setView,
+  setSort,
+  type SortKey,
 } from '../store';
 import AppShell from './AppShell.vue';
 import EntryCard from './EntryCard.vue';
@@ -68,6 +70,37 @@ watch(
   },
   { immediate: true },
 );
+
+/** 排序菜单：打开时记着按钮位置（桌面菜单贴着按钮弹出）。 */
+const sortMenu = ref<{ x: number; y: number } | null>(null);
+
+const SORT_KEYS = ['name', 'size', 'modified', 'type'] as const;
+
+const sortItems = computed(() =>
+  SORT_KEYS.map((k) => ({
+    key: k,
+    // 当前字段用 ✓ 标出，并写明方向
+    icon: state.sortKey === k ? 'check' : 'minus',
+    label: i18n.t(`sort.${k}`) + (state.sortKey === k
+      ? ` · ${i18n.t(state.sortDir === 'asc' ? 'sort.asc' : 'sort.desc')}`
+      : ''),
+  })),
+);
+
+function openSortMenu(ev: MouseEvent) {
+  const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+  sortMenu.value = { x: r.left, y: r.bottom + 4 };
+}
+
+function onSortPick(key: string) {
+  sortMenu.value = null;
+  if ((SORT_KEYS as readonly string[]).includes(key)) setSort(key as SortKey);
+}
+
+/** 列头上当前排序列的样式类（带方向箭头）。 */
+function sortCls(key: SortKey) {
+  return state.sortKey === key ? ['sorted', state.sortDir] : [];
+}
 
 /** 悬浮按钮的「新建」菜单是否打开。 */
 const fabMenu = ref(false);
@@ -272,6 +305,17 @@ function onRowMenu(e, ev) {
           </template>
         </nav>
 
+        <!-- 排序：网格与列表都要能排（列表视图另有可点的列头） -->
+        <button
+          class="crumbbtn"
+          data-tb="sort"
+          :title="i18n.t('sort.title')"
+          :aria-label="i18n.t('sort.title')"
+          @click="openSortMenu"
+        >
+          <AppIcon name="sort" />
+        </button>
+
         <!-- 移动端：视图切换收成一个按钮放在面包屑尾部。桌面上它在顶栏，
              手机顶栏留给标题与搜索 -->
         <button
@@ -382,6 +426,14 @@ function onRowMenu(e, ev) {
         </div>
 
         <div v-else :key="'l:' + locationKey" class="list anim-in">
+          <!-- 列头：点一下按该列排序，再点切换升降序。手机上列放不下，只靠排序按钮 -->
+          <div v-if="!isMobile" class="lhead" role="row">
+            <span class="ic"></span>
+            <button class="nm" :class="sortCls('name')" @click="setSort('name')">{{ i18n.t('sort.name') }}</button>
+            <button class="sz" :class="sortCls('size')" @click="setSort('size')">{{ i18n.t('sort.size') }}</button>
+            <button class="tm" :class="sortCls('modified')" @click="setSort('modified')">{{ i18n.t('sort.modified') }}</button>
+            <button class="tg" :class="sortCls('type')" @click="setSort('type')">{{ i18n.t('sort.type') }}</button>
+          </div>
           <div
             v-for="(e, i) in entriesWithMeta"
             :key="e.path"
@@ -403,6 +455,7 @@ function onRowMenu(e, ev) {
               {{ e.is_encrypted && !e.unlocked ? i18n.t('file.locked_name') : e.real_name || e.name }}
             </span>
             <span class="sz">{{ e.size == null ? '' : i18n.formatSize(e.size) }}</span>
+            <span v-if="!isMobile" class="tm">{{ i18n.formatDateTime(e.modified) }}</span>
             <span class="tg">
               {{
                 e.is_dir
@@ -483,6 +536,18 @@ function onRowMenu(e, ev) {
       >
         <AppIcon name="plus" :size="24" :stroke-width="2.2" />
       </button>
+    </Transition>
+
+    <Transition name="menu">
+      <ContextMenu
+        v-if="sortMenu"
+        :items="sortItems"
+        :x="sortMenu.x"
+        :y="sortMenu.y"
+        :title="i18n.t('sort.title')"
+        @pick="onSortPick"
+        @close="sortMenu = null"
+      />
     </Transition>
 
     <!-- 悬浮按钮的「新建」菜单。原来它只做「打开文件夹」，可「+」读起来是

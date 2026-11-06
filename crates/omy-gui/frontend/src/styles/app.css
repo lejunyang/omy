@@ -840,6 +840,75 @@ input {
   flex: 0 0 auto;
 }
 
+/* 列表列头：与行同样的列宽，按钮可点排序；当前排序列带方向箭头 */
+.lhead {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2.5);
+  padding-inline: calc(var(--sp) * 2);
+  border-block-end: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+
+.lhead .ic {
+  width: 24px;
+  flex: 0 0 auto;
+}
+
+.lhead button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lhead button:hover,
+.lhead button.sorted {
+  color: var(--fg);
+}
+
+.lhead button.sorted::after {
+  content: '';
+  display: inline-block;
+  margin-inline-start: 5px;
+  border-inline: 4px solid transparent;
+  vertical-align: middle;
+}
+
+.lhead button.sorted.asc::after {
+  border-block-end: 5px solid currentColor;
+}
+
+.lhead button.sorted.desc::after {
+  border-block-start: 5px solid currentColor;
+}
+
+.lhead .nm {
+  flex: 1;
+  text-align: start;
+}
+
+.lhead .sz,
+.lhead .tg {
+  width: 84px;
+  text-align: end;
+  flex: 0 0 auto;
+}
+
+.lhead .tm {
+  width: 150px;
+  text-align: end;
+  flex: 0 0 auto;
+}
+
 /* 列表视图的上传/发送时间列。比大小/类型宽些（要放完整日期时间），
    窄屏会被下面的 @media 隐藏，与类型列同一处理。 */
 .lrow .tm {

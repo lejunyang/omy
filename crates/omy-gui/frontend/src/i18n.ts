@@ -111,6 +111,18 @@ export function formatSize(bytes?: number | null): string {
 }
 
 /** 时长格式化，毫秒 → `1:23:45` 或 `12:34`。 */
+/** 日期时间（列表的「修改时间」列）。跟随界面语言而不是系统 locale。 */
+export function formatDateTime(ms?: number | null): string {
+  if (ms == null || !Number.isFinite(ms)) return '';
+  return new Intl.DateTimeFormat(current.value, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(ms));
+}
+
 export function formatDuration(ms?: number | null): string {
   if (ms == null) return '';
   const total = Math.floor(Number(ms) / 1000);

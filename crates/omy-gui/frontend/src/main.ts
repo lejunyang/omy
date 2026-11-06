@@ -54,6 +54,8 @@ async function boot() {
 
   // 分页大小是编译期常量，启动时问一次即可
   void store.loadPageSize?.();
+  // 上次选的排序（按观看者记在本机）
+  store.loadSort();
 
   const app = createApp(App);
   app.component('AppIcon', AppIcon);
