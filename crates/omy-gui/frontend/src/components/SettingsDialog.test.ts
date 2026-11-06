@@ -48,7 +48,7 @@ vi.mock('../api', () => ({
 vi.mock('../i18n', () => ({
   __v_isRef: false,
   t: (key: string) => key,
-  te: (key: string) => key,
+  te: (key: string, fallback?: string) => key || fallback || '',
   tn: (key: string, count: number) => `${key}:${count}`,
   formatSize: (n: number) => String(n),
 }));
@@ -177,6 +177,36 @@ describe('SettingsDialog 通用组', () => {
     // 界面要等重启才切过去，用户以为没选上
     expect(w.emitted('lang')?.at(-1)).toEqual(['en']);
     expect((w.find('[data-sf="m_language"]').element as HTMLSelectElement).value).toBe('en');
+    w.unmount();
+  });
+});
+
+describe('SettingsDialog 移动端底栏离开', () => {
+  it('离开前保存在设置里做的改动', async () => {
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-sf="m_view"]').setValue('list');
+    await w.find('[data-si="nav-files"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：手机上没有关闭按钮，底栏是主要出口；不保存的话改的
+    // 默认视图、自动锁定、加密默认值全部丢失，语言主题重启后也变回去
+    expect(h.configSet).toHaveBeenCalledTimes(1);
+    expect(h.configSet.mock.calls[0][0].ui.view).toBe('list');
+    expect(w.emitted('close')).toBeTruthy();
+    w.unmount();
+  });
+
+  it('保存失败时留在设置页并显示错误', async () => {
+    setTestMobile(true);
+    h.configSet.mockRejectedValue(new Error('disk full'));
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-si="nav-places"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：页面关掉了，用户以为改好了，下次启动才发现没生效
+    expect(w.emitted('places')).toBeFalsy();
+    expect(w.find('[data-sf="m_error"]').text()).toBe('settings.save_failed');
     w.unmount();
   });
 });

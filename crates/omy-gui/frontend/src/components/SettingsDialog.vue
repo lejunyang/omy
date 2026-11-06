@@ -221,7 +221,8 @@ onMounted(async () => {
  * 那时已经无从判断是哪一步出的问题。
  */
 async function save() {
-  if (!cfg.value) return;
+  // 配置没读出来就没有可保存的内容：放行，否则设置页关不掉、底栏也走不了
+  if (!cfg.value) return true;
   try {
     await api.configSet(cfg.value);
     // 缓存上限/目录改了要让运行中的后端立刻换缓存实例，否则要等重启；
@@ -479,8 +480,13 @@ onBeforeUnmount(unregisterBack);
  * 不清的话，下次再进设置会停在上次那个二级页，而且更要命的是——设置是个盖住
  * 整屏的模态，切走时若不显式 emit('close') 让上层关掉 showSettings，模态会一直
  * 压在文件/远程页上面，表现成「点了别的 tab 进不去」（本 bug 的根因：二级页
- * 返回后底栏点击没有一条能真正关掉设置层的路径）。 */
-function leaveTo(tab) {
+ * 返回后底栏点击没有一条能真正关掉设置层的路径）。
+ *
+ * 离开前必须先保存：底栏是手机上离开设置的主要出口（移动端没有关闭按钮），
+ * 不保存的话在这里改的自动锁定、加密默认值、默认视图全部丢失，语言和主题
+ * 当下看着生效了、重启又变回去。保存失败就留在设置页，让用户看到错误。 */
+async function leaveTo(tab) {
+  if (!(await save())) return;
   mobilePane.value = null;
   mobileStack.value = [];
   if (tab === 'files') emit('close');
@@ -681,6 +687,8 @@ async function openLogDir() {
             <span class="mrv">{{ aboutInfo.app_version }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
+          <!-- 主列表也要能看到保存失败：底栏/返回键离开时就是在这一层保存的 -->
+          <div v-if="error" class="err" data-sf="m_error">{{ error }}</div>
         </div>
 
         <!-- 内容区 -->
