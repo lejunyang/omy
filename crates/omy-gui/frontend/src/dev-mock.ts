@@ -132,11 +132,16 @@ function remoteEntries(): RemoteEntry[] {
   ];
 }
 
+// 字段与 omy-config 的真实配置一致：设置页直接读 cfg.defaults.* 等，少一节就整页渲染失败
 const config = {
   ui: { language: 'zh-CN', theme: 'dark', view: 'grid', startup: 'home', thumbnails: true },
-  security: { auto_lock_secs: 900 },
-  remote: { telegram_proxy_mode: 'system', cache_limit: 2_000_000_000 },
-  encrypt: {},
+  security: { auto_lock_secs: 900, lock_on_background: false },
+  remote: {
+    telegram_proxy_mode: 'system', cache_limit: 2_000_000_000, cache_wifi_only: false,
+    clear_cache_on_exit: false, scan_concurrency: 4, scan_omy_only: true, transfer_concurrency: 2,
+  },
+  defaults: { kdf_profile: 'interactive', chunk_size: 262_144, name_mode: 'encrypt', original_action: 'keep' },
+  compress: { enabled: false, level: 3 },
   playback: {},
 };
 
