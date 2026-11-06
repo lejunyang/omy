@@ -115,7 +115,7 @@ Commit and cleanup follow the destination's capabilities rather than assuming ev
 2. If either rename or delete is unavailable, omy writes the final name directly. When delete is available it attempts cleanup after failure. When delete is unavailable or cleanup fails, Transfer Management reports that an incomplete object may remain and does not offer Retry until you inspect the destination.
 3. Path-based destinations such as WebDAV refuse to overwrite a same-named existing file.
 
-Every remote-copy operation appears immediately in **Transfer Management**, with progress, cancellation, and Retry for failures that are safe to retry.
+Every remote-copy operation appears immediately in **Transfer Management**, showing progress, bytes transferred out of the total, speed, and estimated time remaining, with cancellation and Retry for failures that are safe to retry.
 
 #### Can Telegram resume transfers?
 
