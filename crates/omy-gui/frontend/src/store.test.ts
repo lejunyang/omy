@@ -67,7 +67,6 @@ import {
   reloadVirtualDir,
   activateVirtualEntry,
   openRemotePlace,
-  reloadRemoteDir,
   remoteFileCacheKeyFor,
   toggleRemoteSelected,
   remoteSelectionActive,

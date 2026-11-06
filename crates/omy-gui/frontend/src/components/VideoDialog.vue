@@ -224,7 +224,6 @@ const frameStep = computed(() => {
 /* ---------------- 能力 ---------------- */
 
 const canCompress = computed(() => (caps.value?.video_encoders?.length ?? 0) > 0);
-const canAac = computed(() => (caps.value?.audio_encoders ?? []).includes('aac'));
 
 /** 转封装到 MP4 会不会丢音轨。
  *

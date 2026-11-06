@@ -23,7 +23,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { isAndroid, registerMobileBack } from '../mobile-platform';
-import { theme, setTheme } from '../theme';
+import { setTheme } from '../theme';
 import * as api from '../api';
 import { state, setNotice, reloadRemotePlaces } from '../store';
 
@@ -320,12 +320,6 @@ function setGeneral(key: GeneralField['key'], v: string) {
   if (key === 'language') onLanguage(v);
   else if (key === 'theme') onTheme(v);
   else cfg.value.ui[key] = v;
-}
-
-/** 字节数转可读文本。 */
-function fmtBytes(n) {
-  if (!n) return i18n.t('settings.cache_unlimited');
-  return i18n.formatSize(n);
 }
 
 function lockLabel(secs) {

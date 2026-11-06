@@ -38,7 +38,6 @@ import {
   ensureRemoteListeners,
   restoreStartupDir,
   loadStorageAccess,
-  grantStorageAccess,
   encryptSelected,
   restoreSelected,
   tryDeviceUnlock,

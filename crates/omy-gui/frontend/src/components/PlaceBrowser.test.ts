@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { defineComponent, h, reactive, computed, nextTick } from 'vue';
+import { defineComponent, h, nextTick } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
 
 // happy-dom 不实现真实布局，ResizeObserver 只需要「存在且不报错」。

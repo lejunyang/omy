@@ -17,7 +17,6 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
 import { isMobile } from '../viewport';
 import { isAndroid, registerMobileBack } from '../mobile-platform';
-import * as i18n from '../i18n';
 
 /** 右键菜单里一项。分隔线用 key 'sep'，其余字段按场景可选。 */
 interface MenuItem {

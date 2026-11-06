@@ -63,7 +63,6 @@ import {
   activateVirtualEntry,
   locateFile,
   isVirtualPlace,
-  addVirtualFolder,
   openAddToVirtual,
   openUploadToRemote,
   setGridLayout,

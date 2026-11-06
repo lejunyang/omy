@@ -19,7 +19,7 @@
  *    （点 ✕、按 Esc、切换文件）都覆盖到。
  */
 
-import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { playing } from '../autolock';
 import OmyVideoPlayer from './OmyVideoPlayer.vue';
 import OmyAudioPlayer from './OmyAudioPlayer.vue';
@@ -186,7 +186,6 @@ function onKey(ev: KeyboardEvent) {
   }
 }
 
-const media = useTemplateRef('media');
 const text = ref('');
 const mediaError = ref('');
 
