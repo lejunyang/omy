@@ -812,17 +812,14 @@ pub fn stream_base() -> String {
 /// 这一个受控入口，将来要加审计或路径限制也只需改这里。
 #[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Option<String>> {
-    // 安卓没有原生文件夹选择器：tauri-plugin-dialog 在移动端不提供
-    // pick_folder，而 SAF 的 ACTION_OPEN_DOCUMENT_TREE 返回 content:// URI，
-    // 与本项目基于路径的 std::fs 核心接不上（详见 crate::storage 的说明）。
-    //
-    // 安卓上选目录走另一条路：拿到全盘权限后直接在侧栏和列表里浏览，
-    // 目标目录本身就是当前 cwd，不需要额外的选择器。
-    // 明确报不支持而不是静默返回 None——前端靠错误码区分「取消了」和「用不了」。
+    // 安卓：tauri-plugin-dialog 在移动端不提供 pick_folder，改走自己的存储
+    // 插件弹系统原生目录选择器（SAF），再借全盘访问权限把树 URI 换算成路径——
+    // omy 的核心是路径语义的 std::fs，content:// URI 接不上原子写。
+    // 原来这里直接报 unsupported，而移动端首屏唯一的悬浮按钮就是它。
     #[cfg(target_os = "android")]
     {
-        let _ = (app, title);
-        Err(CmdError::code("unsupported"))
+        let _ = title;
+        crate::storage::pick_directory(&app)
     }
 
     #[cfg(not(target_os = "android"))]

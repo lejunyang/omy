@@ -163,5 +163,8 @@
   "log_open_failed": "打不开日志目录，请手动前往该路径查看。",
   "log_dir_unknown": "尚未确定日志目录。",
   "log_dir_open_failed": "打不开日志目录，请手动前往该路径查看。",
-  "log_dir_unsupported": "当前平台不支持打开日志目录。"
+  "log_dir_unsupported": "当前平台不支持打开日志目录。",
+  "storage_permission_required": "需要先在系统设置里给 omy 开启「所有文件访问权限」，才能打开这个文件夹",
+  "unsupported_location": "这个位置不在本机存储上（例如云盘），无法直接浏览",
+  "picker_unavailable": "这台设备没有系统目录选择器"
 }

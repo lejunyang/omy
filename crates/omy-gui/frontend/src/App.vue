@@ -989,8 +989,9 @@ async function onUnlockSubmit({ password }) {
 }
 
 async function onPick() {
-  // 不能静默吞错误：移动端根本没有文件夹选择器，后端会返回
-  // unsupported。吞掉的话点了完全没反应，用户只会以为按钮坏了
+  // 不能静默吞错误：Android 上要先有「所有文件访问权限」、系统选择器也可能
+  // 选到不在本机存储上的位置（云盘），后端会返回对应的错误码。吞掉的话
+  // 点了完全没反应，用户只会以为按钮坏了
   let dir = null;
   try {
     dir = await api.pickFolder(i18n.t('nav.pick_folder'));

@@ -126,6 +126,20 @@ mod imp {
                 .map_err(|e| e.to_string())
         }
 
+        /// 弹系统目录选择器，返回选中目录的路径；用户取消时为 None。
+        ///
+        /// 失败时把 Kotlin 侧的错误码原样带回（`unsupported_location` 等），
+        /// 前端据此给出能看懂的提示。
+        pub fn pick_directory(&self) -> Result<Option<String>, tauri::plugin::mobile::PluginInvokeError> {
+            #[derive(serde::Deserialize)]
+            struct Picked {
+                path: Option<String>,
+            }
+            self.0
+                .run_mobile_plugin::<Picked>("pickDirectory", ())
+                .map(|p| p.path)
+        }
+
         /// 列出所有已挂载的存储卷。
         pub fn volumes(&self) -> Result<Vec<super::StorageVolume>, String> {
             self.0
@@ -166,6 +180,22 @@ mod imp {
             .request()
     }
 
+    /// 取插件句柄并弹系统目录选择器。
+    pub fn pick_directory(
+        app: &tauri::AppHandle,
+    ) -> Result<Option<String>, crate::commands::CmdError> {
+        use tauri::Manager as _;
+        let plugin = app
+            .try_state::<StoragePlugin<tauri::Wry>>()
+            .ok_or_else(|| crate::commands::CmdError::code("unsupported"))?;
+        plugin.pick_directory().map_err(|e| match e {
+            tauri::plugin::mobile::PluginInvokeError::InvokeRejected(r) => {
+                crate::commands::CmdError::code(r.code.as_deref().unwrap_or("internal"))
+            }
+            _ => crate::commands::CmdError::code("internal"),
+        })
+    }
+
     /// 取插件句柄并列举存储卷。
     ///
     /// 失败时返回空列表而不是错误：调用方 [`super::android_volume_roots`]
@@ -190,6 +220,25 @@ pub use imp::init;
 #[must_use]
 pub fn is_granted(app: &tauri::AppHandle) -> bool {
     imp::check(app).map(|s| s.granted).unwrap_or(false)
+}
+
+/// 用系统目录选择器选一个文件夹（Android）。
+///
+/// 选出来的位置靠全盘访问权限才能按路径读写，所以没授权时先申请；
+/// 用户没给就报 `storage_permission_required`，而不是返回一个读不了的路径。
+///
+/// # Errors
+///
+/// 申请或选择失败、位置不在本机存储上时返回。
+#[cfg(target_os = "android")]
+pub fn pick_directory(app: &tauri::AppHandle) -> Result<Option<String>, crate::commands::CmdError> {
+    if !is_granted(app) {
+        let s = imp::request(app).map_err(|_| crate::commands::CmdError::code("storage_permission_required"))?;
+        if !s.granted {
+            return Err(crate::commands::CmdError::code("storage_permission_required"));
+        }
+    }
+    imp::pick_directory(app)
 }
 
 /// 已挂载的存储卷（供后端内部使用）。

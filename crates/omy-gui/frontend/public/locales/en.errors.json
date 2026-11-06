@@ -163,5 +163,8 @@
   "log_open_failed": "Couldn't open the log folder. Please open the path manually.",
   "log_dir_unknown": "The log folder is not determined yet.",
   "log_dir_open_failed": "Couldn't open the log folder. Please open the path manually.",
-  "log_dir_unsupported": "Opening the log folder is not supported on this platform."
+  "log_dir_unsupported": "Opening the log folder is not supported on this platform.",
+  "storage_permission_required": "Allow omy \"All files access\" in system settings to open this folder",
+  "unsupported_location": "This location is not on local storage (e.g. a cloud drive) and cannot be browsed directly",
+  "picker_unavailable": "This device has no system folder picker"
 }
