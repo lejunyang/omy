@@ -705,54 +705,72 @@ export const ctxItems = computed(() => {
   });
 
   items.push({ key: 'sep' });
+
+  // 「永远用不上」的项不出现，「暂时用不了」的项禁用并说明原因。
+  //
+  // 菜单项位置固定是为了肌肉记忆（见 PROGRESS「交互上的两条防误删」），但
+  // 普通文件的菜单里摆四个永远是灰的密码 / 恢复码项，手机底部弹层因此长到
+  // 13 项、删除被挤出屏幕。按选中项的类型裁掉不可能适用的那一组：同一类
+  // 条目的菜单仍然一模一样，肌肉记忆不受影响。
+  const selEntries = state.selected
+    .map((path) => state.entries.find((x) => x.path === path))
+    .filter(Boolean);
+  const pool = selEntries.length ? selEntries : [e];
+  const anyEncrypted = pool.some((x) => x.is_encrypted || x.is_encrypted_dir);
+  const anyPlain = pool.some((x) => !x.is_encrypted && !x.is_encrypted_dir);
+
   const canEncrypt = encryptable.value.length > 0;
-  items.push({
-    key: 'encrypt',
-    icon: '🔒',
-    label: t('file.encrypt'),
-    disabled: !canEncrypt,
-    hint: canEncrypt ? '' : t('ctx.already_encrypted'),
-  });
+  if (anyPlain) {
+    items.push({
+      key: 'encrypt',
+      icon: '🔒',
+      label: t('file.encrypt'),
+      disabled: !canEncrypt,
+      hint: canEncrypt ? '' : t('ctx.already_encrypted'),
+    });
+  }
 
-  // 还原：已解锁的加密文件
-  const canRestore = restorable.value.length > 0;
-  items.push({
-    key: 'restore',
-    icon: '📤',
-    label: t('file.restore'),
-    disabled: !canRestore,
-    hint: canRestore ? '' : t('ctx.restore_needs_unlocked'),
-  });
+  if (anyEncrypted) {
+    // 还原：已解锁的加密文件
+    const canRestore = restorable.value.length > 0;
+    items.push({
+      key: 'restore',
+      icon: '📤',
+      label: t('file.restore'),
+      disabled: !canRestore,
+      hint: canRestore ? '' : t('ctx.restore_needs_unlocked'),
+    });
 
-  // 密码管理：必须是**已解锁的单个**加密文件
-  const canKey = !!keyManageable.value;
-  items.push({
-    key: 'manage-key',
-    icon: '🔑',
-    label: t('keymgmt.title'),
-    disabled: !canKey,
-    hint: canKey ? '' : t('ctx.key_needs_unlocked_file'),
-  });
+    // 密码管理：必须是**已解锁的单个**加密文件
+    const canKey = !!keyManageable.value;
+    items.push({
+      key: 'manage-key',
+      icon: '🔑',
+      label: t('keymgmt.title'),
+      disabled: !canKey,
+      hint: canKey ? '' : t('ctx.key_needs_unlocked_file'),
+    });
 
-  // 恢复码：生成要已解锁（得先证明你现在能打开），使用则不要求——
-  // 会用到它正是因为密码已经忘了
-  const canGenReco = !!recoveryGeneratable.value;
-  items.push({
-    key: 'recovery-generate',
-    icon: '🔐',
-    label: t('recovery.menu_generate'),
-    disabled: !canGenReco,
-    hint: canGenReco ? '' : t('ctx.recovery_needs_unlocked_file'),
-  });
+    // 恢复码：生成要已解锁（得先证明你现在能打开），使用则不要求——
+    // 会用到它正是因为密码已经忘了
+    const canGenReco = !!recoveryGeneratable.value;
+    items.push({
+      key: 'recovery-generate',
+      icon: '🔐',
+      label: t('recovery.menu_generate'),
+      disabled: !canGenReco,
+      hint: canGenReco ? '' : t('ctx.recovery_needs_unlocked_file'),
+    });
 
-  const canUseReco = !!recoveryUsable.value;
-  items.push({
-    key: 'recovery-restore',
-    icon: '🔓',
-    label: t('recovery.menu_restore'),
-    disabled: !canUseReco,
-    hint: canUseReco ? '' : t('ctx.recovery_needs_file'),
-  });
+    const canUseReco = !!recoveryUsable.value;
+    items.push({
+      key: 'recovery-restore',
+      icon: '🔓',
+      label: t('recovery.menu_restore'),
+      disabled: !canUseReco,
+      hint: canUseReco ? '' : t('ctx.recovery_needs_file'),
+    });
+  }
 
   items.push({ key: 'sep' });
 
