@@ -2474,8 +2474,14 @@ export async function setSearchMode(mode) {
 
 /** 刷新远程位置列表。 */
 export async function reloadRemotePlaces() {
-  state.remotePlaces = await api.remotePlaceList().catch(() => []);
-  state.virtualPlaces = await api.virtualPlaces().catch(() => []);
+  // 两份列表互不依赖，并发取：串行时每次锁定 / 解锁 / 增删位置都多等一轮 IPC，
+  // 侧栏的锁徽标也要晚一拍才更新
+  const [remote, virtual] = await Promise.all([
+    api.remotePlaceList().catch(() => []),
+    api.virtualPlaces().catch(() => []),
+  ]);
+  state.remotePlaces = remote;
+  state.virtualPlaces = virtual;
 }
 
 /** 重命名虚拟位置（侧栏「编辑」）。空名忽略。 */
