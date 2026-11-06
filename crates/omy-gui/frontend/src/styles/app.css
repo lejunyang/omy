@@ -2154,15 +2154,15 @@ input {
 
 /* ===================== 移动端（≤768px） =====================
  *
- * 断点与 src/viewport.js 的 MOBILE_MAX 必须一致，**改一处要改两处**：
- * CSS 管布局，JS 管交互（触屏没有双击）。两边不一致会出现界面已经
- * 是移动版、但打开手势还是桌面版这种最难查的状态。
+ * `@media (--mobile)` 在构建时展开成 src/breakpoint.ts 的断点，与
+ * viewport.ts 的 matchMedia 同源：CSS 管布局，JS 管交互（触屏没有双击），
+ * 两边一旦分叉就会出现界面已经是移动版、打开手势还是桌面版的状态。
  *
  * 布局取自 docs/research/appendix/ui-prototype.html 的移动端原型：
  * 顶栏 + 2 列网格 + 底部导航；侧栏改为抽屉。
  */
 
-@media (max-width: 768px) {
+@media (--mobile) {
   /* 顶栏：去掉品牌名给搜索框让位，280px 宽度下品牌 + 搜索 + 4 个图标
      会把搜索框挤成一条缝 */
   .titlebar.mob {
@@ -2563,7 +2563,7 @@ input {
 
 /* 移动端：对话框不能用固定宽度，440px 在 360px 宽的屏幕上会横向溢出，
    把「应用」按钮推到屏幕外——界面看着正常，但根本点不到那个按钮 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .dlg.keymgmt {
     width: 100%;
   }
@@ -2702,7 +2702,7 @@ input {
    桌面的 12.5px 行高在手机上会频繁点错行。
    底部弹层（.ctxmenu.mobile）的版式在 mobile.css，不受断点限制：
    Android 平板宽度超过 768px 时也用弹层（见 ContextMenu 的 modalMode） */
-@media (max-width: 768px) {
+@media (--mobile) {
   .ctxmenu .mi {
     padding: calc(var(--sp) * 3) calc(var(--sp) * 3);
     font-size: 14px;
@@ -2719,7 +2719,7 @@ input {
  * 这个手势。这里的规则只管布局，凡涉及打开 / 多选 / 拖拽的交互仍要读
  * isMobile 分别处理。
  */
-@media (max-width: 768px) {
+@media (--mobile) {
   /* 对话框占满屏：820px 在手机上只会横向溢出 */
   .dlg.vdlg {
     width: 100%;
@@ -2872,7 +2872,7 @@ input {
    这条必须放在 `.seg button` 之后：特异性相同的两条规则同分时后者胜，
    写在前面那个 @media 里会被上面的 32px 压掉——CSS 不会报错，
    只是安静地用了另一条。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .seg button {
     min-height: 44px;
   }

@@ -147,7 +147,7 @@ onMounted(load);
 .create-row .text-input { flex: 1; min-width: 0; }
 .hint { color: var(--fg2); font-size: 12px; line-height: 1.45; }
 .errline { margin-top: 10px; color: var(--danger); font-size: 12px; }
-@media (max-width: 768px) {
+@media (--mobile) {
   .forward-dlg { width: 100%; }
   .create-row { flex-direction: column; }
 }

@@ -484,7 +484,7 @@ onBeforeUnmount(() => {
 }
 
 /* 移动端：160px 的进度列挤不下，换成两行 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .tsk {
     grid-template-columns: 20px minmax(0, 1fr) auto;
     grid-template-areas:

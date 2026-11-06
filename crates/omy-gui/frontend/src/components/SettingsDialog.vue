@@ -1270,7 +1270,7 @@ async function openLogDir() {
    设置**背后**那个内容屏的（MainScreen 的 @files 是空操作），点了根本关不掉
    设置层——这正是「二级页返回后点别的 tab 进不去」的根因。改为设置自带底栏、
    直接 emit 给 App 控制 showSettings，路径唯一且可靠。盖住外层 pnav 避免双底栏。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .mask {
     background: none;
     z-index: 40;
@@ -1643,7 +1643,7 @@ async function openLogDir() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@media (max-width: 768px) {
+@media (--mobile) {
   .proxy-row {
     display: block;
   }

@@ -79,7 +79,7 @@ const emit = defineEmits<{
   line-height: 1.45;
   color: var(--fg2);
 }
-@media (max-width: 768px) {
+@media (--mobile) {
   .methods { grid-template-columns: 1fr; }
   .btn, .mcard { min-height: 44px; }
 }

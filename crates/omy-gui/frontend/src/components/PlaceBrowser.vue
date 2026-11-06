@@ -2342,7 +2342,7 @@ function rowTitle(f) {
 /* 窄屏抬到触控下限。同一行里的图标钮已经是 44，只有「进入」是 30，
    既按不准也显得高度不齐。这条要写在这里而不是全局 app.css：
    `.rowactions .btn` 特异性更高，全局那条压不住它。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .rowactions .btn {
     min-height: 44px;
   }

@@ -8,8 +8,8 @@
  *
  * # 断点
  *
- * 768px 与 src/viewport.ts 的 MOBILE_MAX、app.css 里的 @media 一致，
- * **改断点时三处一起改**。
+ * 一律写 `@media (--mobile)`，构建时展开成 src/breakpoint.ts 的 MOBILE_MAX，
+ * 与 viewport.ts 的 matchMedia 同源。不要再手写 `max-width: 768px`。
  *
  * 由 v-if="isMobile" 渲染的元素（.pnav、.selbar、.fab、.mtitle）不再套
  * 媒体查询——JS 已经保证它们只在移动端存在，样式再判一次是重复的真相源。
@@ -96,7 +96,7 @@
 }
 
 /* ---------- 抽屉 ---------- */
-@media (max-width: 768px) {
+@media (--mobile) {
   .side.drawer {
     width: min(300px, 84vw);
     flex-basis: auto;
@@ -171,7 +171,7 @@
   to { opacity: 1; transform: none; }
 }
 
-@media (max-width: 768px) {
+@media (--mobile) {
   .titlebar.mob {
     gap: calc(var(--sp) * 1);
     background: var(--bg);
@@ -633,7 +633,7 @@
 /* ---------- 弹窗 ----------
  * 移动端对话框改为底部弹层形态：拇指够得到确认按钮，键盘弹出时也不会
  * 把对话框顶出屏幕顶部。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   /* .dlg-overlay 同时带着 .overlay（flex-direction: column），
      所以「贴底」要用 justify-content，align-items 管的是水平方向 */
   .dlg-overlay {
@@ -729,7 +729,7 @@
 }
 
 /* 预览层顶栏在手机上用渐变而不是实色条，图片可以铺到顶部 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .overlay:not(.dlg-overlay) .overlay-bar {
     background: linear-gradient(rgb(0 0 0 / 70%), transparent);
   }
