@@ -460,11 +460,7 @@ async function onOpen(entry) {
     // 容器是一整个文件夹，载荷为多个文件拼接。当成单个文件预览
     // 只会得到一堆首尾相接的字节，所以先分流出去——像进普通文件夹
     // 那样进入它，而不是弹一个另一套交互的面板
-    if (entry.is_container) {
-      await enterContainer(entry);
-      return;
-    }
-    await openPreview(entry);
+    await openUnlocked(entry);
     return;
   }
   // 锁着：先看看会话里是不是已经有能开它的密钥
@@ -537,7 +533,20 @@ async function openPreview(entry) {
 async function tryRefreshThenPreview(entry) {
   await reload();
   const fresh = state.entries.find((e) => e.path === entry.path);
-  if (fresh?.unlocked) await openPreview(fresh);
+  if (fresh?.unlocked) await openUnlocked(fresh);
+}
+
+/** 打开一个已解锁的加密条目：加密文件夹（容器）进入，单个文件预览。
+ *
+ * 两处调用（双击已解锁条目、刷新后再打开）必须共用这一个分流：
+ * 原来刷新那条路径直接预览，加密文件夹被当成单个文件，
+ * 预览出来的是一堆首尾相接的字节。 */
+async function openUnlocked(entry) {
+  if (entry.is_container) {
+    await enterContainer(entry);
+    return;
+  }
+  await openPreview(entry);
 }
 
 async function onRestoreSubmit(opts) {
