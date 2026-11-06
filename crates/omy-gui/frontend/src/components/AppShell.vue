@@ -22,7 +22,9 @@ import { ref, watch, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
 
 import { isMobile } from '../viewport';
 import { registerMobileBack } from '../mobile-platform';
-import { state } from '../store';
+// 网格/列表切换用 store 的 setView：它会把选择写进配置（默认视图）。
+// 这里原先另写了一个只改内存的版本，桌面顶栏切换后重启就回到网格
+import { state, setView } from '../store';
 import * as i18n from '../i18n';
 import SideBar from './SideBar.vue';
 
@@ -79,10 +81,6 @@ watch(isMobile, (m) => {
 /** 移动端点了侧栏里的位置后自动收起抽屉，否则挡着刚打开的目录。 */
 function onNavigate() {
   drawer.value = false;
-}
-
-function setView(v) {
-  state.view = v;
 }
 
 /* ---- 抽屉左滑收起 ----
