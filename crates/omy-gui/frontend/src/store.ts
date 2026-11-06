@@ -1086,12 +1086,22 @@ export async function restoreStartupDir() {
   }
 }
 
+/** 本地浏览的代号：每次 navigate +1。与远程浏览的 browseSeq 同一个道理。 */
+let navSeq = 0;
+
 export async function navigate(dir) {
+  // 快速连点（双击进目录后立刻点面包屑）时两次读目录并发进行，先发的可能后回。
+  // 不比对代号的话，晚到的旧结果会把新目录覆盖掉：界面停在用户已经离开的目录，
+  // 而且先结束的那次会提前关掉加载态
+  const seq = ++navSeq;
+  const stale = () => seq !== navSeq;
   state.busy = true;
   state.busyKey = 'busy.loading';
   state.error = '';
   try {
-    state.entries = await api.browseDirectory(dir);
+    const entries = await api.browseDirectory(dir);
+    if (stale()) return;
+    state.entries = entries;
     state.cwd = dir;
     state.selected = [];
     // 进磁盘目录就意味着不在容器里了。不清的话面包屑会同时显示
@@ -1100,9 +1110,10 @@ export async function navigate(dir) {
     await refreshKnown();
     schedulePersistLastDir(dir);
   } catch (e) {
+    if (stale()) return;
     state.error = i18n.te(api.errCode(e), i18n.t('errors.load_failed'));
   } finally {
-    state.busy = false;
+    if (!stale()) state.busy = false;
   }
 }
 
