@@ -675,7 +675,15 @@ fn serve_remote_file(
     };
 
     let total = opened.header.plaintext_size;
-    let Some(span) = resolve_span(range_of(request), total, Unranged::Whole) else {
+    // 媒体的无 Range 首请求同样截断：局域网远端要真的把字节从对方拉过来，
+    // 不截断时点开一个大视频，第一个请求就把整部片子拉进内存。
+    // 文本等 fetch 消费者仍要完整的 200，与本地加密文件同一策略
+    let is_media = f
+        .mime
+        .as_deref()
+        .is_some_and(|m| m.starts_with("audio/") || m.starts_with("video/"));
+    let policy = if is_media { Unranged::Capped } else { Unranged::Whole };
+    let Some(span) = resolve_span(range_of(request), total, policy) else {
         return unsatisfiable(total);
     };
     let Span { start, end_inclusive, length, partial: is_partial } = span;
