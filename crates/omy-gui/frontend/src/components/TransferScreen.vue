@@ -117,6 +117,9 @@ async function refresh() {
     const now = Date.now();
     const next = new Map();
     for (const t of rows) {
+      // 分组任务的 done 是文件个数：拿它算「字节/秒」会显示成「1 B/s」，
+      // 还会因为数值小于阈值而误报「服务端限速」
+      if (t.is_group) continue;
       const prev = lastSample.get(t.id);
       if (prev && now > prev.at && t.done >= prev.done) {
         const bps = ((t.done - prev.done) * 1000) / (now - prev.at);

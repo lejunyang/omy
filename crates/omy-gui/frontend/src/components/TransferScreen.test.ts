@@ -78,6 +78,9 @@ describe('传输行的字节与剩余时间', () => {
     const group = { id: 9, kind: 'upload', name: 'album', target: 'tg', state: 'running', is_group: true, done: 3, total: 12, children: [] };
     const w = await mountWith([group], [{ ...group, done: 4 }]);
     expect(w.find('[data-xf=bytes]').exists()).toBe(false);
+    // 不这样会怎样：每秒多传一个文件会被算成「1 B/s」，还会触发「服务端限速」提示
+    expect(w.find('[data-xf=rate]').exists()).toBe(false);
+    expect(w.find('[data-xf=slow]').exists()).toBe(false);
     w.unmount();
   });
 });
