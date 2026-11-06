@@ -18,6 +18,17 @@ describe('Android 返回处理栈', () => {
     expect(calls).toEqual(['dialog']);
   });
 
+  it('Esc 与返回键走同一个栈，并把来源告诉处理器', async () => {
+    const { registerMobileBack, dispatchBack } = await import('./mobile-platform');
+    const seen: string[] = [];
+    // 底层页面：只处理返回键（后退目录），不处理 Esc
+    registerMobileBack((source) => { seen.push('page:' + source); return source === 'back'; });
+    registerMobileBack((source) => { seen.push('dialog:' + source); return true; });
+    expect(dispatchBack('escape')).toBe(true);
+    // 不这样会怎样：Esc 不分发时，大多数对话框按 Esc 毫无反应
+    expect(seen).toEqual(['dialog:escape']);
+  });
+
   it('未处理时返回 false 交给 Activity 退出', async () => {
     const { registerMobileBack } = await import('./mobile-platform');
     registerMobileBack(() => false);

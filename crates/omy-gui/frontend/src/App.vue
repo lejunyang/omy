@@ -127,7 +127,7 @@ import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
 import AskDialog from './components/AskDialog.vue';
 import { askConfirm, askText } from './ask';
 import { initAutoLock, configureAutoLock } from './autolock';
-import { registerMobileBack } from './mobile-platform';
+import { registerMobileBack, dispatchBack, type BackSource } from './mobile-platform';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
@@ -1094,8 +1094,11 @@ function onUnlockCancel() {
   unlockForRemote.value = false;
 }
 
-/** Android 返回键只处理最上层；返回 true 才阻止 Activity 退出。 */
-function onAndroidBack() {
+/** Android 返回键与桌面 Esc 只处理最上层；返回 true 才阻止 Activity 退出。
+ *
+ * Esc 只关浮层，不做页面级后退（返回上级目录、退出远程位置）：
+ * 桌面用户按 Esc 是想关掉眼前的东西，不是想离开当前目录。 */
+function onAndroidBack(source: BackSource = 'back') {
   if (ctxMenu.entry) { closeContextMenu(); return true; }
   // SettingsDialog 自己先处理二级页；到这里时只剩关闭整个设置。
   if (showSettings.value) { void onSettingsClose(); return true; }
@@ -1124,6 +1127,7 @@ function onAndroidBack() {
   if (state.vEncryptFor) { cancelVirtualEncrypt(); return true; }
   if (state.vUnlockFor) { cancelVirtualUnlock(); return true; }
   if (state.transfersOpen) { closeTransfers(); return true; }
+  if (source === 'escape') return false;
   if (state.placeBrowserOpen) {
     if (state.remotePlace) void remoteGoUp();
     else closePlaceBrowser();
@@ -1138,6 +1142,12 @@ function onAndroidBack() {
 const unregisterAndroidBack = registerMobileBack(onAndroidBack);
 
 function onKey(e) {
+  // Esc 关最上层浮层。已被输入框等自己处理过的（defaultPrevented）不再分发，
+  // 否则一次 Esc 会连关两层
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    if (dispatchBack('escape')) e.preventDefault();
+    return;
+  }
   // Ctrl/Cmd+L 锁定（文档 §8）
   if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
     e.preventDefault();

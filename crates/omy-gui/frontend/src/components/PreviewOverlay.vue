@@ -100,12 +100,7 @@ function onVideoPause() {
   playing.value = false;
 }
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close');
-}
-
 onMounted(() => {
-  document.addEventListener('keydown', onKey);
   if (kind.value === 'text') {
     text.value = i18n.t('playback.loading');
     loadText();
@@ -113,7 +108,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKey);
   // 音视频的暂停与缓冲释放由各自播放器负责。
   // 无论从哪条路径关闭都要清掉，否则关了预览还一直算「在播放」，
   // 自动锁定就永远不会触发——那等于这个功能默默失效了

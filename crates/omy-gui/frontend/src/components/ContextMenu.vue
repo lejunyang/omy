@@ -85,13 +85,6 @@ function pick(item: MenuItem) {
   emit('pick', item.key);
 }
 
-/** Esc 关闭。菜单是模态的，键盘用户必须有退出手段。 */
-function onKey(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') {
-    ev.preventDefault();
-    emit('close');
-  }
-}
 
 /** 忽略长按手势尾巴上那次合成 click 的截止时刻。
  *
@@ -114,7 +107,8 @@ function onLayerClick() {
 
 onMounted(async () => {
   openedAt = performance.now();
-  window.addEventListener('keydown', onKey);
+  // 返回键与 Esc 都走这里（Esc 由 App 统一分发到返回栈）：菜单是模态的，
+  // 键盘用户必须有退出手段
   unregisterBack = registerMobileBack(() => {
     emit('close');
     return true;
@@ -153,7 +147,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKey);
   unregisterBack?.();
 });
 </script>
