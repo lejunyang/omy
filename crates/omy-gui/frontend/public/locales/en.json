@@ -45,7 +45,7 @@
     "pick_folder": "Choose a folder first",
     "pick_folder_hint": "Unlock parameters live in the files, so pick a folder before typing a password",
     "browse": "Choose folder…",
-    "add_password": "Add password",
+    "add_password": "Add another password",
     "recursive": "Include subfolders",
     "try_here": "Unlock this folder",
     "quick_hint": "Enter a password to unlock encrypted files in this folder",

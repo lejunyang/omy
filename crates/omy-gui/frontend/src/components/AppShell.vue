@@ -18,7 +18,7 @@
  * 外壳只管框架，`.main` 里放什么由调用方决定。这样远程位置也能有
  * 自己的面包屑与工具栏，而不必把两种页面的逻辑揉进一个组件。
  */
-import { ref, watch, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
+import { ref, computed, watch, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
 
 import { isMobile } from '../viewport';
 import { registerMobileBack } from '../mobile-platform';
@@ -28,6 +28,7 @@ import { state, setView } from '../store';
 import * as i18n from '../i18n';
 import SideBar from './SideBar.vue';
 import BrandMark from './BrandMark.vue';
+import ContextMenu from './ContextMenu.vue';
 
 const props = defineProps({
   /** 顶栏搜索框是否可用。远程位置有自己的搜索栏（带服务端搜索开关），
@@ -78,6 +79,30 @@ watch(isMobile, (m) => {
     searchOpen.value = false;
   }
 });
+
+/** 手机上密码胶囊弹出的小菜单是否打开。 */
+const vaultMenu = ref(false);
+
+const vaultItems = computed(() => [
+  { key: 'add', icon: 'key', label: i18n.t('unlock.add_password') },
+  { key: 'lock', icon: 'lock', label: i18n.t('status.lock_now'), danger: true },
+]);
+
+/** 点密码胶囊：桌面直接弹解锁框（锁定按钮另有一个）；手机上已有密码时
+ *  先给菜单，没有密码时直接解锁——那时「立即锁定」没有意义。 */
+function onVaultClick() {
+  if (isMobile.value && state.credentials > 0) {
+    vaultMenu.value = true;
+    return;
+  }
+  emit('quick-unlock');
+}
+
+function onVaultPick(key: string) {
+  vaultMenu.value = false;
+  if (key === 'lock') emit('lock');
+  else emit('quick-unlock');
+}
 
 /** 移动端点了侧栏里的位置后自动收起抽屉，否则挡着刚打开的目录。 */
 function onNavigate() {
@@ -201,7 +226,8 @@ onBeforeUnmount(unregisterBack);
       class="pill"
       :class="{ ok: state.credentials > 0 }"
       :title="i18n.t('unlock.quick_hint')"
-      @click="emit('quick-unlock')"
+      data-tb="vault"
+      @click="onVaultClick"
     >
       <span class="pill-ico" aria-hidden="true"><AppIcon :name="state.credentials > 0 ? 'unlock' : 'key'" /></span>
       <span class="pill-txt">{{
@@ -242,8 +268,10 @@ onBeforeUnmount(unregisterBack);
         <AppIcon name="settings" />
       </button>
     </template>
+    <!-- 手机上不单独放锁定按钮：它与左边的密码胶囊并排时是两把长得差不多的锁，
+         分不清哪个是「状态」哪个是「立即锁定」。改由胶囊弹出的小菜单提供 -->
     <button
-      v-if="state.credentials > 0"
+      v-if="state.credentials > 0 && !isMobile"
       id="btn-lock"
       class="iconbtn"
       :title="i18n.t('status.lock_now')"
@@ -286,6 +314,19 @@ onBeforeUnmount(unregisterBack);
        远程位置走的是另一个内容组件，底栏写在 MainScreen 中的话，
        一进远程位置这四个入口就全没了——实测 pnav 从 4 变 0，
        而设置里才有缓存管理，用户在远程位置里根本够不到。 -->
+  <!-- 手机上点密码胶囊：已装入密码时给「再加一个 / 立即锁定」两项 -->
+  <Transition name="menu">
+    <ContextMenu
+      v-if="vaultMenu"
+      :items="vaultItems"
+      :x="0"
+      :y="0"
+      :title="i18n.tn('status.credentials', state.credentials)"
+      @pick="onVaultPick"
+      @close="vaultMenu = false"
+    />
+  </Transition>
+
   <nav v-if="isMobile" class="pnav">
     <button
       class="pnavi"

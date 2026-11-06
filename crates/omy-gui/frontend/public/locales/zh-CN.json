@@ -45,7 +45,7 @@
     "pick_folder": "先选择一个文件夹",
     "pick_folder_hint": "解锁参数存在文件里，所以要先选文件夹再输密码",
     "browse": "选择文件夹…",
-    "add_password": "添加密码",
+    "add_password": "再加一个密码",
     "recursive": "包含子文件夹",
     "try_here": "试解锁此目录",
     "quick_hint": "输入密码可解锁当前目录中的加密文件",
