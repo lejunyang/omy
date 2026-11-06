@@ -267,15 +267,7 @@ fn list_dir(root: &Path, state: &Shared) -> CmdResult<Vec<DirEntry>> {
 ///
 /// 只读前 64 字节：magic 在最前面，没必要为此把大文件读进来。
 fn probe_encrypted(p: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(p) else {
-        return false;
-    };
-    let mut buf = [0u8; 64];
-    let Ok(n) = f.read(&mut buf) else {
-        return false;
-    };
-    omy_core::file::is_omy_file(buf.get(..n).unwrap_or(&[]))
+    omy_core::scan::read_prefix(p, 64).is_ok_and(|b| omy_core::file::is_omy_file(&b))
 }
 
 /// 解出树形加密目录的真实名字，以及目录内加密文件的真实名字。
@@ -394,12 +386,7 @@ fn annotate_tree_names(entries: &mut [DirEntry], root: &Path, state: &Shared) {
 /// 这里没有第四次复制的必要——若将来要统一，三处一起收进 `crate::util`
 /// 之类的地方，**改一处就要改三处**。
 fn read_head(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut f = std::fs::File::open(p)?;
-    let mut buf = vec![0u8; n];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n)
 }
 
 /// 读出一个加密文件在 TLV 里记的真实文件名。

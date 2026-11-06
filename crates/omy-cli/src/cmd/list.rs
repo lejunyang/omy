@@ -139,21 +139,7 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
 /// 读取文件前若干字节。
 fn read_prefix(p: &std::path::Path, n: usize) -> Result<Vec<u8>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(p)?;
-    let mut buf = vec![0u8; n];
-    let mut got = 0usize;
-    while got < n {
-        let Some(s) = buf.get_mut(got..) else { break };
-        match f.read(s) {
-            Ok(0) => break,
-            Ok(k) => got = got.saturating_add(k),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    buf.truncate(got);
-    Ok(buf)
+    Ok(omy_core::scan::read_prefix(p, n)?)
 }
 
 /// 过长字符串截断，保留尾部（路径的尾部信息量更大）。

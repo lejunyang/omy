@@ -385,16 +385,7 @@ pub fn credential_count(state: State<'_, Shared>) -> usize {
 ///
 /// 对 800 MB 的视频，读全文件再解析头部会让「添加目录」卡好几秒。
 fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let f = std::fs::File::open(p)?;
-    // 用 take + read_to_end 而不是单次 read：`Read::read` **不保证**填满
-    // 缓冲区，它可以只返回一部分。单次 read 对小缓冲区几乎总能读满，
-    // 所以这个问题在 64 字节的探测里从来不显现；但按 header_len 读几 KB
-    // 时一旦短读，open() 就会因为数据不全而失败——表现为「同一个文件
-    // 有时有缩略图有时没有」，极难复现。
-    let mut buf = Vec::new();
-    f.take(n as u64).read_to_end(&mut buf)?;
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n)
 }
 
 /// 读出足够覆盖整个头部区域（含 TLV）的字节，且**一个字节都不多读**。
@@ -418,23 +409,7 @@ fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
 /// 大小**彻底无关**（实测小文件与 4 MiB 文件都是 0.09 ms/文件），
 /// 不必再赌某个常量对将来的缩略图尺寸够不够大。
 pub(crate) fn read_header_area(p: &Path) -> std::io::Result<Vec<u8>> {
-    let off = omy_core::header::HEADER_LEN_FIELD_OFFSET;
-    let head = read_prefix(p, off.saturating_add(4))?;
-    let Some(field) = head
-        .get(off..off.saturating_add(4))
-        .and_then(|s| <[u8; 4]>::try_from(s).ok())
-    else {
-        // 比固定头还短，不可能是 omy 文件。把已读到的还回去，
-        // 让上层用统一的 peek_header 去报错，而不是在这里另造一种错误
-        return Ok(head);
-    };
-    let claimed = u32::from_le_bytes(field) as usize;
-    // header_len 来自**尚未验证**的文件内容，不能直接拿去分配内存：
-    // 一个声称 4 GiB 的坏文件会让扫描进程被 OOM 杀掉。用文件实际长度
-    // 兜住——头部不可能比文件本身长。
-    let actual = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let cap = claimed.min(usize::try_from(actual).unwrap_or(usize::MAX));
-    read_prefix(p, cap)
+    omy_core::scan::read_header_area(p)
 }
 
 /// 从磁盘上的一个加密文件读出媒体附加信息。

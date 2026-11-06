@@ -784,12 +784,7 @@ fn existing_vault(dir: &Path) -> Option<([u8; 16], Argon2Params)> {
 
 /// 读文件开头若干字节。
 fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(p)?;
-    let mut buf = vec![0u8; n];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n)
 }
 
 #[cfg(test)]

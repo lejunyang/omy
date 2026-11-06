@@ -386,13 +386,7 @@ fn decrypt_as_tree(
 
 /// 只读文件开头若干字节。
 fn read_head(p: &Path, n: usize) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut f = std::fs::File::open(p)
-        .with_context(|| format!("打开 {} 失败", p.display()))?;
-    let mut buf = vec![0u8; n];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n).with_context(|| format!("打开 {} 失败", p.display()))
 }
 
 /// 把容器载荷展开到磁盘，并把结果展示给用户。

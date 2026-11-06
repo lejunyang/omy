@@ -1004,12 +1004,6 @@ fn read_vault_params(p: &Path) -> Result<([u8; 16], omy_core::crypto::Argon2Para
 }
 /// 只读文件开头的头部区域。
 fn read_header_prefix(p: &Path) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut f = std::fs::File::open(p).with_context(|| format!("无法打开 {}", p.display()))?;
-    // 4 KiB 足够覆盖固定头与 slot 区；TLV 区可能更长，
-    // 但 peek_header 只需要固定头
-    let mut buf = vec![0u8; 4096];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
-    Ok(buf)
+    // 4 KiB 足够覆盖固定头与 slot 区；peek_header 只需要固定头
+    omy_core::scan::read_prefix(p, 4096).with_context(|| format!("无法打开 {}", p.display()))
 }
