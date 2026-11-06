@@ -1296,8 +1296,13 @@ async function openLogDir() {
   border-radius: 0;
   border: 0;
 }
-/* 设置自带的移动端底栏：贴底、让出安全区。与外层 pnav 同款视觉。 */
+/* 设置自带的移动端底栏：贴底、让出安全区。与外层 pnav 同款视觉。
+   必须改回文档流：它同时带着 .pnav 类，而 .pnav 是 position: fixed。
+   固定定位时它不占 flex 空间，列表铺到屏幕底、最后几行（「关于」、各二级页
+   的末尾选项）被底栏盖住，矮屏手机上根本滚不出来。 */
 .setpnav {
+  position: relative;
+  inset: auto;
   flex: none;
 }
 .seth {
@@ -1321,6 +1326,8 @@ async function openLogDir() {
   flex: 1;
   display: grid;
   grid-template-columns: 172px 1fr;
+  /* 行高钉在容器高度内：auto 行会被内容撑高，滚动容器就不再滚动 */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 .setbody.mob {
