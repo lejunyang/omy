@@ -2134,9 +2134,11 @@ input {
     overflow-wrap: anywhere;
   }
 
+  /* 落在悬浮按钮上方：底栏 + 悬浮按钮（56px，离底栏 18px）+ 间距。
+     原来只抬高 72px，正好与悬浮按钮重叠，错误条的关闭按钮被它盖住 */
   .toast {
     max-width: calc(100vw - var(--sp) * 8);
-    inset-block-end: calc(var(--sp) * 18);
+    inset-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px) + 18px + 56px + 12px);
   }
 }
 
