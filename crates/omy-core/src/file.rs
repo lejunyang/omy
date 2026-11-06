@@ -215,6 +215,35 @@ pub fn encrypt_with_fek_and_progress(
         return Err(Error::MalformedHeader { reason: "chunk_size must not be zero" });
     }
 
+    let mut header = new_header(opts, rnd, vault_salt, plaintext.len() as u64);
+    let payload_key = fek.derive_payload_key(&header.file_uuid);
+    let (payload, index) = payload::encrypt_payload_with_progress(
+        &header,
+        &payload_key,
+        plaintext,
+        opts.zstd_level,
+        progress,
+    )?;
+
+    let hash = opts.write_content_hash.then(|| content_hash(plaintext));
+    let tlvs = build_tlvs(opts, fek, hash.as_ref(), &index, opts.folder_index.as_deref())?;
+    let head = seal_header(&mut header, &tlvs, keks, fek, rnd, opts.cipher)?;
+
+    let mut out = Writer::with_capacity(head.len().saturating_add(payload.len()));
+    out.bytes(&head).bytes(&payload);
+
+    let bytes = out.into_vec();
+    debug_assert_eq!(
+        bytes.len(),
+        (header.header_len as usize).saturating_add(payload.len()),
+        "输出长度与 header_len + payload 不符"
+    );
+
+    Ok(EncryptedFile { bytes, header })
+}
+
+/// 按选项算出文件 flags。内存版与流式版共用，两边的 flag 不可能不一致。
+fn file_flags(opts: &EncryptOptions) -> u32 {
     let mut file_flags = 0u32;
     if opts.filename.is_some() {
         file_flags |= flags::FILENAME_ENCRYPTED;
@@ -234,11 +263,50 @@ pub fn encrypt_with_fek_and_progress(
     if opts.folder_index.is_some() {
         file_flags |= flags::CONTAINER;
     }
+    file_flags
+}
 
-    // 先构造不含索引的 TLV，算出载荷，再回填压缩索引。
-    // 压缩索引的长度取决于块数，而块数与 TLV 无关，所以两趟即可收敛——
-    // 但索引 TLV 的存在会改变 header_len，而索引内容里的 ct_offset 是**相对载荷起始**的，
-    // 不受 header_len 影响，因此不会循环依赖。
+/// 构造固定头（`header_len` / `tlv_len` 由 [`seal_header`] 回填）。
+fn new_header(
+    opts: &EncryptOptions,
+    rnd: &RandomMaterial,
+    vault_salt: &[u8; 16],
+    plaintext_size: u64,
+) -> FixedHeader {
+    FixedHeader {
+        version_major: VERSION_MAJOR,
+        version_minor: VERSION_MINOR,
+        header_len: 0,
+        file_uuid: rnd.file_uuid,
+        vault_salt: *vault_salt,
+        flags: file_flags(opts),
+        cipher_id: opts.cipher,
+        kdf_id: KDF_ARGON2ID,
+        compress_id: if opts.compress { COMPRESS_ZSTD } else { COMPRESS_NONE },
+        slot_count: SLOT_COUNT_U8,
+        argon2_m_kib: opts.argon2.m_kib,
+        argon2_t: opts.argon2.t,
+        argon2_p: opts.argon2.p,
+        chunk_size: opts.chunk_size,
+        plaintext_size,
+        base_nonce: rnd.base_nonce,
+        chunk_version: 0,
+        tlv_len: 0,
+    }
+}
+
+/// 按固定顺序构造 TLV 集合。
+///
+/// 内容哈希与压缩索引要等载荷处理完才知道，由调用方传入；`folder_index`
+/// 单独传入而不读 `opts`，是为了让流式打包能先用同长度的占位、最后换成真值。
+/// 顺序必须与规范及测试向量一致，所以只此一处。
+fn build_tlvs(
+    opts: &EncryptOptions,
+    fek: &Fek,
+    hash: Option<&[u8; 32]>,
+    index: &[CompressionIndexEntry],
+    folder_index: Option<&[u8]>,
+) -> Result<TlvSet> {
     let mut tlvs = TlvSet::new();
 
     if let Some(name) = &opts.filename {
@@ -270,7 +338,7 @@ pub fn encrypt_with_fek_and_progress(
         // 只是要多做两次 seek。标 CRITICAL 会让旧版实现无谓地拒绝打开。
         tlvs.push(encrypt_entry(types::MOOV_CACHE, 0, mv, fek, opts.cipher)?);
     }
-    if let Some(idx) = &opts.folder_index {
+    if let Some(idx) = folder_index {
         // CRITICAL：容器的载荷是多个文件的拼接，不认识索引就不该打开
         tlvs.push(encrypt_entry(
             types::FOLDER_INDEX,
@@ -296,44 +364,13 @@ pub fn encrypt_with_fek_and_progress(
             opts.cipher,
         )?);
     }
-    if opts.write_content_hash {
-        let h = content_hash(plaintext);
-        tlvs.push(encrypt_entry(types::CONTENT_HASH, 0, &h, fek, opts.cipher)?);
+    if let Some(h) = hash {
+        tlvs.push(encrypt_entry(types::CONTENT_HASH, 0, h, fek, opts.cipher)?);
     }
-
-    let mut header = FixedHeader {
-        version_major: VERSION_MAJOR,
-        version_minor: VERSION_MINOR,
-        header_len: 0, // 稍后计算
-        file_uuid: rnd.file_uuid,
-        vault_salt: *vault_salt,
-        flags: file_flags,
-        cipher_id: opts.cipher,
-        kdf_id: KDF_ARGON2ID,
-        compress_id: if opts.compress { COMPRESS_ZSTD } else { COMPRESS_NONE },
-        slot_count: SLOT_COUNT_U8,
-        argon2_m_kib: opts.argon2.m_kib,
-        argon2_t: opts.argon2.t,
-        argon2_p: opts.argon2.p,
-        chunk_size: opts.chunk_size,
-        plaintext_size: plaintext.len() as u64,
-        base_nonce: rnd.base_nonce,
-        chunk_version: 0,
-        tlv_len: 0, // 稍后计算
-    };
-
-    let payload_key = fek.derive_payload_key(&header.file_uuid);
-    let (payload, index) = payload::encrypt_payload_with_progress(
-        &header,
-        &payload_key,
-        plaintext,
-        opts.zstd_level,
-        progress,
-    )?;
-
-    // 压缩模式必须写 CRITICAL 索引 TLV，否则无法定位块
+    // 压缩模式必须写 CRITICAL 索引 TLV，否则无法定位块。
+    // 索引里的 ct_offset 相对载荷起点，不受 header_len 影响，不会循环依赖
     if opts.compress {
-        let enc = encode_compression_index(&index);
+        let enc = encode_compression_index(index);
         tlvs.push(encrypt_entry(
             types::COMPRESSION_INDEX,
             tlv_flags::CRITICAL,
@@ -342,7 +379,18 @@ pub fn encrypt_with_fek_and_progress(
             opts.cipher,
         )?);
     }
+    Ok(tlvs)
+}
 
+/// 回填 `header_len` / `tlv_len`，构造 slot 区与头部 MAC，返回完整头部字节。
+fn seal_header(
+    header: &mut FixedHeader,
+    tlvs: &TlvSet,
+    keks: &[Kek],
+    fek: &Fek,
+    rnd: &RandomMaterial,
+    cipher: CipherId,
+) -> Result<Vec<u8>> {
     let tlv_blob = tlvs.to_bytes();
     header.tlv_len = u32::try_from(tlv_blob.len())
         .map_err(|_| Error::MalformedHeader { reason: "tlv area exceeds u32" })?;
@@ -355,9 +403,9 @@ pub fn encrypt_with_fek_and_progress(
 
     let fixed = header.to_bytes()?;
     let slot_area = if let Some(pad) = &rnd.slot_padding {
-        build_slot_area_with_padding(keks, fek, &header.file_uuid, opts.cipher, pad)?
+        build_slot_area_with_padding(keks, fek, &header.file_uuid, cipher, pad)?
     } else {
-        build_slot_area(keks, fek, &header.file_uuid, opts.cipher)?
+        build_slot_area(keks, fek, &header.file_uuid, cipher)?
     };
 
     // MAC 覆盖 fixed_header || slot_area || tlv_blob
@@ -365,20 +413,152 @@ pub fn encrypt_with_fek_and_progress(
     covered.bytes(&fixed).bytes(&slot_area).bytes(&tlv_blob);
     let mac_key = fek.derive_header_mac_key(&header.file_uuid);
     let mac = header_mac(&mac_key, covered.as_slice());
+    let mut out = covered.into_vec();
+    out.extend_from_slice(&mac);
+    Ok(out)
+}
 
-    let mut out = Writer::with_capacity(
-        (header.header_len as usize).saturating_add(payload.len()),
-    );
-    out.bytes(covered.as_slice()).bytes(&mac).bytes(&payload);
+/// 流式加密的「最后定稿」回调：载荷写完后返回真正的 FOLDER_INDEX 内容。
+///
+/// 容器的索引里有逐文件哈希，要读完文件才算得出；而它与内容无关的长度
+/// 在开头就已确定。流式加密先按 `opts.folder_index`（同长度占位）留出头部
+/// 空间，写完载荷再调用它换成真值。两者长度不同会报错——那会让 header_len
+/// 与已写出的载荷错位。
+pub type FinalizeFolderIndex<'a> = &'a mut dyn FnMut() -> Result<Vec<u8>>;
 
-    let bytes = out.into_vec();
-    debug_assert_eq!(
-        bytes.len(),
-        (header.header_len as usize).saturating_add(payload.len()),
-        "输出长度与 header_len + payload 不符"
-    );
+/// 流式加密：从 `input` 读恰好 `plaintext_len` 字节明文，把完整的 omy 文件写进 `out`。
+///
+/// 与 [`encrypt_with_progress`] 产出**逐字节相同**的文件（给定相同 FEK 与随机材料
+/// 时），但内存占用与文件大小无关：原来要把整个明文读进内存、再在内存里拼出
+/// 整个密文，几 GB 的视频峰值是文件大小的两倍以上。
+///
+/// 做法：头部的长度只取决于各 TLV 的长度（与内容无关），所以先写同长度的
+/// 零占位，逐块加密写载荷，同时累计内容哈希与压缩索引；最后 seek 回开头写入
+/// 真正的头部。头部 MAC 覆盖的都是这时才确定的字段，占位不会进入 MAC。
+///
+/// `input` 实际长度与 `plaintext_len` 不符（文件在加密过程中被改动）时报错，
+/// 而不是写出一个与头部声明不一致的文件。
+///
+/// # Errors
+///
+/// 与 [`encrypt_with_progress`] 一致；另外读写失败返回 [`Error::Io`]，
+/// 定稿的 FOLDER_INDEX 长度与占位不同返回 [`Error::MalformedHeader`]。
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_stream<R: std::io::Read, W: std::io::Write + std::io::Seek>(
+    input: &mut R,
+    plaintext_len: u64,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
+    rnd: &RandomMaterial,
+    out: &mut W,
+    progress: Option<payload::ProgressFn<'_>>,
+    finalize_folder_index: Option<FinalizeFolderIndex<'_>>,
+) -> Result<FixedHeader> {
+    if keks.is_empty() {
+        return Err(Error::TooManySlots { got: 0, max: SLOT_COUNT });
+    }
+    validate_chunk_size(opts.chunk_size)?;
+    let fek = Fek::random();
+    encrypt_stream_with_fek(
+        input,
+        plaintext_len,
+        keks,
+        vault_salt,
+        opts,
+        rnd,
+        &fek,
+        out,
+        progress,
+        finalize_folder_index,
+    )
+}
 
-    Ok(EncryptedFile { bytes, header })
+/// 与 [`encrypt_stream`] 相同，但用指定 FEK（测试与复现用）。
+///
+/// # Errors
+///
+/// 与 [`encrypt_stream`] 一致。
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_stream_with_fek<R: std::io::Read, W: std::io::Write + std::io::Seek>(
+    input: &mut R,
+    plaintext_len: u64,
+    keks: &[Kek],
+    vault_salt: &[u8; 16],
+    opts: &EncryptOptions,
+    rnd: &RandomMaterial,
+    fek: &Fek,
+    out: &mut W,
+    progress: Option<payload::ProgressFn<'_>>,
+    finalize_folder_index: Option<FinalizeFolderIndex<'_>>,
+) -> Result<FixedHeader> {
+    use std::io::SeekFrom;
+    if opts.chunk_size == 0 {
+        return Err(Error::MalformedHeader { reason: "chunk_size must not be zero" });
+    }
+    let mut header = new_header(opts, rnd, vault_salt, plaintext_len);
+    let n_chunks = usize::try_from(header.n_chunks())
+        .map_err(|_| Error::MalformedHeader { reason: "chunk count exceeds usize" })?;
+
+    // 占位头部：各 TLV 用与真值同长度的零内容，只为算出头部长度。
+    // 占位的密文只在内存里，写进文件的是全零
+    let zero_hash = [0u8; 32];
+    let placeholder_index = vec![
+        CompressionIndexEntry { ct_offset: 0, ct_len: 0, plain_len: 0 };
+        if opts.compress { n_chunks } else { 0 }
+    ];
+    let placeholder = build_tlvs(
+        opts,
+        fek,
+        opts.write_content_hash.then_some(&zero_hash),
+        &placeholder_index,
+        opts.folder_index.as_deref(),
+    )?;
+    let reserved = TLV_AREA_OFFSET
+        .saturating_add(placeholder.to_bytes().len())
+        .saturating_add(HEADER_MAC_LEN);
+    let base = out.stream_position().map_err(Error::Io)?;
+    out.write_all(&vec![0u8; reserved]).map_err(Error::Io)?;
+
+    let payload_key = fek.derive_payload_key(&header.file_uuid);
+    let (hash, index) = payload::encrypt_payload_stream(
+        &header,
+        &payload_key,
+        input,
+        opts.zstd_level,
+        &mut |ct| out.write_all(ct).map_err(Error::Io),
+        progress,
+    )?;
+
+    let folder_index = match (finalize_folder_index, opts.folder_index.as_deref()) {
+        (Some(f), Some(placeholder_idx)) => {
+            let real = f()?;
+            if real.len() != placeholder_idx.len() {
+                return Err(Error::MalformedHeader {
+                    reason: "finalized folder index length differs from placeholder",
+                });
+            }
+            Some(real)
+        }
+        (_, other) => other.map(<[u8]>::to_vec),
+    };
+    let tlvs = build_tlvs(
+        opts,
+        fek,
+        opts.write_content_hash.then_some(&hash),
+        &index,
+        folder_index.as_deref(),
+    )?;
+    let head = seal_header(&mut header, &tlvs, keks, fek, rnd, opts.cipher)?;
+    if head.len() != reserved {
+        return Err(Error::MalformedHeader { reason: "streamed header length changed" });
+    }
+    let end = out.stream_position().map_err(Error::Io)?;
+    out.seek(SeekFrom::Start(base)).map_err(Error::Io)?;
+    out.write_all(&head).map_err(Error::Io)?;
+    out.seek(SeekFrom::Start(end)).map_err(Error::Io)?;
+    out.flush().map_err(Error::Io)?;
+    Ok(header)
 }
 
 /// 用指定的填充字节构建 slot 区，供确定性复现使用。
