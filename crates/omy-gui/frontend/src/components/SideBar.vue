@@ -24,6 +24,7 @@ import {
   promptVirtualEncrypt,
   promptVirtualUnlock,
   lockVirtualPlace,
+  placeLabel,
 } from '../store';
 import ContextMenu from './ContextMenu.vue';
 
@@ -257,23 +258,7 @@ async function goRemote(p) {
  * 插两张卡时靠它区分，没有对应的翻译键。
  */
 function labelOf(place) {
-  if (place.real_name) return place.real_name;
-  const known = [
-    'home',
-    'desktop',
-    'documents',
-    'downloads',
-    'pictures',
-    'videos',
-    'cache',
-    'camera',
-    'documents_shared',
-    'movies',
-    'music',
-    'internal_storage',
-    'removable',
-  ];
-  return known.includes(place.name) ? i18n.t(`places.${place.name}`) : place.name;
+  return placeLabel(place);
 }
 
 function iconOf(place) {

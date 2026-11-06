@@ -1212,15 +1212,56 @@ export async function grantStorageAccess() {
  * 在容器里时，磁盘路径那几段仍然保留在前面：用户需要知道这个加密
  * 文件夹是从哪儿打开的，而且点它能回去。
  */
+/** 侧栏位置的显示名：常用目录按语义翻译，可移除卷用系统给的名字。
+ *  侧栏与面包屑共用——两处各写一份的话，同一个目录在两处叫法不同。 */
+export function placeLabel(place: { name: string; real_name?: string | null }): string {
+  if (place.real_name) return place.real_name;
+  const known = [
+    'home', 'desktop', 'documents', 'downloads', 'pictures', 'videos', 'cache', 'camera',
+    'documents_shared', 'movies', 'music', 'internal_storage', 'removable',
+  ];
+  return known.includes(place.name) ? i18n.t(`places.${place.name}`) : place.name;
+}
+
+/** 去掉末尾分隔符（根目录 `/`、`C:\` 保持原样）。 */
+function trimSep(p: string): string {
+  const t = p.replace(/[\\/]+$/, '');
+  return t || p;
+}
+
+/** cwd 落在哪个侧栏位置之下（取最长的那个前缀）。 */
+function placeRootOf(cwd: string) {
+  let best = null;
+  for (const pl of state.places || []) {
+    if (!pl?.path) continue;
+    const root = trimSep(pl.path);
+    // 根目录本身（`/`、`C:\`）不合并：那一段本来就短，合并只会丢掉盘符
+    if (root.length <= 3) continue;
+    const hit = cwd === root || cwd.startsWith(root + '/') || cwd.startsWith(root + '\\');
+    if (hit && (!best || root.length > trimSep(best.path).length)) best = pl;
+  }
+  return best;
+}
+
 export const crumbs = computed(() => {
   const out = [];
   if (state.cwd) {
     // Windows 用反斜杠，Unix 用正斜杠。分割后重新拼接成可点击的路径
     const sep = state.cwd.includes('\\') ? '\\' : '/';
-    const parts = state.cwd.split(/[\\/]/).filter(Boolean);
+    // 落在某个侧栏位置之下时，那一段前缀合成一个带名字的段：Android 上原来
+    // 显示成「storage › emulated › 0 › Download」，手机上一行放不下，当前目录
+    // 被挤到屏幕外；桌面上主目录之下也少了一串用户名
+    const root = placeRootOf(state.cwd);
     let acc = '';
+    let rest = state.cwd;
+    if (root) {
+      acc = trimSep(root.path);
+      out.push({ name: placeLabel(root), path: root.path, kind: 'dir' });
+      rest = state.cwd.slice(acc.length);
+    }
+    const parts = rest.split(/[\\/]/).filter(Boolean);
     for (const [i, p] of parts.entries()) {
-      if (i === 0) {
+      if (i === 0 && !root) {
         // Windows 的 "C:" 要补上分隔符才是合法路径；
         // Unix 的第一段前面要加根斜杠
         acc = sep === '\\' ? `${p}${sep}` : `${sep}${p}`;

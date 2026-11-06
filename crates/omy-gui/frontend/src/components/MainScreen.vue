@@ -6,7 +6,7 @@
  * 面包屑 + 内容区 + 状态栏。
  */
 
-import { computed } from 'vue';
+import { computed, watch, nextTick, useTemplateRef } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
@@ -54,6 +54,19 @@ const mobileSubtitle = computed(() => {
   return parts.join(' · ');
 });
 
+
+/** 面包屑容器。路径一长，当前目录那一段就被挤出可视区（真机上实测只露出
+ *  一个字），每次换目录都滚到最右端，保证用户看得到自己在哪。 */
+const crumbEl = useTemplateRef<HTMLElement>('crumbEl');
+watch(
+  () => crumbs.value.map((c) => c.path).join('|'),
+  async () => {
+    await nextTick();
+    const el = crumbEl.value;
+    if (el) el.scrollLeft = el.scrollWidth;
+  },
+  { immediate: true },
+);
 
 /** 进度百分比，取整。
  *
@@ -218,7 +231,7 @@ function onRowMenu(e, ev) {
           <AppIcon name="refresh" />
         </button>
 
-        <nav class="crumbpath">
+        <nav ref="crumbEl" class="crumbpath">
           <!-- key 要带 kind：容器内的相对路径可能与磁盘段字符串相同，
                只用 path 做 key 会让 Vue 复用错的节点 -->
           <template v-for="(c, i) in crumbs" :key="c.kind + ':' + c.path">
