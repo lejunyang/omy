@@ -124,6 +124,8 @@ import TelegramCacheAllDialog from './components/TelegramCacheAllDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import PasswordManagerDialog from './components/PasswordManagerDialog.vue';
 import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
+import AskDialog from './components/AskDialog.vue';
+import { askConfirm, askText } from './ask';
 import { initAutoLock, configureAutoLock } from './autolock';
 import { registerMobileBack } from './mobile-platform';
 
@@ -172,7 +174,7 @@ async function onTelegramDone({ sessionSaved, placeId, duplicate }) {
       // 添加成功后的**可选**加密：默认不加密，问一次让用户选，可跳过。
       // 取消 = 保持默认（不加密）；只有确认才转成 per-place 槽。
       // 用 confirm 而非强制步骤：加密是可选的，不该挡在进入位置的路上。
-      if (window.confirm(i18n.t('rplace.encrypt_offer'))) {
+      if (await askConfirm({ title: i18n.t('rplace.encrypt_offer') })) {
         await encryptTelegramPlace(id);
       }
     }
@@ -208,10 +210,14 @@ async function onNewRemotePick(kind: 'webdav' | 'telegram' | 'virtual') {
     showTelegramLogin.value = true;
     return;
   }
-  const name = window.prompt(i18n.t('virtual.name_prompt'));
+  const name = await askText({ title: i18n.t('virtual.name_prompt') });
   if (name === null) return;
-  const id = await createVirtualPlaceOnly(name.trim());
-  if (id) await openPlaceBrowserAt(id);
+  try {
+    const id = await createVirtualPlaceOnly(name);
+    if (id) await openPlaceBrowserAt(id);
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+  }
 }
 
 /** 设置页里改了语言：立刻加载对应语言包。
@@ -693,9 +699,11 @@ function onQuerySlots(path, password) {
  */
 async function onRemoveSlot({ path, current, slotIndex, kind }) {
   const label = i18n.t(`keymgmt.slot_kind_${kind}`);
-  if (!window.confirm(i18n.t('keymgmt.slot_remove_confirm', { index: slotIndex, kind: label }))) {
-    return;
-  }
+  const sure = await askConfirm({
+    title: i18n.t('keymgmt.slot_remove_confirm', { index: slotIndex, kind: label }),
+    danger: true,
+  });
+  if (!sure) return;
   keyError.value = '';
   const ok = await manageKey({
     path,
@@ -1498,4 +1506,7 @@ onBeforeUnmount(() => {
     @cancel="cancelVirtualUnlock"
     @submit="confirmVirtualUnlock"
   />
+
+  <!-- 应用内确认 / 输入 / 密码框（替代 window.confirm / prompt），放最后保证在最上层 -->
+  <AskDialog />
 </template>

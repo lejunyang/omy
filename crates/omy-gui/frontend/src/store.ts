@@ -28,6 +28,7 @@ import * as api from './api';
 import * as i18n from './i18n';
 import type { MessageRow, MessageWindow, RemoteEntry } from './types';
 import { theme } from './theme';
+import { askText, askPassword } from './ask';
 
 export const state = reactive({
   /** 当前目录路径。空串表示还在「起点」页。 */
@@ -2570,18 +2571,16 @@ export async function lockVirtualPlace(id) {
 /** 在当前虚拟位置新建文件夹（右键空白/工具入口），刷新当前目录。 */
 export async function newVirtualFolderPrompt() {
   if (!isVirtualPlace()) return;
-  const name = window.prompt(i18n.t('virtual.folder_name_prompt'));
+  const name = await askText({ title: i18n.t('virtual.folder_name_prompt') });
   if (name === null) return;
-  await addVirtualFolder(name.trim());
+  await addVirtualFolder(name);
 }
 
 /** 重命名虚拟位置里的一个文件夹（右键）。 */
 export async function renameVirtualFolderPrompt(folderId) {
   if (!isVirtualPlace() || !folderId) return;
   const cur = state.remoteItems.find((x) => x.id === folderId)?.name || '';
-  const name = window.prompt(i18n.t('virtual.folder_rename_prompt'), cur);
-  if (name === null) return;
-  const trimmed = name.trim();
+  const trimmed = await askText({ title: i18n.t('virtual.folder_rename_prompt'), initial: cur });
   if (!trimmed) return;
   await api.virtualRenameFolder(state.remotePlace, folderId, trimmed);
   await reloadRemoteDir();
@@ -4179,18 +4178,20 @@ export async function decryptTelegramPlace(id) {
     // 会话里没有能开这个位置的 KEK（它用独立密码加密、当前没解锁过那个密码）：
     // 不是失败，弹框收现场密码走 decrypt_pw。这也是把误加密位置解回来的途径。
     if (api.errCode(e) === 'tg_decrypt_no_key' || api.errCode(e) === 'tg_decrypt_failed') {
-      const pw = window.prompt(i18n.t('rplace.decrypt_pw_prompt'));
+      // 密码框必须遮蔽：原来用 window.prompt，输入的密码明文摆在屏幕上
+      const pw = await askPassword({ title: i18n.t('rplace.decrypt_pw_prompt') });
       if (pw === null) return false; // 取消
       try {
         const changed = await api.telegramPlaceDecryptPw(id, pw);
         setNotice(i18n.t(changed ? 'rplace.decrypted' : 'rplace.already_plain'));
         return true;
       } catch (e2) {
-        setNotice(i18n.te(api.errCode(e2), 'errors.tg_decrypt_failed'));
+        // 失败走错误条：setNotice 是成功样式且 4 秒自动消失，用户可能根本没看到
+        state.error = i18n.te(api.errCode(e2), 'errors.tg_decrypt_failed');
         return false;
       }
     }
-    setNotice(i18n.te(api.errCode(e), 'errors.tg_decrypt_failed'));
+    state.error = i18n.te(api.errCode(e), 'errors.tg_decrypt_failed');
     return false;
   }
 }

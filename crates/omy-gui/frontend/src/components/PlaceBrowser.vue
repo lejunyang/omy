@@ -25,6 +25,7 @@
 
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
+import { askConfirm, askText } from '../ask';
 import { isMobile } from '../viewport';
 import type { MessageRow, MessageListItem, RemoteEntry } from '../types';
 import AppShell from './AppShell.vue';
@@ -316,9 +317,8 @@ function onVirtualKeys(ev: KeyboardEvent) {
     const refs = sel.filter((f) => f.is_ref && !f.is_dir);
     if (ev.key === 'Delete' && inVirtual && refs.length) {
       ev.preventDefault();
-      if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length))) {
-        removeSelectedVirtualRefs();
-      }
+      void askConfirm({ title: i18n.tn('virtual.delete_refs_confirm', refs.length) })
+        .then((ok) => { if (ok) removeSelectedVirtualRefs(); });
       return;
     }
     if (mod && ev.key.toLowerCase() === 'x' && inVirtual && refs.length) {
@@ -333,9 +333,8 @@ function onVirtualKeys(ev: KeyboardEvent) {
   if (ev.key === 'Delete' && target) {
     if (target.is_ref) {
       ev.preventDefault();
-      if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(target) }))) {
-        removeVirtualRefs(target);
-      }
+      void askConfirm({ title: i18n.t('virtual.delete_ref_confirm', { name: displayName(target) }) })
+        .then((ok) => { if (ok) removeVirtualRefs(target); });
     } else if (target.is_dir) {
       ev.preventDefault();
       confirmRemoveFolder(target);
@@ -463,7 +462,7 @@ async function remove(p) {
   // 「删除账号」并排出现，点错的代价不对称，所以也确认一次，并顺便说清
   // 登录态和永久缓存都还在——否则用户以为摘掉位置就干净了
   if (hasLocalSession(p)) {
-    if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
+    if (!(await askConfirm({ title: i18n.t('rplace.detach_confirm', { name: p.name }) }))) return;
     await detachTelegramPlace(p.id);
     return;
   }
@@ -472,13 +471,17 @@ async function remove(p) {
 
 /** 删除账号：连本机登录态一起清掉，下次要重新扫码或导入 tdata。 */
 async function deleteAccount(p) {
-  if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
+  const ok = await askConfirm({
+    title: i18n.t('rplace.delete_account_confirm', { name: p.name }),
+    danger: true,
+  });
+  if (!ok) return;
   await deleteTelegramAccount(p.id);
 }
 
 /** 改本机显示名。两个账号昵称相同时，这是唯一能分辨它们的办法。 */
 async function rename(p) {
-  const next = window.prompt(i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
+  const next = await askText({ title: i18n.t('rplace.rename_prompt', { name: p.name }), initial: p.name });
   if (next === null) return;
   await renameTelegramPlace(p.id, next);
 }
@@ -942,7 +945,7 @@ async function onMenuPick(key) {
   } else if (key === 'vpaste') {
     await pasteInto(f);
   } else if (key === 'vdelete-ref') {
-    if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(f) }))) {
+    if (await askConfirm({ title: i18n.t('virtual.delete_ref_confirm', { name: displayName(f) }) })) {
       await removeVirtualRefs(f);
     }
   } else if (key === 'vrename-folder') {
@@ -968,14 +971,14 @@ function forwardSelectedMessages() {
 async function onBatchDelete() {
   const refs = selectedRemoteEntries().filter((f) => f.is_ref && !f.is_dir);
   if (!refs.length) return;
-  if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length, { n: refs.length }))) {
+  if (await askConfirm({ title: i18n.tn('virtual.delete_refs_confirm', refs.length, { n: refs.length }) })) {
     await removeSelectedVirtualRefs();
   }
 }
 
 /** 删除虚拟文件夹前确认；删除后后端返回一并移除的引用条数。 */
 async function confirmRemoveFolder(f) {
-  if (!window.confirm(i18n.t('virtual.delete_folder_confirm', { name: displayName(f) }))) return;
+  if (!(await askConfirm({ title: i18n.t('virtual.delete_folder_confirm', { name: displayName(f) }) }))) return;
   await removeVirtualFolder(f.id);
 }
 

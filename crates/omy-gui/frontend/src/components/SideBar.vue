@@ -3,6 +3,7 @@
 
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n';
+import { askConfirm, askText } from '../ask';
 import {
   leaveOverlays,
   state,
@@ -178,7 +179,7 @@ async function onVirtualMenuPick(key) {
   if (key === 'open') {
     await goRemote(v);
   } else if (key === 'rename') {
-    const next = window.prompt(i18n.t('rplace.rename_prompt', { name: v.name }), v.name);
+    const next = await askText({ title: i18n.t('rplace.rename_prompt', { name: v.name }), initial: v.name });
     if (next === null) return;
     await renameVirtualPlace(v.id, next);
   } else if (key === 'vencrypt') {
@@ -188,7 +189,7 @@ async function onVirtualMenuPick(key) {
   } else if (key === 'vlock') {
     await lockVirtualPlace(v.id);
   } else if (key === 'vdelete') {
-    if (!window.confirm(i18n.t('virtual.delete_confirm', { name: v.name }))) return;
+    if (!(await askConfirm({ title: i18n.t('virtual.delete_confirm', { name: v.name }), danger: true }))) return;
     await deleteVirtualPlace(v.id);
   }
 }
@@ -208,8 +209,7 @@ async function onPlaceMenuPick(key) {
     return;
   }
   if (key === 'rename') {
-    const next = window.prompt(
-      i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
+    const next = await askText({ title: i18n.t('rplace.rename_prompt', { name: p.name }), initial: p.name });
     if (next === null) return;
     await renameTelegramPlace(p.id, next);
     return;
@@ -218,7 +218,7 @@ async function onPlaceMenuPick(key) {
     // 即便菜单里已写明后果，仍然确认一次：它与「删除账号」相邻，
     // 点错的代价不对称
     if (hasLocalSession(p)) {
-      if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
+      if (!(await askConfirm({ title: i18n.t('rplace.detach_confirm', { name: p.name }) }))) return;
       await detachTelegramPlace(p.id);
     } else {
       await removeRemotePlace(p.id);
@@ -238,7 +238,7 @@ async function onPlaceMenuPick(key) {
     return;
   }
   if (key === 'delacct') {
-    if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
+    if (!(await askConfirm({ title: i18n.t('rplace.delete_account_confirm', { name: p.name }), danger: true }))) return;
     await deleteTelegramAccount(p.id);
   }
 }
