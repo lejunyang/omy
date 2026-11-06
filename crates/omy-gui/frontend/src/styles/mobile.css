@@ -104,6 +104,15 @@
     border-inline-end: 0;
     border-start-end-radius: 20px;
     border-end-end-radius: 20px;
+    /* 收起时不带阴影：收起位置只比自身宽度多移 5%，32px 的模糊会漏进屏幕左缘，
+       在浅色主题下是一条一直挂着的灰边（真机上也能看到） */
+    box-shadow: none;
+    transition:
+      transform var(--dur-4) var(--ease-out),
+      box-shadow var(--dur-4) var(--ease-out);
+  }
+
+  .side.drawer.open {
     box-shadow: 8px 0 32px rgb(0 0 0 / 40%);
   }
 
