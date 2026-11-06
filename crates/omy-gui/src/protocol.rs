@@ -203,6 +203,72 @@ pub fn parse_range(h: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
+/// 一次响应实际返回的明文区间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    start: u64,
+    end_inclusive: u64,
+    length: u64,
+    /// 回 206（带 Content-Range）还是 200。
+    partial: bool,
+}
+
+/// 请求不带 Range 时怎么办。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unranged {
+    /// 截到前 `MAX_SPAN` 并如实标 206。WebView 播放媒体的第一个请求通常不带
+    /// Range，老实返回整个文件的话，双击一个 4 GB 的视频会把 4 GB 读进内存
+    /// （远端还要真的从网线上拉过来）；播放器拿到 206 会继续要后面的区间。
+    Capped,
+    /// 返回完整的 200。文本预览等 `fetch` 消费者要完整内容，截断它们就是缺数据。
+    Whole,
+}
+
+/// 把 Range 头解析成本次要返回的区间；`None` 表示不可满足，调用方回 416。
+///
+/// 带 Range 的请求一律截到 `MAX_SPAN`：WebView 的 seek 请求是开放结尾的
+/// （`bytes=1572864-`），返回到文件末尾等于近全量解密。
+///
+/// 七种来源（本地明文、本地加密、容器条目、局域网远端、云盘加密、云盘明文、
+/// 云盘容器条目）都走这一个函数。以前每处各抄一份，结果三份行为不一样，
+/// 而这里写的测试只能复刻逻辑、测不到任何一处真实代码。
+fn resolve_span(range: Option<&str>, total: u64, unranged: Unranged) -> Option<Span> {
+    let (start, end_inclusive, partial) = match range {
+        Some(h) => {
+            let (s, e) = parse_range(h, total)?;
+            (s, e.min(s.saturating_add(MAX_SPAN).saturating_sub(1)), true)
+        }
+        None => (0u64, total.saturating_sub(1), false),
+    };
+    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+    if !partial && unranged == Unranged::Capped && length > MAX_SPAN {
+        return Some(Span {
+            start: 0,
+            end_inclusive: MAX_SPAN.saturating_sub(1),
+            length: MAX_SPAN,
+            partial: true,
+        });
+    }
+    Some(Span { start, end_inclusive, length, partial })
+}
+
+/// 取请求里的 Range 头（不是合法 UTF-8 时当作没有）。
+fn range_of(request: &Request<Vec<u8>>) -> Option<&str> {
+    request.headers().get(header::RANGE).and_then(|h| h.to_str().ok())
+}
+
+/// 416 响应。必须带 `Content-Range: bytes */total` 告知真实长度，
+/// 播放器据此纠正自己的认知；钳到末尾会让播放器拿到错误数据却以为成功。
+fn unsatisfiable(total: u64) -> Response<Vec<u8>> {
+    with_common_headers(
+        Response::builder()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{total}")),
+    )
+    .body(Vec::new())
+    .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
 /// 给响应加上所有必需的公共头。
 ///
 /// 抽成函数是因为**每一条错误路径也必须带 CORS 头**。
@@ -315,42 +381,10 @@ fn serve_plain(
     };
     let total = md.len();
 
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Capped) else {
+        return unsatisfiable(total);
     };
-
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-
-    // 无 Range 的请求也要设上限：否则双击一个 4 GB 的视频，
-    // WebView 的第一个请求（不带 Range）就会把 4 GB 读进内存。
-    // 返回前 MAX_SPAN 并如实标注 206，播放器会继续要后面的
-    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
-    };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     if f.seek(SeekFrom::Start(start)).is_err() {
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
@@ -455,42 +489,10 @@ fn serve_container_item(
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Capped) else {
+        return unsatisfiable(total);
     };
-
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-
-    // 无 Range 的请求同样要设上限：容器里可能有个 4 GB 的视频，
-    // 第一个不带 Range 的请求会把它整个解密进内存。
-    // 与 `serve_plain` 的处理一致：返回前 MAX_SPAN 并如实标 206
-    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
-    };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     // 与独立文件共用核心随机读取，压缩索引错误必须传播，不能默默当未压缩读。
     let payload_start = item.offset.saturating_add(start);
@@ -548,46 +550,11 @@ fn serve_file(
     };
 
     let total = opened.header.plaintext_size;
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                // 416 必须带 Content-Range 告知真实长度，
-                // 播放器据此纠正自己的认知
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
-    };
-
-    // Range 先截到响应上限；下面另为无 Range 的媒体首请求生成有界 206。
-    // 非媒体的完整 fetch 仍返回完整内容。
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-
-    // 即使媒体首请求不带 Range，也不能把长音频全量解密到内存。
-    // 文本等 fetch 消费者仍需完整的 200；只给媒体作有界的 206。
     let is_media = entry.mime.as_deref().is_some_and(|m| m.starts_with("audio/") || m.starts_with("video/"));
-    let (length, is_partial, end_inclusive) = if !is_partial && is_media && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
+    let Some(span) = resolve_span(range_of(request), total, if is_media { Unranged::Capped } else { Unranged::Whole }) else {
+        return unsatisfiable(total);
     };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
     let data = match read_source_range(&source, &opened, start, length) {
         Ok(d) => d,
         Err(_) => return bare(StatusCode::INTERNAL_SERVER_ERROR),
@@ -708,35 +675,10 @@ fn serve_remote_file(
     };
 
     let total = opened.header.plaintext_size;
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Whole) else {
+        return unsatisfiable(total);
     };
-
-    // 截断对远端更要紧：本地多解密几 MiB 只是费点 CPU，
-    // 远端却要真的把这些字节从网线上拉过来
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     let cindex = opened.compression_index().unwrap_or_default();
     let cindex = if cindex.is_empty() {
@@ -878,43 +820,10 @@ fn serve_place_file(
     };
 
     let total = opened.header.plaintext_size;
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Capped) else {
+        return unsatisfiable(total);
     };
-
-    // 截断对云盘尤其要紧：多解一段就要真的从网线上多拉一段密文
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-
-    // 无 Range 的请求同样要设上限（与 serve_plain / serve_container 一致）：
-    // 大视频的第一个请求常不带 Range，不截断会把整片从云端拉下、整块解密进内存。
-    // 返回前 MAX_SPAN 并如实标 206，播放器会继续要后面的区间。
-    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
-    };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     // RemoteSource 实现了 BlockSource，块对齐 / 密文缓存 / Range 拉取都在
     // 它内部；read_source_range 再负责 header 偏移与压缩索引，所以这里
@@ -954,41 +863,10 @@ fn serve_plain_remote(
     request: &Request<Vec<u8>>,
     total: u64,
 ) -> Response<Vec<u8>> {
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Capped) else {
+        return unsatisfiable(total);
     };
-
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-
-    // 与加密分支同理：不带 Range 的首个请求也要截断，
-    // 否则一个几百 MB 的视频会被整片拉进内存
-    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
-    };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     let data = match f.source.read_plain_range(start, length) {
         Ok(d) => d,
@@ -1099,38 +977,10 @@ fn serve_place_container_item(
     };
 
     let total = item.size;
-    let range_header = request
-        .headers()
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok());
-
-    let (start, end_inclusive, is_partial) = match range_header {
-        Some(h) => match parse_range(h, total) {
-            Some(r) => (r.0, r.1, true),
-            None => {
-                return with_common_headers(
-                    Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{total}")),
-                )
-                .body(Vec::new())
-                .unwrap_or_else(|_| Response::new(Vec::new()));
-            }
-        },
-        None => (0u64, total.saturating_sub(1), false),
+    let Some(span) = resolve_span(range_of(request), total, Unranged::Capped) else {
+        return unsatisfiable(total);
     };
-
-    let end_inclusive = if is_partial {
-        end_inclusive.min(start.saturating_add(MAX_SPAN).saturating_sub(1))
-    } else {
-        end_inclusive
-    };
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
-    let (length, is_partial, end_inclusive) = if !is_partial && length > MAX_SPAN {
-        (MAX_SPAN, true, MAX_SPAN.saturating_sub(1))
-    } else {
-        (length, is_partial, end_inclusive)
-    };
+    let Span { start, end_inclusive, length, partial: is_partial } = span;
 
     // 关键：区间要落在**容器明文里该条目的位置**上。
     // item.offset 是它在容器载荷中的起点，请求里的 start 是相对该条目的偏移，
@@ -1313,38 +1163,44 @@ mod tests {
         assert_ne!(parse_target("/plain/x"), parse_target("/thumb/x"));
     }
 
-    /// 无 Range 的大文件请求也必须被截断。
+    /// 无 Range 的大文件请求在 Capped 策略下必须截成有界的 206。
     ///
     /// WebView 的第一个请求通常不带 Range。若老实返回整个文件，
-    /// 双击一个 4 GB 的视频会把 4 GB 读进内存——加密路径靠
-    /// MAX_SPAN 挡住了，明文路径同样需要这条保护。
+    /// 双击一个 4 GB 的视频会把 4 GB 读进内存。
     #[test]
-    fn plain_caps_unranged_large_file() {
+    fn unranged_large_file_is_capped() {
         let total: u64 = 4 * 1024 * 1024 * 1024;
-        let (start, mut end, mut partial) = (0u64, total - 1, false);
-        let mut length = end - start + 1;
-        if !partial && length > MAX_SPAN {
-            length = MAX_SPAN;
-            partial = true;
-            end = MAX_SPAN - 1;
-        }
-        assert!(partial, "超过上限时必须转成 206");
-        assert_eq!(length, MAX_SPAN);
-        assert_eq!(end, MAX_SPAN - 1);
+        let span = resolve_span(None, total, Unranged::Capped);
+        assert_eq!(
+            span,
+            Some(Span { start: 0, end_inclusive: MAX_SPAN - 1, length: MAX_SPAN, partial: true }),
+            "超过上限时必须转成 206 且只给前 MAX_SPAN"
+        );
     }
 
-    /// 小文件不受截断影响，仍然是完整的 200。
+    /// Whole 策略（文本等 fetch 消费者）不截断，仍是完整的 200。
+    /// 不这样会怎样：长文本预览只拿到前 2 MiB 却以为拿全了。
     #[test]
-    fn plain_small_file_stays_whole() {
-        let total: u64 = 1024;
-        let (start, end, mut partial) = (0u64, total - 1, false);
-        let mut length = end - start + 1;
-        if !partial && length > MAX_SPAN {
-            length = MAX_SPAN;
-            partial = true;
+    fn unranged_whole_policy_returns_everything() {
+        let total: u64 = 3 * MAX_SPAN;
+        let span = resolve_span(None, total, Unranged::Whole);
+        assert_eq!(span, Some(Span { start: 0, end_inclusive: total - 1, length: total, partial: false }));
+    }
+
+    /// 小文件无论哪种策略都是完整的 200。
+    #[test]
+    fn small_file_stays_whole() {
+        for policy in [Unranged::Capped, Unranged::Whole] {
+            let span = resolve_span(None, 1024, policy);
+            assert_eq!(span, Some(Span { start: 0, end_inclusive: 1023, length: 1024, partial: false }));
         }
-        assert!(!partial, "小文件不该被切成 206");
-        assert_eq!(length, total);
+    }
+
+    /// 不可满足的 Range 必须得到 None（调用方回 416），不能钳到末尾。
+    #[test]
+    fn unsatisfiable_range_is_none() {
+        assert_eq!(resolve_span(Some("bytes=10000-"), 10_000, Unranged::Capped), None);
+        assert_eq!(resolve_span(Some("bytes=0-0"), 0, Unranged::Whole), None);
     }
 
     #[test]
@@ -1389,14 +1245,21 @@ mod tests {
     #[test]
     fn max_span_caps_open_ended_range() {
         // 这是性能上的关键行为：开放结尾的 Range 必须被截断，
-        // 否则跳到 35% 就要解密 65% 的文件。
-        // 这里验证的是计算本身，实际生效在 serve_file 里。
+        // 否则跳到 35% 就要解密 65% 的文件。两种策略都要截（策略只管无 Range）。
         let total: u64 = 100 * 1024 * 1024;
-        let (start, end) = parse_range("bytes=1572864-", total).unwrap_or((0, 0));
-        assert_eq!(end, total - 1, "解析阶段仍是开放到末尾");
-        let capped = end.min(start + MAX_SPAN - 1);
-        assert_eq!(capped - start + 1, MAX_SPAN, "截断后正好 2 MiB");
-        assert!(capped < end, "必须真的被截断");
+        for policy in [Unranged::Capped, Unranged::Whole] {
+            let span = resolve_span(Some("bytes=1572864-"), total, policy);
+            assert_eq!(
+                span,
+                Some(Span {
+                    start: 1_572_864,
+                    end_inclusive: 1_572_864 + MAX_SPAN - 1,
+                    length: MAX_SPAN,
+                    partial: true,
+                }),
+                "截断后正好 MAX_SPAN 且仍是 206"
+            );
+        }
     }
 
     /// 容器内每个文件都必须解出**自己**的字节。
