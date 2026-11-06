@@ -267,28 +267,37 @@
   padding: calc(var(--sp) * 1) calc(var(--sp) * 3) 104px;
 }
 
+/* 三列：两列大卡片一屏只放得下 6 个条目（实测 411dp 宽的手机上每张卡
+   约 245dp 高），对文件管理器太稀了。三列方形缩略图一屏能看到 12～15 个，
+   名字仍有 7 个汉字左右的宽度。极窄屏（< 360px）退回两列 */
 .main.mob .grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: calc(var(--sp) * 3);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(var(--sp) * 2.5);
+}
+
+@media (max-width: 359px) {
+  .main.mob .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .main.mob .card {
   position: relative;
   padding: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   background: var(--bg2);
   border: 1px solid transparent;
 }
 
 .main.mob .card .thumb {
   height: auto;
-  aspect-ratio: 4 / 3;
-  border-radius: 16px 16px 0 0;
+  aspect-ratio: 1 / 1;
+  border-radius: 14px 14px 0 0;
 }
 
 .main.mob .card .thumb > .app-icon {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
 }
 
 .main.mob .card .thumb.dir {
@@ -297,14 +306,15 @@
 }
 
 .main.mob .card .cname {
-  margin-block-start: 9px;
-  padding-inline: 11px;
-  font-size: 13.5px;
+  margin-block-start: 7px;
+  padding-inline: 9px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
 .main.mob .card .cmeta {
-  padding: 1px 11px 11px;
+  padding: 0 9px 9px;
+  font-size: 11px;
 }
 
 .main.mob .card.sel {
