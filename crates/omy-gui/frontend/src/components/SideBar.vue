@@ -27,6 +27,8 @@ import {
   placeLabel,
 } from '../store';
 import ContextMenu from './ContextMenu.vue';
+import BrandMark from './BrandMark.vue';
+import { isMobile } from '../viewport';
 
 /** 这一项是不是当前位置。
  *
@@ -283,6 +285,10 @@ function iconOf(place) {
 
 <template>
   <aside class="side">
+    <!-- 手机顶栏让位给当前目录名，品牌只在抽屉里出现一次；桌面顶栏已经有了 -->
+    <div v-if="isMobile" class="sbrand" aria-hidden="true">
+      <BrandMark :size="28" /><span>{{ i18n.t('app.name') }}</span>
+    </div>
     <div class="sgrp">{{ i18n.t('places.title') }}</div>
     <button
       v-for="p in state.places"
@@ -427,6 +433,19 @@ function iconOf(place) {
 </template>
 
 <style scoped>
+/* 抽屉顶部的品牌行：手机上唯一出现 logo 的地方（顶栏放的是当前目录名） */
+.sbrand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px 14px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+}
 /* 授权入口要比普通位置显眼：未授权时侧栏几乎是空的，
    用户得能一眼看到下一步该点哪里。 */
 .vlock-badge {
