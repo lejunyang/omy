@@ -18,6 +18,7 @@ import { thumbUrl, state } from '../store';
 import { useThumbLoad } from '../thumbload';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
+import { fileKind, KIND_ICON } from '../file-icons';
 
 const props = defineProps({
   entry: { type: Object, required: true },
@@ -113,32 +114,12 @@ function onContextMenu(ev) {
 
 onBeforeUnmount(clearTimer);
 
-/** 按扩展名选图标。取值为 AppIcon 的语义名。 */
-const EXT_ICONS = {
-  jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image', bmp: 'image',
-  svg: 'image', heic: 'image', heif: 'image', avif: 'image', apng: 'image',
-  mp4: 'video', mkv: 'video', mov: 'video', avi: 'video', webm: 'video', flv: 'video', wmv: 'video',
-  mp3: 'music', flac: 'music', wav: 'music', m4a: 'music', aac: 'music', ogg: 'music', opus: 'music',
-  txt: 'file', md: 'file', log: 'file', json: 'file', xml: 'file', csv: 'file',
-  pdf: 'file', doc: 'file', docx: 'file', xls: 'spreadsheet', xlsx: 'spreadsheet', ppt: 'file', pptx: 'file',
-  zip: 'archiveFile', rar: 'archiveFile', '7z': 'archiveFile', gz: 'archiveFile', tar: 'archiveFile',
-};
+/** 类型类别：决定图标与配色。判定与列表行共用（file-icons.ts）。 */
+const kind = computed(() => fileKind(props.entry));
+const icon = computed(() => KIND_ICON[kind.value]);
 
 /** 播放分级的图标（文档 §4.4）。取值为 AppIcon 的语义名。 */
 const TIER_ICONS = { p1: 'fast', p2: 'refresh', p3: 'turtle' };
-
-const icon = computed(() => {
-  if (props.entry.is_dir) return 'folder';
-  const byExt = EXT_ICONS[props.entry.ext];
-  if (byExt) return byExt;
-  // 后缀不认识时，退回后端算出的预览类别。容器内的条目常常是
-  // 没列进 EXT_ICONS 的后缀，但后端已经按类别分好了；
-  // 一律回落到 package 图标会让容器里的图片全部显示成「包」
-  return (
-    { image: 'image', video: 'video', audio: 'music', text: 'file' }[props.entry.preview] ||
-    'package'
-  );
-});
 
 /** 已解锁加密文件的真实名，其余用磁盘名。 */
 const displayName = computed(() => props.entry.real_name || props.entry.name);
@@ -189,8 +170,8 @@ const tierTitle = computed(() => {
     @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div class="thumb dir">
-      <AppIcon name="folder" />
+    <div class="thumb dir" :class="'k-' + kind">
+      <AppIcon :name="icon" />
       <!-- 加密目录挂一个角标而不是换成锁图标：它首先是个文件夹，
            「能像普通文件夹一样进」是这里要传达的第一件事 -->
       <span v-if="entry.is_encrypted_dir" class="encbadge" aria-hidden="true"><AppIcon name="lock" :size="13" /></span>
@@ -220,7 +201,7 @@ const tierTitle = computed(() => {
     @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div class="thumb lock"><AppIcon name="lock" /></div>
+    <div class="thumb lock k-locked"><AppIcon name="lock" /></div>
     <div class="cname">{{ i18n.t('file.locked_name') }}</div>
     <!-- 只显示密文大小：它在磁盘上本来就藏不住，
          但明文大小、类型、时长一律不显示 -->
@@ -246,14 +227,14 @@ const tierTitle = computed(() => {
     @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div ref="thumbEl" class="thumb">
+    <div ref="thumbEl" class="thumb" :class="'k-' + kind">
       <img
         v-if="state.showThumbnails && known?.has_thumbnail && shouldLoad"
         :src="thumbUrl(entry.entry_id)"
         alt=""
         loading="lazy"
       />
-      <AppIcon v-else name="unlock" />
+      <AppIcon v-else :name="icon" />
       <span v-if="tierIcon" class="tier" :title="tierTitle"><AppIcon :name="tierIcon" :size="14" /></span>
     </div>
     <div class="cname" :title="displayName">{{ displayName }}</div>
@@ -280,7 +261,7 @@ const tierTitle = computed(() => {
     @contextmenu.prevent="onContextMenu"
     @keydown.enter.prevent="$emit('open', entry)"
   >
-    <div class="thumb"><AppIcon :name="icon" /></div>
+    <div class="thumb" :class="'k-' + kind"><AppIcon :name="icon" /></div>
     <div class="cname" :title="entry.name">{{ entry.name }}</div>
     <div class="cmeta">{{ sizeText }}</div>
   </div>

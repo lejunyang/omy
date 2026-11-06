@@ -293,8 +293,7 @@
 
 .main.mob .card .thumb.dir {
   border: 0;
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg3));
-  color: var(--accent);
+  background: color-mix(in srgb, var(--kc, var(--c-folder)) 14%, var(--bg3));
 }
 
 .main.mob .card .cname {
@@ -371,8 +370,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg2);
-  color: var(--fg2);
+  background: color-mix(in srgb, var(--kc, var(--fg2)) 13%, var(--bg2));
+  color: var(--kc, var(--fg2));
   transition: background-color var(--dur-2) ease, color var(--dur-2) ease;
 }
 

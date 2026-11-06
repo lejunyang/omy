@@ -10,6 +10,7 @@ import { computed } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
+import { fileKind, KIND_ICON } from '../file-icons';
 import {
   state,
   visibleEntries,
@@ -358,13 +359,7 @@ function onRowMenu(e, ev) {
             @pointercancel="onRowPointerUp"
             @keydown.enter.prevent="$emit('open', e)"
           >
-            <span class="ic"><AppIcon :name="
-              e.is_dir
-                ? (e.is_encrypted_dir ? 'folder-lock' : 'folder')
-                : e.is_encrypted
-                  ? (e.unlocked ? 'unlock' : 'lock')
-                  : 'file'
-            " /></span>
+            <span class="ic" :class="'k-' + fileKind(e)"><AppIcon :name="KIND_ICON[fileKind(e)]" /></span>
             <span class="nm">
               {{ e.is_encrypted && !e.unlocked ? i18n.t('file.locked_name') : e.real_name || e.name }}
             </span>

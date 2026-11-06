@@ -715,6 +715,30 @@ input {
   border-color: transparent;
 }
 
+/* 按文件类型着色：图标用类型色，缩略图区铺一层很淡的同色底。
+   原来所有图块同一个灰底灰图标，文件夹、图片、视频要读名字才分得清。
+   --kc 由类别类给出（file-icons.ts 的 FileKind），网格与列表共用 */
+.k-folder,
+.k-folder-locked { --kc: var(--c-folder); }
+.k-image,
+.k-sheet { --kc: var(--c-image); }
+.k-video { --kc: var(--c-video); }
+.k-audio { --kc: var(--c-audio); }
+.k-doc { --kc: var(--c-doc); }
+.k-archive { --kc: var(--c-archive); }
+.k-locked,
+.k-unlocked { --kc: var(--accent); }
+.k-other { --kc: var(--fg2); }
+
+.card .thumb[class*='k-'] > .app-icon,
+.lrow .ic[class*='k-'] {
+  color: var(--kc, var(--fg2));
+}
+
+.card .thumb[class*='k-']:not(.lock):not(.dir) {
+  background: color-mix(in srgb, var(--kc, transparent) 10%, var(--bg3));
+}
+
 .tier {
   position: absolute;
   inset-inline-end: 5px;
