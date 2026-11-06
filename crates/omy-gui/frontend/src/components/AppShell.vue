@@ -27,6 +27,7 @@ import { registerMobileBack } from '../mobile-platform';
 import { state, setView } from '../store';
 import * as i18n from '../i18n';
 import SideBar from './SideBar.vue';
+import BrandMark from './BrandMark.vue';
 
 const props = defineProps({
   /** 顶栏搜索框是否可用。远程位置有自己的搜索栏（带服务端搜索开关），
@@ -153,7 +154,7 @@ onBeforeUnmount(unregisterBack);
       <AppIcon name="menu" />
     </button>
 
-    <span v-if="!isMobile" class="brand">{{ i18n.t('app.name') }}</span>
+    <span v-if="!isMobile" class="brand"><BrandMark :size="22" />{{ i18n.t('app.name') }}</span>
 
     <!-- 移动端标题：当前位置名 + 一行摘要。搜索展开时让位给搜索框 -->
     <div v-if="isMobile" class="mtitle" :aria-hidden="searchOpen || !!state.query">

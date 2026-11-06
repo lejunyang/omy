@@ -1,34 +1,47 @@
 /* omy 界面样式
  *
- * 色值与尺寸取自 docs/research/08-ui-ux-design.md §4 与
- * docs/research/appendix/ui-prototype.html，不自行发挥——
- * 那份配色已经过对比度校验（WCAG AA）。
+ * 尺寸取自 docs/research/08-ui-ux-design.md §4 与
+ * docs/research/appendix/ui-prototype.html。配色改为品牌青绿（见 :root），
+ * 原型那份是 GitHub Primer 的原样取值；新配色同样逐项做过 WCAG AA
+ * 对比度校验，改色时必须重算，数值写在各令牌旁。
  *
  * 布局一律用逻辑属性（margin-inline-start 而非 margin-left），
  * 为将来的 RTL 预留（文档 §7.5）。事后再改代价很高。
  */
 
 :root {
+  /* 品牌色：青绿（teal）。加密保险箱的「稳、静」，又与 GitHub 式的蓝拉开距离——
+     原先整套取值就是 GitHub Primer 的暗色调色板，界面一眼看上去像 GitHub。
+     中性色也带一点同色相的冷调，让大面积的暗底不显得发灰。
+     全部对比度按 WCAG AA 校验过（脚本算的数值写在各行注释里）。 */
   color-scheme: dark;
-  --bg: #0d1117;
-  --bg2: #161b22;
-  --bg3: #1c2128;
-  --border: #30363d;
-  --fg: #e6edf3;
-  --fg2: #8b949e;
-  --accent: #4493f8;
-  /* 专给「实心底 + 白字」用的那一档。
-     不能直接用 --accent：它被调亮以便在暗背景上当边框/图标时显眼，
-     可白字压上去只有 3.10——**最常点的主操作反而最不清楚**。
-     白字对 #1f6feb 是 4.63。 */
-  --accent-solid: #1f6feb;
-  /* 禁用态文字。--fg2 压在 --bg3 上只有 4.53（浅色更糟，只有 3.80）。
-     禁用不等于看不清：用户仍要读懂那按钮是什么，才知道该满足什么
-     条件才能点。#9198a1 对 --bg3 是 4.84。 */
-  --fg-dim: #9198a1;
+  --bg: #0b1215;
+  --bg2: #111b1f;
+  --bg3: #172429;
+  --border: #26363c;
+  --fg: #e3eeef;          /* 对 --bg 15.96 */
+  --fg2: #93a9ad;         /* 对 --bg 7.66、--bg3 6.45 */
+  /* 在暗底上当图标、边框、链接用的那一档，调亮以便显眼（对 --bg 9.76） */
+  --accent: #2fd0b9;
+  /* 专给「实心底 + 白字」用的那一档：--accent 太亮，白字压上去看不清。
+     白字对 #0f766e 是 5.47 */
+  --accent-solid: #0f766e;
+  /* 选中、悬停的淡底。原先三处在用却从未定义，那几处高亮实际是透明的 */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* 禁用态文字：用户仍要读懂那按钮是什么。对 --bg3 7.01 */
+  --fg-dim: #9bb0b4;
   --ok: #3fb950;
-  --warn: #d29922;
-  --danger: #f85149;
+  --warn: #e0a63a;
+  --danger: #f8625a;      /* 对 --bg3 5.21 */
+  /* 文件类型色：图标按类型着色，一眼分得出文件夹、图片、视频、音频、文档、压缩包 */
+  --c-folder: #e0b44c;
+  --c-image: #5ccf8e;
+  --c-video: #a78bfa;
+  --c-audio: #f27bb5;
+  --c-doc: #6aaef7;
+  --c-archive: #f59a5b;
+  /* 品牌渐变：logo 与少数强调面（空状态插图）用 */
+  --brand-grad: linear-gradient(135deg, #2fd0b9 0%, #0f766e 100%);
   --r-s: 4px;
   --r-m: 8px;
   --r-l: 12px;
@@ -56,20 +69,25 @@
 :root[data-theme='light'] {
   color-scheme: light;
   --bg: #ffffff;
-  --bg2: #f7f8fa;
-  --bg3: #eef0f3;
-  --border: #e5e7eb;
-  --fg: #1f2328;
-  --fg2: #656d76;
-  --accent: #2563eb;
-  /* 浅色下 --accent 白字已有 5.17，仍单列一条：这样后人调 --accent
-     的明度时不会顺手把「实心底 + 白字」那条对比度一起带坏 */
-  --accent-solid: #2563eb;
-  /* #656d76 压在 --bg3 (#eef0f3) 上只有 3.80。#4b5259 是 5.44 */
-  --fg-dim: #4b5259;
-  --ok: #16a34a;
-  --warn: #d97706;
+  --bg2: #f3f8f7;
+  --bg3: #e6efee;
+  --border: #d3e0df;
+  --fg: #0f1f1e;          /* 对 --bg 17.0 */
+  --fg2: #4d6466;         /* 对 --bg 6.31、--bg3 5.39 */
+  /* 浅色下 --accent 本身就够深（对 --bg 5.65），仍单列 --accent-solid：
+     后人调 --accent 的明度时不会顺手把「实心底 + 白字」那条对比度一起带坏 */
+  --accent: #0d7469;
+  --accent-solid: #0d7469; /* 白字 5.65 */
+  --fg-dim: #3e5456;       /* 对 --bg3 6.88 */
+  --ok: #15803d;
+  --warn: #b45309;
   --danger: #dc2626;
+  --c-folder: #b7791f;
+  --c-image: #15803d;
+  --c-video: #6d28d9;
+  --c-audio: #be185d;
+  --c-doc: #1d4ed8;
+  --c-archive: #c2410c;
 }
 
 * {
@@ -347,10 +365,20 @@ input {
   border-block-end: 1px solid var(--border);
 }
 
+/* 品牌标 + 字标。字标用略紧的字距与较重的字重，与图标一起读成一个整体 */
 .brand {
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.2px;
+}
+
+.brand .brandmark {
+  flex: none;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
 }
 
 .spacer {

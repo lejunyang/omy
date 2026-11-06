@@ -450,7 +450,7 @@ function iconOf(place) {
   opacity: 0.85;
 }
 .sitem.grant {
-  color: var(--accent, #2563eb);
+  color: var(--accent);
   font-weight: 600;
 }
 
