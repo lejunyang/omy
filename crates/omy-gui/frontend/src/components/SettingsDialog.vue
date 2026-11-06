@@ -1390,6 +1390,24 @@ async function openLogDir() {
   flex: 1;
   min-width: 180px;
 }
+/* 手机上二级页改为上下排列：左边 130px 的标签列在 360px 宽的屏幕上只给
+   控件和说明留下一半宽度，说明文字被挤成一根竖条 */
+.setdlg.mob .row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.setdlg.mob .lb {
+  width: auto;
+  padding-top: 0;
+  font-weight: 600;
+}
+.setdlg.mob .fld {
+  min-width: 0;
+}
+.setdlg.mob .fld > select {
+  width: 100%;
+}
 .proxy-settings {
   display: flex;
   flex-direction: column;
