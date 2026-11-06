@@ -323,6 +323,8 @@ pub async fn lock(
     // 加密远程文件交给外部应用的是明文工作副本；锁定不仅要清内存密钥，
     // 还要撤销它们的 FileProvider 授权。普通文件本来就是明文，不受影响。
     crate::external_edit::revoke_encrypted_grants(&app, &external_edits);
+    // 授权撤销之后，明文副本本身也要删掉（有未同步改动的除外，见函数说明）
+    external_edits.purge_encrypted_plaintext();
     state.lock();
     devices.close();
     // Telegram 云位置的实时连接与虚拟位置的明文树也必须一起锁，否则「锁定」
