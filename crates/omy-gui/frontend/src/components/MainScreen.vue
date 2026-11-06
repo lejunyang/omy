@@ -105,6 +105,8 @@ const progPercent = computed(() => {
 
 const emit = defineEmits([
   'new-folder',
+  'delete-selected',
+  'selection-more',
   'open',
   'menu',
   'encrypt',
@@ -456,8 +458,14 @@ function onRowMenu(e, ev) {
         <button v-if="restorable.length" class="selbar-act" @click="$emit('restore')">
           <AppIcon name="external" /><span>{{ i18n.t('file.restore') }}</span>
         </button>
-        <button v-if="keyManageable" class="selbar-act" @click="$emit('manage-key', keyManageable)">
-          <AppIcon name="key" /><span>{{ i18n.t('keymgmt.title') }}</span>
+        <!-- 密码管理收进「更多」：操作条宽度有限，一行放不下五个按钮 -->
+        <!-- 删除与「更多」：原来操作条只有全选 / 加密，删、改名、上传都要再长按
+             一次去找菜单 -->
+        <button class="selbar-act" data-selbar="delete" @click="$emit('delete-selected')">
+          <AppIcon name="trash" /><span>{{ i18n.t('view.delete_short') }}</span>
+        </button>
+        <button class="selbar-act" data-selbar="more" @click="$emit('selection-more')">
+          <AppIcon name="more" /><span>{{ i18n.t('view.more') }}</span>
         </button>
       </div>
     </Transition>

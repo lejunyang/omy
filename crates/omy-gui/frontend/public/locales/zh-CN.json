@@ -278,7 +278,9 @@
     "kind": "类型",
     "search": "搜索…",
     "select_all": "全选",
-    "clear_selection": "取消选择"
+    "clear_selection": "取消选择",
+    "delete_short": "删除",
+    "more": "更多"
   },
   "kind": {
     "video": "视频",

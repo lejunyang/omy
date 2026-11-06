@@ -94,6 +94,7 @@ import {
   // 而 onCtxPick 的异常没人接——表现就是「点了完全没反应」。
   keyManageable,
   revealEntry,
+  trashSupported,
   openUploadToLocal,
   closeTransfers,
   remoteGoUp,
@@ -931,21 +932,11 @@ async function onCtxPick(key) {
       nameDlg.value = { mode: 'newfolder', initial: '', path: '' };
       break;
     case 'trash':
-      await doDelete(true);
+      await deleteSelection(false);
       break;
-    case 'delete': {
-      // 永久删除不进回收站、无法撤销，必须先确认。回收站那一项不问：它可以还原，
-      // 每次都问会把用户训练成闭眼点「确定」，反而让这里的确认失去作用
-      const n = state.selected.length;
-      const sure = await askConfirm({
-        title: i18n.tn('ctx.delete_confirm_title', n),
-        message: i18n.t('ctx.delete_confirm_msg'),
-        confirmLabel: i18n.t('ctx.delete'),
-        danger: true,
-      });
-      if (sure) await doDelete(false);
+    case 'delete':
+      await deleteSelection(true);
       break;
-    }
     case 'upload-to': {
       const entries = state.selected
         .map((path) => state.entries.find((item) => item.path === path))
@@ -959,6 +950,36 @@ async function onCtxPick(key) {
     default:
       break;
   }
+}
+
+/** 删除当前选择。右键菜单与手机多选操作条共用。
+ *
+ * 永久删除不进回收站、无法撤销，必须先确认。回收站那一项不问：它可以还原，
+ * 每次都问会把用户训练成闭眼点「确定」，反而让这里的确认失去作用。 */
+async function deleteSelection(permanent: boolean) {
+  if (!permanent) {
+    await doDelete(true);
+    return;
+  }
+  const n = state.selected.length;
+  const sure = await askConfirm({
+    title: i18n.tn('ctx.delete_confirm_title', n),
+    message: i18n.t('ctx.delete_confirm_msg'),
+    confirmLabel: i18n.t('ctx.delete'),
+    danger: true,
+  });
+  if (sure) await doDelete(false);
+}
+
+/** 多选操作条的「删除」：有回收站就移到回收站，没有（Android）就走带确认的永久删除。 */
+async function onDeleteSelected() {
+  await deleteSelection(!trashSupported);
+}
+
+/** 多选操作条的「更多」：对整批选择打开完整菜单（底部弹层）。 */
+function onSelectionMore() {
+  const first = state.entries.find((e) => state.selected.includes(e.path));
+  if (first) openContextMenu({ entry: first, x: 0, y: 0 });
 }
 
 async function onNameSubmit(name) {
@@ -1351,6 +1372,8 @@ onBeforeUnmount(() => {
   <MainScreen
     v-else
     @new-folder="nameDlg = { mode: 'newfolder', initial: '', path: '' }"
+    @delete-selected="onDeleteSelected"
+    @selection-more="onSelectionMore"
     @open="onOpen"
     @menu="onEntryMenu"
     @encrypt="openEncryptDialog"

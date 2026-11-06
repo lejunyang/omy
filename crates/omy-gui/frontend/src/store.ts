@@ -32,7 +32,7 @@ import { askText, askPassword } from './ask';
 import { isAndroid } from './mobile-platform';
 
 /** 本平台有没有系统回收站。与后端 `move_to_trash` 的 cfg 对应：Android 没有。 */
-const trashSupported = !isAndroid;
+export const trashSupported = !isAndroid;
 
 export const state = reactive({
   /** 当前目录路径。空串表示还在「起点」页。 */
