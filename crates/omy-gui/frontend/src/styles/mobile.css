@@ -679,9 +679,20 @@
     font-size: 17px;
   }
 
-  /* 底部按钮撑满并加高：确认/取消是弹层里最常点的东西 */
+  /* 底部按钮撑满并加高：确认/取消是弹层里最常点的东西。
+     并钉在弹层底部：加密这类长表单里，提交按钮原来要滚过一整屏高级选项才
+     找得到，软键盘弹出时更是完全被挡住。负外边距吃掉弹层自身的左右与底部
+     内边距，让这条按钮栏贴边铺满、盖住从下面滚过去的内容 */
   .dlg .acts {
     gap: 10px;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-inline: -18px;
+    margin-block-end: calc(-1 * (max(env(safe-area-inset-bottom, 0px), 16px) + 14px));
+    padding: 12px 18px calc(max(env(safe-area-inset-bottom, 0px), 16px) + 14px);
+    background: var(--bg2);
+    border-block-start: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   }
 
   .dlg .acts .btn {
