@@ -252,6 +252,19 @@ fn resolve_span(range: Option<&str>, total: u64, unranged: Unranged) -> Option<S
     Some(Span { start, end_inclusive, length, partial })
 }
 
+/// 读满 `len` 字节，除非先遇到文件末尾。
+///
+/// 不能只调一次 `read`：它只保证读到「至少 1 个字节」，网络盘、Android 的
+/// FUSE 存储上一次 2 MiB 的读常常被拆成几段。只读一次时，无 Range 的 200
+/// 响应会带着被截断的正文、却仍标着完整——图片显示半张、文本少一截，
+/// 而且没有任何报错。
+fn read_up_to<R: std::io::Read>(r: R, len: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut data = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+    r.take(len).read_to_end(&mut data)?;
+    Ok(data)
+}
+
 /// 取请求里的 Range 头（不是合法 UTF-8 时当作没有）。
 fn range_of(request: &Request<Vec<u8>>) -> Option<&str> {
     request.headers().get(header::RANGE).and_then(|h| h.to_str().ok())
@@ -366,7 +379,7 @@ fn serve_plain(
     request: &Request<Vec<u8>>,
     token: &str,
 ) -> Response<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{Seek, SeekFrom};
 
     // 只有被浏览过的文件才有 token。这道检查挡住的是
     // 「WebView 里的脚本构造 URL 去读任意文件」
@@ -389,12 +402,10 @@ fn serve_plain(
     if f.seek(SeekFrom::Start(start)).is_err() {
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    let cap = usize::try_from(length).unwrap_or(0);
-    let mut data = vec![0u8; cap];
-    let Ok(n) = f.read(&mut data) else {
+    let Ok(data) = read_up_to(&mut f, length) else {
         return bare(StatusCode::INTERNAL_SERVER_ERROR);
     };
-    data.truncate(n);
+    let n = data.len();
 
     // 文件可能在读的过程中被截短，如实按实际读到的长度回报，
     // 不然 Content-Length 与正文对不上，播放器会认为连接断了
@@ -1209,6 +1220,29 @@ mod tests {
     fn unsatisfiable_range_is_none() {
         assert_eq!(resolve_span(Some("bytes=10000-"), 10_000, Unranged::Capped), None);
         assert_eq!(resolve_span(Some("bytes=0-0"), 0, Unranged::Whole), None);
+    }
+
+    /// 每次只吐 3 字节的读取器，模拟网络盘 / FUSE 上被拆段的读。
+    struct Trickle<'a>(&'a [u8]);
+    impl std::io::Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(3).min(self.0.len());
+            let (head, rest) = self.0.split_at(n);
+            buf.get_mut(..n).ok_or_else(|| std::io::Error::other("buf"))?.copy_from_slice(head);
+            self.0 = rest;
+            Ok(n)
+        }
+    }
+
+    /// 短读必须读满。不这样会怎样：只调一次 read 时这里只拿到 3 字节，
+    /// 而响应仍是标着完整的 200。
+    #[test]
+    fn read_up_to_survives_short_reads() -> Result<(), Box<dyn std::error::Error>> {
+        let src: Vec<u8> = (0..100u8).collect();
+        assert_eq!(read_up_to(Trickle(&src), 40)?, src.get(..40).ok_or("slice")?);
+        // 文件比请求的短：如实返回到末尾为止
+        assert_eq!(read_up_to(Trickle(&src), 1000)?, src);
+        Ok(())
     }
 
     #[test]
