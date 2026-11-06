@@ -21,6 +21,7 @@
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
+import type { RemoteEntry } from './types';
 
 const SEP = '/';
 const ROOT = '/mock/home';
@@ -109,11 +110,27 @@ const remotePlaces = [
   { id: 'p2', name: 'Telegram · 我的收藏', kind: 'telegram', caps: { ...caps, server_search: true }, encrypted: true, unlocked: false },
 ];
 
+// kind 只有后端 TaskKind 的三种：upload / download / pin。曾经这里写过不存在的
+// 'copy'，传输页按 kind 分组，于是那一条在预览里凭空消失，像是界面的缺陷
 const transfers = [
-  { id: 1, parent_id: null, kind: 'upload', name: '家庭聚会.mp4', state: 'running', done: 182_331_000, total: 412_993_331, speed: 6_221_331 },
-  { id: 2, parent_id: null, kind: 'download', name: '合同扫描件.pdf', state: 'done', done: 1_934_002, total: 1_934_002, speed: 0 },
-  { id: 3, parent_id: null, kind: 'copy', name: '照片（214 项）', state: 'paused', done: 30_000_000, total: 210_000_000, speed: 0 },
+  { id: 1, parent_id: null, kind: 'upload', name: '家庭聚会.mp4', state: 'running', done: 182_331_000, total: 412_993_331 },
+  { id: 2, parent_id: null, kind: 'download', name: '合同扫描件.pdf', state: 'done', done: 1_934_002, total: 1_934_002 },
+  { id: 3, parent_id: null, kind: 'pin', name: '照片（214 项）', state: 'paused', done: 30_000_000, total: 210_000_000 },
 ];
+
+/** 远程目录的示例条目。类型与后端 `remote_browse` 的 `Vec<RemoteEntry>` 一致：
+ *  原先这里返回 `{ entries, caps }`，与真实契约不符，预览远程位置时直接抛错。 */
+function remoteEntries(): RemoteEntry[] {
+  const f = (id: string, name: string, size: number, extra: Partial<RemoteEntry> = {}): RemoteEntry =>
+    ({ id, name, size, is_dir: false, mtime: 1_760_000_000, ...extra });
+  return [
+    { id: 'd1', name: '电影', is_dir: true },
+    { id: 'd2', name: '备份', is_dir: true },
+    f('f1', 'a91c3e.omy', 1_204_993_331, { is_encrypted: true, unlocked: false }),
+    f('f2', '旅行 vlog.mp4', 302_993_331),
+    f('f3', '笔记.md', 12_331),
+  ];
+}
 
 const config = {
   ui: { language: 'zh-CN', theme: 'dark', view: 'grid', startup: 'home', thumbnails: true },
@@ -159,7 +176,8 @@ export function installMockIpc(): void {
         return { provider: 'keepassxc', installed: false, running: false, database_open: false, associated: false, database_hash: null, version: null, detail: null };
       case 'remote_page_size': return 100;
       case 'remote_cache_usage': return { used: 812_331_221, limit: 2_000_000_000 };
-      case 'remote_browse': return delay({ entries: [], caps });
+      case 'remote_browse': return delay(remoteEntries());
+      case 'remote_effective_caps': return caps;
       case 'list_file_associations': return [];
       case 'ui_log': return null;
       default:
