@@ -55,13 +55,19 @@ function clearTimer() {
   }
 }
 
+/** 最近一次按下是不是触摸（不是鼠标）。原生 contextmenu 事件不带 pointerType，
+ *  要靠它分辨「这是长按触发的」还是鼠标右键。 */
+let lastTouch = false;
+
 function onPointerDown(ev) {
+  lastTouch = ev.pointerType !== 'mouse';
   if (!isMobile.value || ev.pointerType === 'mouse') return;
   startX = ev.clientX;
   startY = ev.clientY;
   suppressClick.value = false;
   clearTimer();
   timer = setTimeout(() => {
+    timer = null;
     suppressClick.value = true;
     // 先选中再弹菜单：菜单里的操作都作用于「选中项」，
     // 不先选中的话长按弹出的菜单会作用在别的条目上
@@ -108,6 +114,19 @@ function onClick(ev) {
  * 对这 5 个一起操作。
  */
 function onContextMenu(ev) {
+  // 触屏上的长按会同时触发我们自己的计时器和 WebView 原生的 contextmenu，
+  // 两者先后不定。各自处理的话菜单会被打开两次（第二次还会按「非加选」把
+  // 刚才的多选重置），或者原生事件落在已经铺开的菜单遮罩上把菜单关掉——
+  // 真机上表现为「按住不到一秒只选中、菜单闪一下就没了」。统一成一次长按：
+  // 计时器已经触发过就忽略原生事件；还没触发就当长按提前到了。
+  if (isMobile.value && lastTouch) {
+    if (suppressClick.value) return;
+    clearTimer();
+    suppressClick.value = true;
+    if (!props.selected) emit('select', { ctrlKey: true });
+    emit('menu', { entry: props.entry, x: ev.clientX, y: ev.clientY });
+    return;
+  }
   if (!props.selected) emit('select', { ctrlKey: false });
   emit('menu', { entry: props.entry, x: ev.clientX, y: ev.clientY });
 }
