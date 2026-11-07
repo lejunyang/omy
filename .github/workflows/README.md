@@ -254,13 +254,15 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 
 发布由 `scripts/publish-crates.sh` 按依赖顺序逐个执行：
 
-    omy-core → omy-config → omy-media → omy-net → omy-secret → omy-cli
+    omy-core → omy-config → omy-secret → omy-media → omy-net
+      → omy-remote → omy-cli → omy-password-manager
 
-`omy-gui`（build.rs 需要前端产物）、`omy-remote`（应用层远程驱动）与
-`spikes/*` 在各自 Cargo.toml 里标了 `publish = false`，脚本清单里没有它们。
+共 8 个。`omy-gui`（build.rs 安装时要跑 pnpm 构建前端，`cargo install`
+的环境里没有）与 `spikes/*` 在各自 Cargo.toml 里标了 `publish = false`。
 
-`omy-config` 与 `omy-secret` 是可发布的库：CLI 依赖它们，不发布则
-`cargo publish -p omy-cli` 会因为找不到 registry 版本而失败。
+`omy-config`、`omy-secret`、`omy-remote` 必须可发布：CLI 依赖它们，任何
+一个不在 registry 上，`cargo publish -p omy-cli` 都会因为解析不到而失败
+（`omy-remote` 曾经标着 `publish = false`，CLI 接入远程位置后就发不出去了）。
 所有 path 依赖都同时写了 `version`，否则打包阶段直接报错。
 
 #### 为什么不用 `cargo publish --workspace`
@@ -270,19 +272,21 @@ crates.io 官方限流（https://crates.io/docs/rate-limits）：
 - **新 crate**：单账号 burst **5** 个，之后每 **10 分钟**只准 1 个；
 - 已有 crate 的**新版本**：burst 30 个，之后每分钟 1 个。
 
-首次发布有 **6 个全新包**，`--workspace` 会连续打出去，第 6 个必然 429，
+首次发布有 **8 个全新包**，`--workspace` 会连续打出去，第 6 个起必然 429，
 而前 5 个此时已经发出去删不掉。脚本因此：
 
-1. 发每个包前查 `crates.io/api/v1/crates/<name>` 区分「全新包」还是
-   「新版本」；
-2. 按依赖顺序逐个 `cargo publish -p`；包之间留 30s 让 sparse 索引（CDN）
+1. 发每个包前先查 `crates.io/api/v1/crates/<name>/<version>`：这个版本已经
+   在了就跳过——中途失败后**直接重跑流水线**即可，不会重复上传；
+2. 再查 `crates.io/api/v1/crates/<name>` 区分「全新包」还是「新版本」；
+3. 按依赖顺序逐个 `cargo publish -p`；包之间留 30s 让 sparse 索引（CDN）
    传播，好让下一个包能解析到刚发的依赖；
-3. 满 5 个新包后、下一个仍是新包时，等待 **610s**（略大于 10 分钟）再发；
-4. 单个包失败最多重试 3 次，每次重试也等满一个冷却窗口。
+4. 本次已发满 5 个新包后，每个新包发出**前**等待 **610s**（略大于 10 分钟）；
+5. 单个包失败最多重试 3 次：输出里认出 429 / 限流就等满一个冷却窗口，
+   其它失败等 60s；输出说「已存在」视为成功。
 
-所以**首次发布会在第 5 个包后暂停约 10 分钟，全程约 13 分钟**，publish
-任务的 `timeout-minutes` 设为 90。以后都是发新版本，6 个包远在 30 的
-burst 内，只受 30s 的索引传播等待影响。
+所以**首次发布在第 5 个包后还要发 3 个新包，每个前面等约 10 分钟，全程约
+45 分钟**（含每个包的编译校验），publish 任务的 `timeout-minutes` 设为 120。
+以后都是发新版本，8 个包远在 30 的 burst 内，只受 30s 的索引传播等待影响。
 
 真正上传前仍会先跑一次 `cargo publish --workspace --dry-run` 整体校验。
 

@@ -15,8 +15,9 @@
 #
 # 1. 构建 Windows / Linux / macOS（Apple Silicon + Intel）/ Android 全部产物，
 #    全绿后创建 GitHub Release（自动打 v{version} 标签并挂产物）；
-# 2. 发布到 crates.io（omy-core → omy-config → omy-media → omy-net →
-#    omy-secret → omy-cli，omy-gui / omy-remote / spikes 不发布）。
+# 2. 发布到 crates.io（omy-core → omy-config → omy-secret → omy-media →
+#    omy-net → omy-remote → omy-cli → omy-password-manager，共 8 个；
+#    omy-gui / spikes 不发布）。
 #
 # 两者共享同一组构建门禁：任何一个平台构建失败，Release 与 crates.io 都不会动。
 #
@@ -589,10 +590,10 @@ jobs:
     needs: [decide, build-windows, build-android, build-linux, build-macos]
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    # 首次发布的 6 个包里第 6 个新 crate 要等 10 分钟限流冷却，加上失败重试
-    # （每次也等一个冷却窗口），正常首次约 13 分钟；给足余量，避免 GitHub
-    # Actions 默认的 360 分钟虽够、但排队时看不出还要多久——显式写出来。
-    timeout-minutes: 90
+    # 首次发布 8 个全新包：前 5 个连发，后 3 个每个前面等 10 分钟限流冷却，
+    # 加上每个包 cargo publish 自带的编译校验，正常首次约 45 分钟；再留出
+    # 一次 429 重试（又一个冷却窗口）的余量。显式写出来，排队时知道要等多久。
+    timeout-minutes: 120
     # 走 environment 是为了给这个不可撤销的动作加一道人工闸门：
     # CARGO_REGISTRY_TOKEN 配在这个环境里，并可在仓库设置里给它加
     # required reviewers，这样上传前会停下来等人点确认。
@@ -646,13 +647,14 @@ jobs:
 
       - name: 发布
         # 逐个发，不用 cargo publish --workspace：crates.io 对**新 crate**
-        # 限流是 burst 5 个、之后每 10 分钟 1 个，而首次要发 6 个全新包，
-        # 一把梭第 6 个必然 429。脚本按依赖顺序发，前 5 个新包后等待冷却，
-        # 并查询 crates.io API 区分「新包」与「发新版本」分别处理，
+        # 限流是 burst 5 个、之后每 10 分钟 1 个，而首次要发 8 个全新包，
+        # 一把梭第 6 个起必然 429。脚本按依赖顺序发，前 5 个新包后每个新包
+        # 前等待冷却，并查询 crates.io API 区分「新包」与「发新版本」；
+        # 本版本已上传过的包直接跳过，所以中途失败后重跑流水线是安全的。
         # 详见 scripts/publish-crates.sh。
         #
-        # omy-gui / omy-remote / spikes 在各自 Cargo.toml 里标了
-        # publish = false，脚本的发布清单里本就没有它们。
+        # omy-gui / spikes 在各自 Cargo.toml 里标了 publish = false，
+        # 脚本的发布清单里本就没有它们。
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: bash scripts/publish-crates.sh
@@ -660,5 +662,5 @@ jobs:
       - name: 汇总
         run: |
           echo "已发布 v${{ needs.decide.outputs.version }} 到 crates.io"
-          echo "omy-core / omy-config / omy-media / omy-net / omy-secret / omy-cli"
-          echo "omy-gui、omy-remote 与 spikes 不发布到 registry（见各自 Cargo.toml）"
+          echo "omy-core / omy-config / omy-secret / omy-media / omy-net / omy-remote / omy-cli / omy-password-manager"
+          echo "omy-gui 与 spikes 不发布到 registry（见各自 Cargo.toml）"
