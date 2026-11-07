@@ -8,8 +8,8 @@
  *
  * # 断点
  *
- * 768px 与 src/viewport.ts 的 MOBILE_MAX、app.css 里的 @media 一致，
- * **改断点时三处一起改**。
+ * 一律写 `@media (--mobile)`，构建时展开成 src/breakpoint.ts 的 MOBILE_MAX，
+ * 与 viewport.ts 的 matchMedia 同源。不要再手写 `max-width: 768px`。
  *
  * 由 v-if="isMobile" 渲染的元素（.pnav、.selbar、.fab、.mtitle）不再套
  * 媒体查询——JS 已经保证它们只在移动端存在，样式再判一次是重复的真相源。
@@ -96,7 +96,7 @@
 }
 
 /* ---------- 抽屉 ---------- */
-@media (max-width: 768px) {
+@media (--mobile) {
   .side.drawer {
     width: min(300px, 84vw);
     flex-basis: auto;
@@ -104,6 +104,15 @@
     border-inline-end: 0;
     border-start-end-radius: 20px;
     border-end-end-radius: 20px;
+    /* 收起时不带阴影：收起位置只比自身宽度多移 5%，32px 的模糊会漏进屏幕左缘，
+       在浅色主题下是一条一直挂着的灰边（真机上也能看到） */
+    box-shadow: none;
+    transition:
+      transform var(--dur-4) var(--ease-out),
+      box-shadow var(--dur-4) var(--ease-out);
+  }
+
+  .side.drawer.open {
     box-shadow: 8px 0 32px rgb(0 0 0 / 40%);
   }
 
@@ -162,7 +171,7 @@
   to { opacity: 1; transform: none; }
 }
 
-@media (max-width: 768px) {
+@media (--mobile) {
   .titlebar.mob {
     gap: calc(var(--sp) * 1);
     background: var(--bg);
@@ -258,45 +267,54 @@
   padding: calc(var(--sp) * 1) calc(var(--sp) * 3) 104px;
 }
 
+/* 三列：两列大卡片一屏只放得下 6 个条目（实测 411dp 宽的手机上每张卡
+   约 245dp 高），对文件管理器太稀了。三列方形缩略图一屏能看到 12～15 个，
+   名字仍有 7 个汉字左右的宽度。极窄屏（< 360px）退回两列 */
 .main.mob .grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: calc(var(--sp) * 3);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(var(--sp) * 2.5);
+}
+
+@media (max-width: 359px) {
+  .main.mob .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .main.mob .card {
   position: relative;
   padding: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   background: var(--bg2);
   border: 1px solid transparent;
 }
 
 .main.mob .card .thumb {
   height: auto;
-  aspect-ratio: 4 / 3;
-  border-radius: 16px 16px 0 0;
+  aspect-ratio: 1 / 1;
+  border-radius: 14px 14px 0 0;
 }
 
 .main.mob .card .thumb > .app-icon {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
 }
 
 .main.mob .card .thumb.dir {
   border: 0;
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg3));
-  color: var(--accent);
+  background: color-mix(in srgb, var(--kc, var(--c-folder)) 14%, var(--bg3));
 }
 
 .main.mob .card .cname {
-  margin-block-start: 9px;
-  padding-inline: 11px;
-  font-size: 13.5px;
+  margin-block-start: 7px;
+  padding-inline: 9px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
 .main.mob .card .cmeta {
-  padding: 1px 11px 11px;
+  padding: 0 9px 9px;
+  font-size: 11px;
 }
 
 .main.mob .card.sel {
@@ -362,8 +380,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg2);
-  color: var(--fg2);
+  background: color-mix(in srgb, var(--kc, var(--fg2)) 13%, var(--bg2));
+  color: var(--kc, var(--fg2));
   transition: background-color var(--dur-2) ease, color var(--dur-2) ease;
 }
 
@@ -411,6 +429,18 @@
 .lrow.placerow.mob .placeic.k-telegram {
   background: color-mix(in srgb, #2aabee 18%, var(--bg3));
   color: #2aabee;
+}
+
+/* 虚拟远程是本地的引用集合，用中性色块与真实云端位置区分 */
+.lrow.placerow.mob .placeic.k-virtual {
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg3));
+  color: var(--warn);
+}
+
+/* 新建入口：虚线框，读起来是「添加」而不是又一个已有位置 */
+.lrow.placerow.mob .placeic.k-add {
+  background: transparent;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .lrow.placerow.mob .nm {
@@ -603,7 +633,7 @@
 /* ---------- 弹窗 ----------
  * 移动端对话框改为底部弹层形态：拇指够得到确认按钮，键盘弹出时也不会
  * 把对话框顶出屏幕顶部。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   /* .dlg-overlay 同时带着 .overlay（flex-direction: column），
      所以「贴底」要用 justify-content，align-items 管的是水平方向 */
   .dlg-overlay {
@@ -649,9 +679,20 @@
     font-size: 17px;
   }
 
-  /* 底部按钮撑满并加高：确认/取消是弹层里最常点的东西 */
+  /* 底部按钮撑满并加高：确认/取消是弹层里最常点的东西。
+     并钉在弹层底部：加密这类长表单里，提交按钮原来要滚过一整屏高级选项才
+     找得到，软键盘弹出时更是完全被挡住。负外边距吃掉弹层自身的左右与底部
+     内边距，让这条按钮栏贴边铺满、盖住从下面滚过去的内容 */
   .dlg .acts {
     gap: 10px;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-inline: -18px;
+    margin-block-end: calc(-1 * (max(env(safe-area-inset-bottom, 0px), 16px) + 14px));
+    padding: 12px 18px calc(max(env(safe-area-inset-bottom, 0px), 16px) + 14px);
+    background: var(--bg2);
+    border-block-start: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   }
 
   .dlg .acts .btn {
@@ -688,7 +729,7 @@
 }
 
 /* 预览层顶栏在手机上用渐变而不是实色条，图片可以铺到顶部 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .overlay:not(.dlg-overlay) .overlay-bar {
     background: linear-gradient(rgb(0 0 0 / 70%), transparent);
   }

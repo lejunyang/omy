@@ -56,7 +56,7 @@ Each remote file always maps to the same private local path, so its URI remains 
 
 For ordinary files, the grant is bound directly to the selected app package and does not depend on omy's UI or process remaining alive: the external app can reopen the same URI after its receiving activity has finished, and Android can start the FileProvider on demand if omy was reclaimed. Whenever another app is selected, omy first revokes the URI's previous grants, leaving only the latest app and the read-only or read/write access chosen this time. This is not a permanent grant across device reboots—after restarting the device, open the file from omy again. Force-stopping, clearing the data of, or uninstalling omy is also outside this guarantee.
 
-Encrypted files are different: the external app receives a decrypted plaintext working copy, so it gets only a temporary grant tied to the receiving activity's lifetime. Locking omy immediately revokes read and write grants for that URI. Android cannot let a provider forcibly invalidate a file descriptor that another app already opened, so close the file in the third-party app before locking.
+Encrypted files are different: the external app receives a decrypted plaintext working copy, so it gets only a temporary grant tied to the receiving activity's lifetime. Locking omy immediately revokes read and write grants for that URI and deletes plaintext working copies that are already synced (copies with unsynced changes are kept until they sync after the next unlock; leftovers from a previous run are also cleared at startup). Android cannot let a provider forcibly invalidate a file descriptor that another app already opened, so close the file in the third-party app before locking.
 
 ::: warning External opening keeps a plaintext working copy
 Inline preview uses `omystream://` and does not write plaintext to disk, but third-party apps cannot consume that internal protocol. External opening therefore stores a **plaintext working copy** of the single file in omy's private Android directory. Only the selected app can access it through the temporary grant, but an attacker running as the same local user, a rooted device, or anything able to read private app data may still obtain the copy. Uninstalling omy or clearing its app data removes it.
@@ -115,7 +115,7 @@ Commit and cleanup follow the destination's capabilities rather than assuming ev
 2. If either rename or delete is unavailable, omy writes the final name directly. When delete is available it attempts cleanup after failure. When delete is unavailable or cleanup fails, Transfer Management reports that an incomplete object may remain and does not offer Retry until you inspect the destination.
 3. Path-based destinations such as WebDAV refuse to overwrite a same-named existing file.
 
-Every remote-copy operation appears immediately in **Transfer Management**, with progress, cancellation, and Retry for failures that are safe to retry.
+Every remote-copy operation appears immediately in **Transfer Management**, showing progress, bytes transferred out of the total, speed, and estimated time remaining, with cancellation and Retry for failures that are safe to retry.
 
 #### Can Telegram resume transfers?
 
@@ -397,7 +397,7 @@ chats.
 
 Concurrent edits through the same shared virtual-collection registry are saved in order, so an older snapshot cannot overwrite entries saved later. Separate registry instances or omy processes writing the same collection file are currently not coordinated.
 
-- **Create**: at the bottom of the sidebar's "Remote locations" section, click "New remote location" → "Virtual remote", then give it a name.
+- **Create**: at the bottom of the sidebar's "Remote locations" section, or at the end of the list on the "Remote locations" page, click "New remote location" → "Virtual remote", then give it a name. Virtual remotes are listed on the "Remote locations" page alongside real locations.
 - **Add content**: right-click a file in a real remote (or select several) →
   "Add to virtual remote…". In the dialog, clicking a virtual remote's name adds
   to its **root** (files can live at the root — no folder needed first); click the

@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { defineComponent, h, reactive, computed, nextTick } from 'vue';
+import { defineComponent, h, nextTick } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
 
 // happy-dom 不实现真实布局，ResizeObserver 只需要「存在且不报错」。
@@ -308,6 +308,40 @@ describe('PlaceBrowser 远程位置空态', () => {
     expect(w.emitted('new-remote')).toHaveLength(1);
   });
 });
+describe('PlaceBrowser 位置列表里的虚拟远程与新建入口', () => {
+  beforeEach(() => {
+    state.remotePlace = '';
+    state.remotePlaces = [{ id: 'w1', kind: 'webdav', name: 'NAS' }];
+    state.virtualPlaces = [{ id: 'v1', name: '收藏', encrypted: false }];
+  });
+
+  it('虚拟远程也列在位置列表里，并能进入', async () => {
+    // 不这样会怎样：手机上「远程位置」tab 里看不到虚拟收藏，只能去抽屉找
+    hst.mobile.value = true;
+    const w = mountView();
+    await flushPromises();
+    const row = w.find('[data-pb-virtual="v1"]');
+    expect(row.exists()).toBe(true);
+    await row.trigger('click');
+    expect(openRemotePlace).toHaveBeenCalledWith('v1');
+  });
+
+  it('只有虚拟远程时不显示「还没有远程位置」', async () => {
+    state.remotePlaces = [];
+    const w = mountView();
+    await flushPromises();
+    expect(w.find('.empty').exists()).toBe(false);
+  });
+
+  it('列表不空时仍有新建入口', async () => {
+    // 不这样会怎样：新建按钮只在空状态里，加第二个位置得先打开抽屉
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-pb="new-remote"]').trigger('click');
+    expect(w.emitted('new-remote')).toHaveLength(1);
+  });
+});
+
 describe('PlaceBrowser 文件网格', () => {
   it('卡片与透明占位共享明确的 CSS Grid 列轨道', () => {
     // happy-dom 不做布局，不能拿它伪测像素宽度；这里锁定导致本次缺陷的结构契约。

@@ -14,7 +14,7 @@ import App from './App.vue';
 import AppIcon from './components/AppIcon.vue';
 import * as api from './api';
 import * as i18n from './i18n';
-import { initTheme, syncThemeFromConfig } from './theme';
+import { initAccent, initTheme, syncAccentFromConfig, syncThemeFromConfig } from './theme';
 import * as store from './store';
 import { state } from './store';
 import './styles/app.css';
@@ -31,6 +31,7 @@ async function boot() {
   }
 
   initTheme();
+  initAccent();
 
   state.streamBase = await api.streamBase().catch(() => 'omystream://localhost');
 
@@ -45,6 +46,7 @@ async function boot() {
   try {
     const cfg = await api.configGet();
     syncThemeFromConfig(cfg?.ui?.theme);
+    syncAccentFromConfig(cfg?.ui?.accent);
   } catch {
     // 读不到配置就沿用本地副本，不影响启动
   }
@@ -54,6 +56,8 @@ async function boot() {
 
   // 分页大小是编译期常量，启动时问一次即可
   void store.loadPageSize?.();
+  // 上次选的排序（按观看者记在本机）
+  store.loadSort();
 
   const app = createApp(App);
   app.component('AppIcon', AppIcon);

@@ -3,6 +3,7 @@
 
 import { ref, computed } from 'vue';
 import * as i18n from '../i18n';
+import { askConfirm, askText } from '../ask';
 import {
   leaveOverlays,
   state,
@@ -23,8 +24,11 @@ import {
   promptVirtualEncrypt,
   promptVirtualUnlock,
   lockVirtualPlace,
+  placeLabel,
 } from '../store';
 import ContextMenu from './ContextMenu.vue';
+import BrandMark from './BrandMark.vue';
+import { isMobile } from '../viewport';
 
 /** 这一项是不是当前位置。
  *
@@ -178,7 +182,7 @@ async function onVirtualMenuPick(key) {
   if (key === 'open') {
     await goRemote(v);
   } else if (key === 'rename') {
-    const next = window.prompt(i18n.t('rplace.rename_prompt', { name: v.name }), v.name);
+    const next = await askText({ title: i18n.t('rplace.rename_prompt', { name: v.name }), initial: v.name });
     if (next === null) return;
     await renameVirtualPlace(v.id, next);
   } else if (key === 'vencrypt') {
@@ -188,7 +192,7 @@ async function onVirtualMenuPick(key) {
   } else if (key === 'vlock') {
     await lockVirtualPlace(v.id);
   } else if (key === 'vdelete') {
-    if (!window.confirm(i18n.t('virtual.delete_confirm', { name: v.name }))) return;
+    if (!(await askConfirm({ title: i18n.t('virtual.delete_confirm', { name: v.name }), danger: true }))) return;
     await deleteVirtualPlace(v.id);
   }
 }
@@ -208,8 +212,7 @@ async function onPlaceMenuPick(key) {
     return;
   }
   if (key === 'rename') {
-    const next = window.prompt(
-      i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
+    const next = await askText({ title: i18n.t('rplace.rename_prompt', { name: p.name }), initial: p.name });
     if (next === null) return;
     await renameTelegramPlace(p.id, next);
     return;
@@ -218,7 +221,7 @@ async function onPlaceMenuPick(key) {
     // 即便菜单里已写明后果，仍然确认一次：它与「删除账号」相邻，
     // 点错的代价不对称
     if (hasLocalSession(p)) {
-      if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
+      if (!(await askConfirm({ title: i18n.t('rplace.detach_confirm', { name: p.name }) }))) return;
       await detachTelegramPlace(p.id);
     } else {
       await removeRemotePlace(p.id);
@@ -238,7 +241,7 @@ async function onPlaceMenuPick(key) {
     return;
   }
   if (key === 'delacct') {
-    if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
+    if (!(await askConfirm({ title: i18n.t('rplace.delete_account_confirm', { name: p.name }), danger: true }))) return;
     await deleteTelegramAccount(p.id);
   }
 }
@@ -257,23 +260,7 @@ async function goRemote(p) {
  * 插两张卡时靠它区分，没有对应的翻译键。
  */
 function labelOf(place) {
-  if (place.real_name) return place.real_name;
-  const known = [
-    'home',
-    'desktop',
-    'documents',
-    'downloads',
-    'pictures',
-    'videos',
-    'cache',
-    'camera',
-    'documents_shared',
-    'movies',
-    'music',
-    'internal_storage',
-    'removable',
-  ];
-  return known.includes(place.name) ? i18n.t(`places.${place.name}`) : place.name;
+  return placeLabel(place);
 }
 
 function iconOf(place) {
@@ -298,6 +285,10 @@ function iconOf(place) {
 
 <template>
   <aside class="side">
+    <!-- 手机顶栏让位给当前目录名，品牌只在抽屉里出现一次；桌面顶栏已经有了 -->
+    <div v-if="isMobile" class="sbrand" aria-hidden="true">
+      <BrandMark :size="28" /><span>{{ i18n.t('app.name') }}</span>
+    </div>
     <div class="sgrp">{{ i18n.t('places.title') }}</div>
     <button
       v-for="p in state.places"
@@ -442,6 +433,19 @@ function iconOf(place) {
 </template>
 
 <style scoped>
+/* 抽屉顶部的品牌行：手机上唯一出现 logo 的地方（顶栏放的是当前目录名） */
+.sbrand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px 14px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+}
 /* 授权入口要比普通位置显眼：未授权时侧栏几乎是空的，
    用户得能一眼看到下一步该点哪里。 */
 .vlock-badge {
@@ -450,7 +454,7 @@ function iconOf(place) {
   opacity: 0.85;
 }
 .sitem.grant {
-  color: var(--accent, #2563eb);
+  color: var(--accent);
   font-weight: 600;
 }
 

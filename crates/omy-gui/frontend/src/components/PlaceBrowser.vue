@@ -25,10 +25,12 @@
 
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
+import { askConfirm } from '../ask';
 import { isMobile } from '../viewport';
 import type { MessageRow, MessageListItem, RemoteEntry } from '../types';
 import AppShell from './AppShell.vue';
 import ContextMenu from './ContextMenu.vue';
+import PlaceList from './PlaceList.vue';
 import WindowList from './WindowList.vue';
 import {
   state,
@@ -38,10 +40,6 @@ import {
   reloadRemoteDir,
   enterRemoteDir,
   remoteGoUp,
-  removeRemotePlace,
-  detachTelegramPlace,
-  deleteTelegramAccount,
-  renameTelegramPlace,
   retryRemoteEntry,
   decryptRemoteToLocal,
   requestRemoteFileCache,
@@ -65,7 +63,6 @@ import {
   activateVirtualEntry,
   locateFile,
   isVirtualPlace,
-  addVirtualFolder,
   openAddToVirtual,
   openUploadToRemote,
   setGridLayout,
@@ -316,9 +313,8 @@ function onVirtualKeys(ev: KeyboardEvent) {
     const refs = sel.filter((f) => f.is_ref && !f.is_dir);
     if (ev.key === 'Delete' && inVirtual && refs.length) {
       ev.preventDefault();
-      if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length))) {
-        removeSelectedVirtualRefs();
-      }
+      void askConfirm({ title: i18n.tn('virtual.delete_refs_confirm', refs.length) })
+        .then((ok) => { if (ok) removeSelectedVirtualRefs(); });
       return;
     }
     if (mod && ev.key.toLowerCase() === 'x' && inVirtual && refs.length) {
@@ -333,9 +329,8 @@ function onVirtualKeys(ev: KeyboardEvent) {
   if (ev.key === 'Delete' && target) {
     if (target.is_ref) {
       ev.preventDefault();
-      if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(target) }))) {
-        removeVirtualRefs(target);
-      }
+      void askConfirm({ title: i18n.t('virtual.delete_ref_confirm', { name: displayName(target) }) })
+        .then((ok) => { if (ok) removeVirtualRefs(target); });
     } else if (target.is_dir) {
       ev.preventDefault();
       confirmRemoveFolder(target);
@@ -432,7 +427,7 @@ function fmtDur(secs) {
 /** 当前打开的是不是 Telegram 位置。
  *
  * 用来决定「目录」该显示成什么：Telegram 的根目录列出的是对话，
- * 不是文件夹。与 hasLocalSession 同一个判据来源（位置的 kind）。
+ * 不是文件夹。与 PlaceList 的 hasLocalSession 同一个判据来源（位置的 kind）。
  */
 const isTelegram = computed(
   () => state.remotePlaces.find((p) => p.id === state.remotePlace)?.kind === 'telegram',
@@ -449,91 +444,6 @@ const canForwardSelectedFiles = computed(() => {
   const all = selectedRemoteEntries();
   return inTelegramConversation.value && all.length > 0 && selectedTelegramFiles.value.length === all.length;
 });
-
-/** 这个位置有没有「本机登录态」这回事。
- *
- * 只有 Telegram 才分得出「摘掉位置」与「删掉登录态」；WebDAV 的凭据跟着
- * 位置配置走，摘掉就没了，给它一个「删除账号」纯属多余且会让人误解。 */
-function hasLocalSession(p) {
-  return p.kind === 'telegram';
-}
-
-async function remove(p) {
-  // 原本这里不做确认（只删注册信息、不碰云端文件）。多账号之后它与
-  // 「删除账号」并排出现，点错的代价不对称，所以也确认一次，并顺便说清
-  // 登录态和永久缓存都还在——否则用户以为摘掉位置就干净了
-  if (hasLocalSession(p)) {
-    if (!window.confirm(i18n.t('rplace.detach_confirm', { name: p.name }))) return;
-    await detachTelegramPlace(p.id);
-    return;
-  }
-  await removeRemotePlace(p.id);
-}
-
-/** 删除账号：连本机登录态一起清掉，下次要重新扫码或导入 tdata。 */
-async function deleteAccount(p) {
-  if (!window.confirm(i18n.t('rplace.delete_account_confirm', { name: p.name }))) return;
-  await deleteTelegramAccount(p.id);
-}
-
-/** 改本机显示名。两个账号昵称相同时，这是唯一能分辨它们的办法。 */
-async function rename(p) {
-  const next = window.prompt(i18n.t('rplace.rename_prompt', { name: p.name }), p.name);
-  if (next === null) return;
-  await renameTelegramPlace(p.id, next);
-}
-
-/* ---- 移动端位置列表：整行单击进入，其余操作收进底部弹层 ----
- *
- * 桌面行尾并排四个按钮（进入/改名/移除/删除账号），在手机上每个只剩
- * 二十来像素宽，而且「移除」与「删除账号」紧挨着，误触代价很大。手机上
- * 只留一个「更多」按钮，弹层里逐项写明后果（与侧栏右键菜单同一套文案）。 */
-const placeMenu = ref<{ place: any; x: number; y: number } | null>(null);
-
-const placeMenuItems = computed(() => {
-  const p = placeMenu.value?.place;
-  if (!p) return [];
-  const tg = hasLocalSession(p);
-  const items: any[] = [{ key: 'open', label: i18n.t('rplace.enter'), icon: 'folder-open' }];
-  if (tg) items.push({ key: 'rename', label: i18n.t('rplace.rename'), icon: 'pencil' });
-  items.push({ key: 'sep' });
-  items.push({
-    key: 'detach',
-    label: tg ? i18n.t('rplace.detach') : i18n.t('rplace.remove'),
-    icon: 'minus',
-    note: tg ? i18n.t('rplace.detach_note') : undefined,
-  });
-  if (tg) {
-    items.push({
-      key: 'delacct',
-      label: i18n.t('rplace.delete_account'),
-      icon: 'trash',
-      danger: true,
-      note: i18n.t('rplace.delete_account_note'),
-    });
-  }
-  return items;
-});
-
-function openPlaceMenu(p, ev: MouseEvent) {
-  placeMenu.value = { place: p, x: ev.clientX, y: ev.clientY };
-}
-
-async function onPlaceMenuPick(key: string) {
-  const p = placeMenu.value?.place;
-  placeMenu.value = null;
-  if (!p) return;
-  if (key === 'open') await open(p);
-  else if (key === 'rename') await rename(p);
-  else if (key === 'detach') await remove(p);
-  else if (key === 'delacct') await deleteAccount(p);
-}
-
-/** 位置行的单击：移动端直接进入（触屏没有双击），桌面不响应——
- *  桌面靠双击或行尾的「进入」按钮，单击进入会让人在想改名时误入。 */
-function onPlaceRowClick(p) {
-  if (isMobile.value) void open(p);
-}
 
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
 function onEntryClick(f, ev?) {
@@ -942,7 +852,7 @@ async function onMenuPick(key) {
   } else if (key === 'vpaste') {
     await pasteInto(f);
   } else if (key === 'vdelete-ref') {
-    if (window.confirm(i18n.t('virtual.delete_ref_confirm', { name: displayName(f) }))) {
+    if (await askConfirm({ title: i18n.t('virtual.delete_ref_confirm', { name: displayName(f) }) })) {
       await removeVirtualRefs(f);
     }
   } else if (key === 'vrename-folder') {
@@ -968,14 +878,14 @@ function forwardSelectedMessages() {
 async function onBatchDelete() {
   const refs = selectedRemoteEntries().filter((f) => f.is_ref && !f.is_dir);
   if (!refs.length) return;
-  if (window.confirm(i18n.tn('virtual.delete_refs_confirm', refs.length, { n: refs.length }))) {
+  if (await askConfirm({ title: i18n.tn('virtual.delete_refs_confirm', refs.length, { n: refs.length }) })) {
     await removeSelectedVirtualRefs();
   }
 }
 
 /** 删除虚拟文件夹前确认；删除后后端返回一并移除的引用条数。 */
 async function confirmRemoveFolder(f) {
-  if (!window.confirm(i18n.t('virtual.delete_folder_confirm', { name: displayName(f) }))) return;
+  if (!(await askConfirm({ title: i18n.t('virtual.delete_folder_confirm', { name: displayName(f) }) }))) return;
   await removeVirtualFolder(f.id);
 }
 
@@ -1236,13 +1146,6 @@ async function openFromMessage(m: MessageRow) {
   );
 }
 
-function kindLabel(p) {
-  if (p.kind === 'nextcloud') return i18n.t('rplace.vendor_nextcloud');
-  if (p.kind === 'telegram') return i18n.t('rplace.vendor_telegram');
-  if (p.kind === 'webdav') return 'WebDAV';
-  return p.kind || '';
-}
-
 /** 状态栏那枚能力徽标。
  *
  * 读的是**有效**能力（按当前目录），不是位置级上界：同一位置里有的目录可写、
@@ -1283,7 +1186,9 @@ function rowTitle(f) {
     @places="leaveToList"
   >
   <div class="main" data-ui="place-browser">
-    <div class="crumb">
+    <!-- 手机上位置列表那一层不要这一行：标题、底栏 tab 已经写着「远程位置」，
+         「回到本地」底栏也有，这一行只是第三遍重复 -->
+    <div v-if="state.remotePlace || !isMobile" class="crumb">
       <button
         class="crumbbtn"
         :title="i18n.t('common.back')"
@@ -1370,80 +1275,7 @@ function rowTitle(f) {
 
     <div class="content" ref="contentEl" @contextmenu="onBlankContext">
       <!-- 一、位置列表 -->
-      <div v-if="!state.remotePlace" class="list anim-in">
-        <div v-if="!state.remotePlaces.length" class="empty">
-          <div class="icon" aria-hidden="true"><AppIcon name="cloud" /></div>
-          <div class="title">{{ i18n.t('rplace.empty') }}</div>
-          <div class="sub">{{ i18n.t('rplace.empty_hint') }}</div>
-          <button class="btn primary" style="margin-top: 12px" @click="$emit('new-remote')">
-            {{ i18n.t('rplace.new') }}
-          </button>
-        </div>
-
-        <div
-          v-for="(p, pi) in state.remotePlaces"
-          :key="p.id"
-          class="lrow placerow"
-          :class="{ mob: isMobile }"
-          :style="{ '--i': pi }"
-          tabindex="0"
-          @click="onPlaceRowClick(p)"
-          @dblclick="open(p)"
-          @keydown.enter.prevent="open(p)"
-        >
-          <span class="placeic" :class="'k-' + p.kind"><AppIcon :name="p.kind === 'telegram' ? 'send' : 'cloud'" /></span>
-          <span class="placetext">
-            <span class="nm">{{ p.name }}</span>
-            <span v-if="isMobile" class="placesub">{{ kindLabel(p) }}<template v-if="p.encrypted"> · <AppIcon :name="p.unlocked ? 'unlock' : 'lock'" :size="12" /></template></span>
-          </span>
-          <span v-if="!isMobile" class="tg">{{ kindLabel(p) }}</span>
-          <!-- 移动端：只留一个「更多」，操作进底部弹层（理由见 placeMenu） -->
-          <span v-if="isMobile" class="rowactions">
-            <button
-              class="iconbtn"
-              :data-pb-more="p.id"
-              :aria-label="i18n.t('rplace.menu_open')"
-              @click.stop="openPlaceMenu(p, $event)"
-            >
-              <AppIcon name="more" />
-            </button>
-          </span>
-          <span v-else class="rowactions">
-            <button class="btn small" :data-pb-enter="p.id" @click.stop="open(p)">
-              {{ i18n.t('rplace.enter') }}
-            </button>
-            <button
-              v-if="hasLocalSession(p)"
-              class="iconbtn"
-              :data-pb-rename="p.id"
-              :aria-label="i18n.t('rplace.rename')"
-              :title="i18n.t('rplace.rename')"
-              @click.stop="rename(p)"
-            >
-              <AppIcon name="pencil" />
-            </button>
-            <button
-              class="iconbtn"
-              :data-pb-detach="p.id"
-              :aria-label="hasLocalSession(p) ? i18n.t('rplace.detach') : i18n.t('rplace.remove')"
-              :title="hasLocalSession(p) ? i18n.t('rplace.detach') : i18n.t('rplace.remove')"
-              @click.stop="remove(p)"
-            >
-              <AppIcon name="close" />
-            </button>
-            <button
-              v-if="hasLocalSession(p)"
-              class="iconbtn danger"
-              :data-pb-delacct="p.id"
-              :aria-label="i18n.t('rplace.delete_account')"
-              :title="i18n.t('rplace.delete_account')"
-              @click.stop="deleteAccount(p)"
-            >
-              <AppIcon name="trash" />
-            </button>
-          </span>
-        </div>
-      </div>
+      <PlaceList v-if="!state.remotePlace" @open="open" @new-remote="$emit('new-remote')" />
 
       <!-- 二、某个位置的目录浏览 -->
       <template v-else>
@@ -1864,7 +1696,7 @@ function rowTitle(f) {
       </template>
     </div>
 
-    <div class="statusbar">
+    <div v-if="state.remotePlace || !isMobile" class="statusbar">
       <span v-if="state.remotePlace">
         <AppIcon name="cloud" /> {{ currentPlace?.name }}
       </span>
@@ -1907,17 +1739,6 @@ function rowTitle(f) {
         :y="blankMenu.y"
         @pick="onBlankMenuPick"
         @close="blankMenu = null"
-      />
-    </Transition>
-    <Transition name="menu">
-      <ContextMenu
-        v-if="placeMenu"
-        :items="placeMenuItems"
-        :x="placeMenu.x"
-        :y="placeMenu.y"
-        :title="placeMenu.place.name"
-        @pick="onPlaceMenuPick"
-        @close="placeMenu = null"
       />
     </Transition>
   </div>
@@ -2181,39 +2002,6 @@ function rowTitle(f) {
   color: var(--fg);
 }
 
-/* 位置行：让操作按钮靠右排成一组 */
-.placerow {
-  cursor: pointer;
-}
-/* 位置图标放进一个色块：桌面上与普通列表行对齐（20px 方块内），
-   手机上放大成 44px 圆角块（见 mobile.css） */
-.placeic {
-  width: 24px;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg2);
-}
-.placetext {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.placesub {
-  font-size: 12px;
-  color: var(--fg2);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-/* 删除账号不可撤销，要和旁边的「移除」在视觉上区分开——
-   两个相邻的灰图标，点错的代价却差很远 */
-.iconbtn.danger:hover {
-  background: #fee2e2;
-  border-color: #fca5a5;
-}
 /* 搜索栏吸顶：往下滚动后搜索框与媒体 tabs 仍常驻可见。
    用与内容区左右 padding 等大的负 margin 横向铺满吸顶条、再用 padding 把内部
    内容顶回原对齐——这样背景能盖住从下方划过去的列表，而输入框/tabs 位置不变。
@@ -2269,25 +2057,8 @@ function rowTitle(f) {
   border-radius: 50%;
   animation: pb-spin 0.6s linear infinite;
 }
-.rowactions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.rowactions .btn {
-  padding: 3px 10px;
-  font-size: 12px;
-  min-height: 30px;
-}
 
-/* 窄屏抬到触控下限。同一行里的图标钮已经是 44，只有「进入」是 30，
-   既按不准也显得高度不齐。这条要写在这里而不是全局 app.css：
-   `.rowactions .btn` 特异性更高，全局那条压不住它。 */
-@media (max-width: 768px) {
-  .rowactions .btn {
-    min-height: 44px;
-  }
+@media (--mobile) {
   /* 工具条窄屏分层：五分栏 + 文件/消息 + 搜索模式 + 转圈一行放不下，
      必然换行错乱或溢出（用户点名「分栏多」担心的就是这个）。
      所以窄屏让 .searchbar 换行，各控件分层，且五分栏独占一行横向可滚——

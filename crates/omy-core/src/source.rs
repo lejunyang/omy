@@ -320,6 +320,77 @@ pub fn read_source_range<S: BlockSource + ?Sized>(
     )
 }
 
+/// 把整个明文按窗口解密并交给 `sink`，内存占用与文件大小无关。
+///
+/// 原来还原文件要先把整个密文读进内存、再整份解密成明文，峰值是文件大小的
+/// 两倍以上——几 GB 的视频在手机上直接被系统杀掉。这里每次只解一个窗口
+/// （块大小的整数倍，约 [`crate::unpack::STREAM_WINDOW`]），边解边交给调用方
+/// 写盘，并在末尾校验头部记录的内容哈希（与 `decrypt_all` 同一保证）。
+///
+/// `progress(done, total)` 按明文字节回报。返回写出的明文字节数。
+///
+/// # Errors
+///
+/// 读取、块认证、内容哈希校验失败，或 `sink` 报错时返回。哈希不匹配时
+/// `sink` 已经收到了全部数据，调用方必须丢弃产物（原子写入时不要提交）。
+pub fn decrypt_to_sink<S: BlockSource + ?Sized>(
+    src: &S,
+    opened: &OpenedFile,
+    sink: &mut dyn FnMut(&[u8]) -> Result<()>,
+    mut progress: Option<crate::payload::ProgressFn<'_>>,
+) -> Result<u64> {
+    use blake2::digest::{Digest, consts::U32};
+
+    let total = opened.header.plaintext_size;
+    let chunk = u64::from(opened.header.chunk_size).max(1);
+    // 窗口取块大小的整数倍：跨块边界的窗口会让同一块被解密两次
+    let window = crate::unpack::STREAM_WINDOW
+        .checked_div(chunk)
+        .unwrap_or(1)
+        .max(1)
+        .saturating_mul(chunk);
+    let index: Option<Vec<CompressionIndexEntry>> =
+        if src.header().has_flag(crate::header::flags::COMPRESSED) {
+            Some(opened.compression_index()?)
+        } else {
+            None
+        };
+    let mut hasher = blake2::Blake2b::<U32>::new();
+    let mut done = 0u64;
+    while done < total {
+        let n = total.saturating_sub(done).min(window);
+        let plain = read_range(
+            src.header(),
+            opened.payload_key(),
+            index.as_deref(),
+            done,
+            n,
+            |ct_off, ct_len| src.read_ct(ct_off, ct_len),
+        )?;
+        if plain.len() as u64 != n {
+            return Err(Error::Truncated {
+                context: "payload",
+                need: usize::try_from(n).unwrap_or(usize::MAX),
+                got: plain.len(),
+            });
+        }
+        hasher.update(&plain);
+        sink(&plain)?;
+        done = done.saturating_add(n);
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(done, total);
+        }
+    }
+    if let Ok(expected) = opened.stored_content_hash() {
+        use subtle::ConstantTimeEq;
+        let actual: [u8; 32] = hasher.finalize().into();
+        if !bool::from(actual.ct_eq(&expected)) {
+            return Err(Error::ContentHashMismatch);
+        }
+    }
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +504,26 @@ mod tests {
         let (bytes, _) = make(b"x", false);
         let src = MemorySource::new(&bytes).unwrap();
         assert_eq!(src.describe(), "memory");
+    }
+
+    /// 流式解密的结果必须与整份解密逐字节相同，跨多个窗口、压缩与否都一样。
+    ///
+    /// 不这样会怎样：窗口拼接错一位，还原出来的大文件就是坏的，而小文件
+    /// （单窗口）测不出来——所以这里用远大于窗口的数据。
+    #[test]
+    fn decrypt_to_sink_matches_decrypt_all() -> Result<()> {
+        let big: Vec<u8> = (0..(crate::unpack::STREAM_WINDOW as usize * 2 + 12_345))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        for compress in [false, true] {
+            let (file, kek) = make(&big, compress);
+            let opened = open(&file, &[kek])?;
+            let src = MemorySource::new(&file)?;
+            let mut out = Vec::new();
+            let n = decrypt_to_sink(&src, &opened, &mut |b| { out.extend_from_slice(b); Ok(()) }, None)?;
+            assert_eq!(n as usize, big.len());
+            assert_eq!(out, opened.decrypt_all(&file)?, "compress={compress}");
+        }
+        Ok(())
     }
 }

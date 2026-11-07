@@ -127,9 +127,11 @@ could not execute process ... (never executed)
 
 ## 响应式与移动端
 
-断点 768px 同时写在 `frontend/src/styles/app.css` 的 `@media` 和
-`frontend/src/viewport.js` 的 `MOBILE_MAX`，**改一处必须改两处**。
-两边不一致会产生最难查的状态：界面已经是移动版，但交互还是桌面版。
+断点 768px 只定义在 `frontend/src/breakpoint.ts` 的 `MOBILE_MAX`。样式里
+一律写 `@media (--mobile)`，构建时由 `vite.config.ts` 挂的插件展开；
+`viewport.ts` 的 `matchMedia` 用同一个字符串。**不要再手写
+`max-width: 768px`**（`breakpoint.test.ts` 会拦）。CSS 与 JS 一旦不一致
+会产生最难查的状态：界面已经是移动版，但交互还是桌面版。
 
 **只做 CSS 适配是不够的**。桌面靠 `dblclick` 打开条目，触屏上没有
 双击这个手势——移动 WebView 要么不触发，要么当成双击缩放吃掉。

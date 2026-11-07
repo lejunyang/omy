@@ -194,7 +194,7 @@ fn read_tree_slots(root: &Path, password: &str) -> CmdResult<SlotList> {
     let Some(sample) = omy_core::tree::find_any_file(root) else {
         return Err(CmdError::code("not_encrypted_tree"));
     };
-    let data = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let data = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&data).map_err(|_| CmdError::code("not_omy_file"))?;
     let kek = derive(password, &header.vault_salt, header.argon2_params())?;
 
@@ -223,7 +223,7 @@ fn read_slots(_state: &Shared, req: &SlotQuery) -> CmdResult<SlotList> {
     if path.is_dir() {
         return read_tree_slots(path, &req.password);
     }
-    let data = std::fs::read(path).map_err(|e| match e.kind() {
+    let data = omy_core::scan::read_header_area(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CmdError::code("file_not_found"),
         _ => CmdError::code("io_error"),
     })?;
@@ -582,7 +582,7 @@ fn run_tree(
     // 目录没有头部，从树里任意一个密文文件取 vault_salt 与 KDF 参数。
     // 同一个 vault 内它们本就一致，所以 Argon2 只需派生一次
     let sample = omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_a_tree"))?;
-    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let head = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
     let params = header.argon2_params();
 
@@ -774,7 +774,7 @@ fn run_retry(
     // 参数来自 vault 里任意一个文件，与 run_tree 同一套做法
     let sample =
         omy_core::tree::find_any_file(&root).ok_or_else(|| CmdError::code("not_a_tree"))?;
-    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let head = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
     let params = header.argon2_params();
 
@@ -785,7 +785,7 @@ fn run_retry(
     // 尽早验密码，但要拿**失败的那些文件之一**来验，不能用样本文件：
     // 样本很可能已经改成新密码了，用它验会把正确的旧密码判成错的
     let first = files.first().ok_or_else(|| CmdError::code("nothing_to_retry"))?;
-    let probe = std::fs::read(first).map_err(|_| CmdError::code("io_error"))?;
+    let probe = omy_core::scan::read_header_area(first).map_err(|_| CmdError::code("io_error"))?;
     omy_core::file::open(&probe, &[current.duplicate()]).map_err(map_core_err)?;
 
     let changing = !req.next.is_empty();
@@ -1218,7 +1218,7 @@ fn run_recovery_tree(
 ) -> CmdResult<RecoveryOutcome> {
     let sample =
         omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_encrypted_tree"))?;
-    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let head = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
     let params = header.argon2_params();
     let current = derive(&req.current, &header.vault_salt, params)?;
@@ -1270,7 +1270,7 @@ fn run_restore_tree(
 ) -> CmdResult<RestoreOutcome> {
     let sample =
         omy_core::tree::find_any_file(path).ok_or_else(|| CmdError::code("not_encrypted_tree"))?;
-    let head = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    let head = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&head).map_err(map_core_err)?;
 
     let code = omy_core::recovery::RecoveryCode::from_phrase(&req.code).map_err(|e| {

@@ -12,16 +12,16 @@
  * # 断点取 768px
  *
  * 与文档 08 的「移动端：单栏 + 底部导航」一致：横屏手机与竖屏平板
- * 在 768 以上仍放得下侧栏。这个值同时用于 CSS 与 JS，改的时候
- * **两处都要改**（另一处在 styles/app.css 的 @media 块）。
+ * 在 768 以上仍放得下侧栏。数值只定义在 breakpoint.ts：样式里写
+ * `@media (--mobile)`，构建时展开成同一个媒体查询，CSS 与 JS 不会分叉。
  */
 
 import { ref, readonly } from 'vue';
+import { MOBILE_MAX, MOBILE_MEDIA } from './breakpoint';
 
-/** 移动端断点，单位 px。与 app.css 中的 @media 保持一致。 */
-export const MOBILE_MAX = 768;
+export { MOBILE_MAX };
 
-const mq = window.matchMedia(`(max-width: ${MOBILE_MAX}px)`);
+const mq = window.matchMedia(MOBILE_MEDIA);
 const mobile = ref(mq.matches);
 
 // 监听而不是只读一次：Android 上转屏会改变宽度，桌面窗口也能拖动。

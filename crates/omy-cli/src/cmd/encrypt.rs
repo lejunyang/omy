@@ -20,7 +20,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::Args as ClapArgs;
 use omy_core::pack::SkipReason;
 use omy_core::crypto::Kek;
-use omy_core::file::{EncryptOptions, RandomMaterial, encrypt_with_progress};
+use omy_core::file::{EncryptOptions, RandomMaterial};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -418,24 +418,25 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             continue;
         }
 
-        let (plaintext, folder_index, name) = if meta.is_dir() {
+        // 全程流式：明文从磁盘按块读、密文按块写进原子写的临时文件，内存占用
+        // 与文件大小无关。原来单文件整个读进内存、目录把所有文件拼成一个内存
+        // 载荷，再在内存里拼出整个密文，几 GB 的输入峰值是文件大小的两倍以上。
+        let plan = if meta.is_dir() {
             match a.mode {
-                DirMode::Container => {
-                    let (p, idx, n) = build_container(ctx, p)?;
-                    (p, Some(idx), n)
-                }
+                DirMode::Container => Some(build_container(ctx, p)?),
                 // 上面已经 continue 掉了，这里不可能到达。
                 // 写 unreachable 而不是重复一遍逻辑：两处实现迟早分歧
                 DirMode::Tree => unreachable!("tree 模式已在上面处理"),
             }
         } else {
-            let data = std::fs::read(p)
-                .with_context(|| format!("读取 {} 失败", p.display()))?;
-            let n = p
+            None
+        };
+        let name = match &plan {
+            Some(pl) => pl.root_name.clone(),
+            None => p
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| String::from("unnamed"));
-            (data, None, n)
+                .unwrap_or_else(|| String::from("unnamed")),
         };
 
         let out_path = resolve_output(p, a, meta.is_dir())?;
@@ -445,18 +446,22 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
         // 只对**单文件**做：容器模式的载荷是多个文件拼接，
         // 整体探测毫无意义（会把第一个文件的头当成整体格式）。
         //
-        // prepare 不返回 Err——媒体附加信息全是优化项，
-        // 任何一步失败都只降级并记警告，绝不阻断加密。
-        let prepared = if folder_index.is_some() {
+        // prepare_file 不返回 Err——媒体附加信息全是优化项，任何一步失败都只
+        // 降级并记警告，绝不阻断加密；对大文件只读有限的前缀与 moov。
+        let prepared = if plan.is_some() {
             omy_media::Prepared::default()
         } else {
-            omy_media::prepare(&plaintext, &prep_opts)
+            omy_media::prepare_file(p, &prep_opts)
         };
         // 警告要让用户看见，否则"为什么没有缩略图"无从排查
         for w in &prepared.warnings {
             ctx.out.warn(w);
         }
 
+        let folder_placeholder = match &plan {
+            Some(pl) => Some(pl.placeholder_index().context("构造容器索引失败")?),
+            None => None,
+        };
         let opts = EncryptOptions {
             filename: match name_mode {
                 NameMode::Plain => None,
@@ -472,56 +477,81 @@ pub fn run(ctx: &Ctx<'_>, a: &Args) -> Result<()> {
             thumbnail: prepared.thumbnail.clone(),
             media_meta: prepared.media_meta.clone(),
             moov_cache: prepared.moov_cache.clone(),
-            folder_index: folder_index.clone(),
+            folder_index: folder_placeholder,
             slot_directory: slot_dir.clone(),
         };
 
+        let plain_len = match &plan {
+            Some(pl) => pl.total_size,
+            None => meta.len(),
+        };
         // 进度条按**明文**字节走。回调在加密线程内同步调用，
         // 所以里面只做一次 set_position——indicatif 自己会限流重绘，
         // 在这里再加判断反而会让进度条卡顿。
-        let bar = Progress::new(
-            ctx.out.wants_progress(),
-            plaintext.len() as u64,
-            &format!("加密 {}", name),
-        );
-        let enc = {
+        let bar = Progress::new(ctx.out.wants_progress(), plain_len, &format!("加密 {}", name));
+        let mut writer = omy_core::fsatomic::AtomicWriter::create(&out_path)?;
+        let streamed = {
             let mut cb = |done: u64, _total: u64| bar.set(done);
-            encrypt_with_progress(
-                &plaintext,
-                &keks,
-                &vault_salt,
-                &opts,
-                &RandomMaterial::generate(),
-                Some(&mut cb),
-            )?
+            match &plan {
+                Some(pl) => {
+                    let mut reader = pl.reader();
+                    let hashes = reader.hashes();
+                    omy_core::file::encrypt_stream(
+                        &mut reader,
+                        plain_len,
+                        &keks,
+                        &vault_salt,
+                        &opts,
+                        &RandomMaterial::generate(),
+                        &mut writer,
+                        Some(&mut cb),
+                        Some(&mut || Ok(pl.finish(&hashes.borrow())?.encode())),
+                    )?
+                }
+                None => {
+                    let f = std::fs::File::open(p)
+                        .with_context(|| format!("读取 {} 失败", p.display()))?;
+                    let mut input = std::io::BufReader::with_capacity(1 << 20, f);
+                    omy_core::file::encrypt_stream(
+                        &mut input,
+                        plain_len,
+                        &keks,
+                        &vault_salt,
+                        &opts,
+                        &RandomMaterial::generate(),
+                        &mut writer,
+                        Some(&mut cb),
+                        None,
+                    )?
+                }
+            }
         };
+        writer.commit()?;
         // 必须在打印结果之前清掉，否则进度条残留会和成功信息挤在一行
         bar.finish();
 
-        omy_core::fsatomic::write_atomic(&out_path, &enc.bytes)?;
-
-        total_in += plaintext.len() as u64;
-        total_out += enc.bytes.len() as u64;
+        total_in += plain_len;
+        total_out += streamed.len;
 
         ctx.out.success(&format!(
             "{} {} → {}（{} → {}）",
             t("ok.encrypted"),
             p.display(),
             out_path.display(),
-            human_bytes(plaintext.len() as u64),
-            human_bytes(enc.bytes.len() as u64)
+            human_bytes(plain_len),
+            human_bytes(streamed.len)
         ));
 
         results.push(json!({
             "input": p.display().to_string(),
             "output": out_path.display().to_string(),
-            "plaintext_size": plaintext.len(),
-            "encrypted_size": enc.bytes.len(),
+            "plaintext_size": plain_len,
+            "encrypted_size": streamed.len,
         }));
 
         // 处置原文件前先校验加密产物可解密——绝不能先删后验
         if original.needs_confirm() {
-            verify_then_handle(ctx, p, &enc.bytes, &keks, original)?;
+            verify_then_handle(ctx, p, &out_path, &keks, original)?;
         }
     }
 
@@ -809,45 +839,43 @@ fn skip_why(reason: SkipReason) -> &'static str {
 /// 两个入口必须产出**完全一样**的容器。这里只负责把结果讲给用户听。
 ///
 /// 返回 `(载荷字节, 索引编码, 根目录名)`。
-fn build_container(ctx: &Ctx<'_>, root: &Path) -> Result<(Vec<u8>, Vec<u8>, String)> {
-    let mut on_file = |name: &str, size: u64| {
-        ctx.out.trace(&format!("  文件 {} （{}）", name, human_bytes(size)));
-    };
-
-    let packed = omy_core::pack::pack_folder(root, Some(&mut on_file))
+fn build_container(ctx: &Ctx<'_>, root: &Path) -> Result<omy_core::pack::PackPlan> {
+    // 只规划（遍历取大小），内容在加密时按块流式读取
+    let plan = omy_core::pack::plan_folder(root)
         .with_context(|| format!("打包 {} 失败", root.display()))?;
 
     // 跳过的条目必须逐条报出来。静默丢弃最坏的后果是：用户以为整个
     // 目录都加密了，删掉原件，解密时才发现少东西
-    for sk in &packed.skipped {
+    for sk in &plan.skipped {
         ctx.out.warn(&format!("跳过 {}：{}", sk.path, skip_why(sk.reason)));
     }
 
-    if packed.index.entries.len() > omy_core::container::RECOMMENDED_MAX_ENTRIES {
+    let entries = plan.file_count + plan.dir_count + plan.link_count;
+    if entries > omy_core::container::RECOMMENDED_MAX_ENTRIES {
         ctx.out.warn(&format!(
             "容器含 {} 个条目，超过建议上限 {}。\n\
              大容器修改任一文件都需重写整包，建议改用 --mode tree。",
-            packed.index.entries.len(),
+            entries,
             omy_core::container::RECOMMENDED_MAX_ENTRIES
         ));
     }
 
     // 链接数只在真有链接时才说。绝大多数目录不含链接，无条件加一句
     // 「0 个符号链接」只是噪音，还会让人以为这里有什么要注意的
-    let links = if packed.link_count > 0 {
-        format!("、{} 个符号链接", packed.link_count)
+    let links = if plan.link_count > 0 {
+        format!("、{} 个符号链接", plan.link_count)
     } else {
         String::new()
     };
     ctx.out.detail(&format!(
         "容器：{} 个文件、{} 个目录{}，载荷 {}",
-        packed.file_count,
-        packed.dir_count,
+        plan.file_count,
+        plan.dir_count,
         links,
-        human_bytes(packed.payload.len() as u64)
+        human_bytes(plan.total_size)
     ));
 
-    Ok((packed.payload, packed.index.encode(), packed.root_name))
+    Ok(plan)
 }
 
 /// 决定输出路径。
@@ -884,7 +912,7 @@ fn resolve_output(input: &Path, a: &Args, is_dir: bool) -> Result<PathBuf> {
 fn verify_then_handle(
     ctx: &Ctx<'_>,
     orig: &Path,
-    enc: &[u8],
+    enc: &Path,
     keks: &[Kek],
     action: OriginalAction,
 ) -> Result<()> {
@@ -900,10 +928,7 @@ fn verify_then_handle(
     }
 
     // 真解密一次并比对内容，而不是只检查文件存在
-    let opened = omy_core::file::open(enc, keks)?;
-    let plain = opened.decrypt_all(enc)?;
-    let disk = std::fs::read(orig)?;
-    if plain != disk {
+    if !verify_against_original(enc, orig, keks)? {
         bail!(
             "校验失败：解密结果与原文件不一致，已跳过处置 {}",
             orig.display()
@@ -929,6 +954,61 @@ fn verify_then_handle(
         OriginalAction::Keep => {}
     }
     Ok(())
+}
+
+/// 从磁盘上的加密产物流式解密，逐段与原件比对。返回是否一致。
+///
+/// 原来把产物与原件都整个读进内存再比较，而且对目录（容器模式）直接
+/// `std::fs::read` 目录本身——必然失败，`--original delete` 加密文件夹后
+/// 删原件这条路因此从来走不通。现在：
+/// - 单文件：解密流与原件按段比对，内存占用与大小无关；
+/// - 容器：先全量校验（块认证 + 内容哈希），再按索引逐个文件把磁盘上的原件
+///   重新算哈希，与索引里的逐文件哈希比对。
+fn verify_against_original(enc: &Path, orig: &Path, keks: &[Kek]) -> Result<bool> {
+    use std::io::Read as _;
+    let head = omy_core::scan::read_header_area(enc)?;
+    let opened = omy_core::file::open(&head, keks)?;
+    let src = omy_core::source::LocalFileSource::open(enc)?;
+
+    if opened.is_container() {
+        omy_core::source::decrypt_to_sink(&src, &opened, &mut |_| Ok(()), None)?;
+        let idx = opened.folder_index()?;
+        for e in &idx.entries {
+            if e.kind != omy_core::container::EntryKind::File {
+                continue;
+            }
+            let Some(expect) = e.hash else { return Ok(false) };
+            let disk = e.path.iter().fold(orig.to_path_buf(), |acc, c| acc.join(c));
+            let f = std::fs::File::open(&disk)
+                .with_context(|| format!("读取 {} 失败", disk.display()))?;
+            if omy_core::util::blake2b_256_reader(f)? != expect {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+
+    let mut disk = std::io::BufReader::new(std::fs::File::open(orig)?);
+    let mut same = true;
+    let mut cmp = vec![0u8; 0];
+    omy_core::source::decrypt_to_sink(
+        &src,
+        &opened,
+        &mut |plain| {
+            cmp.resize(plain.len(), 0);
+            if disk.read_exact(&mut cmp).is_err() || cmp != plain {
+                same = false;
+            }
+            Ok(())
+        },
+        None,
+    )?;
+    // 原件比解密结果长同样算不一致
+    let mut extra = [0u8; 1];
+    if disk.read(&mut extra)? != 0 {
+        same = false;
+    }
+    Ok(same)
 }
 
 /// 从已有的 omy 文件读出 vault salt 与 KDF 参数，用于 `--vault`。
@@ -1004,12 +1084,6 @@ fn read_vault_params(p: &Path) -> Result<([u8; 16], omy_core::crypto::Argon2Para
 }
 /// 只读文件开头的头部区域。
 fn read_header_prefix(p: &Path) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut f = std::fs::File::open(p).with_context(|| format!("无法打开 {}", p.display()))?;
-    // 4 KiB 足够覆盖固定头与 slot 区；TLV 区可能更长，
-    // 但 peek_header 只需要固定头
-    let mut buf = vec![0u8; 4096];
-    let got = f.read(&mut buf)?;
-    buf.truncate(got);
-    Ok(buf)
+    // 4 KiB 足够覆盖固定头与 slot 区；peek_header 只需要固定头
+    omy_core::scan::read_prefix(p, 4096).with_context(|| format!("无法打开 {}", p.display()))
 }

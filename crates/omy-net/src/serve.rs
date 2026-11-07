@@ -150,15 +150,7 @@ impl Share {
 
     /// 读文件头判断是不是 omy 文件。**不需要密钥。**
     fn looks_like_omy(p: &Path) -> bool {
-        use std::io::Read as _;
-        let Ok(mut f) = std::fs::File::open(p) else {
-            return false;
-        };
-        let mut head = [0u8; 64];
-        let Ok(n) = f.read(&mut head) else {
-            return false;
-        };
-        head.get(..n).is_some_and(omy_core::file::is_omy_file)
+        omy_core::scan::read_prefix(p, 64).is_ok_and(|b| omy_core::file::is_omy_file(&b))
     }
 
     /// 生成一个随机 handle。

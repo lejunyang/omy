@@ -23,7 +23,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { isAndroid, registerMobileBack } from '../mobile-platform';
-import { theme, setTheme } from '../theme';
+import { setAccent, setTheme } from '../theme';
+import AccentPicker from './AccentPicker.vue';
 import * as api from '../api';
 import { state, setNotice, reloadRemotePlaces } from '../store';
 
@@ -221,7 +222,8 @@ onMounted(async () => {
  * 那时已经无从判断是哪一步出的问题。
  */
 async function save() {
-  if (!cfg.value) return;
+  // 配置没读出来就没有可保存的内容：放行，否则设置页关不掉、底栏也走不了
+  if (!cfg.value) return true;
   try {
     await api.configSet(cfg.value);
     // 缓存上限/目录改了要让运行中的后端立刻换缓存实例，否则要等重启；
@@ -267,10 +269,67 @@ function onTheme(v) {
   setTheme(v);
 }
 
-/** 字节数转可读文本。 */
-function fmtBytes(n) {
-  if (!n) return i18n.t('settings.cache_unlimited');
-  return i18n.formatSize(n);
+/** 主题色同样立即应用：色块点下去界面就该变，否则用户无从比较。 */
+function onAccent(v) {
+  cfg.value.ui.accent = v;
+  setAccent(v);
+}
+
+/** 「通用」组的几项设置。桌面在右侧面板、移动端在主列表里平铺，
+ *  两处原来各写一份模板，顺序已经不一致了；加选项时只改一边也不会有
+ *  任何检查报错。现在两处都从这里渲染。 */
+interface GeneralField {
+  /** 也是 data-sf 的取值（移动端加 m_ 前缀，探针按它定位） */
+  key: 'language' | 'theme' | 'accent' | 'view' | 'startup';
+  label: string;
+  /** 主题色用色块而不是下拉框，没有 options */
+  options: { value: string; label: string }[];
+}
+const generalFields = computed<GeneralField[]>(() => [
+  {
+    key: 'language',
+    label: 'settings.language',
+    options: [
+      { value: 'auto', label: i18n.t('settings.follow_system') },
+      // 语言名不翻译：切到看不懂的语言后，用户得能认出自己的那一项
+      { value: 'zh-CN', label: '简体中文' },
+      { value: 'en', label: 'English' },
+    ],
+  },
+  {
+    key: 'theme',
+    label: 'settings.theme',
+    options: [
+      { value: 'auto', label: i18n.t('settings.follow_system') },
+      { value: 'dark', label: i18n.t('settings.theme_dark') },
+      { value: 'light', label: i18n.t('settings.theme_light') },
+    ],
+  },
+  { key: 'accent', label: 'settings.accent', options: [] },
+  {
+    key: 'view',
+    label: 'settings.default_view',
+    options: [
+      { value: 'grid', label: i18n.t('view.grid') },
+      { value: 'list', label: i18n.t('view.list') },
+    ],
+  },
+  {
+    key: 'startup',
+    label: 'settings.startup',
+    options: [
+      { value: 'last', label: i18n.t('settings.startup_last') },
+      { value: 'home', label: i18n.t('settings.startup_home') },
+    ],
+  },
+]);
+
+/** 语言、主题、主题色要立即生效，其余只写回配置，随「保存」落盘。 */
+function setGeneral(key: GeneralField['key'], v: string) {
+  if (key === 'language') onLanguage(v);
+  else if (key === 'theme') onTheme(v);
+  else if (key === 'accent') onAccent(v);
+  else cfg.value.ui[key] = v;
 }
 
 function lockLabel(secs) {
@@ -425,8 +484,13 @@ onBeforeUnmount(unregisterBack);
  * 不清的话，下次再进设置会停在上次那个二级页，而且更要命的是——设置是个盖住
  * 整屏的模态，切走时若不显式 emit('close') 让上层关掉 showSettings，模态会一直
  * 压在文件/远程页上面，表现成「点了别的 tab 进不去」（本 bug 的根因：二级页
- * 返回后底栏点击没有一条能真正关掉设置层的路径）。 */
-function leaveTo(tab) {
+ * 返回后底栏点击没有一条能真正关掉设置层的路径）。
+ *
+ * 离开前必须先保存：底栏是手机上离开设置的主要出口（移动端没有关闭按钮），
+ * 不保存的话在这里改的自动锁定、加密默认值、默认视图全部丢失，语言和主题
+ * 当下看着生效了、重启又变回去。保存失败就留在设置页，让用户看到错误。 */
+async function leaveTo(tab) {
+  if (!(await save())) return;
   mobilePane.value = null;
   mobileStack.value = [];
   if (tab === 'files') emit('close');
@@ -563,44 +627,22 @@ async function openLogDir() {
         <div v-if="isMobile && !mobilePane" class="mlist">
           <!-- 语言/主题原本在底栏一点即切，收进设置后必须在主页一层就够得到 -->
           <div class="mgh">{{ i18n.t('settings.general') }}</div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-language">{{ i18n.t('settings.language') }}</label>
+          <div v-for="f in generalFields" :key="f.key" class="mqrow">
+            <label :id="`m-lb-${f.key}`" class="mqlb" :for="`m-set-${f.key}`">{{ i18n.t(f.label) }}</label>
+            <AccentPicker
+              v-if="f.key === 'accent'"
+              :model-value="cfg.ui.accent"
+              :labelledby="`m-lb-${f.key}`"
+              @update:model-value="setGeneral('accent', $event)"
+            />
             <select
-              id="m-set-language"
-              data-sf="m_language"
-              :value="cfg.ui.language"
-              @change="onLanguage(($event.target as HTMLInputElement).value)"
+              v-else
+              :id="`m-set-${f.key}`"
+              :data-sf="`m_${f.key}`"
+              :value="cfg.ui[f.key]"
+              @change="setGeneral(f.key, ($event.target as HTMLSelectElement).value)"
             >
-              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-              <option value="zh-CN">简体中文</option>
-              <option value="en">English</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-theme">{{ i18n.t('settings.theme') }}</label>
-            <select
-              id="m-set-theme"
-              data-sf="m_theme"
-              :value="cfg.ui.theme"
-              @change="onTheme(($event.target as HTMLInputElement).value)"
-            >
-              <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-              <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
-              <option value="light">{{ i18n.t('settings.theme_light') }}</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-view">{{ i18n.t('settings.default_view') }}</label>
-            <select id="m-set-view" data-sf="m_view" v-model="cfg.ui.view">
-              <option value="grid">{{ i18n.t('view.grid') }}</option>
-              <option value="list">{{ i18n.t('view.list') }}</option>
-            </select>
-          </div>
-          <div class="mqrow">
-            <label class="mqlb" for="m-set-startup">{{ i18n.t('settings.startup') }}</label>
-            <select id="m-set-startup" data-sf="m_startup" v-model="cfg.ui.startup">
-              <option value="last">{{ i18n.t('settings.startup_last') }}</option>
-              <option value="home">{{ i18n.t('settings.startup_home') }}</option>
+              <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </div>
 
@@ -656,6 +698,8 @@ async function openLogDir() {
             <span class="mrv">{{ aboutInfo.app_version }}</span>
             <span class="mra" aria-hidden="true">›</span>
           </button>
+          <!-- 主列表也要能看到保存失败：底栏/返回键离开时就是在这一层保存的 -->
+          <div v-if="error" class="err" data-sf="m_error">{{ error }}</div>
         </div>
 
         <!-- 内容区 -->
@@ -666,34 +710,22 @@ async function openLogDir() {
         >
           <!-- 通用 -->
           <template v-if="(isMobile ? mobilePane : pane) === 'general'">
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.language') }}</label>
-              <select data-sf="language" :value="cfg.ui.language" @change="onLanguage(($event.target as HTMLInputElement).value)">
-                <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-                <option value="zh-CN">简体中文</option>
-                <option value="en">English</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.theme') }}</label>
-              <select data-sf="theme" :value="cfg.ui.theme" @change="onTheme(($event.target as HTMLInputElement).value)">
-                <option value="auto">{{ i18n.t('settings.follow_system') }}</option>
-                <option value="dark">{{ i18n.t('settings.theme_dark') }}</option>
-                <option value="light">{{ i18n.t('settings.theme_light') }}</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.startup') }}</label>
-              <select data-sf="startup" v-model="cfg.ui.startup">
-                <option value="last">{{ i18n.t('settings.startup_last') }}</option>
-                <option value="home">{{ i18n.t('settings.startup_home') }}</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="lb">{{ i18n.t('settings.default_view') }}</label>
-              <select data-sf="view" v-model="cfg.ui.view">
-                <option value="grid">{{ i18n.t('view.grid') }}</option>
-                <option value="list">{{ i18n.t('view.list') }}</option>
+            <div v-for="f in generalFields" :key="f.key" class="row">
+              <label :id="`lb-${f.key}`" class="lb" :for="`set-${f.key}`">{{ i18n.t(f.label) }}</label>
+              <AccentPicker
+                v-if="f.key === 'accent'"
+                :model-value="cfg.ui.accent"
+                :labelledby="`lb-${f.key}`"
+                @update:model-value="setGeneral('accent', $event)"
+              />
+              <select
+                v-else
+                :id="`set-${f.key}`"
+                :data-sf="f.key"
+                :value="cfg.ui[f.key]"
+                @change="setGeneral(f.key, ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </div>
           </template>
@@ -1270,7 +1302,7 @@ async function openLogDir() {
    设置**背后**那个内容屏的（MainScreen 的 @files 是空操作），点了根本关不掉
    设置层——这正是「二级页返回后点别的 tab 进不去」的根因。改为设置自带底栏、
    直接 emit 给 App 控制 showSettings，路径唯一且可靠。盖住外层 pnav 避免双底栏。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .mask {
     background: none;
     z-index: 40;
@@ -1296,8 +1328,13 @@ async function openLogDir() {
   border-radius: 0;
   border: 0;
 }
-/* 设置自带的移动端底栏：贴底、让出安全区。与外层 pnav 同款视觉。 */
+/* 设置自带的移动端底栏：贴底、让出安全区。与外层 pnav 同款视觉。
+   必须改回文档流：它同时带着 .pnav 类，而 .pnav 是 position: fixed。
+   固定定位时它不占 flex 空间，列表铺到屏幕底、最后几行（「关于」、各二级页
+   的末尾选项）被底栏盖住，矮屏手机上根本滚不出来。 */
 .setpnav {
+  position: relative;
+  inset: auto;
   flex: none;
 }
 .seth {
@@ -1321,6 +1358,8 @@ async function openLogDir() {
   flex: 1;
   display: grid;
   grid-template-columns: 172px 1fr;
+  /* 行高钉在容器高度内：auto 行会被内容撑高，滚动容器就不再滚动 */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 .setbody.mob {
@@ -1382,6 +1421,24 @@ async function openLogDir() {
 .fld {
   flex: 1;
   min-width: 180px;
+}
+/* 手机上二级页改为上下排列：左边 130px 的标签列在 360px 宽的屏幕上只给
+   控件和说明留下一半宽度，说明文字被挤成一根竖条 */
+.setdlg.mob .row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.setdlg.mob .lb {
+  width: auto;
+  padding-top: 0;
+  font-weight: 600;
+}
+.setdlg.mob .fld {
+  min-width: 0;
+}
+.setdlg.mob .fld > select {
+  width: 100%;
 }
 .proxy-settings {
   display: flex;
@@ -1618,7 +1675,7 @@ async function openLogDir() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@media (max-width: 768px) {
+@media (--mobile) {
   .proxy-row {
     display: block;
   }

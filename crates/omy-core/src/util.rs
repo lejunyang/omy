@@ -37,6 +37,27 @@ pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
     r
 }
 
+/// 流式计算一个 `Read` 的 BLAKE2b-256，与 [`blake2b_256`] 结果相同。
+///
+/// 容器索引的逐文件哈希就是它；校验磁盘上的原件时按段读，不把整个文件读进内存。
+///
+/// # Errors
+///
+/// 读取失败时返回。
+pub fn blake2b_256_reader<R: std::io::Read>(mut r: R) -> std::io::Result<[u8; 32]> {
+    use blake2::digest::{Digest, consts::U32};
+    let mut h = blake2::Blake2b::<U32>::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(buf.get(..n).unwrap_or(&[]));
+    }
+    Ok(h.finalize().into())
+}
+
 /// 顺序读取小端序整数的游标。
 ///
 /// 每个方法都做边界检查并返回结构化错误，避免 panic —— 解析不可信输入时这点很重要。

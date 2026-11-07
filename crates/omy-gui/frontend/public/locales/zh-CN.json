@@ -33,7 +33,8 @@
     "menu": "菜单",
     "tab_files": "文件",
     "tab_devices": "设备",
-    "global": "全局"
+    "global": "全局",
+    "new_title": "新建"
   },
   "unlock": {
     "title": "解锁",
@@ -45,7 +46,7 @@
     "pick_folder": "先选择一个文件夹",
     "pick_folder_hint": "解锁参数存在文件里，所以要先选文件夹再输密码",
     "browse": "选择文件夹…",
-    "add_password": "添加密码",
+    "add_password": "再加一个密码",
     "recursive": "包含子文件夹",
     "try_here": "试解锁此目录",
     "quick_hint": "输入密码可解锁当前目录中的加密文件",
@@ -95,7 +96,7 @@
     "restore_partial": "{{ok}} 项已还原，{{failed}} 项失败：{{reason}}"
   },
   "file": {
-    "locked_name": "🔒 加密文件",
+    "locked_name": "加密文件",
     "locked_meta": "密码未解锁",
     "unknown": "未知",
     "folder": "文件夹",
@@ -159,7 +160,9 @@
     "slot_mode_deniable_desc": "无法判断这个文件配了几个密码，连你自己也不行。代价：以后删除某个密码时只能\"只保留当前密码\"，会连同恢复码一起清掉",
     "slot_mode_managed": "可管理",
     "slot_mode_managed_desc": "能看到每个槽位是什么（日常密码／恢复码／设备），可以精确删掉其中一个而保住其它。代价：能打开这个文件的人也能看到这份清单",
-    "slot_mode_permanent": "这个选择加密后无法更改——模式写在文件头里，换模式等于重新加密。"
+    "slot_mode_permanent": "这个选择加密后无法更改——模式写在文件头里，换模式等于重新加密。",
+    "advanced": "高级选项",
+    "advanced_sub": "文件名、压缩、缩略图、强度等，默认值通常即可"
   },
   "video": {
     "title": "视频处理",
@@ -262,7 +265,9 @@
     "cannot_preview": "此格式无法在应用内预览",
     "loading": "加载中…",
     "rewind_10": "后退 10 秒",
-    "forward_10": "前进 10 秒"
+    "forward_10": "前进 10 秒",
+    "prev_file": "上一个",
+    "next_file": "下一个"
   },
   "view": {
     "grid": "网格视图",
@@ -277,7 +282,9 @@
     "kind": "类型",
     "search": "搜索…",
     "select_all": "全选",
-    "clear_selection": "取消选择"
+    "clear_selection": "取消选择",
+    "delete_short": "删除",
+    "more": "更多"
   },
   "kind": {
     "video": "视频",
@@ -515,7 +522,11 @@
     "folder_created": "已创建文件夹",
     "trashed_n": "已移到回收站 {{n}} 项",
     "deleted_n": "已永久删除 {{n}} 项",
-    "delete_partial": "已删除 {{ok}} 项，{{bad}} 项失败"
+    "delete_partial": "已删除 {{ok}} 项，{{bad}} 项失败",
+    "delete_confirm_title_one": "永久删除这 1 项？",
+    "delete_confirm_title_other": "永久删除这 {{count}} 项？",
+    "delete_confirm_msg": "不会放进回收站，删除后无法恢复。",
+    "trash_unsupported": "这个平台没有系统回收站，只能永久删除"
   },
   "settings": {
     "title": "设置",
@@ -533,6 +544,12 @@
     "theme": "主题",
     "theme_dark": "深色",
     "theme_light": "浅色",
+    "accent": "主题色",
+    "accent_blue": "蓝",
+    "accent_teal": "青绿",
+    "accent_violet": "紫",
+    "accent_rose": "玫红",
+    "accent_amber": "琥珀",
     "follow_system": "跟随系统",
     "startup": "启动时打开",
     "startup_last": "上次的位置",
@@ -766,7 +783,8 @@
     "unlock_submit": "解锁",
     "unlock_wrong": "密码不对，请重试",
     "unlocked": "已解锁",
-    "locked_hint": "这个位置已加密，请输入密码解锁"
+    "locked_hint": "这个位置已加密，请输入密码解锁",
+    "kind_virtual": "虚拟远程"
   },
   "common": {
     "back": "返回",
@@ -949,7 +967,8 @@
     "st_skipped": "已缓存，已跳过",
     "summary": "{{running}} 进行中 · {{waiting}} 等待 · {{failed}} 失败",
     "speed": "{{rate}}/s",
-    "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。"
+    "slow_note": "Telegram 对非会员账号有下载限速，这不是 omy 的速度上限。",
+    "eta": "剩余 {{time}}"
   },
   "cache_all": {
     "menu": "全部缓存…",
@@ -1085,5 +1104,19 @@
     "create": "新建群组",
     "create_hint": "创建一个初始成员只有你自己的 Telegram 超级群；创建后仍需点击转发确认。",
     "create_failed": "新建群组失败"
+  },
+  "sort": {
+    "title": "排序",
+    "name": "名称",
+    "size": "大小",
+    "modified": "修改时间",
+    "type": "类型",
+    "asc": "升序",
+    "desc": "降序"
+  },
+  "drop": {
+    "hint": "松开以加密这些文件",
+    "mixed_dirs": "一次只能拖入同一个文件夹里的文件",
+    "nothing_to_encrypt": "拖入的条目都已加密"
   }
 }

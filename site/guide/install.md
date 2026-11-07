@@ -111,7 +111,7 @@ cargo build --release -p omy-gui
 
 Android 版是图形界面。安装 APK 之后可直接使用，加解密与浏览功能与桌面一致。
 
-注意 Android 上没有 FFmpeg，所以视频缩略图与转封装播放不可用；另外回收站也不可用——`trash` crate 在 Android 上不提供任何实现，所以那里的「移到回收站」选项不会出现。
+注意 Android 上没有 FFmpeg，所以视频缩略图与转封装播放不可用；另外回收站也不可用——`trash` crate 在 Android 上不提供任何实现，所以那里的「移到回收站」显示为灰色，只能永久删除，删除前会二次确认。
 
 ## 下一步
 

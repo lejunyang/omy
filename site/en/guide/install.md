@@ -111,7 +111,7 @@ The bundled FFmpeg includes H.264 / HEVC decoders, which are covered by patents.
 
 The Android build is the graphical interface. Install the APK and it works; encryption, decryption and browsing match the desktop.
 
-Note that Android has no FFmpeg, so video thumbnails and remux playback are unavailable, and there is no trash either — the `trash` crate provides no implementation on that platform, so the "move to trash" option does not appear.
+Note that Android has no FFmpeg, so video thumbnails and remux playback are unavailable, and there is no trash either — the `trash` crate provides no implementation on that platform, so "move to trash" is greyed out and only permanent deletion is available, after a confirmation.
 
 ## Next
 

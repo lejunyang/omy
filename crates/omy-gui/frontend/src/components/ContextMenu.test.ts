@@ -119,3 +119,20 @@ describe('ContextMenu', () => {
     w.unmount();
   });
 });
+
+describe('遮罩上的 contextmenu', () => {
+  it('刚打开时到达的不关闭菜单（长按的原生事件），过一会儿再到才关闭', async () => {
+    const now = vi.spyOn(performance, 'now');
+    now.mockReturnValue(1000);
+    const w = mount(ContextMenu, {
+      props: { items: [{ key: 'a', label: 'A', icon: 'file' }], x: 0, y: 0 },
+      global: { stubs: { AppIcon: true } },
+    });
+    await w.find('.ctxlayer').trigger('contextmenu');
+    expect(w.emitted('close')).toBeUndefined();
+    now.mockReturnValue(5000);
+    await w.find('.ctxlayer').trigger('contextmenu');
+    expect(w.emitted('close')).toHaveLength(1);
+    now.mockRestore();
+  });
+});

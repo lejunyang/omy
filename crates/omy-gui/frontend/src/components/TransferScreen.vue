@@ -117,6 +117,9 @@ async function refresh() {
     const now = Date.now();
     const next = new Map();
     for (const t of rows) {
+      // 分组任务的 done 是文件个数：拿它算「字节/秒」会显示成「1 B/s」，
+      // 还会因为数值小于阈值而误报「服务端限速」
+      if (t.is_group) continue;
       const prev = lastSample.get(t.id);
       if (prev && now > prev.at && t.done >= prev.done) {
         const bps = ((t.done - prev.done) * 1000) / (now - prev.at);
@@ -161,6 +164,21 @@ const slowHint = computed(() =>
 async function cancel(t) {
   await api.transferCancel(t.id).catch(() => {});
   await refresh();
+}
+
+/** 已传 / 总量。分组任务的 done/total 是文件个数，不是字节，不显示。 */
+function bytesText(t) {
+  if (t.is_group || !t.total) return '';
+  return `${i18n.formatSize(t.done)} / ${i18n.formatSize(t.total)}`;
+}
+
+/** 预计剩余时间：按平滑后的速度估算，只对正在传的字节任务显示。
+ *  只有进度条看不出「还要等多久」，大文件上传时用户只能干等。 */
+function etaText(t) {
+  const bps = rates.value.get(t.id);
+  if (t.is_group || t.state !== 'running' || !bps || !t.total || t.done >= t.total) return '';
+  const ms = ((t.total - t.done) / bps) * 1000;
+  return i18n.t('xfer.eta', { time: i18n.formatDuration(ms) });
 }
 
 /** 这条失败任务能不能重试。后端在失败态里下发 retryable——界面不自己
@@ -277,6 +295,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="tskbarwrap">
             <div class="tskbar"><i :style="{ width: pct(t) + '%' }"></i></div>
+            <div v-if="bytesText(t)" class="tskmeta" data-xf="bytes">
+              {{ bytesText(t) }}<template v-if="etaText(t)"> · {{ etaText(t) }}</template>
+            </div>
           </div>
           <div class="tskv" data-xf="state">
             {{ stateText(t) }}<template v-if="rateText(t)">
@@ -422,6 +443,16 @@ onBeforeUnmount(() => {
   background: var(--accent);
   transition: width 0.2s;
 }
+/* 等宽数字：每秒刷新时宽度不跳，行尾不会左右抖 */
+.tskmeta {
+  margin-top: 3px;
+  color: var(--fg2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tskv {
   color: var(--fg2);
   white-space: nowrap;
@@ -453,7 +484,7 @@ onBeforeUnmount(() => {
 }
 
 /* 移动端：160px 的进度列挤不下，换成两行 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .tsk {
     grid-template-columns: 20px minmax(0, 1fr) auto;
     grid-template-areas:

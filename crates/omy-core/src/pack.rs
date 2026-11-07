@@ -346,6 +346,240 @@ pub fn pack_folder(root: &Path, mut progress: Option<ProgressFn<'_>>) -> Result<
     })
 }
 
+/// 流式打包的计划：遍历一遍目录，只取大小，不读内容。
+///
+/// [`pack_folder`] 把所有文件内容拼进一个内存载荷，几十 GB 的文件夹在手机上
+/// 根本加密不了。流式打包分三步：`plan_folder` 定下条目与偏移（索引长度从此
+/// 确定，只差逐文件哈希）→ [`PackPlan::reader`] 按同样的顺序把文件内容串成
+/// 一条 `Read` 流，边读边算哈希 → [`PackPlan::finish`] 填入哈希得到真索引。
+/// 配合 [`crate::file::encrypt_stream`] 的定稿回调使用。
+#[derive(Debug)]
+pub struct PackPlan {
+    /// 容器根名。
+    pub root_name: String,
+    items: Vec<PlanItem>,
+    /// 普通文件数。
+    pub file_count: usize,
+    /// 目录数。
+    pub dir_count: usize,
+    /// 符号链接数。
+    pub link_count: usize,
+    /// 跳过的条目。
+    pub skipped: Vec<SkippedEntry>,
+    /// 所有文件内容的总字节数（即容器载荷的明文长度）。
+    pub total_size: u64,
+}
+
+#[derive(Debug)]
+enum PlanItem {
+    Dir { comps: Vec<String>, meta: EntryMeta },
+    Link { comps: Vec<String>, target: String, meta: EntryMeta },
+    File { path: PathBuf, comps: Vec<String>, size: u64, meta: EntryMeta },
+}
+
+/// 规划流式打包。遍历判定与 [`pack_folder`] 共用 [`walk_dir`]。
+///
+/// 打不开的文件（常见原因：被别的程序独占）在这一步就跳过并记录，与
+/// `pack_folder` 的行为一致。
+///
+/// # Errors
+///
+/// 遍历出错时返回。
+pub fn plan_folder(root: &Path) -> Result<PackPlan> {
+    let root_name = root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("folder"));
+    let mut items = Vec::new();
+    let mut skipped = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    let (mut files, mut dirs, mut links) = (0usize, 0usize, 0usize);
+    let mut total = 0u64;
+    walk_dir(root, &mut skipped, &mut |item| {
+        if let Some(target) = &item.link_target {
+            items.push(PlanItem::Link {
+                comps: item.comps.clone(),
+                target: target.clone(),
+                meta: item.meta.clone(),
+            });
+            links = links.saturating_add(1);
+        } else if item.is_dir {
+            items.push(PlanItem::Dir { comps: item.comps.clone(), meta: item.meta.clone() });
+            dirs = dirs.saturating_add(1);
+        } else {
+            let size = std::fs::File::open(&item.path).and_then(|f| f.metadata()).map(|m| m.len());
+            let Ok(size) = size else {
+                unreadable.push(item.comps.join("/"));
+                return Ok(());
+            };
+            items.push(PlanItem::File {
+                path: item.path.clone(),
+                comps: item.comps.clone(),
+                size,
+                meta: item.meta.clone(),
+            });
+            files = files.saturating_add(1);
+            total = total.saturating_add(size);
+        }
+        Ok(())
+    })?;
+    skipped.extend(unreadable.into_iter().map(|path| SkippedEntry {
+        path,
+        reason: SkipReason::Unreadable,
+    }));
+    Ok(PackPlan {
+        root_name,
+        items,
+        file_count: files,
+        dir_count: dirs,
+        link_count: links,
+        skipped,
+        total_size: total,
+    })
+}
+
+impl PackPlan {
+    fn index_with(&self, hashes: Option<&[[u8; 32]]>) -> Result<ContainerIndex> {
+        let mut builder = ContainerBuilder::new(self.root_name.clone());
+        let mut fi = 0usize;
+        for it in &self.items {
+            match it {
+                PlanItem::Dir { comps, meta } => builder.add_dir(comps.clone(), meta.clone())?,
+                PlanItem::Link { comps, target, meta } => {
+                    builder.add_symlink(comps.clone(), target.clone(), meta.clone())?;
+                }
+                PlanItem::File { comps, size, meta, .. } => {
+                    let hash = match hashes {
+                        Some(h) => *h.get(fi).ok_or(Error::MalformedHeader {
+                            reason: "pack plan hash count mismatch",
+                        })?,
+                        None => [0u8; 32],
+                    };
+                    builder.add_file(comps.clone(), *size, Some(hash), meta.clone())?;
+                    fi = fi.saturating_add(1);
+                }
+            }
+        }
+        builder.finish()
+    }
+
+    /// 与最终索引等长的占位索引（哈希全零），用来给流式加密预留头部空间。
+    ///
+    /// # Errors
+    ///
+    /// 条目非法时返回。
+    pub fn placeholder_index(&self) -> Result<Vec<u8>> {
+        Ok(self.index_with(None)?.encode())
+    }
+
+    /// 填入逐文件哈希，得到真正的容器索引。`hashes` 来自 [`PackReader::hashes`]。
+    ///
+    /// # Errors
+    ///
+    /// 哈希数与文件数不符或条目非法时返回。
+    pub fn finish(&self, hashes: &[[u8; 32]]) -> Result<ContainerIndex> {
+        if hashes.len() != self.file_count {
+            return Err(Error::MalformedHeader { reason: "pack plan hash count mismatch" });
+        }
+        self.index_with(Some(hashes))
+    }
+
+    /// 按规划顺序把文件内容串成一条流。
+    #[must_use]
+    pub fn reader(&self) -> PackReader {
+        let files = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                PlanItem::File { path, size, .. } => Some((path.clone(), *size)),
+                _ => None,
+            })
+            .collect();
+        PackReader {
+            files,
+            next: 0,
+            cur: None,
+            hashes: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+}
+
+/// 当前正在读的文件：剩余字节数受限的句柄、还差多少字节、该文件的哈希器。
+type CurrentFile = (std::io::Take<std::fs::File>, u64, blake2::Blake2b<blake2::digest::consts::U32>);
+
+/// 把规划里的文件内容按顺序串成一条 `Read` 流，并逐文件计算哈希。
+///
+/// 每个文件读到的字节数必须与规划时的大小一致：文件在加密途中被改动时报错，
+/// 而不是让容器索引的偏移与载荷错位。
+pub struct PackReader {
+    files: Vec<(PathBuf, u64)>,
+    next: usize,
+    cur: Option<CurrentFile>,
+    hashes: std::rc::Rc<std::cell::RefCell<Vec<[u8; 32]>>>,
+}
+
+impl std::fmt::Debug for PackReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PackReader")
+            .field("files", &self.files.len())
+            .field("next", &self.next)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PackReader {
+    /// 已读完的文件的哈希。返回共享句柄：流被加密函数借走期间，定稿回调
+    /// 仍需要读到它。
+    #[must_use]
+    pub fn hashes(&self) -> std::rc::Rc<std::cell::RefCell<Vec<[u8; 32]>>> {
+        std::rc::Rc::clone(&self.hashes)
+    }
+}
+
+impl std::io::Read for PackReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use blake2::Digest;
+        loop {
+            if self.cur.is_none() {
+                let Some((path, size)) = self.files.get(self.next) else {
+                    return Ok(0);
+                };
+                let f = std::fs::File::open(path)?;
+                let size = *size;
+                self.cur = Some((std::io::Read::take(f, size), size, blake2::Blake2b::new()));
+                self.next = self.next.saturating_add(1);
+            }
+            let Some((take, remaining, hasher)) = self.cur.as_mut() else {
+                return Ok(0);
+            };
+            let n = take.read(buf)?;
+            if n > 0 {
+                hasher.update(buf.get(..n).unwrap_or(&[]));
+                *remaining = remaining.saturating_sub(n as u64);
+                return Ok(n);
+            }
+            // 当前文件读完：必须恰好读满规划时的大小
+            if *remaining != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "file shrank while packing",
+                ));
+            }
+            if let Some((take, _, hasher)) = self.cur.take() {
+                let mut f = take.into_inner();
+                let mut probe = [0u8; 1];
+                if f.read(&mut probe)? != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "file grew while packing",
+                    ));
+                }
+                self.hashes.borrow_mut().push(hasher.finalize().into());
+            }
+        }
+    }
+}
+
 /// 从文件系统元数据提取可移植的元数据。
 fn meta_from_fs(md: &std::fs::Metadata) -> EntryMeta {
     let mut m = EntryMeta::default();

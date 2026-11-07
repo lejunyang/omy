@@ -8,7 +8,7 @@ title: Graphical interface
 
 ## It works like a file manager
 
-The interface is a file browser rather than an "encryption tool": a location sidebar on the left, a list of entries on the right, double-click to enter or open (single tap on mobile).
+The interface is a file browser rather than an "encryption tool": a location sidebar on the left, a list of entries on the right, double-click to enter or open (single tap on mobile). Opening a locked encrypted file asks for its password first and opens the file right after it unlocks, without a second click.
 
 Interface icons are all vector icons, so they render consistently across Windows, Android and other platforms.
 
@@ -37,13 +37,16 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Encrypt | Pick files or folders; set chunk size, KDF profile, thumbnails, original handling |
 | Decrypt / restore | Restore one or many to a chosen location |
 | Browse | Mixed listing of plain files and `.omy`, with lock state visible |
-| Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline |
+| Preview and playback | Video seeking, volume, speed, 10-second jumps and mobile press-to-speed-up; images, audio and text inline; arrow keys, the side buttons or a horizontal swipe flip to the previous / next file in the folder; images support pinch zoom, double-click zoom and Ctrl + wheel |
 | Password management | Add key slots, change passwords, re-encrypt |
-| Context menu | Open, open with another app, reveal a file or folder in the file manager, password management and move to trash; PC uses the native Windows picker, Android uses a native app list |
+| Drag to encrypt (desktop) | Drag files from one folder in your system file manager onto the window: omy opens that folder, selects them and shows the encrypt dialog |
+| Keyboard (desktop) | Arrow keys move the current item, Shift + arrows or Shift + click selects a range; Enter opens, Delete moves to trash, Shift + Delete deletes permanently (with confirmation), F2 renames, Esc closes the topmost dialog or preview |
+| Sorting | Sort by name, size, modified time or type (folders always first); click a column header in list view; the choice is remembered on this device |
+| Context menu | Open, open with another app, reveal a file or folder in the file manager, password management, move to trash and permanent delete (asks for confirmation); PC uses the native Windows picker, Android uses a native app list |
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
 | Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
-| Theme | Light and dark (under Settings → General) |
+| Theme | Light and dark, plus an accent color (blue, teal, violet, rose, amber), under Settings → General |
 | Languages | Simplified Chinese and English, following the system locale (under Settings → General) |
 
 ## Security constraints
@@ -68,7 +71,7 @@ The mobile layout differs from desktop:
 - A **path strip** sits below the top bar: go up on the left, a horizontally scrollable path in the middle, and a grid / list toggle on the right.
 - The **sidebar** lives in a drawer opened from the menu button at the top left; swipe left inside the drawer to close it. Swiping in from the screen edge is intentionally not supported, so it never fights Android's system back gesture.
 - During **multi-select** an action bar rises from the bottom showing the selection count and whichever of Select all / Encrypt / Restore / Manage passwords currently apply; ✕ leaves selection mode.
-- **Open folder** is a floating button at the bottom right (on desktop it lives in the sidebar); it steps aside for the action bar while selecting.
+- The "+" floating button at the bottom right opens a **New** menu: open folder, new folder and new remote location (on desktop these live in the sidebar and context menu); it steps aside for the action bar while selecting. On Android "Open folder" first asks for "All files access", then shows the system folder picker; Android does not allow picking the storage root or Download itself there (their subfolders are fine) — open those from the sidebar instead.
 - In the **remote locations list**, tapping a row enters it; rename, remove and delete account move into the "⋮" menu at the end of the row.
 
 Opening a video preview on Android automatically switches to landscape and closing it restores the system orientation. The player keeps its touch gesture model even when the landscape viewport exceeds the responsive breakpoint. The system Back button first closes the active menu or dialog, closes the drawer or search field, returns from a settings subpage, closes the preview, or moves up one folder; it exits the app only from the application start state. On mobile, long-press menus and dialogs rise from the bottom of the screen, and menus are titled with the item they act on. “Open with another app” shows a native app list and can remember a default app by file extension; saved associations can be cleared under **Settings → Playback & preview**, and are discarded automatically if the app is removed or stops handling that format. Telegram login omits the desktop-only tdata reuse entry.
@@ -79,7 +82,7 @@ Dialogs, menus and list changes are animated; when the system's "reduce motion" 
 Desktop opens entries by double-click, a gesture touchscreens do not have (`dblclick` in a mobile WebView either never fires or gets eaten by double-tap zoom). On mobile, a single tap always opens a file or folder; only a long press enters or extends file selection, and an existing selection never changes what a tap means. So opening, multi-select and dragging are handled separately on mobile — it is not merely CSS adaptation.
 :::
 
-Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is not offered.
+Two platform limits apply on mobile: no FFmpeg, so video thumbnails and P2/P3 playback are unavailable; and no trash, so "move to trash" is greyed out with the reason shown; only permanent deletion (which asks for confirmation) is available.
 
 ### Storage access permission
 
@@ -99,7 +102,7 @@ On desktop settings is a dialog (gear in the top bar); on mobile it is a list wi
 
 | Category | Contents |
 |---|---|
-| General | Language, theme, default view (grid / list), open at startup (last folder / home) |
+| General | Language, theme, accent color, default view (grid / list), open at startup (last folder / home) |
 | Remote locations | Recognition scope, request concurrency, and the **Remote cache** page for temporary-block limits/usage/clearing plus complete-original-file permanent storage |
 | Security & passwords | Auto-lock (idle duration, whether backgrounding counts as idle, playback exemption), number of passwords loaded in the current session, lock now, recovery-code hint |
 | Encryption defaults | KDF profile, chunk size, pre-encryption compression, filename encryption, original-file handling; these become the initial values in the encrypt dialog |

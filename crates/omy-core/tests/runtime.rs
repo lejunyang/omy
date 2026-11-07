@@ -863,3 +863,20 @@ fn scan_nonexistent_dir_returns_error() {
     let r = scan_dir(Path::new("E:/definitely/does/not/exist/omy-test"), &s, &ScanOptions::default());
     assert!(r.is_err(), "不存在的目录应返回错误");
 }
+
+/// 只读文件头的公共入口：读满请求的字节数、文件更短时读到末尾为止。
+///
+/// 不这样会怎样：各 crate 曾各写一份且多数只调一次 `read`，短读时会把
+/// 加密文件误判成普通文件；或者为了取头部把几 GB 的视频整个读进内存。
+#[test]
+fn read_prefix_reads_exactly_up_to_n() {
+    let dir = tmpdir("read-prefix");
+    let p = dir.join("f.bin");
+    let body: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+    fs::write(&p, &body).expect("write");
+    let head = omy_core::scan::read_prefix(&p, 4096).expect("read");
+    assert_eq!(head.as_slice(), &body[..4096]);
+    let all = omy_core::scan::read_prefix(&p, 1 << 20).expect("read");
+    assert_eq!(all, body, "文件比请求短时读到末尾为止");
+    let _ = fs::remove_dir_all(&dir);
+}

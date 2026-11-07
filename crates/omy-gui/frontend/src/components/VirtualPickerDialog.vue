@@ -10,6 +10,7 @@
 
 import { ref, onMounted } from 'vue';
 import * as i18n from '../i18n';
+import { askText } from '../ask';
 import * as api from '../api';
 import { state, confirmAddToVirtual, cancelAddToVirtual, createVirtualPlaceOnly } from '../store';
 
@@ -61,9 +62,9 @@ async function submit() {
 
 /** 空态：先新建一个虚拟位置再选。 */
 async function newVirtual() {
-  const name = window.prompt(i18n.t('virtual.name_prompt'));
+  const name = await askText({ title: i18n.t('virtual.name_prompt') });
   if (name === null) return;
-  await createVirtualPlaceOnly(name.trim());
+  await createVirtualPlaceOnly(name);
   await load();
 }
 

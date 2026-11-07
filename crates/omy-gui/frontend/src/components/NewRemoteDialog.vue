@@ -13,9 +13,12 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="mask" @click.self="$emit('cancel')">
-    <div class="dlg" data-new-remote="dialog">
-      <div class="dh">{{ i18n.t('rplace.new') }}</div>
+  <!-- 用全局的 .overlay.dlg-overlay / .dlg：与其它对话框同一套外观与动效，
+       手机上同样是底部弹层。原来自带一套 .mask / .dlg / .btn 样式，手机上是
+       居中弹窗，与别的对话框风格不一致 -->
+  <div class="overlay dlg-overlay" @click.self="$emit('cancel')">
+    <div class="dlg nr-dlg" data-new-remote="dialog">
+      <h3>{{ i18n.t('rplace.new') }}</h3>
       <div class="methods">
         <button class="mcard" data-new-remote="webdav" @click="$emit('pick', 'webdav')">
           <AppIcon class="mi" name="cloud" />
@@ -33,7 +36,7 @@ const emit = defineEmits<{
           <span class="d">{{ i18n.t('rplace.new_virtual_desc') }}</span>
         </button>
       </div>
-      <div class="act">
+      <div class="acts">
         <button class="btn" data-new-remote="cancel" @click="$emit('cancel')">
           {{ i18n.t('common.cancel') }}
         </button>
@@ -43,30 +46,8 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.mask {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: rgba(0, 0, 0, 0.5);
-}
-.dlg {
+.nr-dlg {
   width: min(620px, 100%);
-  max-height: 90vh;
-  overflow: auto;
-  padding: 18px;
-  padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-l);
-}
-.dh {
-  margin-bottom: 14px;
-  font-size: 15px;
-  font-weight: 600;
 }
 .methods {
   display: grid;
@@ -98,22 +79,7 @@ const emit = defineEmits<{
   line-height: 1.45;
   color: var(--fg2);
 }
-.act {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
-}
-.btn {
-  min-height: 36px;
-  padding: 7px 14px;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-s);
-  cursor: pointer;
-}
-@media (max-width: 768px) {
+@media (--mobile) {
   .methods { grid-template-columns: 1fr; }
   .btn, .mcard { min-height: 44px; }
 }

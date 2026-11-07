@@ -197,6 +197,12 @@ pub struct Ui {
     pub language: String,
     /// 主题：auto | dark | light
     pub theme: String,
+    /// 主题色：blue | teal | violet | rose | amber。
+    ///
+    /// 只是色相预设，明暗仍由 `theme` 决定：每个预设在两种底色上各有一套
+    /// 校验过对比度的取值，所以不开放任意色值——随手挑的颜色在浅色底上
+    /// 很容易做不到文字可读。未知值按 blue 处理（界面侧回落）。
+    pub accent: String,
     /// 默认视图：grid | list
     pub view: String,
     /// 启动时打开：last | home | 具体路径
@@ -212,6 +218,7 @@ impl Default for Ui {
         Self {
             language: String::from("auto"),
             theme: String::from("auto"),
+            accent: String::from("blue"),
             view: String::from("grid"),
             startup: String::from("last"),
             last_dir: None,
@@ -728,6 +735,19 @@ mod tests {
         assert_eq!(c.compress.level, 3);
         assert_eq!(c.scan.max_depth, 8);
         assert_eq!(c.ui.language, "auto");
+    }
+
+    /// 旧配置文件里没有 `ui.accent`，读出来必须是默认的蓝。
+    ///
+    /// 不这样会怎样：升级前写下的配置缺这一项，若回落成空串，界面拿到的
+    /// 是一个不认识的主题色——设置页下拉框显示空白，用户不知道当前是哪个。
+    #[test]
+    fn missing_accent_defaults_to_blue() {
+        let c: Config = toml::from_str("[ui]
+theme = \"dark\"
+").expect("应能解析");
+        assert_eq!(c.ui.accent, "blue");
+        assert_eq!(c.ui.theme, "dark");
     }
 
     /// 缺省片段要回落到默认值，不能把整组清零。

@@ -359,6 +359,7 @@ mod tests {
         // 设置页直接读这些键，改名等于改协议
         assert!(j["ui"].get("language").is_some());
         assert!(j["ui"].get("theme").is_some());
+        assert!(j["ui"].get("accent").is_some());
         assert!(j["security"].get("auto_lock_secs").is_some());
         assert!(j["remote"].get("cache_limit").is_some());
     }

@@ -6,10 +6,11 @@
  * 面包屑 + 内容区 + 状态栏。
  */
 
-import { computed } from 'vue';
+import { ref, computed, watch, nextTick, useTemplateRef } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { fileClickAction } from '../file-interaction';
+import { fileKind, KIND_ICON } from '../file-icons';
 import {
   state,
   visibleEntries,
@@ -24,13 +25,17 @@ import {
   goUp,
   reload,
   toggleSelect,
+  selectRange,
   selectAll,
   clearSelection,
   clearNotice,
   setView,
+  setSort,
+  type SortKey,
 } from '../store';
 import AppShell from './AppShell.vue';
 import EntryCard from './EntryCard.vue';
+import ContextMenu from './ContextMenu.vue';
 
 /* ---- 移动端 ----
  *
@@ -54,6 +59,72 @@ const mobileSubtitle = computed(() => {
 });
 
 
+/** 面包屑容器。路径一长，当前目录那一段就被挤出可视区（真机上实测只露出
+ *  一个字），每次换目录都滚到最右端，保证用户看得到自己在哪。 */
+const crumbEl = useTemplateRef<HTMLElement>('crumbEl');
+watch(
+  () => crumbs.value.map((c) => c.path).join('|'),
+  async () => {
+    await nextTick();
+    const el = crumbEl.value;
+    if (el) el.scrollLeft = el.scrollWidth;
+  },
+  { immediate: true },
+);
+
+/** 排序菜单：打开时记着按钮位置（桌面菜单贴着按钮弹出）。 */
+const sortMenu = ref<{ x: number; y: number } | null>(null);
+
+const SORT_KEYS = ['name', 'size', 'modified', 'type'] as const;
+
+const sortItems = computed(() =>
+  SORT_KEYS.map((k) => ({
+    key: k,
+    // 当前字段用 ✓ 标出，并写明方向
+    icon: state.sortKey === k ? 'check' : 'minus',
+    label: i18n.t(`sort.${k}`) + (state.sortKey === k
+      ? ` · ${i18n.t(state.sortDir === 'asc' ? 'sort.asc' : 'sort.desc')}`
+      : ''),
+  })),
+);
+
+function openSortMenu(ev: MouseEvent) {
+  const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+  sortMenu.value = { x: r.left, y: r.bottom + 4 };
+}
+
+function onSortPick(key: string) {
+  sortMenu.value = null;
+  if ((SORT_KEYS as readonly string[]).includes(key)) setSort(key as SortKey);
+}
+
+/** 列头上当前排序列的样式类（带方向箭头）。 */
+function sortCls(key: SortKey) {
+  return state.sortKey === key ? ['sorted', state.sortDir] : [];
+}
+
+/** 悬浮按钮的「新建」菜单是否打开。 */
+const fabMenu = ref(false);
+
+const fabItems = computed(() => [
+  { key: 'pick', icon: 'folder-open', label: i18n.t('nav.pick_folder') },
+  {
+    key: 'new-folder',
+    icon: 'plus',
+    label: i18n.t('ctx.new_folder'),
+    // 还没打开任何目录时无处可建
+    disabled: !state.cwd || !!state.container,
+  },
+  { key: 'new-remote', icon: 'cloud', label: i18n.t('rplace.new') },
+]);
+
+function onFabPick(key: string) {
+  fabMenu.value = false;
+  if (key === 'pick') emit('pick');
+  else if (key === 'new-folder') emit('new-folder');
+  else if (key === 'new-remote') emit('new-remote');
+}
+
 /** 进度百分比，取整。
  *
  * total 为 0（空文件）时直接算 100，避免除零得到 NaN——
@@ -67,6 +138,9 @@ const progPercent = computed(() => {
 });
 
 const emit = defineEmits([
+  'new-folder',
+  'delete-selected',
+  'selection-more',
   'open',
   'menu',
   'encrypt',
@@ -112,7 +186,8 @@ const locationKey = computed(() =>
 );
 
 function onSelect(entry, ev) {
-  toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (ev.shiftKey) selectRange(entry.path);
+  else toggleSelect(entry.path, ev.ctrlKey || ev.metaKey);
 }
 
 /** 列表行的点击。移动端单击即打开，与网格卡片保持一致——
@@ -126,7 +201,8 @@ function onRowClick(entry, ev) {
     emit('open', entry);
     return;
   }
-  toggleSelect(entry.path, ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (ev.shiftKey) selectRange(entry.path);
+  else toggleSelect(entry.path, ev.ctrlKey || ev.metaKey);
 }
 
 /** 列表行移动端长按：进入多选（加选第一项）。网格卡片由 EntryCard 内部处理，
@@ -217,7 +293,7 @@ function onRowMenu(e, ev) {
           <AppIcon name="refresh" />
         </button>
 
-        <nav class="crumbpath">
+        <nav ref="crumbEl" class="crumbpath">
           <!-- key 要带 kind：容器内的相对路径可能与磁盘段字符串相同，
                只用 path 做 key 会让 Vue 复用错的节点 -->
           <template v-for="(c, i) in crumbs" :key="c.kind + ':' + c.path">
@@ -231,6 +307,17 @@ function onRowMenu(e, ev) {
             </button>
           </template>
         </nav>
+
+        <!-- 排序：网格与列表都要能排（列表视图另有可点的列头） -->
+        <button
+          class="crumbbtn"
+          data-tb="sort"
+          :title="i18n.t('sort.title')"
+          :aria-label="i18n.t('sort.title')"
+          @click="openSortMenu"
+        >
+          <AppIcon name="sort" />
+        </button>
 
         <!-- 移动端：视图切换收成一个按钮放在面包屑尾部。桌面上它在顶栏，
              手机顶栏留给标题与搜索 -->
@@ -342,11 +429,20 @@ function onRowMenu(e, ev) {
         </div>
 
         <div v-else :key="'l:' + locationKey" class="list anim-in">
+          <!-- 列头：点一下按该列排序，再点切换升降序。手机上列放不下，只靠排序按钮 -->
+          <div v-if="!isMobile" class="lhead" role="row">
+            <span class="ic"></span>
+            <button class="nm" :class="sortCls('name')" @click="setSort('name')">{{ i18n.t('sort.name') }}</button>
+            <button class="sz" :class="sortCls('size')" @click="setSort('size')">{{ i18n.t('sort.size') }}</button>
+            <button class="tm" :class="sortCls('modified')" @click="setSort('modified')">{{ i18n.t('sort.modified') }}</button>
+            <button class="tg" :class="sortCls('type')" @click="setSort('type')">{{ i18n.t('sort.type') }}</button>
+          </div>
           <div
             v-for="(e, i) in entriesWithMeta"
             :key="e.path"
             class="lrow"
             :class="{ sel: state.selected.includes(e.path) }"
+            :data-path="e.path"
             :style="{ '--i': i }"
             tabindex="0"
             @dblclick="$emit('open', e)"
@@ -358,17 +454,12 @@ function onRowMenu(e, ev) {
             @pointercancel="onRowPointerUp"
             @keydown.enter.prevent="$emit('open', e)"
           >
-            <span class="ic"><AppIcon :name="
-              e.is_dir
-                ? (e.is_encrypted_dir ? 'folder-lock' : 'folder')
-                : e.is_encrypted
-                  ? (e.unlocked ? 'unlock' : 'lock')
-                  : 'file'
-            " /></span>
+            <span class="ic" :class="'k-' + fileKind(e)"><AppIcon :name="KIND_ICON[fileKind(e)]" /></span>
             <span class="nm">
               {{ e.is_encrypted && !e.unlocked ? i18n.t('file.locked_name') : e.real_name || e.name }}
             </span>
             <span class="sz">{{ e.size == null ? '' : i18n.formatSize(e.size) }}</span>
+            <span v-if="!isMobile" class="tm">{{ i18n.formatDateTime(e.modified) }}</span>
             <span class="tg">
               {{
                 e.is_dir
@@ -424,8 +515,14 @@ function onRowMenu(e, ev) {
         <button v-if="restorable.length" class="selbar-act" @click="$emit('restore')">
           <AppIcon name="external" /><span>{{ i18n.t('file.restore') }}</span>
         </button>
-        <button v-if="keyManageable" class="selbar-act" @click="$emit('manage-key', keyManageable)">
-          <AppIcon name="key" /><span>{{ i18n.t('keymgmt.title') }}</span>
+        <!-- 密码管理收进「更多」：操作条宽度有限，一行放不下五个按钮 -->
+        <!-- 删除与「更多」：原来操作条只有全选 / 加密，删、改名、上传都要再长按
+             一次去找菜单 -->
+        <button class="selbar-act" data-selbar="delete" @click="$emit('delete-selected')">
+          <AppIcon name="trash" /><span>{{ i18n.t('view.delete_short') }}</span>
+        </button>
+        <button class="selbar-act" data-selbar="more" @click="$emit('selection-more')">
+          <AppIcon name="more" /><span>{{ i18n.t('view.more') }}</span>
         </button>
       </div>
     </Transition>
@@ -437,12 +534,38 @@ function onRowMenu(e, ev) {
         v-if="isMobile && !state.selected.length"
         class="fab"
         data-tb="fab-pick"
-        :aria-label="i18n.t('nav.pick_folder')"
-        :title="i18n.t('nav.pick_folder')"
-        @click="$emit('pick')"
+        :aria-label="i18n.t('nav.new_title')"
+        :title="i18n.t('nav.new_title')"
+        @click="fabMenu = true"
       >
         <AppIcon name="plus" :size="24" :stroke-width="2.2" />
       </button>
+    </Transition>
+
+    <Transition name="menu">
+      <ContextMenu
+        v-if="sortMenu"
+        :items="sortItems"
+        :x="sortMenu.x"
+        :y="sortMenu.y"
+        :title="i18n.t('sort.title')"
+        @pick="onSortPick"
+        @close="sortMenu = null"
+      />
+    </Transition>
+
+    <!-- 悬浮按钮的「新建」菜单。原来它只做「打开文件夹」，可「+」读起来是
+         「新建」——想建文件夹、加远程位置的人点进去却弹出目录选择器 -->
+    <Transition name="menu">
+      <ContextMenu
+        v-if="fabMenu"
+        :items="fabItems"
+        :x="0"
+        :y="0"
+        :title="i18n.t('nav.new_title')"
+        @pick="onFabPick"
+        @close="fabMenu = false"
+      />
     </Transition>
   </AppShell>
 

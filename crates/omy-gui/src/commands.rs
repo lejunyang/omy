@@ -27,6 +27,7 @@ use crate::state::{AppState, FileEntry};
 use omy_core::scan::{ScanOptions, scan_dir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tauri::Emitter as _;
 use tauri::State;
 
 /// 返回给前端的结构化错误。
@@ -322,6 +323,8 @@ pub async fn lock(
     // 加密远程文件交给外部应用的是明文工作副本；锁定不仅要清内存密钥，
     // 还要撤销它们的 FileProvider 授权。普通文件本来就是明文，不受影响。
     crate::external_edit::revoke_encrypted_grants(&app, &external_edits);
+    // 授权撤销之后，明文副本本身也要删掉（有未同步改动的除外，见函数说明）
+    external_edits.purge_encrypted_plaintext();
     state.lock();
     devices.close();
     // Telegram 云位置的实时连接与虚拟位置的明文树也必须一起锁，否则「锁定」
@@ -355,8 +358,18 @@ pub async fn lock(
     // 恰好也清了」是脆的——那条依赖没有任何断言守着，谁为了少查一次表把
     // 回查删掉，就静默破防。每一张能通向明文的表都自己清自己。
     place_containers.clear();
+    // 通知前端清掉界面上已解密的内容。
+    //
+    // 锁定可能不是前端发起的：自动锁定、将来的托盘菜单、CDP 调用都只到后端。
+    // 不发这个事件的话，后端已经锁了，屏幕上却还摆着解密出来的文件名、
+    // 缩略图和打开的预览——自动锁定防的正是「有人走到闲置的屏幕前」。
+    // 发送失败（窗口已关）不影响锁定本身，所以忽略结果。
+    let _ = app.emit(SESSION_LOCKED_EVENT, ());
     Ok(())
 }
+
+/// 锁定完成后发给前端的事件名，必须与前端 `api.SESSION_LOCKED_EVENT` 一致。
+pub const SESSION_LOCKED_EVENT: &str = "session://locked";
 
 /// 当前是否已解锁。
 #[tauri::command]
@@ -374,16 +387,7 @@ pub fn credential_count(state: State<'_, Shared>) -> usize {
 ///
 /// 对 800 MB 的视频，读全文件再解析头部会让「添加目录」卡好几秒。
 fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let f = std::fs::File::open(p)?;
-    // 用 take + read_to_end 而不是单次 read：`Read::read` **不保证**填满
-    // 缓冲区，它可以只返回一部分。单次 read 对小缓冲区几乎总能读满，
-    // 所以这个问题在 64 字节的探测里从来不显现；但按 header_len 读几 KB
-    // 时一旦短读，open() 就会因为数据不全而失败——表现为「同一个文件
-    // 有时有缩略图有时没有」，极难复现。
-    let mut buf = Vec::new();
-    f.take(n as u64).read_to_end(&mut buf)?;
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n)
 }
 
 /// 读出足够覆盖整个头部区域（含 TLV）的字节，且**一个字节都不多读**。
@@ -407,23 +411,7 @@ fn read_prefix(p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
 /// 大小**彻底无关**（实测小文件与 4 MiB 文件都是 0.09 ms/文件），
 /// 不必再赌某个常量对将来的缩略图尺寸够不够大。
 pub(crate) fn read_header_area(p: &Path) -> std::io::Result<Vec<u8>> {
-    let off = omy_core::header::HEADER_LEN_FIELD_OFFSET;
-    let head = read_prefix(p, off.saturating_add(4))?;
-    let Some(field) = head
-        .get(off..off.saturating_add(4))
-        .and_then(|s| <[u8; 4]>::try_from(s).ok())
-    else {
-        // 比固定头还短，不可能是 omy 文件。把已读到的还回去，
-        // 让上层用统一的 peek_header 去报错，而不是在这里另造一种错误
-        return Ok(head);
-    };
-    let claimed = u32::from_le_bytes(field) as usize;
-    // header_len 来自**尚未验证**的文件内容，不能直接拿去分配内存：
-    // 一个声称 4 GiB 的坏文件会让扫描进程被 OOM 杀掉。用文件实际长度
-    // 兜住——头部不可能比文件本身长。
-    let actual = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let cap = claimed.min(usize::try_from(actual).unwrap_or(usize::MAX));
-    read_prefix(p, cap)
+    omy_core::scan::read_header_area(p)
 }
 
 /// 从磁盘上的一个加密文件读出媒体附加信息。
@@ -824,17 +812,14 @@ pub fn stream_base() -> String {
 /// 这一个受控入口，将来要加审计或路径限制也只需改这里。
 #[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CmdResult<Option<String>> {
-    // 安卓没有原生文件夹选择器：tauri-plugin-dialog 在移动端不提供
-    // pick_folder，而 SAF 的 ACTION_OPEN_DOCUMENT_TREE 返回 content:// URI，
-    // 与本项目基于路径的 std::fs 核心接不上（详见 crate::storage 的说明）。
-    //
-    // 安卓上选目录走另一条路：拿到全盘权限后直接在侧栏和列表里浏览，
-    // 目标目录本身就是当前 cwd，不需要额外的选择器。
-    // 明确报不支持而不是静默返回 None——前端靠错误码区分「取消了」和「用不了」。
+    // 安卓：tauri-plugin-dialog 在移动端不提供 pick_folder，改走自己的存储
+    // 插件弹系统原生目录选择器（SAF），再借全盘访问权限把树 URI 换算成路径——
+    // omy 的核心是路径语义的 std::fs，content:// URI 接不上原子写。
+    // 原来这里直接报 unsupported，而移动端首屏唯一的悬浮按钮就是它。
     #[cfg(target_os = "android")]
     {
-        let _ = (app, title);
-        Err(CmdError::code("unsupported"))
+        let _ = title;
+        crate::storage::pick_directory(&app)
     }
 
     #[cfg(not(target_os = "android"))]

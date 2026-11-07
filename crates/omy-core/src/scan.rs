@@ -174,29 +174,38 @@ impl ScanResult {
 }
 
 /// 从已打开的文件中读取恰好 `n` 字节（允许短读到 EOF）。
+///
+/// 用 take + read_to_end 而不是单次 `read`：`read` 只保证读到至少 1 字节，
+/// 网络盘与 Android FUSE 上常被拆段。也不按 `n` 预分配——`n` 可能来自
+/// 未验证的文件头，按它分配会让一个声称超大头部的坏文件吃掉内存。
 fn read_exact_upto(f: &mut File, n: usize) -> std::io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; n];
-    let mut filled = 0;
-    while filled < n {
-        let n_read = f.read(buf.get_mut(filled..).unwrap_or(&mut []))?;
-        if n_read == 0 {
-            break;
-        }
-        filled = filled.saturating_add(n_read);
-    }
-    buf.truncate(filled);
+    let mut buf = Vec::new();
+    f.take(n as u64).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
-/// 读取识别与解锁所需的头部字节。
+/// 读文件开头至多 `n` 字节（文件更短时读到末尾为止）。
 ///
-/// 分两步，避免为小文件读多余数据、也避免为大头部读不够：
-/// 1. 先读 [`MIN_PROBE_SIZE`]（480 B）= 固定头 + slot 区
-/// 2. 解析出 `header_len` 后，若 TLV 区还没读到，补读剩余部分
+/// 只为认文件头时用它，不要把整个文件读进来：几 GB 的视频读全文件
+/// 只为取前几百字节，是纯粹的 IO 浪费。各 crate 曾各写一份，且多数只调
+/// 一次 `read`，短读时会把加密文件误判成普通文件。
 ///
-/// 返回的字节数**至少**覆盖到 slot 区末尾；能读到 TLV 时也一并返回，
-/// 这样取文件名无需再次访问磁盘。
-fn read_header_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+/// # Errors
+///
+/// 文件打不开或读失败时返回。
+pub fn read_prefix(path: &Path, n: usize) -> std::io::Result<Vec<u8>> {
+    let mut f = File::open(path)?;
+    read_exact_upto(&mut f, n)
+}
+
+///
+/// 补读量同时受 [`parse_limits::MAX_HEADER_LEN`] 与文件实际长度约束：
+/// `header_len` 来自尚未验证的文件内容，头部不可能比文件本身长。
+///
+/// # Errors
+///
+/// 文件打不开或读失败时返回。
+pub fn read_header_area(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut f = File::open(path)?;
     let mut buf = read_exact_upto(&mut f, MIN_PROBE_SIZE)?;
 
@@ -239,7 +248,7 @@ fn read_header_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
 ///
 /// 文件可识别为 .omy 但头部损坏、版本不支持时返回相应错误。
 pub fn probe_file(path: &Path, session: &SessionKeys) -> Result<Option<ScanHit>> {
-    let prefix = match read_header_bytes(path) {
+    let prefix = match read_header_area(path) {
         Ok(p) => p,
         Err(e) => {
             return Err(Error::Io(std::io::Error::new(

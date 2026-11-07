@@ -104,13 +104,7 @@ pub fn run(_ctx: &Ctx<'_>, a: &Args) -> Result<()> {
 
 /// 只读文件的头部若干字节。
 fn read_head(p: &std::path::Path, n: usize) -> Result<Vec<u8>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(p)
-        .with_context(|| format!("打开 {} 失败", p.display()))?;
-    let mut buf = vec![0u8; n];
-    f.read_exact(&mut buf)
-        .with_context(|| format!("读取 {} 的头部失败", p.display()))?;
-    Ok(buf)
+    omy_core::scan::read_prefix(p, n).with_context(|| format!("读取 {} 失败", p.display()))
 }
 
 /// 解析 `起始-结束` 范围，返回 `(偏移, 长度)`。

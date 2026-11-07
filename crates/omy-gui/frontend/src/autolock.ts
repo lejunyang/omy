@@ -45,14 +45,21 @@ export function markActive() {
   lastActive = Date.now();
 }
 
-/** 真正执行锁定。
+/** 锁定入口，由 App 在 initAutoLock 时注入。
  *
- * 失败不重试也不报错：锁定失败的唯一可能是后端已经锁了，
- * 再弹一条错误只会让用户困惑。
+ * 不能只调 `api.lock()`：那只锁了后端，屏幕上已解密的文件名、缩略图、
+ * 打开的预览都还在——自动锁定防的正是「有人走到闲置的屏幕前」。
+ * 注入 App 的锁定流程，界面与后端一起清。没注入时退回只锁后端，
+ * 界面再由后端的 `session://locked` 事件兜底清理。
  */
+let lockFn: () => Promise<void> = async () => {
+  await api.lock();
+};
+
+/** 真正执行锁定。失败不重试也不报错：锁定失败的唯一可能是后端已经锁了。 */
 async function doLock() {
   try {
-    await api.lock();
+    await lockFn();
   } catch {
     /* 已经锁上了 */
   }
@@ -112,8 +119,9 @@ export function configureAutoLock(security) {
   }
 }
 
-/** 装上全局监听。只在应用启动时调一次。 */
-export function initAutoLock() {
+/** 装上全局监听。只在应用启动时调一次。`lock` 是带界面清理的完整锁定流程。 */
+export function initAutoLock(lock?: () => Promise<void>) {
+  if (lock) lockFn = lock;
   for (const ev of ['mousedown', 'keydown', 'wheel', 'touchstart']) {
     // passive：这些只是记时间戳，不阻止默认行为；
     // 不加的话滚动会被浏览器判定为可能阻塞而掉帧

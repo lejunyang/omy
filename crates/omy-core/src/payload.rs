@@ -197,6 +197,100 @@ pub fn encrypt_payload_with_progress(
     Ok((out, index))
 }
 
+/// 流式分块加密：从 `input` 逐块读明文、加密后交给 `sink`。
+///
+/// 与 [`encrypt_payload_with_progress`] 逐块产出相同的密文，但不要求明文整个
+/// 在内存里。块数由 `header.plaintext_size` 决定；`input` 实际长度与它不符
+/// （文件在加密过程中被改动）时报错，不写出与头部声明不一致的载荷。
+///
+/// 返回 `(明文内容哈希, 压缩索引)`。哈希与 [`crate::crypto::content_hash`] 相同，
+/// 边读边算，免得为了它再读一遍文件。
+///
+/// # Errors
+///
+/// 读取失败、长度不符、压缩或加密失败，或 `sink` 报错时返回。
+pub fn encrypt_payload_stream<R: std::io::Read>(
+    header: &FixedHeader,
+    payload_key: &SecretKey,
+    input: &mut R,
+    zstd_level: i32,
+    sink: &mut dyn FnMut(&[u8]) -> Result<()>,
+    mut progress: Option<ProgressFn<'_>>,
+) -> Result<([u8; 32], Vec<CompressionIndexEntry>)> {
+    use blake2::digest::{Digest, consts::U32};
+    use std::io::Read as _;
+
+    let compressed = header.compress_id == COMPRESS_ZSTD;
+    let chunk_size = u64::from(header.chunk_size);
+    let total = header.plaintext_size;
+    let n_chunks_u32 = u32::try_from(header.n_chunks())
+        .map_err(|_| Error::MalformedHeader { reason: "chunk count exceeds u32" })?;
+
+    let mut hasher = blake2::Blake2b::<U32>::new();
+    let mut index = Vec::new();
+    let mut ct_offset = 0u64;
+    let mut done = 0u64;
+    let mut raw = Vec::with_capacity(usize::try_from(chunk_size).unwrap_or(0));
+
+    for i in 0..n_chunks_u32 {
+        let want = total.saturating_sub(done).min(chunk_size);
+        raw.clear();
+        let got = (&mut *input).take(want).read_to_end(&mut raw).map_err(Error::Io)?;
+        if got as u64 != want {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "source shrank while encrypting",
+            )));
+        }
+        hasher.update(&raw);
+        let is_final = i.saturating_add(1) == n_chunks_u32;
+
+        let body = if compressed {
+            zstd::bulk::compress(&raw, zstd_level)
+                .map_err(|e| Error::Compression { reason: e.to_string() })?
+        } else {
+            raw.clone()
+        };
+        let ct = encrypt_chunk(
+            payload_key,
+            header.cipher_id,
+            &header.base_nonce,
+            &header.file_uuid,
+            i,
+            is_final,
+            &body,
+        )?;
+        if compressed {
+            index.push(CompressionIndexEntry {
+                ct_offset,
+                ct_len: u32::try_from(ct.len()).map_err(|_| Error::MalformedHeader {
+                    reason: "chunk ciphertext exceeds u32",
+                })?,
+                plain_len: u32::try_from(raw.len()).map_err(|_| Error::MalformedHeader {
+                    reason: "chunk plaintext exceeds u32",
+                })?,
+            });
+        }
+        sink(&ct)?;
+        ct_offset = ct_offset.saturating_add(ct.len() as u64);
+        done = done.saturating_add(want);
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(done, total);
+        }
+    }
+
+    // 读完声明的长度后源里还有数据：文件在加密过程中变长了
+    let mut probe = [0u8; 1];
+    if input.read(&mut probe).map_err(Error::Io)? != 0 {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "source grew while encrypting",
+        )));
+    }
+
+    Ok((hasher.finalize().into(), index))
+}
+
 /// 解密整个载荷。
 ///
 /// `index` 在压缩模式下必须提供（规范要求压缩文件必带 CRITICAL 索引 TLV）。

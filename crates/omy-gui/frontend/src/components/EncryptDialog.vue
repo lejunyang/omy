@@ -277,6 +277,11 @@ function submit() {
         <div v-if="mismatch" class="ferr">{{ i18n.t('encrypt.password_mismatch') }}</div>
       </div>
 
+      <!-- 高级选项默认收起：密码管理方式、文件名、压缩、缩略图、分块、强度都有
+           合理的默认值（来自设置里的「加密默认值」），大多数人不需要改。原来全部
+           平铺，手机上提交按钮要滚过一整屏才找得到 -->
+      <details class="enc-adv">
+        <summary><span class="enc-adv-t">{{ i18n.t('encrypt.advanced') }}</span><span class="enc-adv-sub">{{ i18n.t('encrypt.advanced_sub') }}</span></summary>
       <div class="field">
         <div class="flabel">{{ i18n.t('encrypt.slot_mode') }}</div>
         <label class="radio">
@@ -395,6 +400,8 @@ function submit() {
           </span>
         </label>
       </div>
+
+      </details>
 
       <div class="field">
         <div class="flabel">{{ i18n.t('encrypt.original') }}</div>

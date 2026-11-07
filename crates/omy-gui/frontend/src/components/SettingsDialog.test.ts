@@ -6,10 +6,11 @@ const h = vi.hoisted(() => ({
   configSet: vi.fn(),
   systemProxy: vi.fn(),
   checkConnection: vi.fn(),
+  setAccent: vi.fn(),
 }));
 
 const makeConfig = () => ({
-  ui: { language: 'auto', theme: 'auto', startup: 'last', view: 'grid' },
+  ui: { language: 'auto', theme: 'auto', accent: 'blue', startup: 'last', view: 'grid' },
   remote: {
     telegram_proxy_mode: 'system',
     telegram_proxy: '',
@@ -48,7 +49,7 @@ vi.mock('../api', () => ({
 vi.mock('../i18n', () => ({
   __v_isRef: false,
   t: (key: string) => key,
-  te: (key: string) => key,
+  te: (key: string, fallback?: string) => key || fallback || '',
   tn: (key: string, count: number) => `${key}:${count}`,
   formatSize: (n: number) => String(n),
 }));
@@ -64,7 +65,12 @@ vi.mock('../mobile-platform', () => ({
   isAndroid: false,
   registerMobileBack: vi.fn(() => () => {}),
 }));
-vi.mock('../theme', () => ({ theme: ref('auto'), setTheme: vi.fn() }));
+vi.mock('../theme', () => ({
+  theme: ref('auto'),
+  setTheme: vi.fn(),
+  setAccent: h.setAccent,
+  ACCENTS: ['blue', 'teal', 'violet', 'rose', 'amber'],
+}));
 vi.mock('../store', () => ({
   state: { cwd: '', remotePlaces: [] },
   setNotice: vi.fn(),
@@ -140,5 +146,113 @@ describe('SettingsDialog Telegram 全局代理', () => {
     expect(wrapper.find('[data-sf="telegram_proxy_mode"]').exists()).toBe(true);
     expect(wrapper.find('[data-sf="telegram_system_proxy"]').text()).toBe('socks5://127.0.0.1:6480');
     wrapper.unmount();
+  });
+});
+
+describe('SettingsDialog 通用组', () => {
+  const fieldsIn = (w: ReturnType<typeof mount>, sel: string) =>
+    w.findAll(`${sel} select`).map((s) => ({
+      sf: (s.attributes('data-sf') || '').replace(/^m_/, ''),
+      options: s.findAll('option').map((o) => o.attributes('value')),
+    }));
+
+  it('桌面面板与移动端平铺列出同样的字段、同样的顺序与选项', async () => {
+    // 不这样会怎样：两处模板各写一份，曾经顺序就已经对不上；给一边加了
+    // 选项，另一边的用户永远选不到，也没有任何检查会报错
+    const desk = mount(SettingsDialog);
+    await flushPromises();
+    const deskFields = fieldsIn(desk, '[data-pane="general"]');
+    desk.unmount();
+
+    setTestMobile(true);
+    const mob = mount(SettingsDialog);
+    await flushPromises();
+    const mobFields = fieldsIn(mob, '.mlist .mqrow');
+    mob.unmount();
+
+    expect(deskFields.map((f) => f.sf)).toEqual(['language', 'theme', 'view', 'startup']);
+    expect(mobFields).toEqual(deskFields);
+  });
+
+  it('两端都有同一排主题色色块，排在主题之后', async () => {
+    // 不这样会怎样：色块不是 select，上面那条比对抓不到它；只在一端渲染时
+    // 另一端的用户根本找不到主题色设置
+    const swatches = (w: ReturnType<typeof mount>, sel: string) => ({
+      after: w.find(`${sel}:has(.accentpick)`).element.previousElementSibling
+        ?.querySelector('select')?.getAttribute('data-sf')?.replace(/^m_/, ''),
+      list: w.findAll(`${sel} .swatch`).map((b) => b.attributes('data-accent')),
+    });
+    const desk = mount(SettingsDialog);
+    await flushPromises();
+    const d = swatches(desk, '[data-pane="general"] .row');
+    desk.unmount();
+    setTestMobile(true);
+    const mob = mount(SettingsDialog);
+    await flushPromises();
+    const m = swatches(mob, '.mlist .mqrow');
+    mob.unmount();
+    expect(d).toEqual({ after: 'theme', list: ['blue', 'teal', 'violet', 'rose', 'amber'] });
+    expect(m).toEqual(d);
+  });
+
+  it('点色块立即应用主题色，并随保存写进配置', async () => {
+    h.configSet.mockReset();
+    h.configSet.mockResolvedValue(undefined);
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    expect(w.find('[data-sf="accent_blue"]').attributes('aria-checked')).toBe('true');
+    await w.find('[data-sf="accent_violet"]').trigger('click');
+    // 不这样会怎样：只写配置不应用，用户点了色块界面毫无变化，无从比较
+    expect(h.setAccent).toHaveBeenLastCalledWith('violet');
+    expect(w.find('[data-sf="accent_violet"]').attributes('aria-checked')).toBe('true');
+    expect(w.find('[data-sf="accent_blue"]').attributes('aria-checked')).toBe('false');
+    await w.find('[data-si="nav-files"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：只应用不写配置，下次启动配置校正会把它改回原来的颜色
+    expect(h.configSet.mock.calls.at(-1)?.[0].ui.accent).toBe('violet');
+    w.unmount();
+  });
+
+  it('移动端改语言立即生效并写进配置', async () => {
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-sf="m_language"]').setValue('en');
+    // 不这样会怎样：两处共用一套字段后，语言若走了「只写配置」的分支，
+    // 界面要等重启才切过去，用户以为没选上
+    expect(w.emitted('lang')?.at(-1)).toEqual(['en']);
+    expect((w.find('[data-sf="m_language"]').element as HTMLSelectElement).value).toBe('en');
+    w.unmount();
+  });
+});
+
+describe('SettingsDialog 移动端底栏离开', () => {
+  it('离开前保存在设置里做的改动', async () => {
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-sf="m_view"]').setValue('list');
+    await w.find('[data-si="nav-files"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：手机上没有关闭按钮，底栏是主要出口；不保存的话改的
+    // 默认视图、自动锁定、加密默认值全部丢失，语言主题重启后也变回去
+    expect(h.configSet).toHaveBeenCalledTimes(1);
+    expect(h.configSet.mock.calls[0][0].ui.view).toBe('list');
+    expect(w.emitted('close')).toBeTruthy();
+    w.unmount();
+  });
+
+  it('保存失败时留在设置页并显示错误', async () => {
+    setTestMobile(true);
+    h.configSet.mockRejectedValue(new Error('disk full'));
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    await w.find('[data-si="nav-places"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：页面关掉了，用户以为改好了，下次启动才发现没生效
+    expect(w.emitted('places')).toBeFalsy();
+    expect(w.find('[data-sf="m_error"]').text()).toBe('settings.save_failed');
+    w.unmount();
   });
 });

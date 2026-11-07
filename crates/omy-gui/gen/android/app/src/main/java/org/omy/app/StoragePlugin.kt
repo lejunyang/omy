@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
@@ -192,6 +193,87 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
   @Suppress("UNUSED_PARAMETER")
   fun onAllFilesAccessResult(invoke: Invoke, result: ActivityResult) {
     invoke.resolve(currentState())
+  }
+
+  /**
+   * 用系统原生的目录选择器（SAF）选一个文件夹，返回它的文件系统路径。
+   *
+   * # 为什么能把 SAF 的结果当路径用
+   *
+   * omy 的核心是路径语义的 std::fs，SAF 的 content:// URI 接不上原子写。但
+   * 我们已经拿到了全盘访问（MANAGE_EXTERNAL_STORAGE），共享存储上的路径本来
+   * 就能直接读写；这里只是借系统选择器的界面让用户挑位置，再把树 URI 换算
+   * 回路径。原来 Android 上「打开文件夹」直接报不支持，而那是移动端首屏
+   * 唯一的悬浮按钮。
+   *
+   * 换算不出来（第三方云盘等不落在本机卷上的提供方）时明确报错，而不是
+   * 返回一个读不了的假路径。用户取消时返回 `path: null`。
+   */
+  @Command
+  fun pickDirectory(invoke: Invoke) {
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+    if (!canResolve(intent)) {
+      invoke.reject("此设备没有系统目录选择器", "picker_unavailable")
+      return
+    }
+    startActivityForResult(invoke, intent, "onPickDirectoryResult")
+  }
+
+  @ActivityCallback
+  fun onPickDirectoryResult(invoke: Invoke, result: ActivityResult) {
+    val ret = JSObject()
+    val uri = result.data?.data
+    if (result.resultCode != Activity.RESULT_OK || uri == null) {
+      ret.put("path", null)
+      invoke.resolve(ret)
+      return
+    }
+    val path = treeUriToPath(uri)
+    if (path == null) {
+      invoke.reject("这个位置不在本机存储上，无法直接浏览", "unsupported_location")
+      return
+    }
+    ret.put("path", path)
+    invoke.resolve(ret)
+  }
+
+  /**
+   * 把 ExternalStorage 提供方的树 URI 换算成路径。
+   *
+   * 文档 ID 形如 `primary:Download/相册`（主存储）或 `A1B2-C3D4:DCIM`（SD 卡，
+   * 冒号前是卷 UUID）；下载提供方有时给 `raw:/storage/emulated/0/...`。
+   * 其余形式（云盘、媒体库虚拟目录）不对应本机路径，返回 null。
+   */
+  private fun treeUriToPath(uri: Uri): String? {
+    val docId = try {
+      DocumentsContract.getTreeDocumentId(uri)
+    } catch (e: IllegalArgumentException) {
+      return null
+    }
+    if (docId.startsWith("raw:")) {
+      return existingDir(docId.removePrefix("raw:"))
+    }
+    val colon = docId.indexOf(':')
+    if (colon < 0) return null
+    val volumeId = docId.substring(0, colon)
+    val rel = docId.substring(colon + 1).trim('/')
+    val root: String? = if (volumeId.equals("primary", ignoreCase = true)) {
+      @Suppress("DEPRECATION")
+      Environment.getExternalStorageDirectory()?.absolutePath
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      val sm = activity.getSystemService(StorageManager::class.java)
+      sm.storageVolumes.firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }
+        ?.directory?.absolutePath
+    } else {
+      "/storage/$volumeId"
+    }
+    if (root == null) return null
+    return existingDir(if (rel.isEmpty()) root else "$root/$rel")
+  }
+
+  private fun existingDir(path: String): String? {
+    val f = java.io.File(path)
+    return if (f.isDirectory) f.absolutePath else null
   }
 
   /** API 29 及以下的运行时权限回调。同样以实查结果为准。 */

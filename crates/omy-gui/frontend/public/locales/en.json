@@ -33,7 +33,8 @@
     "menu": "Menu",
     "tab_files": "Files",
     "tab_devices": "Devices",
-    "global": "Global"
+    "global": "Global",
+    "new_title": "New"
   },
   "unlock": {
     "title": "Unlock",
@@ -45,7 +46,7 @@
     "pick_folder": "Choose a folder first",
     "pick_folder_hint": "Unlock parameters live in the files, so pick a folder before typing a password",
     "browse": "Choose folder…",
-    "add_password": "Add password",
+    "add_password": "Add another password",
     "recursive": "Include subfolders",
     "try_here": "Unlock this folder",
     "quick_hint": "Enter a password to unlock encrypted files in this folder",
@@ -95,7 +96,7 @@
     "restore_partial": "{{ok}} restored, {{failed}} failed: {{reason}}"
   },
   "file": {
-    "locked_name": "🔒 Encrypted",
+    "locked_name": "Encrypted",
     "locked_meta": "Password required",
     "unknown": "Unknown",
     "folder": "Folder",
@@ -159,7 +160,9 @@
     "slot_mode_deniable_desc": "Nobody can tell how many passwords this file has — not even you. Trade-off: removing a password later can only \"keep the current one and clear the rest\", which also wipes the recovery code",
     "slot_mode_managed": "Manageable",
     "slot_mode_managed_desc": "Shows what each slot is (password / recovery code / device) and lets you remove one precisely while keeping the others. Trade-off: anyone who can open the file can also see this list",
-    "slot_mode_permanent": "This choice cannot be changed after encryption — the mode lives in the file header, so switching means re-encrypting."
+    "slot_mode_permanent": "This choice cannot be changed after encryption — the mode lives in the file header, so switching means re-encrypting.",
+    "advanced": "Advanced options",
+    "advanced_sub": "File name, compression, thumbnail, strength… defaults are usually fine"
   },
   "video": {
     "title": "Video processing",
@@ -262,7 +265,9 @@
     "cannot_preview": "This format cannot be previewed in the app",
     "loading": "Loading…",
     "rewind_10": "Rewind 10 seconds",
-    "forward_10": "Forward 10 seconds"
+    "forward_10": "Forward 10 seconds",
+    "prev_file": "Previous",
+    "next_file": "Next"
   },
   "view": {
     "grid": "Grid view",
@@ -277,7 +282,9 @@
     "kind": "Type",
     "search": "Search…",
     "select_all": "Select all",
-    "clear_selection": "Clear selection"
+    "clear_selection": "Clear selection",
+    "delete_short": "Delete",
+    "more": "More"
   },
   "kind": {
     "video": "Video",
@@ -515,7 +522,11 @@
     "folder_created": "Folder created",
     "trashed_n": "Moved {{n}} item(s) to Trash",
     "deleted_n": "Permanently deleted {{n}} item(s)",
-    "delete_partial": "Deleted {{ok}}, failed {{bad}}"
+    "delete_partial": "Deleted {{ok}}, failed {{bad}}",
+    "delete_confirm_title_one": "Permanently delete this item?",
+    "delete_confirm_title_other": "Permanently delete these {{count}} items?",
+    "delete_confirm_msg": "They will not go to the recycle bin and cannot be recovered.",
+    "trash_unsupported": "This platform has no system recycle bin; only permanent deletion is available"
   },
   "settings": {
     "title": "Settings",
@@ -533,6 +544,12 @@
     "theme": "Theme",
     "theme_dark": "Dark",
     "theme_light": "Light",
+    "accent": "Accent color",
+    "accent_blue": "Blue",
+    "accent_teal": "Teal",
+    "accent_violet": "Violet",
+    "accent_rose": "Rose",
+    "accent_amber": "Amber",
     "follow_system": "Follow system",
     "startup": "On startup open",
     "startup_last": "Last location",
@@ -766,7 +783,8 @@
     "unlock_submit": "Unlock",
     "unlock_wrong": "Wrong password, try again",
     "unlocked": "Unlocked",
-    "locked_hint": "This location is encrypted — enter the password to unlock"
+    "locked_hint": "This location is encrypted — enter the password to unlock",
+    "kind_virtual": "Virtual remote"
   },
   "common": {
     "back": "Back",
@@ -949,7 +967,8 @@
     "st_skipped": "Already cached, skipped",
     "summary": "{{running}} running · {{waiting}} waiting · {{failed}} failed",
     "speed": "{{rate}}/s",
-    "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling."
+    "slow_note": "Telegram rate-limits downloads for non-Premium accounts. This is not omy’s ceiling.",
+    "eta": "{{time}} left"
   },
   "cache_all": {
     "menu": "Cache all…",
@@ -1085,5 +1104,19 @@
     "create": "Create group",
     "create_hint": "Creates a Telegram supergroup whose only initial member is you. You still confirm forwarding afterward.",
     "create_failed": "Failed to create group"
+  },
+  "sort": {
+    "title": "Sort",
+    "name": "Name",
+    "size": "Size",
+    "modified": "Modified",
+    "type": "Type",
+    "asc": "ascending",
+    "desc": "descending"
+  },
+  "drop": {
+    "hint": "Drop to encrypt these files",
+    "mixed_dirs": "Drop files from a single folder at a time",
+    "nothing_to_encrypt": "Everything you dropped is already encrypted"
   }
 }

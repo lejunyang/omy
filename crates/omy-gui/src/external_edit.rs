@@ -98,7 +98,60 @@ impl ExternalEdits {
             *g = Some(roots);
         }
         self.detect_changes();
+        // 上次运行没锁定就被杀掉时，加密文件的明文副本还留在私有目录里。
+        // 重启后会话密钥已经没了，这些副本本该随上次锁定一起清掉
+        self.purge_encrypted_plaintext();
         Ok(())
+    }
+
+    /// 用指定目录初始化（测试用；正式入口是 Android 上的 `configure`）。
+    #[cfg(test)]
+    fn with_root(root: &Path) -> Self {
+        let me = Self::new();
+        if let Ok(mut g) = me.roots.lock() {
+            *g = Some(Roots { files: root.join("files"), state: root.join("state.json") });
+        }
+        me
+    }
+
+    /// 删掉加密文件的明文工作副本（锁定时、启动时调用）。返回清掉的会话数。
+    ///
+    /// 外部打开加密文件时，明文落进应用私有目录是一条显式例外；锁定的语义是
+    /// 「从现在起什么都看不到」，原来锁定只撤销了 FileProvider 授权，明文副本
+    /// 与 `source.omy` 一直留在磁盘上，只读打开的还会被下次直接复用。
+    ///
+    /// 有未同步改动（dirty / 冲突 / 待上传）的会话**保留**：删掉就是丢掉用户
+    /// 在外部应用里做的修改。它们要等下次解锁后同步，同步成功后会被下一次
+    /// 锁定清掉。这里不做安全擦除（覆写），项目不承诺抗取证（见 README）。
+    pub fn purge_encrypted_plaintext(&self) -> usize {
+        self.detect_changes();
+        let victims: Vec<Session> = self
+            .snapshot()
+            .into_iter()
+            .filter(|s| s.encrypted && !s.dirty && !s.conflict && s.pending_file.is_none())
+            .collect();
+        if victims.is_empty() {
+            return 0;
+        }
+        for s in &victims {
+            let local = PathBuf::from(&s.local_file);
+            let _ = std::fs::remove_file(&local);
+            let _ = std::fs::remove_file(dirty_marker(&local));
+            if let Some(src) = &s.source_file {
+                let _ = std::fs::remove_file(src);
+            }
+            // 会话目录（files/<id>/）此时应已为空；非空说明还有别的东西，不硬删
+            if let Some(dir) = local.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        if let Ok(mut map) = self.sessions.lock() {
+            for s in &victims {
+                map.remove(&s.id);
+            }
+        }
+        let _ = self.persist();
+        victims.len()
     }
 
     fn roots(&self) -> Result<Roots, CmdError> {
@@ -259,8 +312,13 @@ pub async fn external_edit_open(
             .read_with_revision(&req.path)
             .await
             .map_err(|e| remote_error(&e))?;
+        // 先判能不能编辑，再落明文：原来这一步在写完明文之后，失败时明文副本
+        // 已经在磁盘上，却没有任何会话记录它，锁定和清理都找不到它
+        if req.editable && revision.is_none() {
+            return Err(CmdError::code("external_edit_revision_unavailable"));
+        }
         encrypted = omy_core::file::is_omy_file(&remote);
-        let plaintext = if encrypted {
+        let (remote, plaintext) = if encrypted {
             let header =
                 omy_core::file::peek_header(&remote).map_err(|_| CmdError::code("corrupted"))?;
             let keks: Vec<Kek> = state
@@ -271,30 +329,29 @@ pub async fn external_edit_open(
                         .collect()
                 })
                 .unwrap_or_default();
-            let remote2 = remote.clone();
+            // 密文移进阻塞任务再还回来，而不是克隆一份：文件可能有几百 MB，
+            // 克隆会让峰值内存多出整整一份密文
             tokio::task::spawn_blocking(move || {
                 let opened =
-                    omy_core::file::open(&remote2, &keks).map_err(|_| CmdError::code("locked"))?;
+                    omy_core::file::open(&remote, &keks).map_err(|_| CmdError::code("locked"))?;
                 if opened.is_container() {
                     return Err(CmdError::code("remote_container_unsupported"));
                 }
-                opened
-                    .decrypt_all(&remote2)
-                    .map_err(|_| CmdError::code("decrypt_failed"))
+                let plain = opened
+                    .decrypt_all(&remote)
+                    .map_err(|_| CmdError::code("decrypt_failed"))?;
+                Ok((remote, plain))
             })
             .await
             .map_err(|_| CmdError::code("internal"))??
         } else {
-            remote.clone()
+            (Vec::new(), remote)
         };
         omy_core::fsatomic::write_atomic(&local, &plaintext)
             .map_err(|_| CmdError::code("external_edit_write_failed"))?;
         if encrypted {
             omy_core::fsatomic::write_atomic(&source, &remote)
                 .map_err(|_| CmdError::code("external_edit_write_failed"))?;
-        }
-        if req.editable && revision.is_none() {
-            return Err(CmdError::code("external_edit_revision_unavailable"));
         }
         let fp =
             fingerprint_file(&local).map_err(|_| CmdError::code("external_edit_write_failed"))?;
@@ -307,7 +364,8 @@ pub async fn external_edit_open(
             mime: req.mime.clone(),
             encrypted,
             editable: req.editable || existing.as_ref().is_some_and(|s| s.editable),
-            remote_size: remote.len() as u64,
+            // 未加密时密文缓冲是空的，远端大小就是明文大小
+            remote_size: if encrypted { remote.len() } else { plaintext.len() } as u64,
             revision: revision.unwrap_or_default(),
             local_file: local.to_string_lossy().into_owned(),
             source_file: encrypted.then(|| source.to_string_lossy().into_owned()),
@@ -1023,6 +1081,63 @@ mod tests {
             !explicit_grant_allowed(true),
             "加密文件的明文工作副本绝不能获得长期包级授权"
         );
+    }
+
+    fn session(dir: &Path, id: &str, encrypted: bool, dirty: bool) -> Session {
+        let sdir = dir.join("files").join(id);
+        let _ = std::fs::create_dir_all(&sdir);
+        let local = sdir.join("doc.txt");
+        let _ = std::fs::write(&local, b"plaintext");
+        let source = sdir.join("source.omy");
+        let _ = std::fs::write(&source, b"cipher");
+        Session {
+            version: STATE_VERSION,
+            id: id.to_owned(),
+            place_id: String::from("p"),
+            remote_path: String::from("/doc.txt"),
+            display_name: String::from("doc.txt"),
+            mime: String::from("text/plain"),
+            encrypted,
+            editable: true,
+            remote_size: 6,
+            revision: String::from("r1"),
+            local_file: local.to_string_lossy().into_owned(),
+            source_file: encrypted.then(|| source.to_string_lossy().into_owned()),
+            pending_file: None,
+            pending_fingerprint: None,
+            synced_fingerprint: fingerprint_file(&local).unwrap_or_default(),
+            dirty,
+            conflict: false,
+            last_error: None,
+            updated_at: 0,
+        }
+    }
+
+    /// 锁定时删掉加密文件的明文副本，但保留有未同步改动的与普通文件的。
+    ///
+    /// 不这样会怎样：锁定只撤销授权，明文副本一直躺在私有目录里，下次
+    /// 只读打开还会直接复用；反过来若连 dirty 的也删，用户在外部应用里的
+    /// 修改就丢了。
+    #[test]
+    fn purge_removes_clean_encrypted_plaintext_only() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("omy-ext-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let edits = ExternalEdits::with_root(&root);
+        let clean = session(&root, "clean", true, false);
+        let dirty = session(&root, "dirty", true, true);
+        let plain = session(&root, "plain", false, false);
+        for s in [clean.clone(), dirty.clone(), plain.clone()] {
+            edits.upsert(s).map_err(|_| "upsert")?;
+        }
+        assert_eq!(edits.purge_encrypted_plaintext(), 1);
+        assert!(!Path::new(&clean.local_file).exists(), "加密且已同步的明文必须删掉");
+        assert!(!Path::new(clean.source_file.as_deref().ok_or("src")?).exists());
+        assert!(Path::new(&dirty.local_file).exists(), "有未同步改动的不能删");
+        assert!(Path::new(&plain.local_file).exists(), "普通文件本就是明文，不动");
+        let ids: Vec<String> = edits.snapshot().into_iter().map(|s| s.id).collect();
+        assert!(!ids.contains(&String::from("clean")));
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[test]

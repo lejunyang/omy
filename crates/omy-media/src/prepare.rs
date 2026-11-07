@@ -273,6 +273,87 @@ pub fn prepare(data: &[u8], opts: &PrepareOptions) -> Prepared {
     out
 }
 
+/// 小于等于它的文件整份读进内存做媒体探测（与 [`prepare`] 完全相同）。
+pub const PREPARE_IN_MEMORY_MAX: u64 = 256 * 1024 * 1024;
+
+/// 大文件只取前这么多字节做探测与抽帧。
+const LARGE_HEAD_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 按路径生成媒体附加信息，内存占用有上限。
+///
+/// [`prepare`] 要求整个文件在内存里，抽帧时还会再拷一份、尾部 moov 的 MP4
+/// 还要重排出第三份——几 GB 的视频加密时光这一步就要好几倍文件大小的内存，
+/// 手机上直接被系统杀掉。这里：
+///
+/// - 不超过 [`PREPARE_IN_MEMORY_MAX`] 的文件，行为与 `prepare` 完全相同；
+/// - 更大的 MP4，按 box 头部 seek 找到 `ftyp` 与 `moov`，用二者拼成的小缓冲
+///   探测：时长、编码、分级与 moov 副本都与整份探测一致（moov 原样拷贝，
+///   偏移仍对应原始载荷）。moov 在前 32 MiB 内时直接用这段前缀，还能抽帧；
+///   moov 在尾部时没有可解码的帧，缩略图缺省并记一条警告；
+/// - 其他大文件用前 32 MiB 探测与抽帧（取不到 10% 处的帧时退到首帧）。
+#[must_use]
+pub fn prepare_file(path: &std::path::Path, opts: &PrepareOptions) -> Prepared {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut out = Prepared::default();
+    if !opts.media_meta && !opts.moov_cache && opts.thumbnail == ThumbSource::None {
+        return out;
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size <= PREPARE_IN_MEMORY_MAX {
+        return match std::fs::read(path) {
+            Ok(data) => prepare(&data, opts),
+            Err(e) => {
+                out.warnings.push(format!("读取文件失败：{e}"));
+                out
+            }
+        };
+    }
+
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            out.warnings.push(format!("读取文件失败：{e}"));
+            return out;
+        }
+    };
+    let mut head = Vec::new();
+    if let Err(e) = (&mut f).take(LARGE_HEAD_BYTES).read_to_end(&mut head) {
+        out.warnings.push(format!("读取文件失败：{e}"));
+        return out;
+    }
+    if !mp4::looks_like_mp4(&head) {
+        return prepare(&head, opts);
+    }
+    let boxes = mp4::top_level_boxes_in(&mut f).unwrap_or_default();
+    let find = |k: &[u8; 4]| boxes.iter().find(|b| &b.kind == k).copied();
+    let (Some(ftyp), Some(moov)) = (find(b"ftyp"), find(b"moov")) else {
+        return prepare(&head, opts);
+    };
+    if moov.offset.saturating_add(moov.size) <= head.len() as u64 {
+        // moov 在前缀里：前缀本身就是一个能探测、能抽前段帧的 MP4
+        return prepare(&head, opts);
+    }
+    // moov 在尾部：只拼 ftyp + moov 用于探测与 moov 副本
+    let mut buf = Vec::new();
+    for b in [ftyp, moov] {
+        let Ok(len) = usize::try_from(b.size) else {
+            return prepare(&head, opts);
+        };
+        let mut part = vec![0u8; len];
+        if f.seek(SeekFrom::Start(b.offset)).and_then(|_| f.read_exact(&mut part)).is_err() {
+            return prepare(&head, opts);
+        }
+        buf.extend_from_slice(&part);
+    }
+    let no_thumb = PrepareOptions { thumbnail: ThumbSource::None, ..opts.clone() };
+    let mut p = prepare(&buf, &no_thumb);
+    if opts.thumbnail != ThumbSource::None {
+        p.warnings.push(String::from("文件过大且 moov 在尾部，未生成视频缩略图"));
+    }
+    p
+}
+
 /// 判断探测结果是不是**静态图片**（而非视频）。
 ///
 /// # 为什么不能用 `has_video()` 或帧率

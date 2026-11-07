@@ -1,14 +1,15 @@
 /* omy 界面样式
  *
- * 色值与尺寸取自 docs/research/08-ui-ux-design.md §4 与
- * docs/research/appendix/ui-prototype.html，不自行发挥——
- * 那份配色已经过对比度校验（WCAG AA）。
+ * 尺寸取自 docs/research/08-ui-ux-design.md §4 与
+ * docs/research/appendix/ui-prototype.html。配色逐项做过 WCAG AA 对比度
+ * 校验，改色时必须重算，数值写在各令牌旁。
  *
  * 布局一律用逻辑属性（margin-inline-start 而非 margin-left），
  * 为将来的 RTL 预留（文档 §7.5）。事后再改代价很高。
  */
 
 :root {
+  /* 主色：蓝，是默认主题色；其余主题色见下方 data-accent 各段。 */
   color-scheme: dark;
   --bg: #0d1117;
   --bg2: #161b22;
@@ -16,19 +17,34 @@
   --border: #30363d;
   --fg: #e6edf3;
   --fg2: #8b949e;
+  /* 在暗底上当图标、边框、链接用的那一档，调亮以便显眼（对 --bg 6.11） */
   --accent: #4493f8;
   /* 专给「实心底 + 白字」用的那一档。
      不能直接用 --accent：它被调亮以便在暗背景上当边框/图标时显眼，
      可白字压上去只有 3.10——**最常点的主操作反而最不清楚**。
      白字对 #1f6feb 是 4.63。 */
   --accent-solid: #1f6feb;
+  /* 品牌标与渐变面用的两端色，不随明暗变：logo 在两种底色上应是同一个样子 */
+  --brand-1: #4493f8;
+  --brand-2: #1f6feb;
+  /* 选中、悬停的淡底。原先三处在用却从未定义，那几处高亮实际是透明的 */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   /* 禁用态文字。--fg2 压在 --bg3 上只有 4.53（浅色更糟，只有 3.80）。
      禁用不等于看不清：用户仍要读懂那按钮是什么，才知道该满足什么
      条件才能点。#9198a1 对 --bg3 是 4.84。 */
   --fg-dim: #9198a1;
   --ok: #3fb950;
   --warn: #d29922;
-  --danger: #f85149;
+  --danger: #f85149;      /* 对 --bg3 4.83 */
+  /* 文件类型色：图标按类型着色，一眼分得出文件夹、图片、视频、音频、文档、压缩包 */
+  --c-folder: #e0b44c;
+  --c-image: #5ccf8e;
+  --c-video: #a78bfa;
+  --c-audio: #f27bb5;
+  --c-doc: #6aaef7;
+  --c-archive: #f59a5b;
+  /* 品牌渐变：logo 与少数强调面（空状态插图）用 */
+  --brand-grad: linear-gradient(135deg, var(--brand-1) 0%, var(--brand-2) 100%);
   --r-s: 4px;
   --r-m: 8px;
   --r-l: 12px;
@@ -61,7 +77,7 @@
   --border: #e5e7eb;
   --fg: #1f2328;
   --fg2: #656d76;
-  --accent: #2563eb;
+  --accent: #2563eb;      /* 对 --bg 5.17、--bg3 4.53 */
   /* 浅色下 --accent 白字已有 5.17，仍单列一条：这样后人调 --accent
      的明度时不会顺手把「实心底 + 白字」那条对比度一起带坏 */
   --accent-solid: #2563eb;
@@ -70,6 +86,77 @@
   --ok: #16a34a;
   --warn: #d97706;
   --danger: #dc2626;
+  --c-folder: #b7791f;
+  --c-image: #15803d;
+  --c-video: #6d28d9;
+  --c-audio: #be185d;
+  --c-doc: #1d4ed8;
+  --c-archive: #c2410c;
+}
+
+/* ---- 主题色预设（设置 → 通用 → 主题色）----
+ *
+ * 只换色相，明暗仍由 data-theme 决定，所以每个预设写三段：
+ * 1. `[data-accent=…]`：品牌两端色。**不加 :root**——设置页的色块也挂着
+ *    data-accent，靠这一段就地拿到各自的颜色，色值不必在组件里再抄一份。
+ * 2. `:root[data-accent=…]`：深色下的 --accent / --accent-solid。
+ * 3. `:root[data-theme='light'][data-accent=…]`：浅色下的取值。特异性比
+ *    第 2 段高，浅色时一定盖得住它。
+ * 蓝是 :root 本身的默认值，只需第 1 段（给色块用）。
+ * 对比度同前：深色 --accent 对 --bg、白字对 --accent-solid、浅色 --accent
+ * 对 --bg / --bg3，都要 ≥ 4.5。新增预设要重算，并同步 theme.ts 的 ACCENTS。 */
+[data-accent='blue'] {
+  --brand-1: #4493f8;
+  --brand-2: #1f6feb;
+}
+[data-accent='teal'] {
+  --brand-1: #2fd0b9;
+  --brand-2: #0f766e;
+}
+:root[data-accent='teal'] {
+  --accent: #2fd0b9;       /* 对 --bg 9.77 */
+  --accent-solid: #0f766e; /* 白字 5.47 */
+}
+:root[data-theme='light'][data-accent='teal'] {
+  --accent: #0d7469;       /* 对 --bg 5.65、--bg3 4.95 */
+  --accent-solid: #0d7469;
+}
+[data-accent='violet'] {
+  --brand-1: #a78bfa;
+  --brand-2: #7c3aed;
+}
+:root[data-accent='violet'] {
+  --accent: #a78bfa;       /* 对 --bg 6.95 */
+  --accent-solid: #7c3aed; /* 白字 5.70 */
+}
+:root[data-theme='light'][data-accent='violet'] {
+  --accent: #6d28d9;       /* 对 --bg 7.10、--bg3 6.22 */
+  --accent-solid: #6d28d9;
+}
+[data-accent='rose'] {
+  --brand-1: #fb7185;
+  --brand-2: #e11d48;
+}
+:root[data-accent='rose'] {
+  --accent: #fb7185;       /* 对 --bg 7.03 */
+  --accent-solid: #e11d48; /* 白字 4.70 */
+}
+:root[data-theme='light'][data-accent='rose'] {
+  --accent: #be123c;       /* 对 --bg 6.29、--bg3 5.51 */
+  --accent-solid: #be123c;
+}
+[data-accent='amber'] {
+  --brand-1: #f0a83a;
+  --brand-2: #b45309;
+}
+:root[data-accent='amber'] {
+  --accent: #f0a83a;       /* 对 --bg 9.34 */
+  --accent-solid: #b45309; /* 白字 5.02 */
+}
+:root[data-theme='light'][data-accent='amber'] {
+  /* 不用 #b45309：对 --bg3 只有 4.40 */
+  --accent: #a65006;       /* 对 --bg 5.57、--bg3 4.88 */
+  --accent-solid: #a65006;
 }
 
 * {
@@ -347,10 +434,20 @@ input {
   border-block-end: 1px solid var(--border);
 }
 
+/* 品牌标 + 字标。字标用略紧的字距与较重的字重，与图标一起读成一个整体 */
 .brand {
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.2px;
+}
+
+.brand .brandmark {
+  flex: none;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
 }
 
 .spacer {
@@ -687,6 +784,30 @@ input {
   border-color: transparent;
 }
 
+/* 按文件类型着色：图标用类型色，缩略图区铺一层很淡的同色底。
+   原来所有图块同一个灰底灰图标，文件夹、图片、视频要读名字才分得清。
+   --kc 由类别类给出（file-icons.ts 的 FileKind），网格与列表共用 */
+.k-folder,
+.k-folder-locked { --kc: var(--c-folder); }
+.k-image,
+.k-sheet { --kc: var(--c-image); }
+.k-video { --kc: var(--c-video); }
+.k-audio { --kc: var(--c-audio); }
+.k-doc { --kc: var(--c-doc); }
+.k-archive { --kc: var(--c-archive); }
+.k-locked,
+.k-unlocked { --kc: var(--accent); }
+.k-other { --kc: var(--fg2); }
+
+.card .thumb[class*='k-'] > .app-icon,
+.lrow .ic[class*='k-'] {
+  color: var(--kc, var(--fg2));
+}
+
+.card .thumb[class*='k-']:not(.lock):not(.dir) {
+  background: color-mix(in srgb, var(--kc, transparent) 10%, var(--bg3));
+}
+
 .tier {
   position: absolute;
   inset-inline-end: 5px;
@@ -785,6 +906,75 @@ input {
   text-align: end;
   font-size: 11px;
   color: var(--fg2);
+  flex: 0 0 auto;
+}
+
+/* 列表列头：与行同样的列宽，按钮可点排序；当前排序列带方向箭头 */
+.lhead {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2.5);
+  padding-inline: calc(var(--sp) * 2);
+  border-block-end: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+
+.lhead .ic {
+  width: 24px;
+  flex: 0 0 auto;
+}
+
+.lhead button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lhead button:hover,
+.lhead button.sorted {
+  color: var(--fg);
+}
+
+.lhead button.sorted::after {
+  content: '';
+  display: inline-block;
+  margin-inline-start: 5px;
+  border-inline: 4px solid transparent;
+  vertical-align: middle;
+}
+
+.lhead button.sorted.asc::after {
+  border-block-end: 5px solid currentColor;
+}
+
+.lhead button.sorted.desc::after {
+  border-block-start: 5px solid currentColor;
+}
+
+.lhead .nm {
+  flex: 1;
+  text-align: start;
+}
+
+.lhead .sz,
+.lhead .tg {
+  width: 84px;
+  text-align: end;
+  flex: 0 0 auto;
+}
+
+.lhead .tm {
+  width: 150px;
+  text-align: end;
   flex: 0 0 auto;
 }
 
@@ -1366,12 +1556,69 @@ input {
   justify-content: center;
   min-height: 0;
   padding: calc(var(--sp) * 4);
+  position: relative;
+  overflow: hidden;
+  /* 竖向滚动交给浏览器（文本预览要能滚），横向滑动留给组件翻页 */
+  touch-action: pan-y;
+}
+
+/* 图片：双指缩放与拖动全部由组件处理，不交给 WebView 的页面缩放 */
+.overlay-body.pv-touch {
+  touch-action: none;
 }
 
 .overlay-body img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+.pv-img {
+  transition: transform var(--dur-2) var(--ease-out);
+  cursor: zoom-in;
+  user-select: none;
+}
+
+.pv-img.zoomed {
+  cursor: grab;
+  /* 拖动与双指缩放要跟手，不能带过渡 */
+  transition: none;
+}
+
+/* 上一个 / 下一个：贴在左右两侧的圆形按钮 */
+.pv-nav {
+  position: absolute;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity var(--dur-1) ease, background-color var(--dur-1) ease;
+}
+
+.pv-nav:hover {
+  opacity: 1;
+  background: rgb(0 0 0 / 65%);
+}
+
+.pv-nav.prev {
+  inset-inline-start: 12px;
+}
+
+.pv-nav.next {
+  inset-inline-end: 12px;
+}
+
+.pv-nav.next .app-icon {
+  transform: scaleX(-1);
 }
 
 .omy-video-player {
@@ -1976,15 +2223,15 @@ input {
 
 /* ===================== 移动端（≤768px） =====================
  *
- * 断点与 src/viewport.js 的 MOBILE_MAX 必须一致，**改一处要改两处**：
- * CSS 管布局，JS 管交互（触屏没有双击）。两边不一致会出现界面已经
- * 是移动版、但打开手势还是桌面版这种最难查的状态。
+ * `@media (--mobile)` 在构建时展开成 src/breakpoint.ts 的断点，与
+ * viewport.ts 的 matchMedia 同源：CSS 管布局，JS 管交互（触屏没有双击），
+ * 两边一旦分叉就会出现界面已经是移动版、打开手势还是桌面版的状态。
  *
  * 布局取自 docs/research/appendix/ui-prototype.html 的移动端原型：
  * 顶栏 + 2 列网格 + 底部导航；侧栏改为抽屉。
  */
 
-@media (max-width: 768px) {
+@media (--mobile) {
   /* 顶栏：去掉品牌名给搜索框让位，280px 宽度下品牌 + 搜索 + 4 个图标
      会把搜索框挤成一条缝 */
   .titlebar.mob {
@@ -2134,9 +2381,11 @@ input {
     overflow-wrap: anywhere;
   }
 
+  /* 落在悬浮按钮上方：底栏 + 悬浮按钮（56px，离底栏 18px）+ 间距。
+     原来只抬高 72px，正好与悬浮按钮重叠，错误条的关闭按钮被它盖住 */
   .toast {
     max-width: calc(100vw - var(--sp) * 8);
-    inset-block-end: calc(var(--sp) * 18);
+    inset-block-end: calc(60px + max(env(safe-area-inset-bottom, 0px), 16px) + 18px + 56px + 12px);
   }
 }
 
@@ -2323,6 +2572,56 @@ input {
   margin-block-end: calc(var(--sp) * 3);
 }
 
+/* 加密对话框的高级选项折叠区 */
+.enc-adv {
+  margin-block: calc(var(--sp) * 3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  padding: 0 calc(var(--sp) * 3);
+}
+
+.enc-adv > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding-block: calc(var(--sp) * 3);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.enc-adv > summary::-webkit-details-marker {
+  display: none;
+}
+
+.enc-adv > summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-inline-end: 1.5px solid var(--fg2);
+  border-block-end: 1.5px solid var(--fg2);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-2) ease;
+  flex: none;
+  align-self: center;
+}
+
+.enc-adv[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.enc-adv-t {
+  white-space: nowrap;
+}
+
+.enc-adv-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
 /* 会作废其它密码的操作，按钮也要红：走到这一步时用户已经看过警示文字，
    但确认按钮和"添加密码"长得一样的话，手快点下去就没有第二次机会 */
 .btn.primary.danger,
@@ -2333,7 +2632,7 @@ input {
 
 /* 移动端：对话框不能用固定宽度，440px 在 360px 宽的屏幕上会横向溢出，
    把「应用」按钮推到屏幕外——界面看着正常，但根本点不到那个按钮 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .dlg.keymgmt {
     width: 100%;
   }
@@ -2472,7 +2771,7 @@ input {
    桌面的 12.5px 行高在手机上会频繁点错行。
    底部弹层（.ctxmenu.mobile）的版式在 mobile.css，不受断点限制：
    Android 平板宽度超过 768px 时也用弹层（见 ContextMenu 的 modalMode） */
-@media (max-width: 768px) {
+@media (--mobile) {
   .ctxmenu .mi {
     padding: calc(var(--sp) * 3) calc(var(--sp) * 3);
     font-size: 14px;
@@ -2489,7 +2788,7 @@ input {
  * 这个手势。这里的规则只管布局，凡涉及打开 / 多选 / 拖拽的交互仍要读
  * isMobile 分别处理。
  */
-@media (max-width: 768px) {
+@media (--mobile) {
   /* 对话框占满屏：820px 在手机上只会横向溢出 */
   .dlg.vdlg {
     width: 100%;
@@ -2642,7 +2941,7 @@ input {
    这条必须放在 `.seg button` 之后：特异性相同的两条规则同分时后者胜，
    写在前面那个 @media 里会被上面的 32px 压掉——CSS 不会报错，
    只是安静地用了另一条。 */
-@media (max-width: 768px) {
+@media (--mobile) {
   .seg button {
     min-height: 44px;
   }
@@ -2854,4 +3153,36 @@ html.omy-video-landscape .omy-video-player .xgplayer-controls {
 
 html.omy-video-landscape .omy-video-player xg-icon.omy-skip {
   display: none;
+}
+
+/* 拖放提示：铺满窗口的半透明层，中间一张提示卡。不拦截事件——拖放由
+   webview 层处理，这一层只是视觉反馈 */
+.drop-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, rgb(0 0 0 / 35%));
+  outline: 3px dashed var(--accent);
+  outline-offset: -14px;
+}
+
+.drop-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 26px;
+  border-radius: var(--r-l);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: var(--shadow-pop);
+}
+
+.drop-card .app-icon {
+  color: var(--accent);
 }

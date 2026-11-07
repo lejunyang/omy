@@ -38,13 +38,13 @@ import {
   ensureRemoteListeners,
   restoreStartupDir,
   loadStorageAccess,
-  grantStorageAccess,
   encryptSelected,
   restoreSelected,
   tryDeviceUnlock,
   tryPasswordManagerUnlock,
   tryUnlock,
   lock,
+  applyLockedState,
   switchLanguage,
   applyLanguage,
   afterPlaceAdded,
@@ -65,6 +65,8 @@ import {
   closePlaceBrowser,
   leaveOverlays,
   selectAll,
+  moveSelection,
+  visibleEntries,
   enrich,
   encryptable,
   restorable,
@@ -93,6 +95,7 @@ import {
   // 而 onCtxPick 的异常没人接——表现就是「点了完全没反应」。
   keyManageable,
   revealEntry,
+  trashSupported,
   openUploadToLocal,
   closeTransfers,
   remoteGoUp,
@@ -123,8 +126,11 @@ import TelegramCacheAllDialog from './components/TelegramCacheAllDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import PasswordManagerDialog from './components/PasswordManagerDialog.vue';
 import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
+import AskDialog from './components/AskDialog.vue';
+import { askConfirm, askText } from './ask';
 import { initAutoLock, configureAutoLock } from './autolock';
-import { registerMobileBack } from './mobile-platform';
+import { registerMobileBack, dispatchBack, type BackSource } from './mobile-platform';
+import { isMobile } from './viewport';
 
 /** 设置对话框是否打开。 */
 const showSettings = ref(false);
@@ -171,7 +177,7 @@ async function onTelegramDone({ sessionSaved, placeId, duplicate }) {
       // 添加成功后的**可选**加密：默认不加密，问一次让用户选，可跳过。
       // 取消 = 保持默认（不加密）；只有确认才转成 per-place 槽。
       // 用 confirm 而非强制步骤：加密是可选的，不该挡在进入位置的路上。
-      if (window.confirm(i18n.t('rplace.encrypt_offer'))) {
+      if (await askConfirm({ title: i18n.t('rplace.encrypt_offer') })) {
         await encryptTelegramPlace(id);
       }
     }
@@ -207,10 +213,14 @@ async function onNewRemotePick(kind: 'webdav' | 'telegram' | 'virtual') {
     showTelegramLogin.value = true;
     return;
   }
-  const name = window.prompt(i18n.t('virtual.name_prompt'));
+  const name = await askText({ title: i18n.t('virtual.name_prompt') });
   if (name === null) return;
-  const id = await createVirtualPlaceOnly(name.trim());
-  if (id) await openPlaceBrowserAt(id);
+  try {
+    const id = await createVirtualPlaceOnly(name);
+    if (id) await openPlaceBrowserAt(id);
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e));
+  }
 }
 
 /** 设置页里改了语言：立刻加载对应语言包。
@@ -453,11 +463,7 @@ async function onOpen(entry) {
     // 容器是一整个文件夹，载荷为多个文件拼接。当成单个文件预览
     // 只会得到一堆首尾相接的字节，所以先分流出去——像进普通文件夹
     // 那样进入它，而不是弹一个另一套交互的面板
-    if (entry.is_container) {
-      await enterContainer(entry);
-      return;
-    }
-    await openPreview(entry);
+    await openUnlocked(entry);
     return;
   }
   // 锁着：先看看会话里是不是已经有能开它的密钥
@@ -469,7 +475,31 @@ async function onOpen(entry) {
   }
   unlockError.value = '';
   refreshDeviceKey();
+  // 记下用户想打开的是哪个：解锁成功后直接打开它。原来解锁完对话框一关就
+  // 停在列表上，文件只是换成了真名，用户还得再双击一次
+  pendingOpen.value = entry;
   showUnlock.value = true;
+}
+
+/** 解锁对话框是因为双击哪个锁定条目弹出的；null 表示不是从双击来的。 */
+const pendingOpen = ref(null);
+
+/** 顶栏「密码」胶囊打开解锁框：不是从双击来的，解锁后不自动打开任何东西。 */
+function openQuickUnlock() {
+  pendingOpen.value = null;
+  unlockError.value = '';
+  showUnlock.value = true;
+}
+
+/** 本地解锁成功后的收尾：打开当初双击的那个条目（若它确实被这次解开了）。 */
+async function afterLocalUnlock() {
+  const target = pendingOpen.value;
+  pendingOpen.value = null;
+  if (!target) return;
+  const fresh = state.entries.find((e) => e.path === target.path);
+  // 输入的密码可能解开了同目录的别的文件、却不是这一个：那就不打开，
+  // 列表上它仍是锁定，用户看得出来
+  if (fresh?.unlocked && fresh.entry_id) await openUnlocked(fresh);
 }
 
 /** 打开一个未加密文件。
@@ -479,6 +509,7 @@ async function onOpen(entry) {
  */
 async function openPlain(entry) {
   if (!entry.token) return;
+  galleryPath.value = entry.path;
 
   // preview 由后端算好（`mime.rs`），前端不再按后缀猜。
   // 判定规则会随浏览器支持情况变化，散在两处早晚不一致
@@ -510,6 +541,7 @@ function openContainerItem(entry) {
     state.error = i18n.te('container_failed');
     return;
   }
+  galleryPath.value = entry.path;
   citemPreview.value = {
     id: entry.token,
     name: entry.name,
@@ -519,6 +551,7 @@ function openContainerItem(entry) {
 }
 
 async function openPreview(entry) {
+  galleryPath.value = entry.path;
   previewEntry.value = entry;
   // 媒体元信息按需补：预览时才需要 tier / 时长 / 尺寸
   if (entry.entry_id) {
@@ -527,10 +560,58 @@ async function openPreview(entry) {
   }
 }
 
+/* ---------------- 相册式翻看 ----------------
+ *
+ * 预览里左右切换同一目录（或同一加密文件夹层级）的上一个 / 下一个可预览
+ * 文件。顺序与列表一致；目录、看不了的类型、锁着的加密文件、加密文件夹
+ * 本身都跳过——它们点开也不是「看下一张」。 */
+
+/** 当前预览对应的列表条目路径（本地明文、加密文件、容器内条目共用）。 */
+const galleryPath = ref<string | null>(null);
+
+function isGalleryItem(e) {
+  if (e.is_dir) return false;
+  if (e.in_container) return !!e.token && !!e.preview && e.preview !== 'other';
+  if (e.is_encrypted) return !!e.unlocked && !!e.entry_id && !e.is_container;
+  return !!e.token && !!e.preview && e.preview !== 'other';
+}
+
+const galleryItems = computed(() => visibleEntries.value.filter(isGalleryItem));
+const galleryIndex = computed(() =>
+  galleryItems.value.findIndex((e) => e.path === galleryPath.value),
+);
+const galleryHasPrev = computed(() => galleryIndex.value > 0);
+const galleryHasNext = computed(
+  () => galleryIndex.value >= 0 && galleryIndex.value < galleryItems.value.length - 1,
+);
+
+/** 切到相邻的一个：先关掉当前的本地预览，再按正常的「打开」流程打开。 */
+async function galleryStep(delta: number) {
+  const next = galleryItems.value[galleryIndex.value + delta];
+  if (!next) return;
+  previewEntry.value = null;
+  plainPreview.value = null;
+  citemPreview.value = null;
+  await onOpen(next);
+}
+
 async function tryRefreshThenPreview(entry) {
   await reload();
   const fresh = state.entries.find((e) => e.path === entry.path);
-  if (fresh?.unlocked) await openPreview(fresh);
+  if (fresh?.unlocked) await openUnlocked(fresh);
+}
+
+/** 打开一个已解锁的加密条目：加密文件夹（容器）进入，单个文件预览。
+ *
+ * 两处调用（双击已解锁条目、刷新后再打开）必须共用这一个分流：
+ * 原来刷新那条路径直接预览，加密文件夹被当成单个文件，
+ * 预览出来的是一堆首尾相接的字节。 */
+async function openUnlocked(entry) {
+  if (entry.is_container) {
+    await enterContainer(entry);
+    return;
+  }
+  await openPreview(entry);
 }
 
 async function onRestoreSubmit(opts) {
@@ -655,6 +736,7 @@ async function selectPasswordManagerKey(entry: PasswordManagerCredential) {
     unlockError.value = '';
     passwordManagerEntries.value = [];
     await api.passwordManagerClear().catch(() => {});
+    await afterLocalUnlock();
   } else {
     passwordManagerError.value = state.error;
     state.error = '';
@@ -692,9 +774,11 @@ function onQuerySlots(path, password) {
  */
 async function onRemoveSlot({ path, current, slotIndex, kind }) {
   const label = i18n.t(`keymgmt.slot_kind_${kind}`);
-  if (!window.confirm(i18n.t('keymgmt.slot_remove_confirm', { index: slotIndex, kind: label }))) {
-    return;
-  }
+  const sure = await askConfirm({
+    title: i18n.t('keymgmt.slot_remove_confirm', { index: slotIndex, kind: label }),
+    danger: true,
+  });
+  if (!sure) return;
   keyError.value = '';
   const ok = await manageKey({
     path,
@@ -888,10 +972,10 @@ async function onCtxPick(key) {
       nameDlg.value = { mode: 'newfolder', initial: '', path: '' };
       break;
     case 'trash':
-      await doDelete(true);
+      await deleteSelection(false);
       break;
     case 'delete':
-      await doDelete(false);
+      await deleteSelection(true);
       break;
     case 'upload-to': {
       const entries = state.selected
@@ -906,6 +990,36 @@ async function onCtxPick(key) {
     default:
       break;
   }
+}
+
+/** 删除当前选择。右键菜单与手机多选操作条共用。
+ *
+ * 永久删除不进回收站、无法撤销，必须先确认。回收站那一项不问：它可以还原，
+ * 每次都问会把用户训练成闭眼点「确定」，反而让这里的确认失去作用。 */
+async function deleteSelection(permanent: boolean) {
+  if (!permanent) {
+    await doDelete(true);
+    return;
+  }
+  const n = state.selected.length;
+  const sure = await askConfirm({
+    title: i18n.tn('ctx.delete_confirm_title', n),
+    message: i18n.t('ctx.delete_confirm_msg'),
+    confirmLabel: i18n.t('ctx.delete'),
+    danger: true,
+  });
+  if (sure) await doDelete(false);
+}
+
+/** 多选操作条的「删除」：有回收站就移到回收站，没有（Android）就走带确认的永久删除。 */
+async function onDeleteSelected() {
+  await deleteSelection(!trashSupported);
+}
+
+/** 多选操作条的「更多」：对整批选择打开完整菜单（底部弹层）。 */
+function onSelectionMore() {
+  const first = state.entries.find((e) => state.selected.includes(e.path));
+  if (first) openContextMenu({ entry: first, x: 0, y: 0 });
 }
 
 async function onNameSubmit(name) {
@@ -923,9 +1037,11 @@ async function onUnlockSubmit({ password }) {
     ? await tryUnlockRemote(password)
     : await tryUnlock(password);
   if (ok) {
+    const wasRemote = unlockForRemote.value;
     showUnlock.value = false;
     unlockForRemote.value = false;
     unlockError.value = '';
+    if (!wasRemote) await afterLocalUnlock();
   } else {
     unlockError.value = state.error;
     // 错误已在对话框里显示，不用再占用底部提示条
@@ -934,8 +1050,9 @@ async function onUnlockSubmit({ password }) {
 }
 
 async function onPick() {
-  // 不能静默吞错误：移动端根本没有文件夹选择器，后端会返回
-  // unsupported。吞掉的话点了完全没反应，用户只会以为按钮坏了
+  // 不能静默吞错误：Android 上要先有「所有文件访问权限」、系统选择器也可能
+  // 选到不在本机存储上的位置（云盘），后端会返回对应的错误码。吞掉的话
+  // 点了完全没反应，用户只会以为按钮坏了
   let dir = null;
   try {
     dir = await api.pickFolder(i18n.t('nav.pick_folder'));
@@ -953,6 +1070,21 @@ async function onPick() {
 }
 
 async function doLock() {
+  closeDecryptedViews();
+  // 断开远端由**后端**的 lock 负责，这里不再重复调用。
+  // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
+  // 的调用会留下活连接——保证放在后端才成立，放在这里只是碰巧生效。
+  await lock();
+}
+
+/** 后端锁定（自动锁定或其它入口）之后的界面收尾。与 doLock 共用同一套关闭逻辑。 */
+async function onSessionLocked() {
+  closeDecryptedViews();
+  await applyLockedState();
+}
+
+/** 关掉所有显示解密内容的浮层。锁定的两条路径（主动 / 后端事件）都要走这里。 */
+function closeDecryptedViews() {
   previewEntry.value = null;
   remotePreview.value = null;
   // 明文预览也要关：后端 lock 会清空 token 表，
@@ -965,10 +1097,10 @@ async function doLock() {
   // 云盘目录浏览本身保留——锁定后仍可看目录，只是文件显示为锁定、点不开
   placePreview.value = null;
   showDevices.value = false;
-  // 断开远端由**后端**的 lock 负责，这里不再重复调用。
-  // 早先版本在这里调 disconnectRemote()，实测发现绕过这段前端代码
-  // 的调用会留下活连接——保证放在后端才成立，放在这里只是碰巧生效。
-  await lock();
+  // 密码管理、恢复码、解锁框里可能还摆着明文密码或恢复词，一并关掉
+  keyTarget.value = null;
+  recoveryDlg.value = null;
+  showUnlock.value = false;
 }
 
 /** 从设备面板发起连接。 */
@@ -989,6 +1121,7 @@ function onOpenRemote(f) {
  * tryUnlock 内部分流到 tryUnlockRemotePlace。
  */
 function onRemotePlaceUnlock() {
+  pendingOpen.value = null;
   unlockForRemote.value = false;
   unlockError.value = '';
   refreshDeviceKey();
@@ -997,6 +1130,7 @@ function onRemotePlaceUnlock() {
 
 /** 在远端视图里点「试密码」。 */
 function onRemoteUnlock() {
+  pendingOpen.value = null;
   unlockForRemote.value = true;
   unlockError.value = '';
   refreshDeviceKey();
@@ -1048,6 +1182,7 @@ async function onDeviceUnlock() {
   if (ok) {
     showUnlock.value = false;
     unlockError.value = '';
+    await afterLocalUnlock();
   } else {
     unlockError.value = state.error;
     // 错误已在对话框里显示，不用再占用底部提示条
@@ -1058,10 +1193,14 @@ async function onDeviceUnlock() {
 function onUnlockCancel() {
   showUnlock.value = false;
   unlockForRemote.value = false;
+  pendingOpen.value = null;
 }
 
-/** Android 返回键只处理最上层；返回 true 才阻止 Activity 退出。 */
-function onAndroidBack() {
+/** Android 返回键与桌面 Esc 只处理最上层；返回 true 才阻止 Activity 退出。
+ *
+ * Esc 只关浮层，不做页面级后退（返回上级目录、退出远程位置）：
+ * 桌面用户按 Esc 是想关掉眼前的东西，不是想离开当前目录。 */
+function onAndroidBack(source: BackSource = 'back') {
   if (ctxMenu.entry) { closeContextMenu(); return true; }
   // SettingsDialog 自己先处理二级页；到这里时只剩关闭整个设置。
   if (showSettings.value) { void onSettingsClose(); return true; }
@@ -1090,6 +1229,7 @@ function onAndroidBack() {
   if (state.vEncryptFor) { cancelVirtualEncrypt(); return true; }
   if (state.vUnlockFor) { cancelVirtualUnlock(); return true; }
   if (state.transfersOpen) { closeTransfers(); return true; }
+  if (source === 'escape') return false;
   if (state.placeBrowserOpen) {
     if (state.remotePlace) void remoteGoUp();
     else closePlaceBrowser();
@@ -1104,19 +1244,96 @@ function onAndroidBack() {
 const unregisterAndroidBack = registerMobileBack(onAndroidBack);
 
 function onKey(e) {
+  // Esc 关最上层浮层。已被输入框等自己处理过的（defaultPrevented）不再分发，
+  // 否则一次 Esc 会连关两层
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    if (dispatchBack('escape')) e.preventDefault();
+    return;
+  }
+  const mod = e.ctrlKey || e.metaKey;
+  // 按 toLowerCase 比较：开着大写锁定时 e.key 是 'L' / 'A'
+  const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
   // Ctrl/Cmd+L 锁定（文档 §8）
-  if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+  if (mod && key === 'l') {
     e.preventDefault();
     if (state.credentials > 0) doLock();
     return;
   }
-  // Ctrl/Cmd+A 全选
-  if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !previewEntry.value) {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Ctrl/Cmd+A 全选：只在本地文件列表就是最上层时生效。
+  // 原来只排除了加密文件预览——开着明文预览、任何对话框、远程位置或传输页时
+  // 按 Ctrl+A，会把**看不见的**本地列表整个选中，随后的删除就作用在它们身上
+  if (mod && key === 'a') {
+    if (isEditable(document.activeElement)) return;
+    if (!localListOnTop()) return;
     e.preventDefault();
     selectAll();
+    return;
   }
+  onListKey(e);
+}
+
+/** 桌面键盘操作本地列表：方向键移动当前项（Shift 扩展选择），Enter 打开，
+ *  Delete 移到回收站（Shift+Delete 永久删除，带确认），F2 重命名。
+ *
+ * 原来只能用鼠标：选中、打开、删除、改名全要点，键盘用户无从下手。
+ * 只在本地列表位于最上层、焦点不在输入框时生效。 */
+function onListKey(e: KeyboardEvent) {
+  // 已被聚焦的卡片 / 行自己处理过（它们的 Enter 会打开自己），不再重复处理
+  if (e.defaultPrevented) return;
+  if (isMobile.value || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isEditable(document.activeElement) || !localListOnTop()) return;
+  const k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'ArrowLeft' || k === 'ArrowRight') {
+    const cols = state.view === 'grid' ? gridColumns() : 1;
+    const delta = k === 'ArrowLeft' ? -1 : k === 'ArrowRight' ? 1 : k === 'ArrowUp' ? -cols : cols;
+    // 列表视图左右键不动（没有「左右」可言），留给浏览器
+    if (state.view !== 'grid' && (k === 'ArrowLeft' || k === 'ArrowRight')) return;
+    e.preventDefault();
+    const target = moveSelection(delta, e.shiftKey);
+    if (target) {
+      document
+        .querySelector(`[data-path="${CSS.escape(target)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }
+    return;
+  }
+  const current = state.entries.find((x) => x.path === state.selected[state.selected.length - 1])
+    || visibleEntries.value.find((x) => x.path === state.selected[state.selected.length - 1]);
+  if (!current) return;
+  if (k === 'Enter') {
+    e.preventDefault();
+    void onOpen(current);
+  } else if (k === 'Delete') {
+    e.preventDefault();
+    void deleteSelection(e.shiftKey || !trashSupported);
+  } else if (k === 'F2' && state.selected.length === 1 && !current.is_encrypted_dir && !current.in_container) {
+    e.preventDefault();
+    nameDlg.value = { mode: 'rename', initial: current.real_name || current.name, path: current.path };
+  }
+}
+
+/** 网格视图当前每行几列：数第一行有多少张卡片（与窗口宽度相关，不能写死）。 */
+function gridColumns() {
+  const cards = [...document.querySelectorAll('.grid > .card')] as HTMLElement[];
+  if (!cards.length) return 1;
+  const top = cards[0].offsetTop;
+  const n = cards.findIndex((c) => c.offsetTop !== top);
+  return n < 0 ? cards.length : Math.max(1, n);
+}
+
+/** 焦点在可编辑控件里时，快捷键让给浏览器（输入框里 Ctrl+A 是选中文字）。 */
+function isEditable(el: Element | null) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || (el as HTMLElement).isContentEditable;
+}
+
+/** 本地文件列表是不是最上层：没有切到别的整屏视图，也没有任何浮层盖着。
+ *  浮层按结构类名判断——对话框、预览、菜单、设置都挂在这几个根类上。 */
+function localListOnTop() {
+  if (state.placeBrowserOpen || state.transfersOpen || state.remoteMode) return false;
+  return !document.querySelector('.overlay, .mask, .ctxlayer');
 }
 
 /** 回到前台时重查存储权限。
@@ -1164,9 +1381,24 @@ onMounted(async () => {
   await refreshDeviceOverview();
   await refreshPasswordManagerStatus();
 
+  // 拖放加密。移动端没有拖放，订阅了也收不到事件
+  api.onFileDrop((ev) => {
+    if (ev.type === 'enter' || ev.type === 'over') dropActive.value = true;
+    else if (ev.type === 'leave') dropActive.value = false;
+    else if (ev.type === 'drop') {
+      dropActive.value = false;
+      void onDropPaths(ev.paths || []);
+    }
+  }).then((un) => { unlistenDrop = un; });
+
+  // 后端锁定（任何入口）都要清掉界面上的解密内容
+  api.onSessionLocked(() => { void onSessionLocked(); })
+    .then((un) => { unlistenLocked = un; })
+    .catch(() => { /* 没有事件通道时仍有 doLock 自己的清理 */ });
+
   // 自动锁定按配置启动。放在最后：它依赖配置读取，而前面几步
-  // 都是界面首屏需要的，不该为它推迟
-  initAutoLock();
+  // 都是界面首屏需要的，不该为它推迟。传入完整的锁定流程而不是只锁后端
+  initAutoLock(doLock);
   await applySettings();
   // 起始目录放最后：它依赖 places 已加载（home 模式）且只在启动时跑一次，
   // 设置保存触发的 applySettings 不应把用户拽回起始目录
@@ -1191,7 +1423,35 @@ async function applySettings() {
     // 配置读不出来就用内置默认值：这不该阻止应用启动
   }
 }
+/** session://locked 的取消订阅函数。 */
+let unlistenLocked: (() => void) | null = null;
+
+/* ---------------- 拖放加密（桌面） ----------------
+ *
+ * 把文件从系统文件管理器拖进窗口：定位到它们所在的目录、选中它们，并弹出
+ * 加密对话框。原来只能先在应用里找到那个目录再逐个选。 */
+const dropActive = ref(false);
+let unlistenDrop: (() => void) | null = null;
+
+async function onDropPaths(paths: string[]) {
+  if (!paths.length) return;
+  const parents = await Promise.all(paths.map((p) => api.parentOf(p).catch(() => null)));
+  const parent = parents[0];
+  // 只处理同一目录里的一批：选择是按当前目录列表算的，跨目录选不到
+  if (!parent || parents.some((p) => p !== parent)) {
+    state.error = i18n.t('drop.mixed_dirs');
+    return;
+  }
+  leaveOverlays();
+  if (state.cwd !== parent || state.container) await navigate(parent);
+  state.selected = paths.filter((p) => state.entries.some((e) => e.path === p));
+  if (encryptable.value.length) openEncryptDialog();
+  else setNotice(i18n.t('drop.nothing_to_encrypt'));
+}
+
 onBeforeUnmount(() => {
+  unlistenLocked?.();
+  unlistenDrop?.();
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('visibilitychange', onVisible);
   unregisterAndroidBack();
@@ -1215,7 +1475,7 @@ onBeforeUnmount(() => {
     @new-remote="showNewRemote = true"
     @settings="showSettings = true"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
     @files="closeTransfers()"
     @places="closeTransfers()"
   />
@@ -1231,18 +1491,21 @@ onBeforeUnmount(() => {
     @new-remote="showNewRemote = true"
     @settings="showSettings = true"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
   />
 
   <MainScreen
     v-else
+    @new-folder="nameDlg = { mode: 'newfolder', initial: '', path: '' }"
+    @delete-selected="onDeleteSelected"
+    @selection-more="onSelectionMore"
     @open="onOpen"
     @menu="onEntryMenu"
     @encrypt="openEncryptDialog"
     @restore="showRestore = true"
     @manage-key="((keyError = ''), (keyTarget = $event))"
     @lock="doLock"
-    @quick-unlock="((unlockError = ''), (showUnlock = true))"
+    @quick-unlock="openQuickUnlock"
     @pick="onPick"
     @lang="switchLanguage"
     @devices="showDevices = true"
@@ -1360,7 +1623,11 @@ onBeforeUnmount(() => {
     v-if="previewFile"
     :key="previewFile.id"
     :file="previewFile"
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
     @close="previewEntry = null"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
   />
 
   <PreviewOverlay
@@ -1376,6 +1643,10 @@ onBeforeUnmount(() => {
     :key="'p' + plainPreview.id"
     :file="plainPreview"
     plain
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
     @close="plainPreview = null"
     @external="onPlainExternal"
   />
@@ -1388,6 +1659,10 @@ onBeforeUnmount(() => {
     :key="'c' + citemPreview.id"
     :file="citemPreview"
     in-container
+    :has-prev="galleryHasPrev"
+    :has-next="galleryHasNext"
+    @prev="galleryStep(-1)"
+    @next="galleryStep(1)"
     @close="citemPreview = null"
   />
 
@@ -1473,4 +1748,14 @@ onBeforeUnmount(() => {
     @cancel="cancelVirtualUnlock"
     @submit="confirmVirtualUnlock"
   />
+
+  <!-- 拖放提示：文件拖到窗口上方时出现 -->
+  <Transition name="fade">
+    <div v-if="dropActive" class="drop-hint" aria-hidden="true">
+      <div class="drop-card"><AppIcon name="lock" :size="28" />{{ i18n.t('drop.hint') }}</div>
+    </div>
+  </Transition>
+
+  <!-- 应用内确认 / 输入 / 密码框（替代 window.confirm / prompt），放最后保证在最上层 -->
+  <AskDialog />
 </template>

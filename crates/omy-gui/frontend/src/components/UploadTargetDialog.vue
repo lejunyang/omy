@@ -208,7 +208,7 @@ onMounted(async () => {
 .mode-row span { display: flex; flex-direction: column; gap: 3px; }
 .mode-row small { color: var(--fg2); line-height: 1.4; }
 .errline { margin-top: 10px; font-size: 12px; }
-@media (max-width: 768px) {
+@media (--mobile) {
   .upload-dlg { width: 100%; }
   .target-layout { grid-template-columns: 1fr; }
   .place-list { border-inline-end: 0; border-bottom: 1px solid var(--border); max-height: 140px; overflow: auto; }

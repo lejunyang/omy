@@ -219,7 +219,8 @@ fn enroll(state: &Shared, path: &str, password: &str) -> CmdResult<DeviceKeyEnro
     } else {
         target.to_path_buf()
     };
-    let data = std::fs::read(&sample).map_err(|_| CmdError::code("io_error"))?;
+    // 只读头部：派生密钥、验密码都只需要它，没必要把样本文件（可能是几 GB 的视频）整个读进内存
+    let data = omy_core::scan::read_header_area(&sample).map_err(|_| CmdError::code("io_error"))?;
     let header = omy_core::file::peek_header(&data).map_err(|_| CmdError::code("not_omy_file"))?;
 
     let cur = Kek::from_password(password.as_bytes(), &header.vault_salt, header.argon2_params())

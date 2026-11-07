@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
+import { mobileMediaPlugin } from './src/breakpoint.ts';
 
 /**
  * omy 前端构建配置。
@@ -30,6 +31,10 @@ import { fileURLToPath, URL } from 'node:url';
  */
 export default defineConfig({
   plugins: [vue()],
+
+  // 样式里的 `@media (--mobile)` 在这里展开成 breakpoint.ts 的断点，
+  // CSS 与 viewport.ts 的 matchMedia 共用一个数值（见 breakpoint.ts）
+  css: { postcss: { plugins: [mobileMediaPlugin()] } },
 
   // frontend/ 是源码，产物回到 crate 根的 dist/
   root: fileURLToPath(new URL('.', import.meta.url)),

@@ -214,5 +214,5 @@ select { min-height: 44px; padding-inline: 12px; border: 1px solid var(--border)
 .audio-error button { margin-block-start: 12px; }
 button:disabled, input:disabled { opacity: .55; cursor: default; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
-@media (max-width: 768px) { .omy-audio-player { padding: 20px; } .audio-art { flex-basis: 64px; height: 64px; } .audio-art .app-icon { width: 36px; height: 36px; } h2 { font-size: 18px; } .audio-heading { gap: 16px; } }
+@media (--mobile) { .omy-audio-player { padding: 20px; } .audio-art { flex-basis: 64px; height: 64px; } .audio-art .app-icon { width: 36px; height: 36px; } h2 { font-size: 18px; } .audio-heading { gap: 16px; } }
 </style>

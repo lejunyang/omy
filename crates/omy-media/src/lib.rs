@@ -62,6 +62,6 @@ pub mod tier;
 pub use caps::{Capabilities, capabilities};
 pub use error::{MediaError, Result};
 pub use meta::MediaMeta;
-pub use prepare::{PrepareOptions, Prepared, ThumbSource, prepare};
+pub use prepare::{PrepareOptions, Prepared, ThumbSource, prepare, prepare_file};
 pub use probe::{AudioStream, MediaInfo, SubtitleStream, VideoStream};
 pub use tier::{PlaybackTier, TierVerdict};

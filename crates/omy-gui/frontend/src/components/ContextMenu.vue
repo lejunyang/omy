@@ -17,7 +17,6 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, useTemplateRef } from 'vue';
 import { isMobile } from '../viewport';
 import { isAndroid, registerMobileBack } from '../mobile-platform';
-import * as i18n from '../i18n';
 
 /** 右键菜单里一项。分隔线用 key 'sep'，其余字段按场景可选。 */
 interface MenuItem {
@@ -85,13 +84,6 @@ function pick(item: MenuItem) {
   emit('pick', item.key);
 }
 
-/** Esc 关闭。菜单是模态的，键盘用户必须有退出手段。 */
-function onKey(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') {
-    ev.preventDefault();
-    emit('close');
-  }
-}
 
 /** 忽略长按手势尾巴上那次合成 click 的截止时刻。
  *
@@ -112,9 +104,18 @@ function onLayerClick() {
   emit('close');
 }
 
+/** 遮罩上的右键 / 长按。桌面上在别处右键就是关掉菜单；但触屏长按刚把菜单
+ *  打开时，WebView 原生的 contextmenu 往往随后才到，正好落在刚铺开的遮罩上——
+ *  不忽略它的话菜单一出现就被关掉。 */
+function onLayerContextMenu() {
+  if (performance.now() - openedAt < SYNTHETIC_CLICK_MS) return;
+  emit('close');
+}
+
 onMounted(async () => {
   openedAt = performance.now();
-  window.addEventListener('keydown', onKey);
+  // 返回键与 Esc 都走这里（Esc 由 App 统一分发到返回栈）：菜单是模态的，
+  // 键盘用户必须有退出手段
   unregisterBack = registerMobileBack(() => {
     emit('close');
     return true;
@@ -153,7 +154,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKey);
   unregisterBack?.();
 });
 </script>
@@ -161,7 +161,7 @@ onBeforeUnmount(() => {
 <template>
   <!-- 铺满全屏的透明层：点任何地方都关掉菜单。
        只在菜单自身上监听 blur 是不够的——点到别的条目上不会触发 -->
-  <div class="ctxlayer" :class="{ mobile: modalMode }" @click="onLayerClick" @contextmenu.prevent="$emit('close')">
+  <div class="ctxlayer" :class="{ mobile: modalMode }" @click="onLayerClick" @contextmenu.prevent="onLayerContextMenu">
     <div
       ref="menu"
       class="ctxmenu"

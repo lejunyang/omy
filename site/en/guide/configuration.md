@@ -118,6 +118,8 @@ autostart = false
 language = "en"
 # auto | dark | light
 theme = "dark"
+# accent color: blue | teal | violet | rose | amber; GUI only
+accent = "blue"
 # grid | list
 view = "list"
 # Open at startup: last (last folder) | home (GUI only)
@@ -174,6 +176,7 @@ scan_omy_only = true
 | `serve.default_expire` | none | Default authorization lifetime |
 | `ui.language` | `"auto"` | Interface language; `auto` follows the system locale |
 | `ui.theme` | `"auto"` | Interface theme; `auto` follows the system (GUI only) |
+| `ui.accent` | `"blue"` | Accent color: `blue`, `teal`, `violet`, `rose`, `amber`; unknown values fall back to `blue` (GUI only) |
 | `ui.view` | `"grid"` | Default view, `grid` or `list` (GUI only) |
 | `ui.startup` | `"last"` | Open at startup: `last` (last folder) or `home` (GUI only) |
 | `ui.last_dir` | none | Last browsed folder, recorded automatically (GUI only) |

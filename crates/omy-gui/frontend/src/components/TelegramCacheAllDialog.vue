@@ -147,7 +147,7 @@ select, input[type='search'], input[type='date'] { width: 100%; min-height: 40px
 .hint { padding: 12px 20px 0; }
 footer { display: flex; justify-content: flex-end; gap: 8px; }
 .err { margin-top: 8px; color: var(--danger); font-size: 12px; }
-@media (max-width: 768px) {
+@media (--mobile) {
   .mask { padding: 0; align-items: end; }
   .cacheall { width: 100%; max-height: 94vh; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
   .checks, .daterow { grid-template-columns: 1fr; }

@@ -118,6 +118,8 @@ autostart = false
 language = "zh-CN"
 # auto | dark | light
 theme = "dark"
+# 主题色：blue | teal | violet | rose | amber；仅 GUI
+accent = "blue"
 # grid | list
 view = "list"
 # 启动时打开：last（上次目录）| home（主目录）；仅 GUI
@@ -174,6 +176,7 @@ scan_omy_only = true
 | `serve.default_expire` | 无 | 默认授权有效期 |
 | `ui.language` | `"auto"` | 界面语言，`auto` 跟随系统 locale |
 | `ui.theme` | `"auto"` | 界面主题，`auto` 跟随系统（仅 GUI）|
+| `ui.accent` | `"blue"` | 主题色：`blue`、`teal`、`violet`、`rose`、`amber`；不认识的值按 `blue` 处理（仅 GUI）|
 | `ui.view` | `"grid"` | 默认视图，`grid` 或 `list`（仅 GUI）|
 | `ui.startup` | `"last"` | 启动时打开，`last`（上次目录）或 `home`（主目录）（仅 GUI）|
 | `ui.last_dir` | 无 | 上次浏览目录，应用自动记录（仅 GUI）|
