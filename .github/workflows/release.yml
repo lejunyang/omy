@@ -245,9 +245,15 @@ jobs:
           cache-key: android-build
 
       - name: 安装 Android 构建工具链
+        # 下面的 `osdk run` 要求 osdk.toml 里**在 Linux 上生效的全部非 lazy
+        # 工具**都已安装，不管任务用不用得到。所以这里的清单必须覆盖那一整套，
+        # 而不只是 APK 构建真正用到的：漏一个，构建一行没跑就失败。
+        # conda:nasm 是给 Linux FFmpeg 构建的，APK 用不到，只为满足这条规则；
+        # 模拟器与系统镜像在 osdk.toml 里标了 lazy，所以可以不装。
+        # 往 osdk.toml 加 Linux 也生效的非 lazy 工具时，这里要一起加。
         run: |
           osdk --yes trust osdk.toml
-          osdk -y install java rust node pnpm
+          osdk -y install java rust node pnpm conda:nasm
           osdk -y install -o accept-licenses=true \
             android-ndk android-platform-tools android-build-tools \
             android-cmdline-tools android-platforms

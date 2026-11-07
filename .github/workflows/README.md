@@ -182,9 +182,9 @@ Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根�
 MSYS epoch 冲突，所以作为独立原生工具安装并由 osdk 单独暴露。Linux 只装
 `conda:nasm`。下载后的每个源码包都校验固定 SHA；若 CDN 返回 200 但内容损坏，
 脚本会删除后重下，最多 3 次，始终不会放行不匹配的内容。
-不要把工具安装改回无参数的 `osdk install`：根配置还声明了本地 Android E2E
-所需的 emulator 与 `android-35;google_apis;x86_64` system image；FFmpeg 任务不使用它们，
-但全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
+不要把工具安装改回无参数的 `osdk install`：根配置还声明了 Android NDK/SDK 等
+FFmpeg 任务不用的工具（本地 E2E 的 emulator 与 system image 现已标 lazy，裸安装
+不再下载它们，但 NDK 等仍有数 GiB）。最初这里全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
 最终被 GitHub 取消。Windows FFmpeg job 另设 90 分钟上限，保证类似的上游静默阻塞能
 尽早暴露。
 
@@ -249,6 +249,17 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 平台与 Build Tools；随后执行 `osdk run --no-deps android-release-build`。安装列表
 刻意不含 emulator 和 system image：生成 APK 不需要启动虚拟设备，把本地 E2E 的
 大镜像带进发布任务只会增加下载超时面。
+
+**`osdk run` 要求 osdk.toml 里当前平台生效的全部非 lazy 工具都已安装**，不论
+任务用不用。0.0.1 首次发布就挂在这里：`conda:libarchive` 漏写了
+`when = windows`，在 Linux 上成了必装项，任务一行没跑就报
+`dynamic tool conda:libarchive@3.8.9 has no complete install`。所以：
+
+- 只在某个平台用得到的工具，声明时写 `when`；
+- 只有本地 E2E 用的 emulator 与 system image 标成 `lazy = true`，由
+  `android-avd-prepare` 任务的 `tools` 按需安装；
+- Android 发布任务的安装清单要覆盖 Linux 上全部非 lazy 工具，所以连 APK
+  用不到的 `conda:nasm` 也装上。往 osdk.toml 加这类工具时两边一起改。
 
 ### 发布到 crates.io 的顺序、范围与限流
 
