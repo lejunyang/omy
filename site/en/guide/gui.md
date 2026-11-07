@@ -46,7 +46,7 @@ Everything travels over the custom `omystream://` protocol, so plaintext is neve
 | Devices and sharing | Discover, pair, browse remote files and play them directly |
 | Remote locations | Connect a WebDAV cloud / NAS and stream `.omy`; on Android, open externally as read-only or editable; see [Remote locations](remote-locations) |
 | Settings | General, Remote locations, Security & passwords, Encryption defaults, Playback & preview, Devices & sharing, About (see below) |
-| Theme | Light and dark (under Settings → General) |
+| Theme | Light and dark, plus an accent color (blue, teal, violet, rose, amber), under Settings → General |
 | Languages | Simplified Chinese and English, following the system locale (under Settings → General) |
 
 ## Security constraints
@@ -102,7 +102,7 @@ On desktop settings is a dialog (gear in the top bar); on mobile it is a list wi
 
 | Category | Contents |
 |---|---|
-| General | Language, theme, default view (grid / list), open at startup (last folder / home) |
+| General | Language, theme, accent color, default view (grid / list), open at startup (last folder / home) |
 | Remote locations | Recognition scope, request concurrency, and the **Remote cache** page for temporary-block limits/usage/clearing plus complete-original-file permanent storage |
 | Security & passwords | Auto-lock (idle duration, whether backgrounding counts as idle, playback exemption), number of passwords loaded in the current session, lock now, recovery-code hint |
 | Encryption defaults | KDF profile, chunk size, pre-encryption compression, filename encryption, original-file handling; these become the initial values in the encrypt dialog |

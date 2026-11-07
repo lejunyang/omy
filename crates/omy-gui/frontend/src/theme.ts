@@ -95,3 +95,59 @@ export function toggleTheme() {
 function apply() {
   document.documentElement.dataset.theme = theme.value;
 }
+
+/* ---------------- 主题色 ----------------
+ *
+ * 与明暗相互独立：明暗决定底色，主题色只换色相。每个预设在 app.css 里
+ * 按 `data-accent` 各有明暗两套取值（都校验过对比度），这里只负责把
+ * 选择写到 <html> 上。和明暗一样，localStorage 存一份副本供首帧使用，
+ * 配置文件里的 `ui.accent` 是权威来源——理由见 syncThemeFromConfig。 */
+
+/** 可选的主题色，第一项是默认。新增预设时 app.css 要补对应的
+ *  `[data-accent]` 两段（深色、浅色），i18n 要补 `settings.accent_*`。 */
+export const ACCENTS = ['blue', 'teal', 'violet', 'rose', 'amber'] as const;
+export type Accent = (typeof ACCENTS)[number];
+
+/** 当前主题色。 */
+export const accent = ref<Accent>('blue');
+
+/** 不认识的值（手改配置、降级后读到新版写的值）一律回落到默认蓝，
+ *  而不是把未知字符串写进 data-accent：那样所有预设都不命中，结果碰巧
+ *  也是蓝，但设置页的下拉框会显示空白。 */
+function normalizeAccent(v: unknown): Accent {
+  return (ACCENTS as readonly unknown[]).includes(v) ? (v as Accent) : 'blue';
+}
+
+function applyAccent() {
+  document.documentElement.dataset.accent = accent.value;
+}
+
+/** 启动时用本地副本即时应用主题色，避免首帧闪一下默认蓝。 */
+export function initAccent() {
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem('omy.accent');
+  } catch {
+    // 读不到本地副本就用默认值，配置加载完成后会再校正
+  }
+  accent.value = normalizeAccent(saved);
+  applyAccent();
+}
+
+/** 设置主题色：立即生效并写本地副本。 */
+export function setAccent(v: unknown) {
+  accent.value = normalizeAccent(v);
+  try {
+    localStorage.setItem('omy.accent', accent.value);
+  } catch {
+    // 写不进本地副本只影响下次启动的首帧，配置文件仍是权威来源
+  }
+  applyAccent();
+}
+
+/** 用配置文件里的值校正主题色。缺省（旧配置）不动当前值。 */
+export function syncAccentFromConfig(v: unknown) {
+  if (v === undefined || v === null) return;
+  if (normalizeAccent(v) === accent.value) return;
+  setAccent(v);
+}

@@ -9,7 +9,7 @@
  */
 
 :root {
-  /* 主色：蓝。试过青绿作品牌色，实际观感偏怪，改回蓝。 */
+  /* 主色：蓝，是默认主题色；其余主题色见下方 data-accent 各段。 */
   color-scheme: dark;
   --bg: #0d1117;
   --bg2: #161b22;
@@ -92,6 +92,71 @@
   --c-audio: #be185d;
   --c-doc: #1d4ed8;
   --c-archive: #c2410c;
+}
+
+/* ---- 主题色预设（设置 → 通用 → 主题色）----
+ *
+ * 只换色相，明暗仍由 data-theme 决定，所以每个预设写三段：
+ * 1. `[data-accent=…]`：品牌两端色。**不加 :root**——设置页的色块也挂着
+ *    data-accent，靠这一段就地拿到各自的颜色，色值不必在组件里再抄一份。
+ * 2. `:root[data-accent=…]`：深色下的 --accent / --accent-solid。
+ * 3. `:root[data-theme='light'][data-accent=…]`：浅色下的取值。特异性比
+ *    第 2 段高，浅色时一定盖得住它。
+ * 蓝是 :root 本身的默认值，只需第 1 段（给色块用）。
+ * 对比度同前：深色 --accent 对 --bg、白字对 --accent-solid、浅色 --accent
+ * 对 --bg / --bg3，都要 ≥ 4.5。新增预设要重算，并同步 theme.ts 的 ACCENTS。 */
+[data-accent='blue'] {
+  --brand-1: #4493f8;
+  --brand-2: #1f6feb;
+}
+[data-accent='teal'] {
+  --brand-1: #2fd0b9;
+  --brand-2: #0f766e;
+}
+:root[data-accent='teal'] {
+  --accent: #2fd0b9;       /* 对 --bg 9.77 */
+  --accent-solid: #0f766e; /* 白字 5.47 */
+}
+:root[data-theme='light'][data-accent='teal'] {
+  --accent: #0d7469;       /* 对 --bg 5.65、--bg3 4.95 */
+  --accent-solid: #0d7469;
+}
+[data-accent='violet'] {
+  --brand-1: #a78bfa;
+  --brand-2: #7c3aed;
+}
+:root[data-accent='violet'] {
+  --accent: #a78bfa;       /* 对 --bg 6.95 */
+  --accent-solid: #7c3aed; /* 白字 5.70 */
+}
+:root[data-theme='light'][data-accent='violet'] {
+  --accent: #6d28d9;       /* 对 --bg 7.10、--bg3 6.22 */
+  --accent-solid: #6d28d9;
+}
+[data-accent='rose'] {
+  --brand-1: #fb7185;
+  --brand-2: #e11d48;
+}
+:root[data-accent='rose'] {
+  --accent: #fb7185;       /* 对 --bg 7.03 */
+  --accent-solid: #e11d48; /* 白字 4.70 */
+}
+:root[data-theme='light'][data-accent='rose'] {
+  --accent: #be123c;       /* 对 --bg 6.29、--bg3 5.51 */
+  --accent-solid: #be123c;
+}
+[data-accent='amber'] {
+  --brand-1: #f0a83a;
+  --brand-2: #b45309;
+}
+:root[data-accent='amber'] {
+  --accent: #f0a83a;       /* 对 --bg 9.34 */
+  --accent-solid: #b45309; /* 白字 5.02 */
+}
+:root[data-theme='light'][data-accent='amber'] {
+  /* 不用 #b45309：对 --bg3 只有 4.40 */
+  --accent: #a65006;       /* 对 --bg 5.57、--bg3 4.88 */
+  --accent-solid: #a65006;
 }
 
 * {

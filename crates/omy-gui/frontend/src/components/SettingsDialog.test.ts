@@ -6,10 +6,11 @@ const h = vi.hoisted(() => ({
   configSet: vi.fn(),
   systemProxy: vi.fn(),
   checkConnection: vi.fn(),
+  setAccent: vi.fn(),
 }));
 
 const makeConfig = () => ({
-  ui: { language: 'auto', theme: 'auto', startup: 'last', view: 'grid' },
+  ui: { language: 'auto', theme: 'auto', accent: 'blue', startup: 'last', view: 'grid' },
   remote: {
     telegram_proxy_mode: 'system',
     telegram_proxy: '',
@@ -64,7 +65,12 @@ vi.mock('../mobile-platform', () => ({
   isAndroid: false,
   registerMobileBack: vi.fn(() => () => {}),
 }));
-vi.mock('../theme', () => ({ theme: ref('auto'), setTheme: vi.fn() }));
+vi.mock('../theme', () => ({
+  theme: ref('auto'),
+  setTheme: vi.fn(),
+  setAccent: h.setAccent,
+  ACCENTS: ['blue', 'teal', 'violet', 'rose', 'amber'],
+}));
 vi.mock('../store', () => ({
   state: { cwd: '', remotePlaces: [] },
   setNotice: vi.fn(),
@@ -166,6 +172,46 @@ describe('SettingsDialog 通用组', () => {
 
     expect(deskFields.map((f) => f.sf)).toEqual(['language', 'theme', 'view', 'startup']);
     expect(mobFields).toEqual(deskFields);
+  });
+
+  it('两端都有同一排主题色色块，排在主题之后', async () => {
+    // 不这样会怎样：色块不是 select，上面那条比对抓不到它；只在一端渲染时
+    // 另一端的用户根本找不到主题色设置
+    const swatches = (w: ReturnType<typeof mount>, sel: string) => ({
+      after: w.find(`${sel}:has(.accentpick)`).element.previousElementSibling
+        ?.querySelector('select')?.getAttribute('data-sf')?.replace(/^m_/, ''),
+      list: w.findAll(`${sel} .swatch`).map((b) => b.attributes('data-accent')),
+    });
+    const desk = mount(SettingsDialog);
+    await flushPromises();
+    const d = swatches(desk, '[data-pane="general"] .row');
+    desk.unmount();
+    setTestMobile(true);
+    const mob = mount(SettingsDialog);
+    await flushPromises();
+    const m = swatches(mob, '.mlist .mqrow');
+    mob.unmount();
+    expect(d).toEqual({ after: 'theme', list: ['blue', 'teal', 'violet', 'rose', 'amber'] });
+    expect(m).toEqual(d);
+  });
+
+  it('点色块立即应用主题色，并随保存写进配置', async () => {
+    h.configSet.mockReset();
+    h.configSet.mockResolvedValue(undefined);
+    setTestMobile(true);
+    const w = mount(SettingsDialog);
+    await flushPromises();
+    expect(w.find('[data-sf="accent_blue"]').attributes('aria-checked')).toBe('true');
+    await w.find('[data-sf="accent_violet"]').trigger('click');
+    // 不这样会怎样：只写配置不应用，用户点了色块界面毫无变化，无从比较
+    expect(h.setAccent).toHaveBeenLastCalledWith('violet');
+    expect(w.find('[data-sf="accent_violet"]').attributes('aria-checked')).toBe('true');
+    expect(w.find('[data-sf="accent_blue"]').attributes('aria-checked')).toBe('false');
+    await w.find('[data-si="nav-files"]').trigger('click');
+    await flushPromises();
+    // 不这样会怎样：只应用不写配置，下次启动配置校正会把它改回原来的颜色
+    expect(h.configSet.mock.calls.at(-1)?.[0].ui.accent).toBe('violet');
+    w.unmount();
   });
 
   it('移动端改语言立即生效并写进配置', async () => {

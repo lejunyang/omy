@@ -23,7 +23,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import * as i18n from '../i18n';
 import { isMobile } from '../viewport';
 import { isAndroid, registerMobileBack } from '../mobile-platform';
-import { setTheme } from '../theme';
+import { setAccent, setTheme } from '../theme';
+import AccentPicker from './AccentPicker.vue';
 import * as api from '../api';
 import { state, setNotice, reloadRemotePlaces } from '../store';
 
@@ -268,13 +269,20 @@ function onTheme(v) {
   setTheme(v);
 }
 
-/** 「通用」组的四个下拉框。桌面在右侧面板、移动端在主列表里平铺，
+/** 主题色同样立即应用：色块点下去界面就该变，否则用户无从比较。 */
+function onAccent(v) {
+  cfg.value.ui.accent = v;
+  setAccent(v);
+}
+
+/** 「通用」组的几项设置。桌面在右侧面板、移动端在主列表里平铺，
  *  两处原来各写一份模板，顺序已经不一致了；加选项时只改一边也不会有
  *  任何检查报错。现在两处都从这里渲染。 */
 interface GeneralField {
   /** 也是 data-sf 的取值（移动端加 m_ 前缀，探针按它定位） */
-  key: 'language' | 'theme' | 'view' | 'startup';
+  key: 'language' | 'theme' | 'accent' | 'view' | 'startup';
   label: string;
+  /** 主题色用色块而不是下拉框，没有 options */
   options: { value: string; label: string }[];
 }
 const generalFields = computed<GeneralField[]>(() => [
@@ -297,6 +305,7 @@ const generalFields = computed<GeneralField[]>(() => [
       { value: 'light', label: i18n.t('settings.theme_light') },
     ],
   },
+  { key: 'accent', label: 'settings.accent', options: [] },
   {
     key: 'view',
     label: 'settings.default_view',
@@ -315,10 +324,11 @@ const generalFields = computed<GeneralField[]>(() => [
   },
 ]);
 
-/** 语言与主题要立即生效，其余只写回配置，随「保存」落盘。 */
+/** 语言、主题、主题色要立即生效，其余只写回配置，随「保存」落盘。 */
 function setGeneral(key: GeneralField['key'], v: string) {
   if (key === 'language') onLanguage(v);
   else if (key === 'theme') onTheme(v);
+  else if (key === 'accent') onAccent(v);
   else cfg.value.ui[key] = v;
 }
 
@@ -618,8 +628,15 @@ async function openLogDir() {
           <!-- 语言/主题原本在底栏一点即切，收进设置后必须在主页一层就够得到 -->
           <div class="mgh">{{ i18n.t('settings.general') }}</div>
           <div v-for="f in generalFields" :key="f.key" class="mqrow">
-            <label class="mqlb" :for="`m-set-${f.key}`">{{ i18n.t(f.label) }}</label>
+            <label :id="`m-lb-${f.key}`" class="mqlb" :for="`m-set-${f.key}`">{{ i18n.t(f.label) }}</label>
+            <AccentPicker
+              v-if="f.key === 'accent'"
+              :model-value="cfg.ui.accent"
+              :labelledby="`m-lb-${f.key}`"
+              @update:model-value="setGeneral('accent', $event)"
+            />
             <select
+              v-else
               :id="`m-set-${f.key}`"
               :data-sf="`m_${f.key}`"
               :value="cfg.ui[f.key]"
@@ -694,8 +711,15 @@ async function openLogDir() {
           <!-- 通用 -->
           <template v-if="(isMobile ? mobilePane : pane) === 'general'">
             <div v-for="f in generalFields" :key="f.key" class="row">
-              <label class="lb" :for="`set-${f.key}`">{{ i18n.t(f.label) }}</label>
+              <label :id="`lb-${f.key}`" class="lb" :for="`set-${f.key}`">{{ i18n.t(f.label) }}</label>
+              <AccentPicker
+                v-if="f.key === 'accent'"
+                :model-value="cfg.ui.accent"
+                :labelledby="`lb-${f.key}`"
+                @update:model-value="setGeneral('accent', $event)"
+              />
               <select
+                v-else
                 :id="`set-${f.key}`"
                 :data-sf="f.key"
                 :value="cfg.ui[f.key]"
