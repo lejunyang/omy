@@ -3,10 +3,16 @@ java = "21"
 android-ndk = "29"
 rust = { version = "1.98", components = "clippy", targets = "x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android" }
 android-platform-tools = "37"
-android-emulator = { version = "37", accept-license = "android-sdk-preview-license" }
+# 模拟器与系统镜像只有本地 E2E 用得到，标成 lazy：裸 `osdk install` 不装，
+# 由 android-avd-prepare 任务的 tools 按需装。
+#
+# 不标 lazy 的代价是具体的：`osdk run` 要求所有**非 lazy** 工具都已安装，
+# 哪怕任务根本不用它们。发布流水线的 Android 任务只装 APK 构建所需的子集
+# （模拟器+镜像近 2 GB），于是 `osdk run android-release-build` 直接失败。
+android-emulator = { version = "37", accept-license = "android-sdk-preview-license", lazy = true }
 android-build-tools = "37"
 android-cmdline-tools = "latest"
-android-system-images = "android-35;google_apis;x86_64"
+android-system-images = { version = "android-35;google_apis;x86_64", lazy = true }
 # FFmpeg 裁剪构建的工具链（见 docs/research/13-ffmpeg-minimal-build.md）。
 # Windows 上不需要装 MSYS2：mingw 交叉编译器与 POSIX 构建环境都由 conda 提供。
 #
@@ -45,7 +51,11 @@ android-system-images = "android-35;google_apis;x86_64"
 node = "22"
 pnpm = "9"
 android-platforms = "=android-36"
-"conda:libarchive" = "3.8.9"
+# 只给 Windows 的 FFmpeg 构建解压源码用（build-windows.sh 里的 bsdtar），
+# Linux / macOS 用系统 tar。原来漏了 when，在 Linux 上它也成了「必须已装」
+# 的工具，发布流水线的 Android 任务因此在 `osdk run` 时报
+# `conda:libarchive@3.8.9 has no complete install`。
+"conda:libarchive" = { version = "3.8.9", when = { os = ["windows"] } }
 
 [settings.shims.tools."conda:m2-base"]
 expose = ["make", "sh", "bash", "sed", "grep", "awk", "gawk", "tr", "head", "tail", "cut", "sort", "uniq", "mkdir", "rm", "cp", "mv", "dirname", "basename", "expr", "find", "diff", "cmp", "pkg-config", "printf", "cat", "wc", "ln", "date", "tee", "tar", "gzip", "gunzip", "sha256sum", "curl", "nproc", "stat"]
@@ -86,6 +96,8 @@ expose = ["bsdtar"]
 [tasks.android-avd-prepare]
 run = 'pwsh -File spikes\android-external-edit-e2e\prepare-avd.ps1'
 description = "检查 Android 工具链与 system image，缺失时创建 omy-test-35 AVD"
+# 两者是 lazy 声明，裸 osdk install 不装，靠这里在跑 E2E 前按需安装
+tools = ["android-emulator", "android-system-images"]
 
 [tasks.android-emulator-start]
 run = 'pwsh -File spikes\android-external-edit-e2e\start-emulator.ps1'

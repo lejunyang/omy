@@ -60,11 +60,13 @@ macos / frontend；未验证平台（linux）的红叉不会阻塞合并。
 不入库——所以**凡是会编到 omy-gui 的任务**（windows / linux / macos / msrv，
 以及 release 里的各构建任务）都必须先装 Node 与 pnpm。
 
-`cargo tauri android build` 是例外：Tauri CLI 会在 Rust `build.rs` 获得执行机会前
-先校验 `frontendDist`。因此 `osdk.toml` 的 `android-release-build` task 把
-`pnpm install --frozen-lockfile`、`pnpm build` 与 Tauri 构建按顺序封装在一起；发布
-流水线只调用这个 task。只安装 pnpm 就直接运行 Tauri 仍会报
-`Unable to find your web assets`。
+经 Tauri CLI 构建的是例外（`cargo tauri android build` 与 Linux 发行包用的
+`cargo tauri build`）：Tauri CLI 会在 Rust `build.rs` 获得执行机会前先校验
+`frontendDist`。因此 `osdk.toml` 的 `android-release-build` task 把
+`pnpm install --frozen-lockfile`、`pnpm build` 与 Tauri 构建按顺序封装在一起，
+build-linux 也在 `cargo tauri build` 前单独加了「构建前端」一步。只安装 pnpm
+就直接运行 Tauri 仍会报 `Unable to find your web assets`——0.0.1 首次发布的
+Linux 任务就是这样挂掉的。
 
 runner 镜像自带 node 与 npm，但**不带 pnpm**。缺它时 `build.rs` 直接 panic，
 而报错长得跟 Rust 毫无关系：
@@ -172,9 +174,13 @@ android 任务只跑 `cargo test -p omy-core`，core 不碰 FFmpeg，所以不�
 ### FFmpeg 任务只安装所需的 osdk 工具
 
 Windows 的 FFmpeg 测试与发布任务、Linux 发布任务都通过 one-sdk 仓库的
-composite Action 安装 osdk，并缓存 Action 管理的 data/cache 目录。Action 固定到包含
-该能力的完整提交 SHA，CLI 版本显式固定为 0.0.4；这样既不跟随可变分支，也不会因 SHA
-引用而额外查询 latest Release。
+composite Action 安装 osdk，并缓存 Action 管理的 data/cache 目录。「内置 FFmpeg」工作流
+（ffmpeg.yml）与发布流水线都用 `lejunyang/one-sdk@main` 与最新 CLI，不固定版本。
+
+**不固定版本的原因**：所有 osdk 消费者共用同一份 osdk.toml，旧 CLI 遇到不认识的键会
+整份解析失败。ffmpeg.yml 曾固定在 0.0.4，osdk.toml 给任务加了 `tools` 键后直接报
+`toml parse error`，FFmpeg 任务一步都没跑。固定版本会让工作流悄悄落后于 osdk.toml
+的语法；最新 osdk 自身若有问题，发布前的 `build_only` 运行与 PR 上的 FFmpeg 任务会先暴露。
 
 Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根目录信任 `osdk.toml`，
 按任务显式安装工具。Windows 安装 FFmpeg 配方使用的六个 conda 工具，其中
@@ -182,9 +188,9 @@ Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根�
 MSYS epoch 冲突，所以作为独立原生工具安装并由 osdk 单独暴露。Linux 只装
 `conda:nasm`。下载后的每个源码包都校验固定 SHA；若 CDN 返回 200 但内容损坏，
 脚本会删除后重下，最多 3 次，始终不会放行不匹配的内容。
-不要把工具安装改回无参数的 `osdk install`：根配置还声明了本地 Android E2E
-所需的 emulator 与 `android-35;google_apis;x86_64` system image；FFmpeg 任务不使用它们，
-但全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
+不要把工具安装改回无参数的 `osdk install`：根配置还声明了 Android NDK/SDK 等
+FFmpeg 任务不用的工具（本地 E2E 的 emulator 与 system image 现已标 lazy，裸安装
+不再下载它们，但 NDK 等仍有数 GiB）。最初这里全量安装会下载约 1 GiB 的 Google 镜像。首次发布曾在这里连续 6 小时没有新输出，
 最终被 GitHub 取消。Windows FFmpeg job 另设 90 分钟上限，保证类似的上游静默阻塞能
 尽早暴露。
 
@@ -249,6 +255,45 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 平台与 Build Tools；随后执行 `osdk run --no-deps android-release-build`。安装列表
 刻意不含 emulator 和 system image：生成 APK 不需要启动虚拟设备，把本地 E2E 的
 大镜像带进发布任务只会增加下载超时面。
+
+**`osdk run` 要求 osdk.toml 里当前平台生效的全部非 lazy 工具都已安装**，不论
+任务用不用。0.0.1 首次发布就挂在这里：`conda:libarchive` 漏写了
+`when = windows`，在 Linux 上成了必装项，任务一行没跑就报
+`dynamic tool conda:libarchive@3.8.9 has no complete install`。所以：
+
+- 只在某个平台用得到的工具，声明时写 `when`；
+- 只有本地 E2E 用的 emulator 与 system image 标成 `lazy = true`，由
+  `android-avd-prepare` 任务的 `tools` 按需安装；
+- Android 发布任务的安装清单要覆盖 Linux 上全部非 lazy 工具，所以连 APK
+  用不到的 `conda:nasm` 也装上。往 osdk.toml 加这类工具时两边一起改。
+
+osdk 0.0.9 解 zip 时不还原符号链接，NDK r29 Linux 包里的 `clang -> clang-21`
+等 37 个链接变成了内容为目标名的小文件；执行时 shell 去 PATH 找 `clang-21`，
+撞上 osdk shim，在 cargo 构建脚本的工作目录里报
+`osdk-shim: no version of android-ndk selected`。Android 任务在装完 NDK 后有一步
+把这些残片还原成符号链接；osdk 修复并发版、CI 改用新版后可以删掉这一步。
+本机 Windows 不受影响（Windows 版 NDK 包里没有符号链接）。
+
+Android 任务还会额外装 `android-build-tools@35.0.0`：AGP 8.11 对没写
+`buildToolsVersion` 的模块（包括依赖包里的 Tauri 插件子工程）默认要 35。SDK
+里没有时 Gradle 自行下载，但它不认 osdk 写下的新版许可哈希，报
+`License for package Android SDK Build-Tools 35 not accepted`；由 osdk 安装会
+补写 35 所需的旧版许可。升级 AGP 后要跟着它的默认版本改。
+
+### 合并前先在分支上验证构建
+
+四个构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面
+那类配置错误（以及 Linux 的 frontendDist 问题）要到真正发布才暴露。改了
+release.yml、osdk.toml、tauri.conf.json 或其它打包相关配置后，先在分支上
+手动触发一次「发布」并勾选 `build_only`：只跑四个构建任务，不建 Release、
+不传 crates.io。
+
+```
+gh workflow run release.yml --ref <分支> -f build_only=true
+```
+
+Release 与 crates.io 两个任务还额外要求 `github.ref == refs/heads/main`：
+手动触发能选任意分支，忘勾 `build_only` 时也不会把分支代码当正式版发出去。
 
 ### 发布到 crates.io 的顺序、范围与限流
 

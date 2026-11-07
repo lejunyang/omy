@@ -16,6 +16,15 @@ val tauriProperties = Properties().apply {
 android {
     compileSdk = 36
     namespace = "org.omy.app"
+    lint {
+        // release 构建的 lintVital 报 `MainActivity must extend
+        // android.app.Activity [Instantiatable]`，是误报：MainActivity 继承
+        // TauriActivity → WryActivity → AppCompatActivity，Kotlin 编译通过，
+        // debug 包也在真机上跑过。这两个父类是 tauri android build 时生成到
+        // generated/ 下的源码，lint 解析不出这条继承链。只关这一条，其余
+        // 检查照常拦截 release。本地以前只构建过 debug，所以没撞到。
+        disable += "Instantiatable"
+    }
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "org.omy.app"

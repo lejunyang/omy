@@ -52,6 +52,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      build_only:
+        # 四个构建任务只在发布时跑，PR 的「测试」流水线覆盖不到。0.0.1 首次
+        # 发布时 Android 与 Linux 两个构建都挂在配置问题上，而这些问题在
+        # 合并前没有任何途径暴露。勾上它可以在分支上只验证构建：
+        #   gh workflow run release.yml --ref <分支> -f build_only=true
+        description: 只跑四个平台构建，不创建 Release、不发布 crates.io
+        type: boolean
+        default: false
 
 # 发布是不可撤销（crates.io）或对外可见（Release）的动作，绝不为新推送
 # 取消正在跑的旧发布
@@ -148,8 +157,9 @@ jobs:
       # 装 osdk 而不是 MSYS2：本地开发用的就是根目录 osdk.toml 那套工具链，
       # CI 复用同一份配置才能保证「CI 里构建出来的 = 本地验证过的」。
       # 换成 MSYS2 等于维护第二套版本组合，而两套之间的漂移只会在产物里暴露。
-      # v0.0.4 还没有 Action，故固定到包含 Action 的已审阅提交；version
-      # 则显式选择已发布的 CLI，避免 SHA 引用触发 latest API 查询。
+      # 发布流水线用 @main 与最新 CLI（不固定版本）：发布前总要先在分支上跑一次
+      # build_only，最新 osdk 若有问题会在那里暴露，而不是等到合并后。
+      # 「内置 FFmpeg」工作流（ffmpeg.yml）同样跟随 main，两处改一处都要改。
       - name: 安装 osdk 并恢复工具缓存
         uses: lejunyang/one-sdk@main
         with:
@@ -245,13 +255,52 @@ jobs:
           cache-key: android-build
 
       - name: 安装 Android 构建工具链
+        # 下面的 `osdk run` 要求 osdk.toml 里**在 Linux 上生效的全部非 lazy
+        # 工具**都已安装，不管任务用不用得到。所以这里的清单必须覆盖那一整套，
+        # 而不只是 APK 构建真正用到的：漏一个，构建一行没跑就失败。
+        # conda:nasm 是给 Linux FFmpeg 构建的，APK 用不到，只为满足这条规则；
+        # 模拟器与系统镜像在 osdk.toml 里标了 lazy，所以可以不装。
+        # 往 osdk.toml 加 Linux 也生效的非 lazy 工具时，这里要一起加。
         run: |
           osdk --yes trust osdk.toml
-          osdk -y install java rust node pnpm
+          osdk -y install java rust node pnpm conda:nasm
           osdk -y install -o accept-licenses=true \
             android-ndk android-platform-tools android-build-tools \
             android-cmdline-tools android-platforms
+          # 再装一份 build-tools 35.0.0：AGP 8.11 对没写 buildToolsVersion 的
+          # 模块默认要 35，tauri-plugin-dialog 等插件子工程的 Gradle 文件在
+          # 依赖包里改不了。SDK 里没有时 Gradle 会自行下载，但 osdk 只写下
+          # 新版许可的哈希，Gradle 认不出 35 用的旧版许可，报
+          # `License for package Android SDK Build-Tools 35 not accepted`。
+          # 由 osdk 装则会补写旧版许可、把 35 链进 SDK 根，Gradle 不再下载
+          # ——本机就是这个状态。升级 AGP 后它的默认版本变了，这里跟着改。
+          osdk -y install -o accept-licenses=true android-build-tools@35.0.0
           echo "NDK_HOME=$(osdk -q where android-ndk | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: 修复 NDK 里被解压成普通文件的符号链接
+        # osdk 0.0.9 解 zip 时不还原符号链接：NDK r29 Linux 包里的 37 个
+        # 链接（clang -> clang-21、ld -> ld.lld 等）被写成「内容是目标名」
+        # 的小文本文件。执行 clang 时 shell 把它当脚本跑，再去 PATH 里找
+        # `clang-21`——命中 osdk 的 shim，而 shim 在 cargo 构建脚本的工作
+        # 目录（CARGO_HOME 里的 crate 源码，不在本项目内）选不到 NDK 版本，
+        # 于是 aws-lc-sys 报 `osdk-shim: no version of android-ndk selected`。
+        #
+        # 这是 osdk 的缺陷（pipeline/extract.rs 的 unpack_zip），修好并发版
+        # 前在这里兜底。判定规则：小于 256 字节、单行、不是脚本、且内容指向
+        # 同目录下真实存在的文件——已用 NDK r29 实测，恰好命中 zip 里全部
+        # 37 个链接，不误伤其它文件；重复执行时 find -type f 不再匹配到它们。
+        # 缓存里恢复出来的旧安装同样是坏的，所以每次都要跑。
+        run: |
+          n=0
+          while IFS= read -r -d '' f; do
+            target="$(head -c 4096 "$f")"
+            case "$target" in ''|*$'\n'*|'#!'*) continue ;; esac
+            [ -e "$(dirname "$f")/$target" ] || continue
+            ln -sfn "$target" "$f"
+            n=$((n + 1))
+          done < <(find "$NDK_HOME" -type f -size -256c -print0)
+          echo "已把 ${n} 个符号链接残片恢复为符号链接"
+          "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -1
 
       - name: 指定交叉编译用的 C 编译器与链接器
         # cc-rs 找的是不带 API 级别的名字，而 NDK 只提供带级别的 wrapper，
@@ -374,9 +423,20 @@ jobs:
       - name: 安装 tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
+      - name: 构建前端
+        # 不能指望 build.rs 来构建前端：tauri build 在 cargo 编译、也就是
+        # build.rs 有机会运行**之前**就先校验 frontendDist，dist/ 不在就报
+        # `Unable to find your web assets`。0.0.1 首次发布就挂在这里。
+        # 与 osdk.toml 的 android-release-build 任务是同一个原因、同一个做法。
+        # 产物落在 crates/omy-gui/dist（vite outDir 是 ../dist）。
+        working-directory: crates/omy-gui
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend build
+
       - name: 构建并生成发行包（deb/rpm/AppImage）
-        # 单独走 tauri build，不直接 cargo build --release：前端由 build.rs
-        # 自动构建，之后按 tauri.conf.json 的 bundle.targets 生成三种包。
+        # 单独走 tauri build，不直接 cargo build --release：要按
+        # tauri.conf.json 的 bundle.targets 生成三种包。前端已由上一步构建好。
         # tauri-cli 2.x 的 build 不支持 -p，在 crate 目录下执行即构建该包
         working-directory: crates/omy-gui
         run: cargo tauri build
@@ -502,8 +562,14 @@ jobs:
     name: 创建 GitHub Release
     needs: [decide, build-windows, build-android, build-linux, build-macos]
     # 四个构建全部成功才出 Release。这里不再需要 always()：所有依赖都是
-    # 硬门禁，不存在「允许失败」的构建任务了
-    if: needs.decide.outputs.publish == 'true'
+    # 硬门禁，不存在「允许失败」的构建任务了。
+    # 另外两条：build_only 只验证构建；只从 main 发布——手动触发可以选
+    # 任意分支，忘勾 build_only 时不能把分支上的代码当正式版发出去。
+    # （publish 任务有同样的条件，改一处两处都要改）
+    if: >-
+      needs.decide.outputs.publish == 'true'
+      && github.event.inputs.build_only != 'true'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -588,7 +654,11 @@ jobs:
     # （只能 yank，且版本号不能复用），这个不可撤销的动作不能在任何平台
     # 构建红着的时候发生。四个构建全绿才允许上传。
     needs: [decide, build-windows, build-android, build-linux, build-macos]
-    if: needs.decide.outputs.publish == 'true'
+    # 条件与 release 任务相同，理由见那里（改一处两处都要改）
+    if: >-
+      needs.decide.outputs.publish == 'true'
+      && github.event.inputs.build_only != 'true'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # 首次发布 8 个全新包：前 5 个连发，后 3 个每个前面等 10 分钟限流冷却，
     # 加上每个包 cargo publish 自带的编译校验，正常首次约 45 分钟；再留出

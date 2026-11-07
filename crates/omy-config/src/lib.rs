@@ -939,12 +939,17 @@ theme = \"dark\"
     /// 不这样会怎样：把 update_at 里的锁去掉，这个测试会因为 places 数量少于
     /// N*K 而失败——它就是为抓这个回归而写的。每个 id 唯一再校验一次，排除两个
     /// 线程撞上同一个 id 造成的假绿。
+    ///
+    /// 线程数取 4 而不是更多：锁是 20ms 轮询、不排队，竞争者越多，某个线程连续
+    /// 抢不到锁的时间越长。12 线程时 CI 的 Windows runner（每次原子写含 fsync，
+    /// 还要过杀毒扫描）上曾有线程等满 5 秒报 LockTimeout，同一份代码重跑又通过。
+    /// 真实场景只有 GUI 与 CLI 两个写者；4 个线程足以让去锁后的丢失更新稳定复现。
     #[test]
     fn concurrent_update_at_keeps_every_appended_place() {
         let p = tmp("conc");
         Config::default().save_to(&p).expect("写初始配置");
 
-        const THREADS: usize = 12;
+        const THREADS: usize = 4;
         const PER: usize = 10;
 
         std::thread::scope(|s| {
