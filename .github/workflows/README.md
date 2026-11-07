@@ -175,13 +175,12 @@ android 任务只跑 `cargo test -p omy-core`，core 不碰 FFmpeg，所以不�
 
 Windows 的 FFmpeg 测试与发布任务、Linux 发布任务都通过 one-sdk 仓库的
 composite Action 安装 osdk，并缓存 Action 管理的 data/cache 目录。「内置 FFmpeg」工作流
-（ffmpeg.yml）把 Action 固定到 v0.0.10 标签的完整提交 SHA，CLI 版本显式固定为 0.0.10；
-这样既不跟随可变分支，也不会因 SHA 引用而额外查询 latest Release。发布流水线用 `@main`
-与最新 CLI，靠发布前的 `build_only` 运行兜住新版问题。
+（ffmpeg.yml）与发布流水线都用 `lejunyang/one-sdk@main` 与最新 CLI，不固定版本。
 
-**osdk.toml 用上新语法时，ffmpeg.yml 的固定版本要一起升级**：所有 osdk 消费者共用
-这一份配置，旧 CLI 遇到不认识的键会整份解析失败。原先固定的 0.0.4 就因为任务的
-`tools` 键报 `toml parse error`，FFmpeg 任务一步都没跑。
+**不固定版本的原因**：所有 osdk 消费者共用同一份 osdk.toml，旧 CLI 遇到不认识的键会
+整份解析失败。ffmpeg.yml 曾固定在 0.0.4，osdk.toml 给任务加了 `tools` 键后直接报
+`toml parse error`，FFmpeg 任务一步都没跑。固定版本会让工作流悄悄落后于 osdk.toml
+的语法；最新 osdk 自身若有问题，发布前的 `build_only` 运行与 PR 上的 FFmpeg 任务会先暴露。
 
 Action 在 `runner.temp` 下执行且关闭自动物化，随后回到仓库根目录信任 `osdk.toml`，
 按任务显式安装工具。Windows 安装 FFmpeg 配方使用的六个 conda 工具，其中

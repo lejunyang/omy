@@ -50,17 +50,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Action 固定到 v0.0.10 标签对应的完整提交 SHA，不跟随可变分支；version
-      # 显式选择同一版 CLI，避免 SHA 引用触发 latest API 查询。
+      # 与 release.yml 一致：Action 跟随 main、CLI 用最新版，不固定版本。
       #
-      # 不能长期停在旧版：osdk.toml 是所有 osdk 消费者共用的，旧 CLI 不认识
-      # 新键就整份解析失败。原先固定的 0.0.4 遇到任务的 `tools` 键直接报
-      # `toml parse error`，本任务一步都没跑。osdk.toml 用上新语法时，这里
-      # 要一起升级。
+      # osdk.toml 是所有 osdk 消费者共用的，旧 CLI 不认识新键就整份解析失败。
+      # 之前这里固定在 0.0.4，osdk.toml 给任务加了 `tools` 键后直接报
+      # `toml parse error`，本任务一步都没跑——固定版本会让这里悄悄落后于
+      # osdk.toml 的语法，跟随最新版才能和它保持同步。
       - name: 安装 osdk 并恢复工具缓存
-        uses: lejunyang/one-sdk@08d0986e8fec05b84557b6299ebe7a48118d5d9e  # v0.0.10
+        uses: lejunyang/one-sdk@main
         with:
-          version: '0.0.10'
           # Action 只负责安装、缓存与导出环境；若让它在仓库根目录执行默认的
           # 全量 install，会把本任务完全不用的 Android system image 也下载。
           working-directory: ${{ runner.temp }}

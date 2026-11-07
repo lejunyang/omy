@@ -159,7 +159,7 @@ jobs:
       # 换成 MSYS2 等于维护第二套版本组合，而两套之间的漂移只会在产物里暴露。
       # 发布流水线用 @main 与最新 CLI（不固定版本）：发布前总要先在分支上跑一次
       # build_only，最新 osdk 若有问题会在那里暴露，而不是等到合并后。
-      # 「内置 FFmpeg」工作流则固定了版本，见 ffmpeg.yml。
+      # 「内置 FFmpeg」工作流（ffmpeg.yml）同样跟随 main，两处改一处都要改。
       - name: 安装 osdk 并恢复工具缓存
         uses: lejunyang/one-sdk@main
         with:
