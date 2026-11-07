@@ -676,10 +676,17 @@ jobs:
 
       - name: 安装系统依赖
         # 发布的是库与 CLI（omy-gui publish = false），不需要 WebKit，
-        # 但部分依赖的 -sys 构建仍需要基础工具链与 openssl 头
+        # 但部分依赖的 -sys 构建仍需要基础工具链与 openssl 头。
+        #
+        # libdbus-1-dev：omy-secret 在 Linux 上经 keyring → dbus-secret-service
+        # 依赖 libdbus-sys，它的 build.rs 用 pkg-config 找 dbus-1，找不到直接
+        # panic。Linux 构建任务从没报过，是因为 libwebkit2gtk-4.1-dev 间接装了
+        # 它；本任务不装 WebKit，首次发布 0.0.1 就在 dry-run 校验 omy-secret 时
+        # 失败。给 omy-secret 等发布包加新的 -sys 依赖时，要在这里补对应的
+        # 开发包，不能指望 Linux 构建任务替它暴露。
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev pkg-config
+          sudo apt-get install -y build-essential libssl-dev pkg-config libdbus-1-dev
 
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
