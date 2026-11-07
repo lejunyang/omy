@@ -614,9 +614,15 @@ jobs:
       - name: 安装 Rust
         run: rustup toolchain install stable --profile minimal
 
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          key: publish
+      # 不用 rust-cache，且校验与上传都在 runner.temp 下的全新 target 里编：
+      # cargo 认为 registry 来源的包「版本相同即内容相同」，不会因源码变了
+      # 而重编。dry-run 时 omy-core 0.0.1 是以 registry 依赖的身份编进
+      # target 的；缓存把它带到下一次运行后，修了代码再发同一个版本，校验
+      # 用的仍是旧的 omy-core 编译产物——本地实测过，表现为「函数明明在，
+      # 却报 cannot find function」。首次发布反正要等约 45 分钟限流，
+      # 省下的那几分钟编译不值得冒这个险。
+      - name: 指定全新的 target 目录
+        run: echo "CARGO_TARGET_DIR=${{ runner.temp }}/publish-target" >> "$GITHUB_ENV"
 
       - name: 确认 token 已配置
         # dry-run **不需要** token 也能过，所以缺 token 时前面一路绿灯，
