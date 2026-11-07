@@ -52,6 +52,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      build_only:
+        # 四个构建任务只在发布时跑，PR 的「测试」流水线覆盖不到。0.0.1 首次
+        # 发布时 Android 与 Linux 两个构建都挂在配置问题上，而这些问题在
+        # 合并前没有任何途径暴露。勾上它可以在分支上只验证构建：
+        #   gh workflow run release.yml --ref <分支> -f build_only=true
+        description: 只跑四个平台构建，不创建 Release、不发布 crates.io
+        type: boolean
+        default: false
 
 # 发布是不可撤销（crates.io）或对外可见（Release）的动作，绝不为新推送
 # 取消正在跑的旧发布
@@ -519,8 +528,14 @@ jobs:
     name: 创建 GitHub Release
     needs: [decide, build-windows, build-android, build-linux, build-macos]
     # 四个构建全部成功才出 Release。这里不再需要 always()：所有依赖都是
-    # 硬门禁，不存在「允许失败」的构建任务了
-    if: needs.decide.outputs.publish == 'true'
+    # 硬门禁，不存在「允许失败」的构建任务了。
+    # 另外两条：build_only 只验证构建；只从 main 发布——手动触发可以选
+    # 任意分支，忘勾 build_only 时不能把分支上的代码当正式版发出去。
+    # （publish 任务有同样的条件，改一处两处都要改）
+    if: >-
+      needs.decide.outputs.publish == 'true'
+      && github.event.inputs.build_only != 'true'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -605,7 +620,11 @@ jobs:
     # （只能 yank，且版本号不能复用），这个不可撤销的动作不能在任何平台
     # 构建红着的时候发生。四个构建全绿才允许上传。
     needs: [decide, build-windows, build-android, build-linux, build-macos]
-    if: needs.decide.outputs.publish == 'true'
+    # 条件与 release 任务相同，理由见那里（改一处两处都要改）
+    if: >-
+      needs.decide.outputs.publish == 'true'
+      && github.event.inputs.build_only != 'true'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # 首次发布 8 个全新包：前 5 个连发，后 3 个每个前面等 10 分钟限流冷却，
     # 加上每个包 cargo publish 自带的编译校验，正常首次约 45 分钟；再留出

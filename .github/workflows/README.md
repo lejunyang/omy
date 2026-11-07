@@ -263,6 +263,21 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 - Android 发布任务的安装清单要覆盖 Linux 上全部非 lazy 工具，所以连 APK
   用不到的 `conda:nasm` 也装上。往 osdk.toml 加这类工具时两边一起改。
 
+### 合并前先在分支上验证构建
+
+四个构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面
+那类配置错误（以及 Linux 的 frontendDist 问题）要到真正发布才暴露。改了
+release.yml、osdk.toml、tauri.conf.json 或其它打包相关配置后，先在分支上
+手动触发一次「发布」并勾选 `build_only`：只跑四个构建任务，不建 Release、
+不传 crates.io。
+
+```
+gh workflow run release.yml --ref <分支> -f build_only=true
+```
+
+Release 与 crates.io 两个任务还额外要求 `github.ref == refs/heads/main`：
+手动触发能选任意分支，忘勾 `build_only` 时也不会把分支代码当正式版发出去。
+
 ### 发布到 crates.io 的顺序、范围与限流
 
 发布由 `scripts/publish-crates.sh` 按依赖顺序逐个执行：
