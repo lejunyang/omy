@@ -15,12 +15,6 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
-    // 用 osdk 装好的 build-tools，不让 AGP 用它自己的默认版本（8.11 默认 35.0.0）。
-    // 默认版本不在 SDK 里时 Gradle 会自行下载，而它不认 osdk 写的许可记录，
-    // 0.0.1 首次发布的 Android 任务就挂在 `License for package Android SDK
-    // Build-Tools 35 not accepted`；本机能过只是因为早先 Gradle 已下过 35。
-    // 必须与根目录 osdk.toml 的 android-build-tools 一致，改一处两处都要改。
-    buildToolsVersion = "37.0.0"
     namespace = "org.omy.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"

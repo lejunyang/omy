@@ -10,10 +10,7 @@ android-platform-tools = "37"
 # 哪怕任务根本不用它们。发布流水线的 Android 任务只装 APK 构建所需的子集
 # （模拟器+镜像近 2 GB），于是 `osdk run android-release-build` 直接失败。
 android-emulator = { version = "37", accept-license = "android-sdk-preview-license", lazy = true }
-# 写死到补丁号：crates/omy-gui/gen/android/app/build.gradle.kts 的
-# buildToolsVersion 要与它完全一致（改一处两处都要改）。只写 "37" 时
-# 一旦出了 37.0.1，osdk 装新版而 Gradle 仍要 37.0.0，又会自行下载并卡在许可上。
-android-build-tools = "37.0.0"
+android-build-tools = "37"
 android-cmdline-tools = "latest"
 android-system-images = { version = "android-35;google_apis;x86_64", lazy = true }
 # FFmpeg 裁剪构建的工具链（见 docs/research/13-ffmpeg-minimal-build.md）。
