@@ -263,6 +263,13 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 - Android 发布任务的安装清单要覆盖 Linux 上全部非 lazy 工具，所以连 APK
   用不到的 `conda:nasm` 也装上。往 osdk.toml 加这类工具时两边一起改。
 
+osdk 0.0.9 解 zip 时不还原符号链接，NDK r29 Linux 包里的 `clang -> clang-21`
+等 37 个链接变成了内容为目标名的小文件；执行时 shell 去 PATH 找 `clang-21`，
+撞上 osdk shim，在 cargo 构建脚本的工作目录里报
+`osdk-shim: no version of android-ndk selected`。Android 任务在装完 NDK 后有一步
+把这些残片还原成符号链接；osdk 修复并发版、CI 改用新版后可以删掉这一步。
+本机 Windows 不受影响（Windows 版 NDK 包里没有符号链接）。
+
 ### 合并前先在分支上验证构建
 
 四个构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面

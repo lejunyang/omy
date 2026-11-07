@@ -268,6 +268,31 @@ jobs:
             android-cmdline-tools android-platforms
           echo "NDK_HOME=$(osdk -q where android-ndk | tail -n 1)" >> "$GITHUB_ENV"
 
+      - name: 修复 NDK 里被解压成普通文件的符号链接
+        # osdk 0.0.9 解 zip 时不还原符号链接：NDK r29 Linux 包里的 37 个
+        # 链接（clang -> clang-21、ld -> ld.lld 等）被写成「内容是目标名」
+        # 的小文本文件。执行 clang 时 shell 把它当脚本跑，再去 PATH 里找
+        # `clang-21`——命中 osdk 的 shim，而 shim 在 cargo 构建脚本的工作
+        # 目录（CARGO_HOME 里的 crate 源码，不在本项目内）选不到 NDK 版本，
+        # 于是 aws-lc-sys 报 `osdk-shim: no version of android-ndk selected`。
+        #
+        # 这是 osdk 的缺陷（pipeline/extract.rs 的 unpack_zip），修好并发版
+        # 前在这里兜底。判定规则：小于 256 字节、单行、不是脚本、且内容指向
+        # 同目录下真实存在的文件——已用 NDK r29 实测，恰好命中 zip 里全部
+        # 37 个链接，不误伤其它文件；重复执行时 find -type f 不再匹配到它们。
+        # 缓存里恢复出来的旧安装同样是坏的，所以每次都要跑。
+        run: |
+          n=0
+          while IFS= read -r -d '' f; do
+            target="$(head -c 4096 "$f")"
+            case "$target" in ''|*$'\n'*|'#!'*) continue ;; esac
+            [ -e "$(dirname "$f")/$target" ] || continue
+            ln -sfn "$target" "$f"
+            n=$((n + 1))
+          done < <(find "$NDK_HOME" -type f -size -256c -print0)
+          echo "已把 ${n} 个符号链接残片恢复为符号链接"
+          "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -1
+
       - name: 指定交叉编译用的 C 编译器与链接器
         # cc-rs 找的是不带 API 级别的名字，而 NDK 只提供带级别的 wrapper，
         # 不指定的话 zstd-sys 会报「failed to find tool」。
