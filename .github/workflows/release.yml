@@ -380,9 +380,20 @@ jobs:
       - name: 安装 tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
+      - name: 构建前端
+        # 不能指望 build.rs 来构建前端：tauri build 在 cargo 编译、也就是
+        # build.rs 有机会运行**之前**就先校验 frontendDist，dist/ 不在就报
+        # `Unable to find your web assets`。0.0.1 首次发布就挂在这里。
+        # 与 osdk.toml 的 android-release-build 任务是同一个原因、同一个做法。
+        # 产物落在 crates/omy-gui/dist（vite outDir 是 ../dist）。
+        working-directory: crates/omy-gui
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend build
+
       - name: 构建并生成发行包（deb/rpm/AppImage）
-        # 单独走 tauri build，不直接 cargo build --release：前端由 build.rs
-        # 自动构建，之后按 tauri.conf.json 的 bundle.targets 生成三种包。
+        # 单独走 tauri build，不直接 cargo build --release：要按
+        # tauri.conf.json 的 bundle.targets 生成三种包。前端已由上一步构建好。
         # tauri-cli 2.x 的 build 不支持 -p，在 crate 目录下执行即构建该包
         working-directory: crates/omy-gui
         run: cargo tauri build
