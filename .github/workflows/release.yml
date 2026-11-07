@@ -266,6 +266,14 @@ jobs:
           osdk -y install -o accept-licenses=true \
             android-ndk android-platform-tools android-build-tools \
             android-cmdline-tools android-platforms
+          # 再装一份 build-tools 35.0.0：AGP 8.11 对没写 buildToolsVersion 的
+          # 模块默认要 35，tauri-plugin-dialog 等插件子工程的 Gradle 文件在
+          # 依赖包里改不了。SDK 里没有时 Gradle 会自行下载，但 osdk 只写下
+          # 新版许可的哈希，Gradle 认不出 35 用的旧版许可，报
+          # `License for package Android SDK Build-Tools 35 not accepted`。
+          # 由 osdk 装则会补写旧版许可、把 35 链进 SDK 根，Gradle 不再下载
+          # ——本机就是这个状态。升级 AGP 后它的默认版本变了，这里跟着改。
+          osdk -y install -o accept-licenses=true android-build-tools@35.0.0
           echo "NDK_HOME=$(osdk -q where android-ndk | tail -n 1)" >> "$GITHUB_ENV"
 
       - name: 修复 NDK 里被解压成普通文件的符号链接

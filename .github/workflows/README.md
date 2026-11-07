@@ -270,6 +270,12 @@ osdk 0.0.9 解 zip 时不还原符号链接，NDK r29 Linux 包里的 `clang -> 
 把这些残片还原成符号链接；osdk 修复并发版、CI 改用新版后可以删掉这一步。
 本机 Windows 不受影响（Windows 版 NDK 包里没有符号链接）。
 
+Android 任务还会额外装 `android-build-tools@35.0.0`：AGP 8.11 对没写
+`buildToolsVersion` 的模块（包括依赖包里的 Tauri 插件子工程）默认要 35。SDK
+里没有时 Gradle 自行下载，但它不认 osdk 写下的新版许可哈希，报
+`License for package Android SDK Build-Tools 35 not accepted`；由 osdk 安装会
+补写 35 所需的旧版许可。升级 AGP 后要跟着它的默认版本改。
+
 ### 合并前先在分支上验证构建
 
 四个构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面
