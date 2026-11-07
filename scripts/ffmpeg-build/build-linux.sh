@@ -61,6 +61,7 @@ fetch() {
   echo "  下载 $(basename "$file") ..."
   # --retry-all-errors：实测 zlib.net 在本网路会先传几十 KB 再 connection reset，
   # 默认只对瞬态 HTTP 码重试，reset 直接失败退出；加上后可自动重试。
+  # build-macos.sh / build-windows.sh 各有一份 fetch，重试策略改一处三处都要改。
   "$CURL" -fsSL --retry 5 --retry-all-errors -o "$file" "$url"
   local got
   got="$(sha256sum "$file" | cut -d' ' -f1)"

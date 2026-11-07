@@ -86,6 +86,7 @@ fetch() {
     rm -f "$file"
   fi
   echo "  下载 $(basename "$file") ..."
+  # build-linux.sh / build-windows.sh 各有一份 fetch，重试策略改一处三处都要改。
   "$CURL" -fsSL --retry 5 --retry-all-errors -o "$file" "$url"
   local got
   got="$(shasum -a 256 "$file" | cut -d' ' -f1)"

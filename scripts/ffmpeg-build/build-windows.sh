@@ -74,7 +74,17 @@ fetch() {
   local attempt got
   for attempt in 1 2 3; do
     echo "  下载 $(basename "$file")（第 ${attempt}/3 次）..."
-    "$CURL" -fsSL --retry 3 -o "$file" "$url"
+    # --retry-all-errors：curl 默认不重试连接被重置（35）这类错误，与
+    # build-linux.sh / build-macos.sh 的 fetch 一致（改一处三处都要改）。
+    # curl 失败也要进入下一轮而不是被 set -e 直接带走：原来写法下这个循环
+    # 只覆盖了哈希不符，0.0.1 发布时 ffmpeg.org 先超时再 reset，第一轮就
+    # 让整个 Windows 构建失败了。
+    if ! "$CURL" -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$file" "$url"; then
+      echo "  下载失败（第 ${attempt}/3 次）：$(basename "$file")" >&2
+      rm -f "$file"
+      sleep 30
+      continue
+    fi
     got="$(sha256sum "$file" | cut -d' ' -f1)"
     if [ "$got" = "$want" ]; then
       return 0
