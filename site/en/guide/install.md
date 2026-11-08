@@ -20,7 +20,8 @@ Each release attaches artifacts for every platform to [GitHub Releases](https://
 | Linux x86_64 GUI | `*.deb` / `*.rpm` / `*.AppImage` | Bundled FFmpeg |
 | macOS (Apple Silicon) | `omy-<version>-aarch64-apple-darwin.tar.gz` | Contains `omy`, `omy-gui`, and a bundled FFmpeg; unzip and run |
 | macOS (Intel) | `omy-<version>-x86_64-apple-darwin.tar.gz` | Same as above |
-| Android | `*.apk` (one per ABI) | GUI; **unsigned**, requires allowing unknown sources |
+| Android ARM64 | `omy-<version>-android-arm64.apk` | GUI, `arm64-v8a`, **unsigned** |
+| Android x64 | `omy-<version>-android-x64.apk` | GUI, `x86_64`, **unsigned** |
 
 Every desktop target also has a standalone CLI archive containing only `omy`
 (`omy.exe` on Windows) and the README, without FFmpeg:
@@ -128,7 +129,11 @@ The bundled FFmpeg includes H.264 / HEVC decoders, which are covered by patents.
 
 ## Android
 
-The Android build is the graphical interface. Install the APK and it works; encryption, decryption and browsing match the desktop.
+The Android build is the GUI, with the same encryption, decryption and browsing
+as the desktop. Only 64-bit APKs are published: choose `android-arm64.apk` for
+ARM64 devices or `android-x64.apk` for x86_64 devices and emulators. Each archive
+contains one ABI; there are no 32-bit or universal APKs. Published APKs are
+unsigned: sign the APK yourself and allow installation from unknown sources.
 
 Note that Android has no FFmpeg, so video thumbnails and remux playback are unavailable, and there is no trash either — the `trash` crate provides no implementation on that platform, so "move to trash" is greyed out and only permanent deletion is available, after a confirmation.
 

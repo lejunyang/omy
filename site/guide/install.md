@@ -20,7 +20,8 @@ omy 有两个入口：命令行工具 `omy`，以及图形界面 `omy-gui`。两
 | Linux x86_64 图形界面 | `*.deb` / `*.rpm` / `*.AppImage` | 内置 FFmpeg |
 | macOS（Apple Silicon） | `omy-<版本>-aarch64-apple-darwin.tar.gz` | 含 `omy`、`omy-gui` 与内置 FFmpeg，解压即用 |
 | macOS（Intel） | `omy-<版本>-x86_64-apple-darwin.tar.gz` | 同上 |
-| Android | `*.apk`（按 ABI 分包） | 图形界面，**未签名**，需允许安装未知来源应用 |
+| Android ARM64 | `omy-<版本>-android-arm64.apk` | 图形界面，`arm64-v8a`，**未签名** |
+| Android x64 | `omy-<版本>-android-x64.apk` | 图形界面，`x86_64`，**未签名** |
 
 各桌面目标还提供独立 CLI 包，只含 `omy`（Windows 上是 `omy.exe`）与 README，不内置 FFmpeg：
 
@@ -126,7 +127,10 @@ Linux 的图形界面发行包（deb/rpm/AppImage）也内置 FFmpeg；各平台
 
 ## Android
 
-Android 版是图形界面。安装 APK 之后可直接使用，加解密与浏览功能与桌面一致。
+Android 版是图形界面，加解密与浏览功能与桌面一致。只发布 64 位 APK，
+ARM64 设备选择 `android-arm64.apk`，x86_64 设备或模拟器选择 `android-x64.apk`；
+没有 32 位或通用 APK，每个包只包含对应架构的原生库。
+发布产物未签名，安装前需自行签名，并允许安装未知来源应用。
 
 注意 Android 上没有 FFmpeg，所以视频缩略图与转封装播放不可用；另外回收站也不可用——`trash` crate 在 Android 上不提供任何实现，所以那里的「移到回收站」显示为灰色，只能永久删除，删除前会二次确认。
 

@@ -237,7 +237,7 @@ jq 从事件 JSON（`GITHUB_EVENT_PATH`）读出，不插值进 shell，避免�
 | 任务 | runner | 产物 |
 |---|---|---|
 | build-windows | windows-latest | Windows x86_64 综合 zip（内置 FFmpeg）与独立 CLI zip |
-| build-android | ubuntu-latest | 四个 ABI 的未签名 APK |
+| build-android | ubuntu-latest | ARM64 / x86_64 两个未签名 APK，按 ABI 分包 |
 | build-linux | ubuntu-22.04 | Linux x86_64 deb/rpm/AppImage（内置 FFmpeg） |
 | build-linux-cli | ubuntu-22.04 / ubuntu-22.04-arm | x86_64 / ARM64 的 GNU / musl 独立 CLI，共四份 tar.gz |
 | build-macos | macos-latest | macOS aarch64 / x86_64 的综合包与独立 CLI，共四份 tar.gz |
@@ -263,6 +263,12 @@ Android 发布任务由 one-sdk Action 恢复并保存 JDK、Rust、Node/pnpm、
 平台与 Build Tools；随后执行 `osdk run --no-deps android-release-build`。安装列表
 刻意不含 emulator 和 system image：生成 APK 不需要启动虚拟设备，把本地 E2E 的
 大镜像带进发布任务只会增加下载超时面。
+
+发布显式传 `--target aarch64 x86_64 --split-per-abi`，不构建 32 位或通用 APK。
+收集时只读两个 flavor 的 release 产物，并检查 ZIP 内实际的 `lib/<abi>/` 与
+`libomy_gui_lib.so`，再命名为 `omy-<版本>-android-arm64.apk` / `omy-<版本>-android-x64.apk`。
+这样文件名误标或缓存里残留通用包都不会被误发布。osdk 的 32 位 Rust target
+仍保留给测试流水线使用，不代表发布 32 位 APK。
 
 **`osdk run` 要求 osdk.toml 里当前平台生效的全部非 lazy 工具都已安装**，不论
 任务用不用。0.0.1 首次发布就挂在这里：`conda:libarchive` 漏写了

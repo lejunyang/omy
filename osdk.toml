@@ -110,16 +110,17 @@ description = "执行前端检查与生产构建，再构建 Android debug APK"
 
 [tasks.android-release-build]
 dir = "crates/omy-gui"
-# 四个 Android ABI 的 rust target 不在这里 rustup target add：
+# 发布只使用 ARM64 与 x86_64；上方还保留测试流水线使用的 32 位 target。
+# Android rust target 不在这里 rustup target add：
 # 单一来源是上方 [tools].rust.targets，由 osdk install rust 装工具链时
 # 用 `rustup toolchain install --target ...` 一并装好（见发布流水线 build-android）。
 run = [
   { argv = ["pnpm", "--dir", "frontend", "install", "--frozen-lockfile"] },
   { argv = ["pnpm", "--dir", "frontend", "build"] },
   { argv = ["cargo", "install", "tauri-cli", "--version", "^2", "--locked"] },
-  { argv = ["cargo", "tauri", "android", "build", "--apk"] },
+  { argv = ["cargo", "tauri", "android", "build", "--apk", "--target", "aarch64", "x86_64", "--split-per-abi"] },
 ]
-description = "构建前端并生成包含四个 ABI 的 Android release APK"
+description = "构建前端并分别生成 ARM64 / x86_64 的 Android release APK"
 timeout = "60m"
 
 [tasks.android-external-edit-e2e]

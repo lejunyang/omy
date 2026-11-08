@@ -203,7 +203,7 @@ pwsh -NoProfile -File spikes\check-android-env.ps1
 | Android SDK（`ANDROID_HOME` 指向它） | SDK Manager 里勾 Platform 36 + Build-Tools 37.0.0 + Platform-Tools |
 | Android NDK 29.0.14206865（`NDK_HOME` 指向它） | SDK Tools → NDK (Side by side) |
 | NDK 里的 clang | 随 NDK 提供 |
-| Rust 目标 | `aarch64-linux-android`、`armv7-linux-androideabi`、`i686-linux-android`、`x86_64-linux-android` |
+| Rust 目标 | `aarch64-linux-android`、`x86_64-linux-android`（发布只构建两个 64 位 ABI） |
 | tauri-cli | `cargo install tauri-cli --version "^2"` |
 
 ::: tip NDK 的 clang 最容易被漏掉
@@ -218,16 +218,16 @@ pwsh -NoProfile -File spikes\check-android-env.ps1
 ```bash
 BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"   # Windows 换成 windows-x86_64
 export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang"
-export CC_armv7_linux_androideabi="$BIN/armv7a-linux-androideabi24-clang"
+export CC_x86_64_linux_android="$BIN/x86_64-linux-android24-clang"
 ```
 
-注意 armv7 的 wrapper 前缀是 `armv7a-`（多一个 a），与 Rust 的目标名 `armv7-linux-androideabi` 不一致，写错了仍然报「找不到工具」。
+这里的两个编译器分别对应 ARM64 与 x86_64，不再构建 32 位发布包。
 :::
 
 齐了之后：
 
 ```bash
-osdk run android-release-build  # 构建前端并生成四 ABI release APK
+osdk run android-release-build  # 构建前端并分别生成 ARM64 / x86_64 release APK
 
 # 需要交互调试时仍可直接使用 Tauri：
 cd crates/omy-gui
@@ -235,9 +235,12 @@ cargo tauri android init
 cargo tauri android dev      # 连真机或模拟器
 ```
 
-`android-release-build` 会补齐四个 Rust Android target，安装锁定的前端依赖并
-构建 `frontendDist`，再安装 Tauri CLI、执行 APK 构建。这样不会在 Tauri 检查
-静态资源时才发现前端尚未生成。
+先运行 `osdk install rust`，由 `osdk.toml` 安装所需的 Rust target。
+`android-release-build` 会安装锁定的前端依赖并构建 `frontendDist`，再安装 Tauri CLI，
+执行 `cargo tauri android build --apk --target aarch64 x86_64 --split-per-abi`。
+产物分别位于 `gen/android/app/build/outputs/apk/arm64/release/` 与
+`gen/android/app/build/outputs/apk/x86_64/release/`（相对 `crates/omy-gui`），
+不生成 32 位或通用 APK，也不会在 Tauri 检查静态资源时才发现前端尚未生成。
 
 ## 跑测试
 

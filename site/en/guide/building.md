@@ -209,7 +209,7 @@ It reports each missing item and how to obtain it:
 | Android SDK (`ANDROID_HOME` points at it) | SDK Manager: Platform 36 + Build-Tools 37.0.0 + Platform-Tools |
 | Android NDK 29.0.14206865 (`NDK_HOME` points at it) | SDK Tools → NDK (Side by side) |
 | clang inside the NDK | Ships with the NDK |
-| Rust targets | `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`, `x86_64-linux-android` |
+| Rust targets | `aarch64-linux-android`, `x86_64-linux-android` (releases build only these two 64-bit ABIs) |
 | tauri-cli | `cargo install tauri-cli --version "^2"` |
 
 ::: tip The NDK's clang is the easiest thing to miss
@@ -224,16 +224,16 @@ Point it at the real compiler (24 matches this project's `minSdk`):
 ```bash
 BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"   # use windows-x86_64 on Windows
 export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang"
-export CC_armv7_linux_androideabi="$BIN/armv7a-linux-androideabi24-clang"
+export CC_x86_64_linux_android="$BIN/x86_64-linux-android24-clang"
 ```
 
-Note the armv7 wrapper is prefixed `armv7a-` (with an extra `a`), which does not match Rust's target name `armv7-linux-androideabi`. Getting it wrong still reports "failed to find tool".
+These compilers target ARM64 and x86_64; releases no longer build 32-bit APKs.
 :::
 
 Once ready:
 
 ```bash
-osdk run android-release-build  # build the frontend and four-ABI release APK
+osdk run android-release-build  # build the frontend and separate ARM64 / x86_64 release APKs
 
 # For interactive development, Tauri can still be invoked directly:
 cd crates/omy-gui
@@ -241,10 +241,14 @@ cargo tauri android init
 cargo tauri android dev      # attach a device or emulator
 ```
 
-`android-release-build` adds all four Rust Android targets, installs the locked
-frontend dependencies, builds `frontendDist`, installs the Tauri CLI, and then
-builds the APK. This prevents Tauri from checking for web assets before they
-have been generated.
+First run `osdk install rust` to install the targets declared in `osdk.toml`.
+`android-release-build` installs the locked frontend dependencies, builds
+`frontendDist`, installs the Tauri CLI, then runs
+`cargo tauri android build --apk --target aarch64 x86_64 --split-per-abi`.
+The outputs are in `gen/android/app/build/outputs/apk/arm64/release/` and
+`gen/android/app/build/outputs/apk/x86_64/release/`, relative to `crates/omy-gui`.
+It produces neither 32-bit nor universal APKs and ensures web assets exist before
+Tauri checks them.
 
 ## Running the tests
 

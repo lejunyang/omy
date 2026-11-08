@@ -54,9 +54,9 @@ $t1 = $targets -match 'aarch64-linux-android'
 Need 'Rust 目标 aarch64-linux-android' ([bool]$t1) `
     'rustup target add aarch64-linux-android'
 
-$t2 = $targets -match 'armv7-linux-androideabi'
-Need 'Rust 目标 armv7-linux-androideabi' ([bool]$t2) `
-    'rustup target add armv7-linux-androideabi'
+$t2 = $targets -match 'x86_64-linux-android'
+Need 'Rust 目标 x86_64-linux-android' ([bool]$t2) `
+    'rustup target add x86_64-linux-android'
 
 $tauriOk = $false
 $tv = cargo tauri --version 2>&1
