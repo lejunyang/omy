@@ -1670,6 +1670,39 @@ input {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* xgplayer 自带的强调色是写死的红（#FA1F41 渐变、拖动按钮的红晕、倍速选中项、
+   手势 seek 的时间提示）。换成主题色，切换设置里的主题色时播放器跟着变。
+   用 --brand-1 而不是 --accent：播放器底色恒为黑，浅色主题下的 --accent 被调暗到
+   适合浅底，压在黑底上反而看不清；--brand-1 是各预设的亮色端，深浅主题一致。
+   选择器前缀 .omy-video-player.xgplayer：播放器样式是打开视频时才动态加载的，
+   排在本文件之后，同特异性会被它盖回红色，所以多一级类。 */
+.omy-video-player.xgplayer .xgplayer-progress-played,
+.omy-video-player.xgplayer .xgplayer-progress .xgplayer-progress-played,
+.omy-video-player.xgplayer xg-mini-progress-played {
+  background: var(--brand-1);
+}
+.omy-video-player.xgplayer .xgplayer-progress-btn,
+.omy-video-player.xgplayer .xgplayer-progress .xgplayer-progress-btn {
+  background: color-mix(in srgb, var(--brand-1) 30%, transparent);
+  border-color: color-mix(in srgb, var(--brand-1) 6%, transparent);
+  box-shadow: 0 0 1px color-mix(in srgb, var(--brand-1) 40%, transparent);
+}
+.omy-video-player.xgplayer .xgplayer-progress-btn.active::before {
+  box-shadow: 0 0 3px color-mix(in srgb, var(--brand-1) 70%, transparent);
+}
+.omy-video-player.xgplayer .xgplayer-drag,
+.omy-video-player.xgplayer xg-trigger .time-preview .xg-bar .xg-curbar,
+.omy-video-player.xgplayer-mobile xg-trigger .time-preview .xg-bar.xg-curbar {
+  background: var(--brand-1);
+}
+.omy-video-player.xgplayer .xg-options-list li:hover,
+.omy-video-player.xgplayer .xg-options-list li.selected,
+.omy-video-player.xgplayer-mobile .xg-options-list li.selected,
+.omy-video-player.xgplayer xg-trigger .time-preview .xg-cur,
+.omy-video-player.xgplayer-mobile xg-trigger .time-preview span.xg-cur {
+  color: var(--brand-1);
+}
+
 .overlay-body audio {
   width: min(560px, 90%);
 }
