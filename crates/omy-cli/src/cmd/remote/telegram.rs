@@ -95,6 +95,8 @@ pub enum Cmd {
     Forward(ForwardArgs),
     /// 服务端搜索消息内容
     Search(SearchArgs),
+    /// 按 JSON 条件树搜索一个对话（与 GUI 高级搜索共用后端）
+    AdvancedSearch(AdvancedSearchArgs),
     /// 创建一个只含自己的私密超级群（转发归档目标）
     Group(GroupArgs),
     /// 查看 Telegram 位置的本地会话状态（不联网）
@@ -248,6 +250,22 @@ pub struct SearchArgs {
     pub limit: u32,
 }
 
+/// 高级搜索以 JSON 文件传完整条件树，避免命令行重复实现分组与取反规则。
+#[derive(Debug, Args)]
+pub struct AdvancedSearchArgs {
+    #[command(flatten)]
+    pub conn: TgConnArgs,
+    /// 源对话（tg:<chat>）
+    #[arg(long)]
+    pub dir: String,
+    /// TgAdvancedQuery JSON 文件（match + conditions）
+    #[arg(long)]
+    pub query_file: PathBuf,
+    /// 最多返回命中数，达到后停止扫描
+    #[arg(long, default_value = "100", value_parser = clap::value_parser!(u32).range(1..))]
+    pub limit: u32,
+}
+
 /// `omy remote telegram group`。
 #[derive(Debug, Args)]
 pub struct GroupArgs {
@@ -365,6 +383,7 @@ pub fn run(ctx: &Ctx, cmd: &Cmd) -> Result<()> {
         Cmd::Targets(a) => targets(ctx, a),
         Cmd::Forward(a) => forward(ctx, a),
         Cmd::Search(a) => search(ctx, a),
+        Cmd::AdvancedSearch(a) => advanced_search(ctx, a),
         Cmd::Group(a) => create_group(ctx, a),
         Cmd::Status(a) => status(ctx, a),
     }
@@ -1384,6 +1403,27 @@ fn search(ctx: &Ctx, a: &SearchArgs) -> Result<()> {
         &format!("命中 {} 条", items.len()),
         &json!({ "query": a.query, "dir": dir, "hits": items }),
     );
+    Ok(())
+}
+
+/// 高级条件只在共享 crate 中求值；CLI 负责输入与输出，不复制过滤规则。
+fn advanced_search(ctx: &Ctx, a: &AdvancedSearchArgs) -> Result<()> {
+    let bytes = std::fs::read(&a.query_file).context("读取高级搜索条件失败")?;
+    let query: omy_remote::telegram::advanced::Query = serde_json::from_slice(&bytes).context("高级搜索条件不是有效 JSON")?;
+    query.validate()?;
+    omy_remote::telegram::Conversation::parse_dir_id(&a.dir)?;
+    let (_sp, tg) = connect_tg(ctx, &a.conn)?;
+    let runtime = rt()?;
+    let mut cursor = None;
+    let mut hits = Vec::new();
+    let scanned = loop {
+        let want = (a.limit as usize - hits.len()).min(100);
+        let page = runtime.block_on(tg.advanced_search(&a.dir, &query, cursor.as_deref(), want))?;
+        hits.extend(page.hits);
+        cursor = page.cursor;
+        if hits.len() >= a.limit as usize || cursor.is_none() { break page.scanned; }
+    };
+    ctx.out.result(&format!("命中 {} 条", hits.len()), &json!({ "hits": hits, "cursor": cursor, "scanned": scanned }));
     Ok(())
 }
 

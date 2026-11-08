@@ -9,7 +9,7 @@ import * as i18n from '../i18n';
 import { setNotice, state } from './state';
 import { isTelegramDialog, reloadRemoteDir, remoteDirKey, remoteEntryBuffer } from './remote-browse';
 import { openTransfers } from './places';
-import type { TgAdvancedQuery, TgBatchAction, TgSelection } from '../types';
+import type { TgAdvancedQuery, TgBatchAction, TgSelection, TgBatchTarget, TgPendingBatch } from '../types';
 
 /** 已加载过的目录列表：`位置\x01目录` -> 条目数组。
  *
@@ -267,12 +267,7 @@ export async function searchTelegramAdvanced(query: TgAdvancedQuery, cursor: str
 /** 每页命中条数上限。页太大首屏要等很久；太小则「全部扫完」要往返很多次。 */
 const ADVANCED_SEARCH_PAGE = 60;
 
-/** 对高级搜索命中执行批量动作。成功后关弹窗、打开传输管理看进度，与「全部缓存」
- *  同一个落点：批量动作要遍历全部历史，耗时不可预估，不能让用户守着弹窗。
- *
- *  forward / add_virtual / upload_to 需要目标（转发到哪个对话、哪个虚拟文件夹、
- *  哪个远程位置）。接后端时在这里先弹现有的目标选择框再发请求，见
- *  docs/research/19-telegram-advanced-search.md 的「批量动作」一节。 */
+/** 目标选择只记下本次搜索快照；确认目标后才创建批量任务，不把已加载项当全部。 */
 export async function startTelegramAdvancedBatch(
   query: TgAdvancedQuery,
   selection: TgSelection,
@@ -280,8 +275,28 @@ export async function startTelegramAdvancedBatch(
 ) {
   const ctx = state.telegramAdvancedSearch;
   if (!ctx) return false;
+  const batch: TgPendingBatch = JSON.parse(JSON.stringify({
+    place_id: ctx.placeId, dir: ctx.dir, query, selection, action,
+  }));
+  if (action === 'pin') return submitTelegramAdvancedBatch(batch);
+  if (action === 'forward') {
+    if (ctx.protected) {
+      state.error = i18n.te('tg_forward_protected');
+      return false;
+    }
+    state.telegramForward = { placeId: ctx.placeId, sourceDir: ctx.dir, advancedBatch: batch };
+  } else if (action === 'add_virtual') {
+    state.addToVirtual = { placeId: ctx.placeId, dirId: ctx.dir, advancedBatch: batch };
+  } else {
+    state.uploadTo = { source: 'advanced', advancedBatch: batch };
+  }
+  return true;
+}
+
+/** 普通目标选择器确认后携带真实目标提交，失败保留选择框与搜索结果。 */
+export async function submitTelegramAdvancedBatch(batch: TgPendingBatch, target?: TgBatchTarget) {
   try {
-    await api.telegramAdvancedBatch({ place_id: ctx.placeId, dir: ctx.dir, query, selection, action });
+    await api.telegramAdvancedBatch({ ...batch, target });
     state.telegramAdvancedSearch = null;
     openTransfers();
     return true;

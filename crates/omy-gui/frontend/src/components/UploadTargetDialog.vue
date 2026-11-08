@@ -33,7 +33,7 @@ const mode = ref<'permanent_cache' | 'memory'>('permanent_cache');
 let loadSeq = 0;
 
 const pending = computed(() => state.uploadTo);
-const remoteSource = computed(() => pending.value?.source === 'remote');
+const remoteSource = computed(() => pending.value?.source === 'remote' || pending.value?.source === 'advanced');
 const currentPlace = computed(() => places.value.find((place) => place.id === placeId.value));
 const canConfirm = computed(() => caps.value?.write === true && !loading.value && !busy.value);
 

@@ -1,8 +1,8 @@
 # 19 · Telegram 对话高级搜索
 
-> 状态：**界面已完成，后端待实现**。前端弹窗、类型契约、浏览器预览用的假实现都已就位；
-> `telegram_advanced_search` / `telegram_advanced_batch` 两个 Tauri 命令尚未实现，
-> 真实界面里点「搜索」会显示「搜索失败」。
+> 状态：**后端与目标选择已接线**。查询契约与校验/递归求值在共享 crate
+> `omy-remote::telegram::advanced`；两个 Tauri 命令已注册。真实账号端到端验证
+> 尚未完成（不得把 mock 或单元测试当成真实账号验证）。
 
 ## 1. 要解决的问题
 
@@ -69,7 +69,7 @@ req: { place_id, dir, query: TgAdvancedQuery, cursor: string | null, limit: numb
 ### `telegram_advanced_batch`
 
 ```
-req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction }
+req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction, target?: TgBatchTarget }
 →   { task_id }
 ```
 
@@ -90,10 +90,19 @@ req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction }
 | `add_virtual` | 在虚拟远程里为每个命中文件建引用 | 虚拟位置 + 文件夹 |
 | `upload_to` | 复制到另一个远程位置 | 远程位置 + 目录 |
 
-**待接线**：`forward` / `add_virtual` / `upload_to` 需要目标，界面目前直接发请求、不带目标。
-实现后端时，在 `store/remote-files.ts` 的 `startTelegramAdvancedBatch` 里先复用现有目标选择框
-（`state.telegramForward`、`state.addToVirtual`、`state.uploadTo` 对应的对话框），把选中的目标并入
-请求，`req` 增加 `target` 字段并同步 `types.ts`。
+**已接线**：`forward` / `add_virtual` / `upload_to` 先复用现有目标选择框；
+确认目标后才发请求。`target` 是按 `kind` 区分的联合类型：
+
+- `forward`：`{ kind: 'forward', dir }`（当前账号的目标对话）；
+- `add_virtual`：`{ kind: 'virtual', place_id, folder }`；
+- `upload_to`：`{ kind: 'remote', place_id, dir, mode: 'memory' | 'permanent_cache' }`；
+- `pin`：不带目标。
+
+目标类型不匹配、虚拟位置锁定、目标目录只读时拒绝。上传不覆盖已有同名对象。
+文件动作跳过无可下载文件的命中；转发允许纯文本。先扫描发现任务，再顺序执行子任务；
+转发收齐消息号后全局按旧→新排序，每批最多 100 条。任务请求仅驻内存，重启不恢复。
+扫描失败重试从上一成功页续跑；子任务失败只重跑失败项，成功件不重放。
+转发断网或返回数不足时结果不确定，不给盲目重试入口，应先检查目标对话。
 
 受保护内容（noforwards）的对话里，转发按钮禁用；后端仍须在发请求前拒绝。
 
@@ -106,9 +115,12 @@ req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction }
 
 ## 6. 命令行
 
-暂不提供。`omy remote telegram search` 已有服务端关键字搜索；高级条件与批量动作在后端实现后，
-应抽到两端共用的 crate，再给 CLI 加 `--media/--ext/--min-size/--max-size/--text/--not-*` 之类的
-选项，而不是在 CLI 另写一份过滤逻辑。在此之前，站点的 GUI/CLI 覆盖表把它登记为未覆盖。
+高级查询已抽到共享 crate；CLI 提供 `omy remote telegram advanced-search <位置>
+--dir tg:<chat> --query-file <JSON路径> --limit 100`。JSON 使用同一 `{ match, conditions }`
+条件树，可以表达分组与取反，不再另写一套 CLI 过滤器。
+
+批量全选动作仍只提供 GUI：它依赖驻留的父子任务与目标选择、暂停/继续/重试管理。
+CLI 的已有 `forward` / `copy` / `cache pin` / 虚拟引用命令继续可用，覆盖表明确分开记录。
 
 ## 7. 测试
 
@@ -118,5 +130,18 @@ req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction }
   受保护对话禁用转发、子组取反、点连接词切换且/或）。
 - 控件：`AppSelect.test.ts`、`AppDatePicker.test.ts`（键盘、Esc 不外泄、min/max、滚动收起）。
 - 浏览器预览：`dev-mock.ts` 用 230 条假历史按条件筛选分页返回。
-- 后端实现时要补：子组的递归求值与取反、日期区间两端都含、取反条件对「无文件消息」的取值、`all` 模式遍历时 except 生效、批量任务可暂停/
-  取消/重试，以及真实账号上的端到端验证。
+- 只有正向媒体/文字可下推时才用 `messages.search`；仅日期或纯本地条件仍用
+  `getHistory`，避免 `filterEmpty` 在部分超级群漏历史。日期在已有搜索路径中向外扩一秒下推，
+  再由本地闭区间求值，超过 Telegram i32 日期范围时不截断。
+- 每页至多 300 条实际返回消息，命中上限 1–100；空页游标非空时继续。游标绑定对话与查询指纹。
+
+### 本次验证
+
+- 自动化：Rust 工作区测试、Clippy `-D warnings`、前端 234 项测试、类型检查、i18n 键检查与中英文站点构建。
+- 真实界面/账号：未验证。本机桌面停在 Windows 登录画面，人工接管被跳过；未执行转发或上传测试，
+  未对用户真实对话产生测试写入。测试覆盖不替代真实账号端到端验证。
+
+- 后端单测已覆盖递归组与叶子取反、日期/大小闭区间、无文件消息、空页游标与累计进度、
+  全选 except、跨对话选择拒绝、230 条跨批转发排序、暂停/继续/取消、扫描期父任务状态、
+  虚拟引用重试幂等性。
+- 仍需真实账号上的端到端验证，以及故障注入下的扫描失败续跑/动作重试验证；未声称已实测。

@@ -19,15 +19,19 @@ pub fn transfer_cancel(
     pins: tauri::State<'_, Arc<PinRetryStore>>,
     copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     batches: tauri::State<'_, Arc<CacheBatchStore>>,
+    advanced: tauri::State<'_, Arc<AdvancedBatchStore>>,
     id: u64,
 ) {
+    // 先停父任务扫描，再枚举子任务；新发现的任务会继承父任务取消状态。
+    xfer.cancel(&app, id);
     // 取消总任务时级联取消全部未结束子任务；子任务单独取消不影响兄弟任务。
     for child_id in xfer.child_ids(id) {
         xfer.cancel(&app, child_id);
         batches.forget(child_id);
+        advanced.forget(child_id);
     }
-    xfer.cancel(&app, id);
     batches.forget(id);
+    advanced.forget(id);
     // 取消即不再是「可重试的失败」，两类原始请求登记都一并清掉。
     pins.forget(id);
     copies.forget(id);
@@ -388,8 +392,14 @@ pub async fn transfer_retry(
     pins: tauri::State<'_, Arc<PinRetryStore>>,
     copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     batches: tauri::State<'_, Arc<CacheBatchStore>>,
+    advanced: tauri::State<'_, Arc<AdvancedBatchStore>>,
+    vreg: tauri::State<'_, Arc<crate::virtual_place::VirtualRegistry>>,
     id: u64,
 ) -> CmdResult<u64> {
+    if let Some(result) = retry_advanced(BatchContext {
+        app: app.clone(), reg: Arc::clone(&reg), cache: Arc::clone(&cache),
+        xfer: Arc::clone(&xfer), vreg: Arc::clone(&vreg), batches: Arc::clone(&advanced),
+    }, id, &crate::place_keys::unlock_keks(&state)).await { return result; }
     let child_ids = xfer.child_ids(id);
     if !child_ids.is_empty() {
         let mut retried = 0usize;
@@ -483,11 +493,13 @@ pub fn transfer_clear_done(
     pins: tauri::State<'_, Arc<PinRetryStore>>,
     copies: tauri::State<'_, Arc<crate::remote_copy::CopyRetryStore>>,
     batches: tauri::State<'_, Arc<CacheBatchStore>>,
+    advanced: tauri::State<'_, Arc<AdvancedBatchStore>>,
 ) {
     // 清掉的任务其原始请求登记也一并丢，避免内存表随清除次数无限增长。
     for id in xfer.clear_done(&app) {
         pins.forget(id);
         copies.forget(id);
         batches.forget(id);
+        advanced.forget(id);
     }
 }

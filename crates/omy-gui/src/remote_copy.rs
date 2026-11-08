@@ -42,7 +42,7 @@ pub struct RemoteCopyRequest {
     /// 首次发起任务时从源端真实元数据解析，重试沿用，避免永久缓存已齐全时仍因
     /// 源消息暂时不可达而无法上传；前端请求不接受也不持久化此字段。
     #[serde(skip)]
-    media_hint: Option<UploadMediaHint>,
+    pub(crate) media_hint: Option<UploadMediaHint>,
 }
 
 /// 复制任务重试登记。只驻留内存，不把文件名和远程路径写入额外日志或配置。
@@ -143,7 +143,7 @@ pub fn retry_copy(
     Ok(id)
 }
 
-async fn validate_request(reg: &PlaceRegistry, req: &RemoteCopyRequest) -> CmdResult<()> {
+pub(crate) async fn validate_request(reg: &PlaceRegistry, req: &RemoteCopyRequest) -> CmdResult<()> {
     if req.source.size == 0 || req.target_name.trim().is_empty() {
         return Err(CmdError::code("remote_copy_invalid"));
     }
@@ -199,7 +199,7 @@ fn spawn_copy(
     });
 }
 
-async fn execute_copy(
+pub(crate) async fn execute_copy(
     app: &tauri::AppHandle,
     reg: &PlaceRegistry,
     cache: &RemoteCache,
@@ -229,8 +229,13 @@ async fn execute_copy(
         .await
         .map_err(|e| e.code)?;
     if req.mode == CopyMode::PermanentCache {
-        // 标记必须先于首块读取：之后 fetch_block 才会直接写永久层。
-        source.pin().map_err(|e| remote_code(&e).to_owned())?;
+        // 首次永久缓存也会读网络，必须离开 async worker，且与后续上传一样响应暂停/取消。
+        tokio::task::block_in_place(|| source.pin_with_progress(&mut |done| {
+            handle.set_done(done);
+            xfer.tick(app, handle);
+            while handle.is_paused() && !handle.is_canceled() { std::thread::sleep(Duration::from_millis(100)); }
+            !handle.is_canceled()
+        })).map_err(|e| remote_code(&e).to_owned())?;
     }
 
     let (mut writer, reader) = tokio::io::duplex(PIPE_CAPACITY);

@@ -383,16 +383,29 @@ pub fn virtual_add_ref(
     reg: tauri::State<'_, Arc<PlaceRegistry>>,
     req: AddRefReq,
 ) -> CmdResult<String> {
+    add_ref(&vreg, &reg, req)
+}
+
+/// 普通添加与高级搜索批量添加复用同一条引用构造路径。
+pub(crate) fn add_ref(vreg: &VirtualRegistry, reg: &PlaceRegistry, req: AddRefReq) -> CmdResult<String> {
+    add_ref_with_id(vreg, reg, req, format!("vr{}", crate::virtual_place::random_id()))
+}
+
+/// 批量重试沿用引用 id；落盘失败后再试只保存同一条，不重复追加引用。
+pub(crate) fn add_ref_with_id(vreg: &VirtualRegistry, reg: &PlaceRegistry, req: AddRefReq, ref_id: String) -> CmdResult<String> {
+    if vreg.is_encrypted(&req.place_id) && !vreg.is_unlocked(&req.place_id) {
+        return Err(CmdError::code("virtual_locked"));
+    }
     // 从源真实位置导出稳定标识——认不出（缺 user_id / 非可引用类型）就拒绝，
     // 否则会存下一条永远认领不回的死引用。
     let source = reg
         .get(&req.source_place_id)
         .and_then(|p| PlaceRegistry::place_source(&p))
         .ok_or_else(|| CmdError::code("virtual_source_unidentified"))?;
-    let ref_id = format!("vr{}", crate::virtual_place::random_id());
     let done = vreg
         .with_place_mut(&req.place_id, |vp| {
             vp.root.find_mut(&req.folder).map(|f| {
+                if f.refs.iter().any(|r| r.ref_id == ref_id) { return; }
                 f.refs.push(Reference {
                     ref_id: ref_id.clone(),
                     source,
@@ -410,6 +423,7 @@ pub fn virtual_add_ref(
         })
         .flatten();
     if done.is_some() {
+        vreg.save().map_err(|_| CmdError::code("config_write_failed"))?;
         Ok(ref_id)
     } else {
         Err(CmdError::code("virtual_no_target"))
@@ -676,7 +690,21 @@ pub fn virtual_delete(vreg: tauri::State<'_, Arc<VirtualRegistry>>, place_id: St
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use omy_remote::cache::BlockCache;
+
+    #[test]
+    fn batch_reference_retry_is_idempotent() {
+        let vreg = VirtualRegistry::new_in_memory();
+        let dest = vreg.create(String::from("目标"));
+        let reg = PlaceRegistry::new();
+        reg.add_telegram_with_id(String::from("p1"), String::from("测试源"), omy_remote::telegram::TelegramStore::with_conversations(Vec::new()), None, Some(123));
+        let req = || AddRefReq { place_id: dest.clone(), folder: String::new(), source_place_id: String::from("p1"), dir_id: String::from("tg:1"), file_id: String::from("tg:1:7"), snapshot_name: String::from("a.mp4"), snapshot_size: Some(42), source_media_tab: Some(String::from("media")) };
+        let first = add_ref_with_id(&vreg, &reg, req(), String::from("vr-retry"));
+        let second = add_ref_with_id(&vreg, &reg, req(), String::from("vr-retry"));
+        assert_eq!(first.ok(), second.ok(), "重试必须沿用相同引用标识，不能创建另一条");
+        assert_eq!(vreg.with_place(&dest, |v| v.root.refs.len()), Some(1), "落盘失败后再次执行不能重复追加引用");
+    }
 
     /// 缓存共享的核心断言：虚拟位置读一条引用，必须用**真实位置的 (place, id)**
     /// 去 BlockCache，key 才会与直接在真实位置打开同一文件时相同、命中同一份缓存。

@@ -11,6 +11,7 @@ import { setNotice, state } from './state';
 import { tgMsgOfId } from './remote-view';
 import { leaveRemotePlace, openRemotePlace, reloadRemoteDir } from './remote-browse';
 import { openTransfers } from './places';
+import { submitTelegramAdvancedBatch } from './remote-files';
 
 /** 刷新远程位置列表。 */
 export async function reloadRemotePlaces() {
@@ -254,6 +255,12 @@ export function cancelTelegramForward() {
 export async function confirmTelegramForward(targetDir: string) {
   const pending = state.telegramForward;
   if (!pending || !targetDir) return 0;
+  if (pending.advancedBatch) {
+    const ok = await submitTelegramAdvancedBatch(pending.advancedBatch, { kind: 'forward', dir: targetDir });
+    if (ok) state.telegramForward = null;
+    else state.placeError = state.error;
+    return ok ? 1 : 0;
+  }
   try {
     const count = await api.telegramForwardMessages(
       pending.placeId,
@@ -411,6 +418,14 @@ export function cancelUploadTo() {
 export async function confirmUploadTo(targetPlaceId, targetDir, mode) {
   const pending = state.uploadTo;
   if (!pending || !targetPlaceId) return false;
+  if (pending.advancedBatch) {
+    const ok = await submitTelegramAdvancedBatch(pending.advancedBatch, {
+      kind: 'remote', place_id: targetPlaceId, dir: targetDir || '',
+      mode: mode === 'memory' ? 'memory' : 'permanent_cache',
+    });
+    if (ok) state.uploadTo = null;
+    return ok;
+  }
   try {
     if (pending.source === 'local') {
       const result = await api.remoteUpload(
@@ -476,6 +491,13 @@ export function cancelAddToVirtual() {
 export async function confirmAddToVirtual(virtualPlaceId, folder) {
   const req = state.addToVirtual;
   if (!req || !virtualPlaceId) return;
+  if (req.advancedBatch) {
+    const ok = await submitTelegramAdvancedBatch(req.advancedBatch, {
+      kind: 'virtual', place_id: virtualPlaceId, folder: folder || '',
+    });
+    if (ok) state.addToVirtual = null;
+    return;
+  }
   let ok = 0;
   for (const it of req.items) {
     try {

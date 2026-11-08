@@ -83,7 +83,8 @@ onMounted(load);
   <div class="overlay dlg-overlay" @click.self="cancelTelegramForward">
     <form class="dlg forward-dlg" @submit.prevent="submit">
       <h3>{{ i18n.t('tg_forward.title') }}</h3>
-      <div class="hint">
+      <div v-if="pending?.advancedBatch" class="hint">{{ i18n.t('adv_search.select_all_hint') }}</div>
+      <div v-else class="hint">
         {{ i18n.tn('tg_forward.hint', pending?.messageIds?.length || 0,
           { count: pending?.messageIds?.length || 0 }) }}
       </div>

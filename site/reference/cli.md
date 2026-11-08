@@ -488,6 +488,7 @@ omy remote telegram <COMMAND>
 | `targets <位置>` | 列出可接收转发的会话（转发目标选择） |
 | `forward <位置> --target tg:CHAT --entry tg:CHAT:MSG…` | 把同一源对话里的一条或多条消息原生转发到目标会话 |
 | `search <位置> <QUERY>` | 服务端搜索消息内容（`--dir tg:CHAT` 限定对话，缺省全局；`--limit N` 默认 50） |
+| `advanced-search <位置> --dir tg:CHAT --query-file <JSON> --limit N` | 共享高级条件树查询（默认至多 100 个命中，JSON 为 `{ match, conditions }`；可分组、取反） |
 | `group <位置> <TITLE>` | 创建一个只含自己的私密超级群（转发归档目标） |
 
 这些都要真连 Telegram；加密位置需经 `--password-*` 现场解锁。`forward` 的源条目可重复给 `--entry tg:<对话>:<消息>`，或用 `--entries-json <文件>` 读一个 id 数组（可并用合并）；**所有条目必须来自同一源对话**，否则报 `[tg_cross_chat]`。

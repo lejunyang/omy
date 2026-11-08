@@ -1,8 +1,7 @@
 <script setup lang="ts">
 /** Telegram 对话高级搜索。
  *
- * 上半部分拼条件，下半部分即时列出命中并可批量处理。界面先行，后端命令
- * telegram_advanced_search / telegram_advanced_batch 尚未实现（契约见 types.ts）。
+ * 上半部分拼条件，下半部分即时列出命中并可批量处理；命令契约见 types.ts。
  *
  * 「全选」选的是**全部命中**而不只是已加载的这些：选择状态记成「全选 + 例外」，
  * 批量动作把 query 原样交给后端重新遍历，所以不必先把整段历史拉进界面。
@@ -89,7 +88,11 @@ async function loadMore() {
     // 不停在「加载中」：给出错误并允许重试，已拿到的结果保留
     searchError.value = i18n.te((e as { code?: string })?.code, i18n.t('adv_search.search_failed'));
   } finally {
-    if (gen === generation) loading.value = false;
+    if (gen === generation) {
+      loading.value = false;
+      // 过滤掉整页时列表没有滚动条；不自动续扫会停在看似空结果的首段历史。
+      if (!done.value && !searchError.value && !hits.value.length) void loadMore();
+    }
   }
 }
 
@@ -148,7 +151,7 @@ function close() {
 </script>
 
 <template>
-  <div class="mask" data-adv-search @click.self="close">
+  <div v-show="!state.telegramForward && !state.addToVirtual && !state.uploadTo" class="mask" data-adv-search @click.self="close">
     <div class="advsearch" role="dialog" aria-modal="true" :aria-label="i18n.t('adv_search.title')">
       <header>
         <div>

@@ -503,6 +503,7 @@ Keep the two Telegram error vocabularies apart: these **offline** commands (and 
 | `targets <location>` | List the conversations you can forward to |
 | `forward <location> --target tg:CHAT --entry tg:CHAT:MSG…` | natively forward one or more messages from one source chat to a target |
 | `search <location> <QUERY>` | Server-side message search (`--dir tg:CHAT` to scope to one chat, global by default; `--limit N` default 50) |
+| `advanced-search <location> --dir tg:CHAT --query-file <JSON> --limit N` | Shared advanced condition-tree query (up to 100 matches by default; JSON is `{ match, conditions }`, including groups and negation) |
 | `group <location> <TITLE>` | Create a private supergroup containing only yourself (a forwarding archive target) |
 
 These require a real Telegram connection; an encrypted location must be unlocked on the spot via `--password-*`. Forward sources can be given repeatably as `--entry tg:<chat>:<msg>`, or read as an id array from `--entries-json <file>` (may be combined); **all entries must come from the same source chat**, else `[tg_cross_chat]`.

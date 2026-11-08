@@ -39,6 +39,7 @@
 //!   而 omy-gui 禁 panic；
 //! - `getDialogs` 单页返回量的上限（样本账号只有 4 个对话，测不出）。
 
+pub mod advanced;
 pub mod appid;
 pub mod appid_store;
 pub mod auth;

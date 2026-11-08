@@ -22,6 +22,7 @@ import type {
   PasswordManagerStatus,
   TgAdvancedQuery,
   TgBatchAction,
+  TgBatchTarget,
   TgSearchPage,
   TgSelection,
 } from './types';
@@ -669,8 +670,7 @@ export const TG_PENDING_ACCOUNT = 'pending';
 export const telegramCacheAll = (req: any): Promise<any> => invoke('telegram_cache_all', { req });
 
 /** 高级搜索：按条件扫描一个对话的历史，返回一页命中（新→旧）。cursor 传上一页
- *  返回的 cursor，首页传 null。后端尚未实现，契约见 types.ts 与
- *  docs/research/19-telegram-advanced-search.md。 */
+ *  返回的 cursor，首页传 null；每页可能无命中但游标仍会前进。 */
 export const telegramAdvancedSearch = (req: {
   place_id: string;
   dir: string;
@@ -687,6 +687,7 @@ export const telegramAdvancedBatch = (req: {
   query: TgAdvancedQuery;
   selection: TgSelection;
   action: TgBatchAction;
+  target?: TgBatchTarget;
 }): Promise<{ task_id: string }> => invoke('telegram_advanced_batch', { req });
 /** 当前全部传输任务（下载 / 上传 / 永久保留三类汇总）。 */
 export const transferList = (): Promise<any> => invoke('transfer_list');

@@ -48,6 +48,7 @@ vi.mock('./api.js', () => ({
   remoteUpload: vi.fn(),
   revealInFolder: vi.fn(),
   telegramForwardMessages: vi.fn(),
+  telegramAdvancedBatch: vi.fn(),
   // 加密虚拟位置时收集同密码 vault 的探测命令（mock，绝不出网）
   vaultParamsOf: vi.fn(),
   remotePlaceVaults: vi.fn(),
@@ -87,6 +88,8 @@ import {
   openTelegramForward,
   openTelegramForwardFiles,
   confirmTelegramForward,
+  startTelegramAdvancedBatch,
+  confirmAddToVirtual,
   openContextMenu,
   closeContextMenu,
   ctxItems,
@@ -1074,5 +1077,46 @@ describe('Telegram 原生转发', () => {
     expect(openTelegramForward([8])).toBe(false);
     expect(state.telegramForward).toBeNull();
     expect(api.telegramForwardMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe('高级搜索批量目标接线', () => {
+  const query = { match: 'all' as const, conditions: [{ kind: 'media' as const, types: ['video' as const], negate: false }] };
+  const selection = { mode: 'all' as const, except: ['tg:-100:9'] };
+  beforeEach(() => {
+    Object.assign(state, {
+      telegramAdvancedSearch: { placeId: 'p1', dir: 'tg:-100', dirName: '源对话', protected: false },
+      telegramForward: null, addToVirtual: null, uploadTo: null, transfersOpen: false, error: '',
+    });
+    vi.clearAllMocks();
+    vi.mocked(api.telegramAdvancedBatch).mockResolvedValue({ task_id: '41' });
+  });
+  it('选择转发目标前不发请求，确认后保留全部命中和排除范围', async () => {
+    await startTelegramAdvancedBatch(query, selection, 'forward');
+    expect(api.telegramAdvancedBatch).not.toHaveBeenCalled(); // 不这样会发出缺目标的请求。
+    expect(state.telegramAdvancedSearch).not.toBeNull(); // 不这样取消选择目标后原搜索就丢了。
+    await confirmTelegramForward('tg:2');
+    expect(api.telegramAdvancedBatch).toHaveBeenCalledWith({ place_id: 'p1', dir: 'tg:-100', query, selection, action: 'forward', target: { kind: 'forward', dir: 'tg:2' } });
+    expect(state.transfersOpen).toBe(true); // 创建后不能让用户继续守着搜索弹窗。
+    expect(state.telegramForward).toBeNull();
+  });
+  it('虚拟与上传目标复用原选择器，但不拿已加载列表生成 id', async () => {
+    await startTelegramAdvancedBatch(query, selection, 'add_virtual');
+    await confirmAddToVirtual('v1', 'folder');
+    expect(api.telegramAdvancedBatch).toHaveBeenLastCalledWith(expect.objectContaining({ selection, target: { kind: 'virtual', place_id: 'v1', folder: 'folder' } }));
+    state.telegramAdvancedSearch = { placeId: 'p1', dir: 'tg:-100', dirName: '源对话', protected: false };
+    await startTelegramAdvancedBatch(query, selection, 'upload_to');
+    await confirmUploadTo('p2', '/dest', 'memory');
+    expect(api.telegramAdvancedBatch).toHaveBeenLastCalledWith(expect.objectContaining({ selection, target: { kind: 'remote', place_id: 'p2', dir: '/dest', mode: 'memory' } }));
+  });
+  it('失败保留目标与搜索；查询快照不受之后修改表单影响', async () => {
+    const form = JSON.parse(JSON.stringify(query));
+    await startTelegramAdvancedBatch(form, selection, 'forward');
+    form.conditions[0].types = ['photo'];
+    vi.mocked(api.telegramAdvancedBatch).mockRejectedValue(new Error('offline'));
+    expect(await confirmTelegramForward('tg:2')).toBe(0);
+    expect(api.telegramAdvancedBatch).toHaveBeenLastCalledWith(expect.objectContaining({ query }));
+    expect(state.telegramForward).not.toBeNull();
+    expect(state.telegramAdvancedSearch).not.toBeNull();
   });
 });

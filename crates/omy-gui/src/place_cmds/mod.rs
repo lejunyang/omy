@@ -182,6 +182,7 @@ pub fn remote_place_remove(reg: tauri::State<'_, Arc<PlaceRegistry>>, id: String
 // 命令按主题拆在子模块里；这里统一再导出，`lib.rs` 注册命令与其他模块引用
 // 时仍写 `place_cmds::xxx`。子模块里非 pub 的辅助项是 `pub(super)`，经这里的
 // glob 再导出后兄弟模块用 `use super::*` 即可互相调用。
+mod advanced;
 mod browse;
 mod cache;
 mod messages;
@@ -189,6 +190,7 @@ mod open;
 mod transfers;
 mod upload;
 
+pub use advanced::*;
 pub use browse::*;
 pub use cache::*;
 pub use messages::*;

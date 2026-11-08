@@ -296,6 +296,9 @@ pub(super) fn run_pin(
         source.pin_with_progress(&mut |done| {
             h2.set_done(done);
             xfer2.tick(&app2, &h2);
+            while h2.is_paused() && !h2.is_canceled() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             !h2.is_canceled()
         })
     })

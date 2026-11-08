@@ -1,4 +1,7 @@
 {
+  "tg_advanced_invalid": "The advanced query, selection or cursor is invalid; search again",
+  "tg_advanced_target": "The batch action requires a matching destination",
+  "tg_forward_uncertain": "The forward result could not be confirmed; check the destination before sending again",
   "external_edit_android_only": "External opening is currently available on Android only",
   "external_edit_webdav_only": "External opening is currently available for WebDAV files only",
   "external_edit_unavailable": "The external edit directory is not ready; restart the app and try again",

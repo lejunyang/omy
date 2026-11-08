@@ -116,7 +116,7 @@ export interface PasswordManagerCredential {
 }
 
 /* ---------------- Telegram 对话高级搜索 ----------------
- * 前端界面先行、后端待实现：下面是 telegram_advanced_search / telegram_advanced_batch
+ * 下面是 telegram_advanced_search / telegram_advanced_batch
  * 两个命令的载荷契约，设计说明见 docs/research/19-telegram-advanced-search.md。
  * 改这里的字段，那份文档与 dev-mock.ts 里的假实现要一起改。 */
 
@@ -190,3 +190,17 @@ export type TgSelection =
 
 /** 批量动作种类：永久保留、原生转发、添加到虚拟远程、上传到另一个远程位置。 */
 export type TgBatchAction = 'pin' | 'forward' | 'add_virtual' | 'upload_to';
+
+/** 目标与动作必须对应；pin 不带目标。上传模式复用普通远程复制。 */
+export type TgBatchTarget =
+  | { kind: 'forward'; dir: string }
+  | { kind: 'virtual'; place_id: string; folder: string }
+  | { kind: 'remote'; place_id: string; dir: string; mode: 'memory' | 'permanent_cache' };
+
+export interface TgPendingBatch {
+  place_id: string;
+  dir: string;
+  query: TgAdvancedQuery;
+  selection: TgSelection;
+  action: TgBatchAction;
+}

@@ -218,11 +218,9 @@ Search comes in two forms, and the interface keeps them clearly apart:
 
 Searching on the server from the conversation list searches across all conversations. Conversations you lack access to are skipped silently, but rate limiting and network errors are reported as such — that is a different thing from "nothing was found".
 
-### Advanced search (in development)
+### Advanced search
 
-::: warning Not available yet
-The interface is in place, but search and batch actions are not connected to the backend yet: clicking **Search** currently only shows "Search failed". The rest of this section describes how the feature will behave once finished.
-:::
+Search and all four batch actions are connected to the backend. End-to-end verification with a real account is still pending.
 
 Inside a conversation, the filter button at the right edge of the search box opens **Advanced search**. Combine several conditions and choose whether messages must match all of them or any of them:
 
@@ -243,7 +241,7 @@ Matches are listed below as the chat is scanned; scrolling to the end keeps scan
 - **Add to virtual remote…**: create a reference to each file in a virtual remote;
 - **Upload to…**: copy to another remote location.
 
-A batch action appears in Transfers as one parent task that can be paused, resumed and cancelled.
+A batch action appears in Transfers as a parent task that can be paused, resumed, cancelled and retried for failed items. File actions skip messages without downloadable files. Forwarding preserves chronological order in batches of up to 100. An uncertain forward result is not blindly retried; check the destination first.
 
 ### Uploading
 
@@ -315,7 +313,8 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Telegram: per-place encrypt / unlock / lock / decrypt (offline) | ✅ | ✅ (offline) |
 | Telegram: forward targets / forward, server-side search, self-archive group | ✅ | ✅ (wired, not tested against a real account) |
 | Telegram: cache entire group, parent/child transfers, parallel downloads, pause/retry | ✅ (desktop and mobile) | N/A (requires a long-running global task and interactive transfer management) |
-| Telegram: advanced chat search (combined conditions with AND/OR groups, date range, batch actions on all matches) | In development (UI only) | Not yet (CLI to follow once the backend is in a shared crate) |
+| Telegram: advanced chat search (combined conditions with AND/OR groups, date range) | Connected; real-account verification pending | Available (`advanced-search --query-file`, shared query logic) |
+| Telegram: batch actions on all advanced matches | Parent/child tasks with pause, cancel and retry | Not yet (requires resident GUI tasks and destination selection; individual actions have CLI equivalents) |
 | List directory `ls`, download `download`, cross-location ciphertext `copy` | ✅ | ✅ |
 | Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
 | `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |

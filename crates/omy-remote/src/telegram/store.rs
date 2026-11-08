@@ -1638,6 +1638,88 @@ impl TelegramStore {
             .ok_or_else(|| Error::NotFound(format!("未知对话：tg:{chat}")))
     }
 
+    /// 高级查询一页最多扫描 300 条；即使没有命中也返回前进的游标。
+    pub async fn advanced_search(
+        &self, dir: &str, query: &super::advanced::Query, cursor: Option<&str>, limit: usize,
+    ) -> Result<super::advanced::SearchPage> {
+        use super::advanced::{Cursor, MAX_PAGE_SCAN, PageScan};
+        query.validate()?;
+        if !(1..=100).contains(&limit) { return Err(Error::Protocol(String::from("invalid search limit"))); }
+        let chat = Conversation::parse_dir_id(dir)?;
+        let cur = Cursor::start(chat, query, cursor)?;
+        let client = self.client()?;
+        let peer = self.peer_ref(chat).await?;
+        let plan = query.plan();
+        // filterEmpty 在部分超级群漏历史：仅日期/本地条件仍走 getHistory。
+        let use_search = plan.media.is_some() || plan.text.is_some();
+        let mut history = client.iter_messages(peer).offset_id(cur.before);
+        let mut search = client.search_messages(peer).offset_id(cur.before);
+        if let Some(media) = plan.media { search = search.filter(media.filter()); }
+        if let Some(text) = &plan.text { search = search.query(text); }
+        // Telegram 日期是开区间；向外扩一秒，再用本地闭区间判断避免丢掉端点。
+        if let Some(date) = plan.from.and_then(|v| v.checked_sub(1)).filter(|v| *v > 0 && *v <= i64::from(i32::MAX)).and_then(|v| chrono::DateTime::from_timestamp(v, 0)) {
+            search = search.min_date(&date.fixed_offset());
+        }
+        if let Some(date) = plan.to.and_then(|v| v.checked_add(1)).filter(|v| *v > 0 && *v <= i64::from(i32::MAX)).and_then(|v| chrono::DateTime::from_timestamp(v, 0)) {
+            search = search.max_date(&date.fixed_offset());
+        }
+        let mut scan = PageScan::new(query, cur, limit);
+        let mut exhausted = false;
+        for _ in 0..MAX_PAGE_SCAN {
+            let next = if use_search { search.next().await } else { history.next().await };
+            let Some(msg) = next.map_err(|e| map_rpc(&e))? else { exhausted = true; break };
+            if !scan.push(self.advanced_hit(chat, msg))? { break; }
+        }
+        scan.finish(exhausted)
+    }
+
+    /// 明确勾选的消息按 id 重取并再次应用原查询，不扫描无关历史。
+    pub async fn advanced_selected(&self, dir: &str, query: &super::advanced::Query, ids: &[i32]) -> Result<Vec<super::advanced::SearchHit>> {
+        query.validate()?;
+        let chat = Conversation::parse_dir_id(dir)?;
+        let peer = self.peer_ref(chat).await?;
+        let msgs = self.client()?.get_messages_by_id(peer, ids).await.map_err(|e| map_rpc(&e))?;
+        Ok(msgs.into_iter().flatten().map(|m| self.advanced_hit(chat, m)).filter(|h| query.matches(h)).collect())
+    }
+
+    fn advanced_hit(&self, chat: i64, msg: grammers_client::message::Message) -> super::advanced::SearchHit {
+        use super::advanced::{MediaKind as K, SearchHit};
+        let has_link = match &msg.raw {
+            tl::enums::Message::Message(m) => m.entities.as_ref().is_some_and(|entities| entities.iter().any(|e| matches!(e, tl::enums::MessageEntity::Url(_) | tl::enums::MessageEntity::TextUrl(_)))),
+            _ => false,
+        };
+        let media = msg.media();
+        let kind = media.as_ref().filter(|m| m.to_raw_input_location().is_some()).map(|m| match upload_media_hint_of(m) {
+            Some(UploadMediaHint::Photo) => K::Photo,
+            Some(UploadMediaHint::Animated { .. }) => K::Gif,
+            Some(UploadMediaHint::Video { .. }) => K::Video,
+            Some(UploadMediaHint::Audio { voice: true, .. }) => K::Voice,
+            Some(UploadMediaHint::Audio { .. }) => K::Audio,
+            _ => if has_link && m.to_raw_input_location().is_none() { K::Link } else { K::File },
+        }).or(if has_link { Some(K::Link) } else { None });
+        let id = TelegramId { chat, message: msg.id() }.encode();
+        let (file_name, file_size) = match media.as_ref().and_then(|m| m.to_raw_input_location().map(|loc| (m, loc))) {
+            Some((m, location)) => {
+                let size = media_size(m);
+                if let Ok(mut cache) = self.media.lock() { cache.insert(id.clone(), CachedMedia { location, size }); }
+                (Some(media_name(m, msg.id())), Some(size))
+            }
+            None => (None, None),
+        };
+        SearchHit { id, message: msg.id(), date: msg.date().timestamp(), text: msg.text().to_owned(), media: kind, file_name, file_size, thumb_token: None, thumb: media.as_ref().and_then(embedded_thumb), has_link }
+    }
+
+    /// 在批量任务创建前校验保护状态与目标能力，不等到首批发送才拒绝。
+    pub async fn validate_forward(&self, source_dir: &str, target_dir: &str) -> Result<()> {
+        let source_chat = Conversation::parse_dir_id(source_dir)?;
+        let target_chat = Conversation::parse_dir_id(target_dir)?;
+        self.peer_ref(source_chat).await?;
+        self.peer_ref(target_chat).await?;
+        if self.conversation(source_chat).is_some_and(|c| c.protected) { return Err(Error::Unsupported(FORWARD_PROTECTED)); }
+        if !self.conversation(target_chat).is_some_and(|c| c.can_send) { return Err(Error::Forbidden); }
+        Ok(())
+    }
+
     /// 按筛选条件扫描整个对话中的可下载媒体，供“全部缓存”建立任务清单。
     ///
     /// 所有条件在同一条消息上取交集；时间范围按消息时间判断，关键字只匹配消息

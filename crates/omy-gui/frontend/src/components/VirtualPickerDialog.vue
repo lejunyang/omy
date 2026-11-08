@@ -74,7 +74,7 @@ const count = () => (state.addToVirtual?.items?.length || 0);
 <template>
   <div class="overlay dlg-overlay" @click.self="cancelAddToVirtual">
     <form class="dlg" @submit.prevent="submit">
-      <h3>{{ i18n.t('virtual.pick_title', { n: count() }) }}</h3>
+      <h3>{{ state.addToVirtual?.advancedBatch ? i18n.t('adv_search.act_add_virtual') : i18n.t('virtual.pick_title', { n: count() }) }}</h3>
       <div class="hint">{{ i18n.t('virtual.pick_hint') }}</div>
 
       <div v-if="!places.length" class="vp-empty">

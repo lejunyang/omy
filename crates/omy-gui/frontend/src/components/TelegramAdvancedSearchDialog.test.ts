@@ -64,6 +64,25 @@ describe('TelegramAdvancedSearchDialog', () => {
     expect(w.findAll('[data-adv-hit]')).toHaveLength(2);
   });
 
+  it('目标选择器打开时搜索遮罩隐藏但搜索状态保留', async () => {
+    h.search.mockResolvedValueOnce({ hits: [hit(9)], cursor: null, scanned: 1 });
+    const w = await searchVideos();
+    h.state.telegramForward = { advancedBatch: {} };
+    await flushPromises();
+    expect(w.find('[data-adv-search]').attributes('style')).toContain('display: none'); // 不这样 z-index 1200 会盖住普通目标框。
+    h.state.telegramForward = null;
+    await flushPromises();
+    expect(w.findAll('[data-adv-hit]')).toHaveLength(1); // 取消目标后原查询与结果不能丢。
+  });
+
+  it('整页无命中但有游标时自动继续，不把第一段空页当结束', async () => {
+    h.search.mockResolvedValueOnce({ hits: [], cursor: 'empty-page', scanned: 300 })
+      .mockResolvedValueOnce({ hits: [hit(7)], cursor: null, scanned: 340 });
+    const w = await searchVideos();
+    expect(h.search).toHaveBeenLastCalledWith(expect.anything(), 'empty-page'); // 不这样首段全被过滤就永远看不到后段。
+    expect(w.findAll('[data-adv-hit]')).toHaveLength(1);
+  });
+
   it('条件不完整时不发请求', async () => {
     const w = mountDialog();
     await w.find('form').trigger('submit');

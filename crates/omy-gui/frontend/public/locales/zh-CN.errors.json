@@ -1,4 +1,7 @@
 {
+  "tg_advanced_invalid": "高级搜索条件、选择范围或游标无效，请重新搜索",
+  "tg_advanced_target": "批量操作缺少正确的目标，请重新选择",
+  "tg_forward_uncertain": "转发结果未能确认，请检查目标对话，避免重复转发",
   "external_edit_android_only": "外部打开目前仅支持 Android",
   "external_edit_webdav_only": "外部打开目前仅支持 WebDAV 文件",
   "external_edit_unavailable": "外部编辑目录尚未准备好，请重启应用后重试",
