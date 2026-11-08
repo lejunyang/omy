@@ -26,13 +26,22 @@
 | `ext` | `exts`：小写、无点的扩展名 | 不是这些扩展名；**没有文件的消息也算命中** |
 | `size` | `min` / `max`：字节，闭区间，null 为不限 | 不在区间内；没有文件的消息也算命中 |
 | `text` | `text`：正文或媒体说明包含，不区分大小写 | 不包含 |
+| `date` | `from` / `to`：Unix 秒，闭区间，null 为不限 | 不在区间内 |
+| `group` | `match` + `conditions`：子条件树 | `all` 取反 = 不全满足，`any` 取反 = 都不满足 |
+
+条件是一棵树：查询根是 `{ match, conditions }`，`conditions` 里既可以是叶子条件，也可以是
+`group`。根不取反（要取反就套一层子组）；界面最多嵌套两层子组（`MAX_GROUP_DEPTH`）。
+空的子组前端直接报错，不发请求：空的 all 恒真、空的 any 恒假，哪种都和用户以为的不同。
+
+日期由界面按**本机时区**换成所选日当天 00:00:00 与 23:59:59（取次日零点 − 1，夏令时那天
+不是 86400 秒），后端拿到的已是秒数，不再做时区换算。
 
 组合方式 `match`：`all`（全部满足）或 `any`（任一满足）。没有文件的消息对 ext / size
 条件的取值是「不满足」，取反后为「满足」——这条要在后端实现与测试里钉住，界面文案
 「不包含 / 不是 / 不在范围内」就是按这个语义写的。
 
 前端在 `tg-advanced-search.ts` 里校验：任何一行不完整（没选媒体、扩展名为空、大小两端都空、
-min > max、文字为空）或一个条件都没有，就**不发请求**。后端仍应自行校验，不能依赖前端。
+min > max、文字为空、日期两端都空或颠倒）、有空的子组，或一个条件都没有，就**不发请求**。后端仍应自行校验，不能依赖前端。
 
 ## 3. 命令契约
 
@@ -51,7 +60,9 @@ req: { place_id, dir, query: TgAdvancedQuery, cursor: string | null, limit: numb
 - `scanned` 是累计扫描的消息数，界面显示为进度。一页可能 0 条命中但 cursor 非空（这一段
   全被过滤掉），前端会继续请求，不能把它当成结束。
 - 能下推的尽量下推：只有一个正向 `media` 条件时用 `messages.search` 的对应 filter；
-  正向 `text` 条件可以作为服务端 q。取反条件、ext、size 只能拉回后在本机过滤。
+  正向 `text` 条件可以作为服务端 q。根为 `all` 时，根上的正向 `date` 条件可以下推为
+  `messages.search` 的 `min_date` / `max_date`，并且扫到早于 `from` 就可以提前结束。
+  取反条件、子组内的条件、ext、size 只能拉回后在本机按整棵树求值。
 - **服务端搜索的隐私语义沿用现有约定**：正向文字条件发给 Telegram，弹窗里已有提示
   （`adv_search.server_hint`）。
 
@@ -101,9 +112,11 @@ req: { place_id, dir, query, selection: TgSelection, action: TgBatchAction }
 
 ## 7. 测试
 
-- 纯逻辑：`tg-advanced-search.test.ts`（扩展名规整、大小换算、校验、选择计数）。
+- 纯逻辑：`tg-advanced-search.test.ts`（扩展名规整、大小换算、日期换算、子组嵌套与空组、校验、选择计数）；
+  `calendar.test.ts`（月末夹取、闰年、周起始、当天首末秒）。
 - 编排：`TelegramAdvancedSearchDialog.test.ts`（分页 cursor、全选 + except、动作用上次搜索的查询、
-  受保护对话禁用转发）。
+  受保护对话禁用转发、子组取反、点连接词切换且/或）。
+- 控件：`AppSelect.test.ts`、`AppDatePicker.test.ts`（键盘、Esc 不外泄、min/max、滚动收起）。
 - 浏览器预览：`dev-mock.ts` 用 230 条假历史按条件筛选分页返回。
-- 后端实现时要补：取反条件对「无文件消息」的取值、`all` 模式遍历时 except 生效、批量任务可暂停/
+- 后端实现时要补：子组的递归求值与取反、日期区间两端都含、取反条件对「无文件消息」的取值、`all` 模式遍历时 except 生效、批量任务可暂停/
   取消/重试，以及真实账号上的端到端验证。

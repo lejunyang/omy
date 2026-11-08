@@ -6,6 +6,7 @@ import {
   buildQuery,
   hasSelection,
   isPicked,
+  newGroup,
   newRow,
   parseExts,
   selectionCount,
@@ -30,9 +31,9 @@ describe('buildQuery', () => {
     const ext = { ...newRow('ext'), exts: 'MKV, .mp4', negate: true };
     const size = { ...newRow('size'), min: '1.5', max: '', unit: 'MB' as const };
     const text = { ...newRow('text'), text: '  周末 ' };
-    const { query, errors } = buildQuery('any', [
+    const { query, errors } = buildQuery(newGroup('any', [
       { ...media, types: [...media.types] }, ext, size, text,
-    ]);
+    ]));
     expect(errors).toEqual([]);
     expect(query).toEqual({
       match: 'any',
@@ -51,7 +52,7 @@ describe('buildQuery', () => {
     const ok = { ...newRow('text'), text: 'a' };
     const badMedia = newRow('media');
     const badSize = { ...newRow('size'), min: '5', max: '2' };
-    const { query, errors } = buildQuery('all', [ok, badMedia, badSize]);
+    const { query, errors } = buildQuery(newGroup('all', [ok, badMedia, badSize]));
     // 不这样会怎样：跳过坏行只发好行，查询被静默放宽，命中比用户以为的多
     expect(query).toBeNull();
     expect(errors).toEqual([
@@ -64,7 +65,7 @@ describe('buildQuery', () => {
     // 不这样会怎样：v-model 绑 type=number 时值是 number，按字符串 .trim() 直接抛错，
     // 点「搜索」毫无反应（真实界面里实测踩到）
     const row = { ...newRow('size'), min: 5, max: '', unit: 'KB' as const };
-    expect(buildQuery('all', [row]).query?.conditions).toEqual([
+    expect(buildQuery(newGroup('all', [row])).query?.conditions).toEqual([
       { kind: 'size', min: 5120, max: null, negate: false },
     ]);
   });
@@ -72,15 +73,78 @@ describe('buildQuery', () => {
   it('大小两端都空、或填了负数都算错', () => {
     const empty = newRow('size');
     const neg = { ...newRow('size'), min: '-1' };
-    const { errors } = buildQuery('all', [empty, neg]);
+    const { errors } = buildQuery(newGroup('all', [empty, neg]));
     expect(errors.map((e) => e.key)).toEqual(['adv_search.err_size_empty', 'adv_search.err_size_number']);
   });
 
   it('没有任何条件不能搜', () => {
     // 不这样会怎样：空条件 = 匹配全部，「全选 → 转发」会把整个对话转出去
-    const { query, errors } = buildQuery('all', []);
+    const { query, errors } = buildQuery(newGroup('all', []));
     expect(query).toBeNull();
     expect(errors).toEqual([{ rowId: null, key: 'adv_search.err_no_condition' }]);
+  });
+});
+
+describe('条件组与日期', () => {
+  it('子组嵌套原样转成树，取反落在组上', () => {
+    const a = { ...newRow('media'), types: ['video' as const] };
+    const b = { ...newRow('ext'), exts: 'mkv' };
+    const c = { ...newRow('text'), text: '花絮' };
+    const inner = newGroup('any', [b, c]);
+    inner.negate = true;
+    const { query, errors } = buildQuery(newGroup('all', [a, inner]));
+    expect(errors).toEqual([]);
+    // 不这样会怎样：把子组摊平成同一层，「视频 且 不(mkv 或 花絮)」变成
+    // 「视频 且 mkv 且 花絮」，批量动作作用于完全不同的一批消息
+    expect(query).toEqual({
+      match: 'all',
+      conditions: [
+        { kind: 'media', types: ['video'], negate: false },
+        {
+          kind: 'group', match: 'any', negate: true,
+          conditions: [
+            { kind: 'ext', exts: ['mkv'], negate: false },
+            { kind: 'text', text: '花絮', negate: false },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('空的子组报错并挂到那个组上，子组里的坏行也拦得住', () => {
+    const empty = newGroup('all', []);
+    const bad = newRow('media');
+    const g = newGroup('any', [bad]);
+    const { query, errors } = buildQuery(newGroup('all', [{ ...newRow('text'), text: 'x' }, empty, g]));
+    // 不这样会怎样：空的「任一满足」组恒为假，整个「全部满足」查询静默变成零命中
+    expect(query).toBeNull();
+    expect(errors).toEqual([
+      { rowId: empty.id, key: 'adv_search.err_empty_group' },
+      { rowId: bad.id, key: 'adv_search.err_media' },
+    ]);
+  });
+
+  it('日期按本地时区换成当天首末秒，区间两端都含', () => {
+    const row = { ...newRow('date'), from: '2026-03-01', to: '2026-03-02' };
+    const cond = buildQuery(newGroup('all', [row])).query?.conditions[0];
+    // 不这样会怎样：结束日取当天 00:00，选「到 3 月 2 日」却漏掉 2 日当天的全部消息
+    expect(cond).toEqual({
+      kind: 'date',
+      from: new Date(2026, 2, 1).getTime() / 1000,
+      to: new Date(2026, 2, 3).getTime() / 1000 - 1,
+      negate: false,
+    });
+  });
+
+  it('日期只填一端是开区间；两端都空或颠倒都算错', () => {
+    const open = { ...newRow('date'), to: '2026-01-31' };
+    expect(buildQuery(newGroup('all', [open])).query?.conditions[0]).toMatchObject({ from: null });
+    const empty = newRow('date');
+    const rev = { ...newRow('date'), from: '2026-02-02', to: '2026-02-01' };
+    const bad = { ...newRow('date'), from: '2026-02-30' };
+    expect(buildQuery(newGroup('all', [empty, rev, bad])).errors.map((e) => e.key)).toEqual([
+      'adv_search.err_date_empty', 'adv_search.err_date_order', 'adv_search.err_date_invalid',
+    ]);
   });
 });
 

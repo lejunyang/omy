@@ -22,6 +22,7 @@ vi.mock('../store', async () => {
 });
 vi.mock('../i18n', () => ({
   __v_isRef: false,
+  lang: { value: 'zh-CN' },
   t: (key: string, p?: Record<string, unknown>) => (p ? `${key}${JSON.stringify(p)}` : key),
   tn: (key: string, n: number) => `${key}:${n}`,
   te: (_c: string, fb: string) => fb,
@@ -41,10 +42,12 @@ beforeEach(() => {
   h.batch.mockReset().mockResolvedValue(true);
 });
 
+// 下拉与日历的面板 Teleport 到 body，打桩成原地渲染才能在 wrapper 里找到
+const mountDialog = () => mount(TelegramAdvancedSearchDialog, { global: { stubs: { teleport: true } } });
+
 async function searchVideos() {
-  const w = mount(TelegramAdvancedSearchDialog);
+  const w = mountDialog();
   await w.find('[data-adv-media="video"]').trigger('click');
-  await w.find('[data-adv-negate]').setValue('false');
   await w.find('form').trigger('submit');
   await flushPromises();
   return w;
@@ -62,7 +65,7 @@ describe('TelegramAdvancedSearchDialog', () => {
   });
 
   it('条件不完整时不发请求', async () => {
-    const w = mount(TelegramAdvancedSearchDialog);
+    const w = mountDialog();
     await w.find('form').trigger('submit');
     await flushPromises();
     // 不这样会怎样：一个没选媒体类型的条件被发出去，后端按「什么都不限」搜
@@ -119,5 +122,42 @@ describe('TelegramAdvancedSearchDialog', () => {
     await w.find('[data-adv-hit] input').setValue(true);
     expect(w.find('[data-adv-act="forward"]').attributes('disabled')).toBeDefined();
     expect(w.find('[data-adv-act="pin"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('添加子组并切换为「都不满足」：查询里是带取反的子组', async () => {
+    h.search.mockResolvedValueOnce({ hits: [], cursor: null, scanned: 0 });
+    const w = mountDialog();
+    await w.find('[data-adv-media="video"]').trigger('click');
+    await w.find('[data-adv-add-group]').trigger('click');
+    const sub = w.find('[data-adv-group="1"]');
+    await sub.find('[data-adv-media="photo"]').trigger('click');
+    // 子组的组合方式下拉：全部 / 任一 / 不全 / 都不 → 选第 4 项
+    await sub.find('[data-adv-match]').trigger('click');
+    await sub.findAll('.osel-opt')[3].trigger('click');
+    await w.find('form').trigger('submit');
+    await flushPromises();
+    // 不这样会怎样：组的取反没进查询，「视频 且 都不是图片」被当成「视频 且 图片」
+    expect(h.search.mock.calls[0][0]).toEqual({
+      match: 'all',
+      conditions: [
+        { kind: 'media', types: ['video'], negate: false },
+        { kind: 'group', match: 'any', negate: true, conditions: [{ kind: 'media', types: ['photo'], negate: false }] },
+      ],
+    });
+  });
+
+  it('点「且」连接词切换整组为「或」', async () => {
+    h.search.mockResolvedValueOnce({ hits: [], cursor: null, scanned: 0 });
+    const w = mountDialog();
+    await w.find('[data-adv-media="video"]').trigger('click');
+    await w.find('[data-adv-add]').trigger('click');
+    await w.find('[data-adv-text]').setValue('周末');
+    const joiner = w.find('[data-adv-joiner]');
+    expect(joiner.text()).toBe('adv_search.join_and');
+    await joiner.trigger('click');
+    await w.find('form').trigger('submit');
+    await flushPromises();
+    // 不这样会怎样：连接词只变了文字，查询仍按「且」发，显示与实际不符
+    expect(h.search.mock.calls[0][0].match).toBe('any');
   });
 });

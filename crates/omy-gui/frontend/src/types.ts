@@ -133,12 +133,28 @@ export type TgSearchCondition =
   /** 文件字节数落在 [min, max] 闭区间，任一端为 null 表示不限；没有文件的消息不命中。 */
   | { kind: 'size'; min: number | null; max: number | null; negate: boolean }
   /** 消息正文或媒体说明包含这段文字（不区分大小写）。 */
-  | { kind: 'text'; text: string; negate: boolean };
+  | { kind: 'text'; text: string; negate: boolean }
+  /** 消息发送时间（Unix 秒）落在 [from, to] 闭区间，任一端为 null 表示不限。
+   *  界面按本地时区把所选日期换成当天 00:00:00 与 23:59:59，后端不再做时区换算。 */
+  | { kind: 'date'; from: number | null; to: number | null; negate: boolean };
 
-/** 一次高级搜索的查询：条件按 match 组合，all = 全部满足，any = 任一满足。 */
+/** 条件组：把若干条件或子组按 match 组合，用来表达「(A 且 B) 或 C」。
+ *  negate 作用于整组的结果：negate + all = 不全满足，negate + any = 都不满足。 */
+export interface TgSearchGroup {
+  kind: 'group';
+  match: 'all' | 'any';
+  negate: boolean;
+  conditions: TgSearchNode[];
+}
+
+/** 条件树的节点：叶子条件或子组。 */
+export type TgSearchNode = TgSearchCondition | TgSearchGroup;
+
+/** 一次高级搜索的查询，即条件树的根：conditions 按 match 组合，all = 全部满足，
+ *  any = 任一满足。根本身不取反——要取反就放进一个子组。界面最多嵌套两层子组。 */
 export interface TgAdvancedQuery {
   match: 'all' | 'any';
-  conditions: TgSearchCondition[];
+  conditions: TgSearchNode[];
 }
 
 /** 一条命中结果。id 与文件视图的条目 id 同构（tg:<chat>:<msg>），批量动作与

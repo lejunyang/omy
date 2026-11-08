@@ -21,7 +21,7 @@
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
-import type { RemoteEntry, TgAdvancedQuery, TgSearchCondition, TgSearchHit, TgSearchPage } from './types';
+import type { RemoteEntry, TgAdvancedQuery, TgSearchHit, TgSearchNode, TgSearchPage } from './types';
 
 const SEP = '/';
 const ROOT = '/mock/home';
@@ -137,13 +137,15 @@ function remoteEntries(): RemoteEntry[] {
  *  契约改了这里要一起改。 */
 const MOCK_HISTORY = 230;
 const MOCK_PAGE_SCAN = 50;
+const MOCK_NOW = Math.floor(Date.now() / 1000);
 function mockHit(i: number): TgSearchHit {
   const media = (['photo', 'video', 'file', 'audio', null, 'gif'] as const)[i % 6];
   const ext = media === 'photo' ? 'jpg' : media === 'video' ? 'mp4' : media === 'audio' ? 'mp3' : media === 'gif' ? 'mp4' : 'pdf';
   return {
     id: `tg:-100:${MOCK_HISTORY - i}`,
     message: MOCK_HISTORY - i,
-    date: 1_760_000_000 - i * 3600,
+    // 相对当前时间、每条间隔 8 小时：230 条跨两个多月，用日期条件筛时在日历上选得到
+    date: MOCK_NOW - i * 8 * 3600,
     text: i % 4 === 0 ? `第 ${i} 条：周末活动照片` : '',
     media,
     file_name: media ? `item-${i}.${ext}` : null,
@@ -151,13 +153,15 @@ function mockHit(i: number): TgSearchHit {
     thumb_token: null,
   };
 }
-function mockMatches(h: TgSearchHit, q: TgAdvancedQuery): boolean {
+function mockMatches(h: TgSearchHit, q: { match: 'all' | 'any'; conditions: TgSearchNode[] }): boolean {
   const ext = h.file_name?.split('.').pop() ?? null;
-  const one = (c: TgSearchCondition): boolean => {
+  const one = (c: TgSearchNode): boolean => {
     let r: boolean;
-    if (c.kind === 'media') r = h.media != null && c.types.includes(h.media);
+    if (c.kind === 'group') r = mockMatches(h, c);
+    else if (c.kind === 'media') r = h.media != null && c.types.includes(h.media);
     else if (c.kind === 'ext') r = ext != null && c.exts.includes(ext);
     else if (c.kind === 'size') r = h.file_size != null && (c.min == null || h.file_size >= c.min) && (c.max == null || h.file_size <= c.max);
+    else if (c.kind === 'date') r = (c.from == null || h.date >= c.from) && (c.to == null || h.date <= c.to);
     else r = h.text.toLowerCase().includes(c.text.toLowerCase());
     return c.negate ? !r : r;
   };

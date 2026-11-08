@@ -4,10 +4,12 @@
  * 后端就会收到一个空扩展名列表之类的查询，按「什么都不匹配」或「什么都匹配」
  * 执行，而批量动作是对**全部命中**做永久保留、转发这类有副作用的事。这类规则要
  * 能脱离界面单测。 */
+import { localDayEnd, localDayStart, parseYmd } from './calendar';
 import type {
   TgAdvancedQuery,
   TgMediaKind,
   TgSearchCondition,
+  TgSearchNode,
   TgSelection,
 } from './types';
 
@@ -30,12 +32,40 @@ export interface ConditionRow {
   max: string | number;
   unit: SizeUnit;
   text: string;
+  /** 日期区间，'YYYY-MM-DD' 或空串（不限）。 */
+  from: string;
+  to: string;
 }
+
+/** 表单里的条件组。根也是一个 GroupRow，只是界面上不给它取反。 */
+export interface GroupRow {
+  id: number;
+  kind: 'group';
+  match: 'all' | 'any';
+  negate: boolean;
+  children: EditNode[];
+}
+
+export type EditNode = ConditionRow | GroupRow;
+
+/** 子组最多嵌套几层（根不算）。再深的逻辑在界面上已经读不清，而且两层已经能
+ *  表达「(A 且 B) 或 (C 且 不(D 或 E))」这种程度的组合。 */
+export const MAX_GROUP_DEPTH = 2;
 
 let nextRowId = 1;
 
 export function newRow(kind: ConditionRow['kind'] = 'media'): ConditionRow {
-  return { id: nextRowId++, kind, negate: false, types: [], exts: '', min: '', max: '', unit: 'MB', text: '' };
+  return {
+    id: nextRowId++, kind, negate: false, types: [], exts: '', min: '', max: '', unit: 'MB', text: '', from: '', to: '',
+  };
+}
+
+export function newGroup(match: GroupRow['match'] = 'all', children: EditNode[] = [newRow('media')]): GroupRow {
+  return { id: nextRowId++, kind: 'group', match, negate: false, children };
+}
+
+export function isGroup(n: EditNode): n is GroupRow {
+  return n.kind === 'group';
 }
 
 /** 把「mp4, .MKV；avi」这类自由输入规整成 ['mp4', 'mkv', 'avi']：去点、转小写、
@@ -64,42 +94,66 @@ export interface RowError {
   key: string;
 }
 
-/** 把表单转成后端查询。有任何错误时 query 为 null——宁可不让搜，也不发一个
- *  被静默放宽或收窄的查询。 */
-export function buildQuery(
-  match: TgAdvancedQuery['match'],
-  rows: ConditionRow[],
-): { query: TgAdvancedQuery | null; errors: RowError[] } {
-  const errors: RowError[] = [];
-  const conditions: TgSearchCondition[] = [];
-  if (!rows.length) errors.push({ rowId: null, key: 'adv_search.err_no_condition' });
-  for (const r of rows) {
-    if (r.kind === 'media') {
-      if (!r.types.length) errors.push({ rowId: r.id, key: 'adv_search.err_media' });
-      else conditions.push({ kind: 'media', types: [...r.types], negate: r.negate });
-    } else if (r.kind === 'ext') {
+/** 把一行条件转成查询节点；不合法时记错误并返回 null。 */
+function buildCondition(r: ConditionRow, errors: RowError[]): TgSearchCondition | null {
+  const err = (key: string) => {
+    errors.push({ rowId: r.id, key });
+    return null;
+  };
+  switch (r.kind) {
+    case 'media':
+      return r.types.length ? { kind: 'media', types: [...r.types], negate: r.negate } : err('adv_search.err_media');
+    case 'ext': {
       const exts = parseExts(r.exts);
-      if (!exts.length) errors.push({ rowId: r.id, key: 'adv_search.err_ext' });
-      else conditions.push({ kind: 'ext', exts, negate: r.negate });
-    } else if (r.kind === 'size') {
+      return exts.length ? { kind: 'ext', exts, negate: r.negate } : err('adv_search.err_ext');
+    }
+    case 'size': {
       const min = toBytes(r.min, r.unit);
       const max = toBytes(r.max, r.unit);
-      if (Number.isNaN(min) || Number.isNaN(max)) {
-        errors.push({ rowId: r.id, key: 'adv_search.err_size_number' });
-      } else if (min == null && max == null) {
-        errors.push({ rowId: r.id, key: 'adv_search.err_size_empty' });
-      } else if (min != null && max != null && min > max) {
-        errors.push({ rowId: r.id, key: 'adv_search.err_size_order' });
-      } else {
-        conditions.push({ kind: 'size', min, max, negate: r.negate });
-      }
-    } else {
+      if (Number.isNaN(min) || Number.isNaN(max)) return err('adv_search.err_size_number');
+      if (min == null && max == null) return err('adv_search.err_size_empty');
+      if (min != null && max != null && min > max) return err('adv_search.err_size_order');
+      return { kind: 'size', min, max, negate: r.negate };
+    }
+    case 'date': {
+      const from = r.from.trim();
+      const to = r.to.trim();
+      if ((from && !parseYmd(from)) || (to && !parseYmd(to))) return err('adv_search.err_date_invalid');
+      if (!from && !to) return err('adv_search.err_date_empty');
+      if (from && to && from > to) return err('adv_search.err_date_order');
+      return { kind: 'date', from: from ? localDayStart(from) : null, to: to ? localDayEnd(to) : null, negate: r.negate };
+    }
+    default: {
       const text = r.text.trim();
-      if (!text) errors.push({ rowId: r.id, key: 'adv_search.err_text' });
-      else conditions.push({ kind: 'text', text, negate: r.negate });
+      return text ? { kind: 'text', text, negate: r.negate } : err('adv_search.err_text');
     }
   }
-  return { query: errors.length ? null : { match, conditions }, errors };
+}
+
+function buildNodes(children: EditNode[], errors: RowError[]): TgSearchNode[] {
+  const out: TgSearchNode[] = [];
+  for (const c of children) {
+    if (isGroup(c)) {
+      // 空组的真值没有直观含义（全部满足 = 恒真，任一满足 = 恒假），
+      // 无论按哪种算都会让结果和用户以为的不一样，所以直接报错
+      if (!c.children.length) errors.push({ rowId: c.id, key: 'adv_search.err_empty_group' });
+      const conditions = buildNodes(c.children, errors);
+      out.push({ kind: 'group', match: c.match, negate: c.negate, conditions });
+    } else {
+      const n = buildCondition(c, errors);
+      if (n) out.push(n);
+    }
+  }
+  return out;
+}
+
+/** 把表单（条件树的根）转成后端查询。有任何错误时 query 为 null——宁可不让搜，
+ *  也不发一个被静默放宽或收窄的查询。 */
+export function buildQuery(root: GroupRow): { query: TgAdvancedQuery | null; errors: RowError[] } {
+  const errors: RowError[] = [];
+  if (!root.children.length) errors.push({ rowId: null, key: 'adv_search.err_no_condition' });
+  const conditions = buildNodes(root.children, errors);
+  return { query: errors.length ? null : { match: root.match, conditions }, errors };
 }
 
 /** 弹窗内的选择状态。all 模式下记「取消勾选」的，ids 模式下记「勾选」的——

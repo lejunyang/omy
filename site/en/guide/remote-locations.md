@@ -229,7 +229,10 @@ Inside a conversation, the filter button at the right edge of the search box ope
 - **Media type**: photos, videos, GIFs, music, voice, files, links — pick any number;
 - **File extension**: e.g. `mp4, mkv, pdf`; case and a leading dot don't matter;
 - **File size**: a minimum, a maximum or both, in KB / MB / GB;
-- **Message text**: the message body or media caption contains this text.
+- **Message text**: the message body or media caption contains this text;
+- **Message date**: a start date, an end date or both; both days are included, in your device's time zone.
+
+To mix AND and OR, click **Add group**: a group has its own "All of these / Any of these / Not all of these / None of these" setting and counts as a single condition in the level above. Groups nest up to two levels — for example "video, AND (extension is mkv OR text contains 'outtakes')". The AND / OR labels between conditions can be clicked to switch how that whole group is combined.
 
 Every condition can be negated ("does not contain", "is not", "outside range"). When negated, text-only messages without a file count as matches for the extension and size conditions. Message-text conditions are sent to Telegram's servers, the same as server-side search above.
 
@@ -312,7 +315,7 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Telegram: per-place encrypt / unlock / lock / decrypt (offline) | ✅ | ✅ (offline) |
 | Telegram: forward targets / forward, server-side search, self-archive group | ✅ | ✅ (wired, not tested against a real account) |
 | Telegram: cache entire group, parent/child transfers, parallel downloads, pause/retry | ✅ (desktop and mobile) | N/A (requires a long-running global task and interactive transfer management) |
-| Telegram: advanced chat search (combined conditions, batch actions on all matches) | In development (UI only) | Not yet (CLI to follow once the backend is in a shared crate) |
+| Telegram: advanced chat search (combined conditions with AND/OR groups, date range, batch actions on all matches) | In development (UI only) | Not yet (CLI to follow once the backend is in a shared crate) |
 | List directory `ls`, download `download`, cross-location ciphertext `copy` | ✅ | ✅ |
 | Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
 | `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |

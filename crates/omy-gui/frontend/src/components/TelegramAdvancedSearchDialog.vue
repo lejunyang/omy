@@ -11,22 +11,21 @@ import { computed, reactive, ref } from 'vue';
 import * as i18n from '../i18n';
 import { placeThumbUrl, searchTelegramAdvanced, startTelegramAdvancedBatch, state } from '../store';
 import {
-  MEDIA_KINDS,
   buildQuery,
   hasSelection,
   isPicked,
-  newRow,
+  newGroup,
   selectionCount,
   togglePick,
   toSelection,
-  type ConditionRow,
   type RowError,
   type SelectionState,
 } from '../tg-advanced-search';
-import type { TgAdvancedQuery, TgBatchAction, TgMediaKind, TgSearchHit } from '../types';
+import type { TgAdvancedQuery, TgBatchAction, TgSearchHit } from '../types';
+import TgConditionGroup from './TgConditionGroup.vue';
 
-const match = ref<TgAdvancedQuery['match']>('all');
-const rows = reactive<ConditionRow[]>([newRow('media')]);
+/** 条件树的根。根组只有「全部 / 任一」，取反要放进子组。 */
+const root = reactive(newGroup('all'));
 const errors = ref<RowError[]>([]);
 
 /** 最近一次成功发起搜索时的查询。批量动作用它而不是当前表单：用户搜完又改了
@@ -44,13 +43,6 @@ let generation = 0;
 
 const selection = reactive<SelectionState>({ all: false, ids: new Set<string>() });
 
-const kindOptions: [ConditionRow['kind'], string][] = [
-  ['media', 'adv_search.kind_media'],
-  ['ext', 'adv_search.kind_ext'],
-  ['size', 'adv_search.kind_size'],
-  ['text', 'adv_search.kind_text'],
-];
-
 const actions: { key: TgBatchAction; icon: string; label: string; needsForward?: boolean }[] = [
   { key: 'pin', icon: 'pin-file', label: 'adv_search.act_pin' },
   { key: 'forward', icon: 'send', label: 'adv_search.act_forward', needsForward: true },
@@ -58,25 +50,7 @@ const actions: { key: TgBatchAction; icon: string; label: string; needsForward?:
   { key: 'upload_to', icon: 'upload', label: 'adv_search.act_upload_to' },
 ];
 
-function rowErrors(id: number) {
-  return errors.value.filter((e) => e.rowId === id);
-}
 const globalErrors = computed(() => errors.value.filter((e) => e.rowId == null));
-
-function addRow() {
-  rows.push(newRow('text'));
-}
-
-function removeRow(id: number) {
-  const i = rows.findIndex((r) => r.id === id);
-  if (i >= 0) rows.splice(i, 1);
-}
-
-function toggleKind(r: ConditionRow, k: TgMediaKind) {
-  const i = r.types.indexOf(k);
-  if (i >= 0) r.types.splice(i, 1);
-  else r.types.push(k);
-}
 
 function resetResults() {
   hits.value = [];
@@ -89,7 +63,7 @@ function resetResults() {
 }
 
 async function search() {
-  const { query, errors: errs } = buildQuery(match.value, rows);
+  const { query, errors: errs } = buildQuery(root);
   errors.value = errs;
   if (!query) return;
   generation += 1;
@@ -187,80 +161,11 @@ function close() {
       </header>
 
       <form class="conds" @submit.prevent="search">
-        <div class="matchrow">
-          <span>{{ i18n.t('adv_search.match_prefix') }}</span>
-          <select v-model="match" data-adv-match>
-            <option value="all">{{ i18n.t('adv_search.match_all') }}</option>
-            <option value="any">{{ i18n.t('adv_search.match_any') }}</option>
-          </select>
-          <span>{{ i18n.t('adv_search.match_suffix') }}</span>
-        </div>
-
-        <div v-for="r in rows" :key="r.id" class="cond" data-adv-cond>
-          <div class="condhead">
-            <select v-model="r.kind" class="kindsel" data-adv-kind :aria-label="i18n.t('adv_search.kind')">
-              <option v-for="[k, label] in kindOptions" :key="k" :value="k">{{ i18n.t(label) }}</option>
-            </select>
-            <!-- 取反做成「是 / 不是」二选一，而不是一个孤零零的复选框：
-                 条件读出来就是一句完整的话，不用猜勾上代表什么 -->
-            <select v-model="r.negate" class="negsel" data-adv-negate :aria-label="i18n.t('adv_search.negate')">
-              <option :value="false">{{ i18n.t(`adv_search.pos_${r.kind}`) }}</option>
-              <option :value="true">{{ i18n.t(`adv_search.neg_${r.kind}`) }}</option>
-            </select>
-            <button
-              type="button"
-              class="iconbtn"
-              data-adv-remove
-              :aria-label="i18n.t('adv_search.remove_condition')"
-              @click="removeRow(r.id)"
-            ><AppIcon name="trash" :size="16" /></button>
-          </div>
-
-          <div v-if="r.kind === 'media'" class="chips">
-            <button
-              v-for="k in MEDIA_KINDS"
-              :key="k"
-              type="button"
-              class="chip"
-              :class="{ on: r.types.includes(k) }"
-              :aria-pressed="r.types.includes(k)"
-              :data-adv-media="k"
-              @click="toggleKind(r, k)"
-            >{{ i18n.t(`adv_search.media_${k}`) }}</button>
-          </div>
-          <input
-            v-else-if="r.kind === 'ext'"
-            v-model="r.exts"
-            type="text"
-            data-adv-ext
-            :placeholder="i18n.t('adv_search.ext_hint')"
-          />
-          <div v-else-if="r.kind === 'size'" class="sizerow">
-            <input v-model="r.min" type="number" min="0" step="any" data-adv-min :placeholder="i18n.t('adv_search.size_min')" />
-            <span>–</span>
-            <input v-model="r.max" type="number" min="0" step="any" data-adv-max :placeholder="i18n.t('adv_search.size_max')" />
-            <select v-model="r.unit" data-adv-unit>
-              <option value="KB">KB</option>
-              <option value="MB">MB</option>
-              <option value="GB">GB</option>
-            </select>
-          </div>
-          <input
-            v-else
-            v-model="r.text"
-            type="search"
-            data-adv-text
-            :placeholder="i18n.t('adv_search.text_hint')"
-          />
-          <p v-for="e in rowErrors(r.id)" :key="e.key" class="err">{{ i18n.t(e.key) }}</p>
-        </div>
+        <TgConditionGroup :group="root" :depth="0" :errors="errors" />
 
         <p v-for="e in globalErrors" :key="e.key" class="err">{{ i18n.t(e.key) }}</p>
 
         <div class="condactions">
-          <button type="button" class="btn small" data-adv-add @click="addRow">
-            <AppIcon name="plus" :size="16" /> {{ i18n.t('adv_search.add_condition') }}
-          </button>
           <button type="submit" class="btn primary" data-adv-search-btn :disabled="loading && !hits.length">
             <AppIcon name="search" :size="16" /> {{ i18n.t('adv_search.search') }}
           </button>
@@ -338,24 +243,14 @@ function close() {
 
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 0.48); }
-.advsearch { width: min(680px, 100%); max-height: min(860px, 94vh); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); box-shadow: 0 18px 60px rgb(0 0 0 / .25); overflow: hidden; }
+.advsearch { width: min(720px, 100%); max-height: min(860px, 94vh); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); box-shadow: 0 18px 60px rgb(0 0 0 / .25); overflow: hidden; }
 header { display: flex; align-items: flex-start; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 h2, p { margin: 0; } h2 { font-size: 18px; }
 header p, .hint { margin-top: 4px; color: var(--fg2); font-size: 12px; }
-.conds { padding: 14px 20px; border-bottom: 1px solid var(--border); overflow: auto; flex: 0 1 auto; max-height: 46vh; display: grid; gap: 10px; }
-.matchrow { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.matchrow select { min-height: 32px; }
-.cond { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
-.condhead { display: flex; gap: 8px; align-items: center; }
-.kindsel { flex: 1 1 auto; min-height: 34px; }
-.negsel { flex: 0 0 auto; min-height: 34px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { min-height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: 15px; background: var(--bg); color: var(--fg); cursor: pointer; font-size: 13px; }
-.chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.cond input[type='text'], .cond input[type='search'] { width: 100%; min-height: 36px; }
-.sizerow { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: center; }
-.sizerow input { min-width: 0; min-height: 36px; }
-.condactions { display: flex; justify-content: space-between; gap: 8px; }
+/* 条件树可能很长，结果出来后两块抢高度：给条件区留一个下限，否则窗口矮时
+   它被压成一条缝，改条件要在一行高的区域里滚（实测 600px 高时就是这样） */
+.conds { padding: 14px 20px; border-bottom: 1px solid var(--border); overflow: auto; flex: 0 1 auto; min-height: min(180px, 28vh); max-height: 52vh; display: grid; align-content: start; gap: 10px; }
+.condactions { display: flex; justify-content: flex-end; gap: 8px; }
 .results { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .reshead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 20px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .selall { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -382,8 +277,6 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
   .mask { padding: 0; align-items: end; }
   .advsearch { width: 100%; max-height: 96vh; border-radius: 16px 16px 0 0; }
   .conds { max-height: 42vh; padding: 12px 14px; }
-  .sizerow { grid-template-columns: 1fr auto 1fr; }
-  .sizerow select { grid-column: 1 / -1; }
   footer { flex-direction: column; align-items: stretch; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   .acts { display: grid; grid-template-columns: 1fr 1fr; }
   .acts .btn { min-height: 44px; justify-content: center; }
