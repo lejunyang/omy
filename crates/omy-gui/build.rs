@@ -37,19 +37,11 @@ fn main() {
 
     // 前端源码变化时重跑。列出具体子路径而不是整个 frontend/，
     // 否则 node_modules 的任何变动都会触发重建
-    for sub in [
-        "src",
-        "public",
-        "index.html",
-        "vite.config.ts",
-        "vitest.config.ts",
-        "tsconfig.json",
-        "package.json",
-    ] {
+    for sub in FRONTEND_INPUTS {
         println!("cargo:rerun-if-changed={}", frontend.join(sub).display());
     }
 
-    if needs_build(&dist) {
+    if needs_build(&frontend, &dist) {
         build_frontend(&frontend, &dist);
     }
 
@@ -89,11 +81,52 @@ fn emit_build_stamp() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
 }
 
-/// 产物是否需要重建。
-fn needs_build(dist: &Path) -> bool {
-    // 只看关键文件是否齐全。更精细的增量判断交给 Vite 自己——
-    // 它比我们清楚哪些模块变了
-    !dist.join("index.html").exists() || !dist.join("app.js").exists()
+/// 决定前端产物的输入：既是 rerun-if-changed 的监视清单，也是 needs_build
+/// 比较新旧的范围——两处共用这一份，免得「cargo 重跑了脚本，脚本却不认为要重建」。
+const FRONTEND_INPUTS: [&str; 7] = [
+    "src",
+    "public",
+    "index.html",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "tsconfig.json",
+    "package.json",
+];
+
+/// 产物缺失，或任一前端输入比产物新，就要重建。
+///
+/// 原先只看产物在不在：`dist/` 一旦生成过，之后改 `.vue` / `.css` 再
+/// `cargo build`，cargo 会照常重跑本脚本，脚本却判定「不用建」，二进制里
+/// 嵌的始终是第一次构建的旧前端——表现就是「改了代码界面毫无变化」，而
+/// 编译确实成功了。CI 先单独跑过前端构建时产物比源码新，这里不会再建一遍。
+fn needs_build(frontend: &Path, dist: &Path) -> bool {
+    if !dist.join("app.js").exists() {
+        return true;
+    }
+    // index.html 每次 vite 构建都会重写（emptyOutDir），拿它的时间代表产物
+    let built = match std::fs::metadata(dist.join("index.html")).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return true,
+    };
+    FRONTEND_INPUTS
+        .iter()
+        .filter_map(|sub| newest_mtime(&frontend.join(sub)))
+        .any(|t| t > built)
+}
+
+/// 路径下（含子目录）最新的修改时间；路径不存在返回 None。
+fn newest_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    let own = meta.modified().ok();
+    if !meta.is_dir() {
+        return own;
+    }
+    let children = std::fs::read_dir(path).ok()?;
+    children
+        .filter_map(|e| e.ok())
+        .filter_map(|e| newest_mtime(&e.path()))
+        .chain(own)
+        .max()
 }
 
 /// 调用包管理器构建前端。
@@ -117,7 +150,9 @@ fn build_frontend(frontend: &Path, dist: &Path) {
     println!("cargo:warning=正在构建前端…");
     run(frontend, &["run", "build"], "构建前端");
 
-    if needs_build(dist) {
+    // 构建后只核对产物在不在：这里不能复用 needs_build 的「比源码新」判断，
+    // 源码的 mtime 若被时钟回拨等原因设在未来，会让一次成功的构建被误报失败
+    if !dist.join("index.html").exists() || !dist.join("app.js").exists() {
         panic!(
             "前端构建跑完了，但 {} 下仍然没有产物。\n\
              检查 vite.config.js 里的 build.outDir 是否指向这个目录。",
