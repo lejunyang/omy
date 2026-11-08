@@ -161,6 +161,23 @@ const buffer = computed(() => {
   return Math.min(MAX_BUFFER, Math.max(MIN_BUFFER, Math.round(h * 1.5)));
 });
 
+/** 每条的稳定 key：优先条目自带的 `key`（消息行、网格行），其次 `id`（文件条目），
+ * 都没有才退回下标。
+ *
+ * 不这样会怎样：virtua 取「插槽只渲染出一个 vnode 时它的 key」当行 key。这里的
+ * `<slot>` 渲染出来是一个 Fragment，Vue 给它的默认 key 是固定的 `_default`——于是
+ * **所有行 key 相同**。可视范围一挪，Vue 无法按 key 对上新旧行，就把行整个卸掉重建：
+ * CDP 实测 70 张卡片的网格来回滚 120 帧，卡片被重新挂载 721 次，新挂的 <img> 解码前
+ * 是空白，肉眼就是滚动时不停闪烁。 */
+function keyOf(item: T, index: number): string | number {
+  if (item && typeof item === 'object') {
+    const o = item as { key?: unknown; id?: unknown };
+    if (typeof o.key === 'string' || typeof o.key === 'number') return o.key;
+    if (typeof o.id === 'string' || typeof o.id === 'number') return o.id;
+  }
+  return index;
+}
+
 function scrollToIndex(index: number, opts?: ScrollToIndexOpts): void {
   vh.value?.scrollToIndex(index, opts || { align: 'center' });
 }
@@ -168,6 +185,9 @@ defineExpose({ scrollToIndex });
 </script>
 
 <template>
+  <!-- key 必须写在 slot 上：它决定 Fragment 的 key，也就是 virtua 用的行 key，见 keyOf。
+       这条注释不能挪进下面的 template：开发构建保留注释节点，插槽就渲染出两个 vnode，
+       virtua 只认「恰好一个」时的 key，会退回按下标。 -->
   <Virtualizer
     ref="vh"
     :data="items"
@@ -176,7 +196,7 @@ defineExpose({ scrollToIndex });
     :shift="shift"
   >
     <template #default="{ item, index }">
-      <slot :item="(item as T)" :index="index" />
+      <slot :key="keyOf(item as T, index)" :item="(item as T)" :index="index" />
     </template>
   </Virtualizer>
 </template>

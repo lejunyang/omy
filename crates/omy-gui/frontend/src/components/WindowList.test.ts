@@ -20,14 +20,27 @@ import { defineComponent, h } from 'vue';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 
-// virtua stub：渲染一个普通 div 承载默认插槽即可，边缘检测由我们自己监听 scrollParent。
-const VirtualizerStub = defineComponent({
-  props: ['data', 'scrollRef', 'bufferSize', 'shift'],
-  setup(props, { slots }) {
-    return () =>
-      h('div', { class: 'virtua-stub' },
-        (props.data as unknown[]).map((item, index) => slots.default?.({ item, index })));
-  },
+// virtua 替身：渲染一个普通 div 承载默认插槽，边缘检测由我们自己监听 scrollParent。
+// 顺带按 virtua 0.52 Virtualizer 的真实规则记下每行 key（lib/vue/index.js 里的 U：
+// 插槽只渲染出一个 vnode 且它有 key 时用它，否则用 `_下标`），供行 key 用例断言。
+// 用 vi.mock 而不是 stubs：virtua 的组件没有 name，按名字 stub 不会生效。
+const rowKeys = vi.hoisted(() => [] as unknown[]);
+vi.mock('virtua/vue', async () => {
+  const { defineComponent: dc, h: hh } = await import('vue');
+  return {
+    Virtualizer: dc({
+      props: ['data', 'scrollRef', 'bufferSize', 'shift'],
+      setup(props, { slots }) {
+        return () =>
+          hh('div', { class: 'virtua-stub' },
+            (props.data as unknown[]).flatMap((item, index) => {
+              const r = slots.default?.({ item, index }) ?? [];
+              rowKeys.push(r.length === 1 && r[0].key != null ? r[0].key : '_' + index);
+              return r;
+            }));
+      },
+    }),
+  };
 });
 
 import WindowList from './WindowList.vue';
@@ -57,9 +70,6 @@ function mountList(scroller: HTMLDivElement) {
       items: Array.from({ length: 50 }, (_, i) => ({ id: i })),
       scrollParent: scroller,
     },
-    global: {
-      stubs: { Virtualizer: VirtualizerStub },
-    },
   });
 }
 
@@ -67,6 +77,22 @@ function fireScroll(el: HTMLElement, top: number) {
   (el as HTMLDivElement).scrollTop = top;
   el.dispatchEvent(new Event('scroll', { bubbles: false }));
 }
+
+describe('WindowList 行 key（防滚动时整行重建闪烁）', () => {
+  it('每行 key 取自条目的 key / id，互不相同', () => {
+    rowKeys.length = 0;
+    mount(WindowList, {
+      props: {
+        items: [{ key: 'm:1' }, { key: 'm:2' }, { id: 'tg:9:3' }, { other: true }],
+        scrollParent: makeScroller(),
+      },
+    });
+    // 不这样会怎样：<slot> 渲染成的 Fragment 默认 key 恒为 `_default`，四行 key 全相同，
+    // 可视范围一变 Vue 就把行卸掉重建，缩略图反复空白——即用户看到的滚动闪烁。
+    // 下标兜底在 Vue 的 renderSlot 里会被拼成字符串，所以是 '3' 而不是 3
+    expect(rowKeys).toEqual(['m:1', 'm:2', 'tg:9:3', '3']);
+  });
+});
 
 describe('WindowList 边缘加载触发（防无限循环）', () => {
   beforeEach(() => vi.useFakeTimers());
