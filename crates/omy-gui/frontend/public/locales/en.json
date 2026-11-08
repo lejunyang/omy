@@ -1054,6 +1054,14 @@
     "search_failed": "Search failed",
     "batch_failed": "Couldn't start the batch action"
   },
+  "datepicker": {
+    "prev_year": "Previous year",
+    "prev_month": "Previous month",
+    "next_month": "Next month",
+    "next_year": "Next year",
+    "today": "Today",
+    "clear": "Clear"
+  },
   "password_manager": {
     "title": "Password manager sync key",
     "checking": "Checking the password manager…",

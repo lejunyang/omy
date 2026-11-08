@@ -1054,6 +1054,14 @@
     "search_failed": "搜索失败",
     "batch_failed": "批量操作未能开始"
   },
+  "datepicker": {
+    "prev_year": "上一年",
+    "prev_month": "上个月",
+    "next_month": "下个月",
+    "next_year": "下一年",
+    "today": "今天",
+    "clear": "清除"
+  },
   "password_manager": {
     "title": "密码管理器同步密钥",
     "checking": "正在检查密码管理器…",
