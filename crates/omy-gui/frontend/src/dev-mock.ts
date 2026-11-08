@@ -21,7 +21,7 @@
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
-import type { RemoteEntry } from './types';
+import type { RemoteEntry, TgAdvancedQuery, TgSearchCondition, TgSearchHit, TgSearchPage } from './types';
 
 const SEP = '/';
 const ROOT = '/mock/home';
@@ -132,6 +132,48 @@ function remoteEntries(): RemoteEntry[] {
   ];
 }
 
+/** 高级搜索的假实现：用一份确定的假历史按条件筛，分页返回。只为在浏览器里
+ *  看界面（结果列表、续扫、全选「N+」）；真实语义以 types.ts 的契约为准，
+ *  契约改了这里要一起改。 */
+const MOCK_HISTORY = 230;
+const MOCK_PAGE_SCAN = 50;
+function mockHit(i: number): TgSearchHit {
+  const media = (['photo', 'video', 'file', 'audio', null, 'gif'] as const)[i % 6];
+  const ext = media === 'photo' ? 'jpg' : media === 'video' ? 'mp4' : media === 'audio' ? 'mp3' : media === 'gif' ? 'mp4' : 'pdf';
+  return {
+    id: `tg:-100:${MOCK_HISTORY - i}`,
+    message: MOCK_HISTORY - i,
+    date: 1_760_000_000 - i * 3600,
+    text: i % 4 === 0 ? `第 ${i} 条：周末活动照片` : '',
+    media,
+    file_name: media ? `item-${i}.${ext}` : null,
+    file_size: media ? ((i * 7919) % 900 + 1) * 1024 * 64 : null,
+    thumb_token: null,
+  };
+}
+function mockMatches(h: TgSearchHit, q: TgAdvancedQuery): boolean {
+  const ext = h.file_name?.split('.').pop() ?? null;
+  const one = (c: TgSearchCondition): boolean => {
+    let r: boolean;
+    if (c.kind === 'media') r = h.media != null && c.types.includes(h.media);
+    else if (c.kind === 'ext') r = ext != null && c.exts.includes(ext);
+    else if (c.kind === 'size') r = h.file_size != null && (c.min == null || h.file_size >= c.min) && (c.max == null || h.file_size <= c.max);
+    else r = h.text.toLowerCase().includes(c.text.toLowerCase());
+    return c.negate ? !r : r;
+  };
+  return q.match === 'all' ? q.conditions.every(one) : q.conditions.some(one);
+}
+function mockAdvancedSearch(req: { query: TgAdvancedQuery; cursor: string | null }): TgSearchPage {
+  const from = req.cursor ? Number(req.cursor) : 0;
+  const to = Math.min(MOCK_HISTORY, from + MOCK_PAGE_SCAN);
+  const hits: TgSearchHit[] = [];
+  for (let i = from; i < to; i++) {
+    const h = mockHit(i);
+    if (mockMatches(h, req.query)) hits.push(h);
+  }
+  return { hits, cursor: to < MOCK_HISTORY ? String(to) : null, scanned: to };
+}
+
 // 字段与 omy-config 的真实配置一致：设置页直接读 cfg.defaults.* 等，少一节就整页渲染失败
 const config = {
   ui: { language: 'zh-CN', theme: 'dark', accent: 'blue', view: 'grid', startup: 'home', thumbnails: true },
@@ -185,6 +227,8 @@ export function installMockIpc(): void {
       case 'remote_effective_caps': return caps;
       case 'list_file_associations': return [];
       case 'ui_log': return null;
+      case 'telegram_advanced_search': return delay(mockAdvancedSearch(args?.req), 600);
+      case 'telegram_advanced_batch': return delay({ task_id: 'mock-batch' });
       default:
         return null;
     }

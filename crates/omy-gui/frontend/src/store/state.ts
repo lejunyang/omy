@@ -52,6 +52,8 @@ export const state = reactive({
   remoteDirCaps: null,
   /** Telegram 群组“全部缓存”的筛选弹窗上下文。 */
   telegramCacheAll: null,
+  /** Telegram 对话高级搜索弹窗的上下文：{ placeId, dir, dirName, protected }。 */
+  telegramAdvancedSearch: null,
   /** 传输任务快照（下载 / 上传 / 永久保留三类汇总）。 */
   transfers: [],
   /** 传输管理页是否打开。它是顶层页，与文件浏览、云盘并列。 */

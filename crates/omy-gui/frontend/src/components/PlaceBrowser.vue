@@ -445,6 +445,18 @@ const canForwardSelectedFiles = computed(() => {
   return inTelegramConversation.value && all.length > 0 && selectedTelegramFiles.value.length === all.length;
 });
 
+/** 打开当前对话的高级搜索。只在真实 Telegram 对话内可用：条件里的媒体种类、
+ *  扩展名都是按 Telegram 消息来定义的，对话列表或网盘目录没有对应语义。 */
+function openAdvancedSearch() {
+  if (!inTelegramConversation.value) return;
+  state.telegramAdvancedSearch = {
+    placeId: state.remotePlace,
+    dir: state.remoteDir,
+    dirName: state.remoteDirName,
+    protected: !!state.remoteProtected,
+  };
+}
+
 /** 移动端单击：目录进入、可播放文件打开。桌面靠双击。 */
 function onEntryClick(f, ev?) {
   activeEntry.value = f;
@@ -1291,6 +1303,7 @@ function rowTitle(f) {
           <input
             v-model="state.query"
             class="sinput"
+            :class="{ hasadv: inTelegramConversation }"
             type="search"
             data-tg="searchinput"
             :placeholder="i18n.t('view.search')"
@@ -1298,6 +1311,17 @@ function rowTitle(f) {
             @input="onSearchQueryCleared($event)"
             @keydown.enter="state.searchMode === 'server' && runServerSearch()"
           />
+          <!-- 高级搜索入口贴在输入框右缘（视觉上在框内），与普通搜索是同一件事的
+               两档，而不是另起一个工具栏按钮 -->
+          <button
+            v-if="inTelegramConversation"
+            type="button"
+            class="iconbtn sadv"
+            data-tg="adv-search"
+            :title="i18n.t('adv_search.open')"
+            :aria-label="i18n.t('adv_search.open')"
+            @click="openAdvancedSearch"
+          ><AppIcon name="filter" :size="16" /></button>
           <!-- 分栏：媒体/文件/链接/音频/GIF/消息。前五栏用服务端类型 filter，
                「消息」是第六栏、走 getHistory 时间线（原来单独的「文件/消息」
                切换已并入这一排）。只在 Telegram 对话内出现。 -->
@@ -1968,6 +1992,23 @@ function rowTitle(f) {
 .sinput:focus {
   outline: none;
   border-color: var(--accent);
+}
+/* 高级搜索按钮：负外边距把它拉回输入框右缘里面，输入框相应留出右内边距，
+   字不会压在按钮下。不用绝对定位：移动端搜索栏会换行，绝对定位的按钮
+   找不到输入框在哪一行。 */
+.sinput.hasadv {
+  padding-right: 36px;
+}
+.sadv {
+  width: 30px;
+  height: 30px;
+  margin-left: -42px;
+  position: relative;
+  z-index: 1;
+  color: var(--fg2);
+}
+.sadv:hover {
+  color: var(--accent);
 }
 
 /* ---------- 说明条 ----------

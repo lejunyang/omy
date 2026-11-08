@@ -123,6 +123,7 @@ import VirtualPickerDialog from './components/VirtualPickerDialog.vue';
 import UploadTargetDialog from './components/UploadTargetDialog.vue';
 import TelegramForwardDialog from './components/TelegramForwardDialog.vue';
 import TelegramCacheAllDialog from './components/TelegramCacheAllDialog.vue';
+import TelegramAdvancedSearchDialog from './components/TelegramAdvancedSearchDialog.vue';
 import TelegramLoginDialog from './components/TelegramLoginDialog.vue';
 import PasswordManagerDialog from './components/PasswordManagerDialog.vue';
 import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
@@ -1224,6 +1225,7 @@ function onAndroidBack(source: BackSource = 'back') {
   if (state.uploadTo) { state.uploadTo = null; return true; }
   if (state.telegramForward) { state.telegramForward = null; return true; }
   if (state.telegramCacheAll) { state.telegramCacheAll = null; return true; }
+  if (state.telegramAdvancedSearch) { state.telegramAdvancedSearch = null; return true; }
   if (state.tgEncryptFor) { cancelTgEncrypt(); return true; }
   if (state.tgUnlockFor) { cancelTgUnlock(); return true; }
   if (state.vEncryptFor) { cancelVirtualEncrypt(); return true; }
@@ -1729,6 +1731,7 @@ onBeforeUnmount(() => {
   <UploadTargetDialog v-if="state.uploadTo" />
   <TelegramForwardDialog v-if="state.telegramForward" />
   <TelegramCacheAllDialog v-if="state.telegramCacheAll" />
+  <TelegramAdvancedSearchDialog v-if="state.telegramAdvancedSearch" />
 
   <!-- 虚拟位置加密：复用 Telegram 的加密对话框组件（同款密码 + KDF 档）。 -->
   <TgEncryptDialog

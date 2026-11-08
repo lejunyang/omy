@@ -17,7 +17,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import type { PasswordManagerCredential, PasswordManagerStatus } from './types';
+import type {
+  PasswordManagerCredential,
+  PasswordManagerStatus,
+  TgAdvancedQuery,
+  TgBatchAction,
+  TgSearchPage,
+  TgSelection,
+} from './types';
 
 /** 从后端错误里取出错误码。
  *
@@ -661,6 +668,26 @@ export const TG_PENDING_ACCOUNT = 'pending';
 /** 扫描 Telegram 群组并按筛选条件建立“总任务 + 下载子任务”。 */
 export const telegramCacheAll = (req: any): Promise<any> => invoke('telegram_cache_all', { req });
 
+/** 高级搜索：按条件扫描一个对话的历史，返回一页命中（新→旧）。cursor 传上一页
+ *  返回的 cursor，首页传 null。后端尚未实现，契约见 types.ts 与
+ *  docs/research/19-telegram-advanced-search.md。 */
+export const telegramAdvancedSearch = (req: {
+  place_id: string;
+  dir: string;
+  query: TgAdvancedQuery;
+  cursor: string | null;
+  limit: number;
+}): Promise<TgSearchPage> => invoke('telegram_advanced_search', { req });
+
+/** 对高级搜索的命中执行批量动作，建立一个全局传输/后台任务并立即返回。
+ *  selection 为 all 时后端按同一个 query 重新遍历全部历史，不依赖前端已加载多少。 */
+export const telegramAdvancedBatch = (req: {
+  place_id: string;
+  dir: string;
+  query: TgAdvancedQuery;
+  selection: TgSelection;
+  action: TgBatchAction;
+}): Promise<{ task_id: string }> => invoke('telegram_advanced_batch', { req });
 /** 当前全部传输任务（下载 / 上传 / 永久保留三类汇总）。 */
 export const transferList = (): Promise<any> => invoke('transfer_list');
 

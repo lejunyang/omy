@@ -218,6 +218,30 @@ Search comes in two forms, and the interface keeps them clearly apart:
 
 Searching on the server from the conversation list searches across all conversations. Conversations you lack access to are skipped silently, but rate limiting and network errors are reported as such — that is a different thing from "nothing was found".
 
+### Advanced search (in development)
+
+::: warning Not available yet
+The interface is in place, but search and batch actions are not connected to the backend yet: clicking **Search** currently only shows "Search failed". The rest of this section describes how the feature will behave once finished.
+:::
+
+Inside a conversation, the filter button at the right edge of the search box opens **Advanced search**. Combine several conditions and choose whether messages must match all of them or any of them:
+
+- **Media type**: photos, videos, GIFs, music, voice, files, links — pick any number;
+- **File extension**: e.g. `mp4, mkv, pdf`; case and a leading dot don't matter;
+- **File size**: a minimum, a maximum or both, in KB / MB / GB;
+- **Message text**: the message body or media caption contains this text.
+
+Every condition can be negated ("does not contain", "is not", "outside range"). When negated, text-only messages without a file count as matches for the extension and size conditions. Message-text conditions are sent to Telegram's servers, the same as server-side search above.
+
+Matches are listed below as the chat is scanned; scrolling to the end keeps scanning older history. **Select all matches** selects *every* match, including messages not scanned yet: when you run an action, omy keeps walking the whole conversation and skips only the items you unticked, so until scanning finishes the count shows as "N+". With a selection you can:
+
+- **Keep permanently**: store every file as a complete permanent copy;
+- **Forward…**: native forward to another chat (unavailable in chats with protected content);
+- **Add to virtual remote…**: create a reference to each file in a virtual remote;
+- **Upload to…**: copy to another remote location.
+
+A batch action appears in Transfers as one parent task that can be paused, resumed and cancelled.
+
 ### Uploading
 
 When uploading into a writable conversation, omy always sends **as a file** rather than letting the client classify by content. Sending as a photo makes the server re-encode the data, which is fatal for ciphertext — and the resulting failure points at the key rather than at the upload method.
@@ -288,6 +312,7 @@ Remote locations are not limited to the GUI. The `omy remote` subcommands read a
 | Telegram: per-place encrypt / unlock / lock / decrypt (offline) | ✅ | ✅ (offline) |
 | Telegram: forward targets / forward, server-side search, self-archive group | ✅ | ✅ (wired, not tested against a real account) |
 | Telegram: cache entire group, parent/child transfers, parallel downloads, pause/retry | ✅ (desktop and mobile) | N/A (requires a long-running global task and interactive transfer management) |
+| Telegram: advanced chat search (combined conditions, batch actions on all matches) | In development (UI only) | Not yet (CLI to follow once the backend is in a shared crate) |
 | List directory `ls`, download `download`, cross-location ciphertext `copy` | ✅ | ✅ |
 | Upload: single file `upload`, recursive directory `upload` (non-transactional) | ✅ | ✅ |
 | `mkdir` / `delete` (recursive) / `move` (same-directory rename) | not offered yet | ✅ |

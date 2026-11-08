@@ -9,6 +9,7 @@ import * as i18n from '../i18n';
 import { setNotice, state } from './state';
 import { isTelegramDialog, reloadRemoteDir, remoteDirKey, remoteEntryBuffer } from './remote-browse';
 import { openTransfers } from './places';
+import type { TgAdvancedQuery, TgBatchAction, TgSelection } from '../types';
 
 /** 已加载过的目录列表：`位置\x01目录` -> 条目数组。
  *
@@ -245,6 +246,47 @@ export async function startTelegramCacheAll(filters) {
     return true;
   } catch (e) {
     state.error = i18n.te(api.errCode(e), i18n.t('cache_all.failed'));
+    return false;
+  }
+}
+
+/** 高级搜索的一页结果。上下文取自弹窗打开时记下的对话，而不是当前 remoteDir：
+ *  弹窗开着时用户不会离开对话，但以它为准可以避免将来改交互后搜错对话。 */
+export async function searchTelegramAdvanced(query: TgAdvancedQuery, cursor: string | null) {
+  const ctx = state.telegramAdvancedSearch;
+  if (!ctx) return null;
+  return api.telegramAdvancedSearch({
+    place_id: ctx.placeId,
+    dir: ctx.dir,
+    query,
+    cursor,
+    limit: ADVANCED_SEARCH_PAGE,
+  });
+}
+
+/** 每页命中条数上限。页太大首屏要等很久；太小则「全部扫完」要往返很多次。 */
+const ADVANCED_SEARCH_PAGE = 60;
+
+/** 对高级搜索命中执行批量动作。成功后关弹窗、打开传输管理看进度，与「全部缓存」
+ *  同一个落点：批量动作要遍历全部历史，耗时不可预估，不能让用户守着弹窗。
+ *
+ *  forward / add_virtual / upload_to 需要目标（转发到哪个对话、哪个虚拟文件夹、
+ *  哪个远程位置）。接后端时在这里先弹现有的目标选择框再发请求，见
+ *  docs/research/19-telegram-advanced-search.md 的「批量动作」一节。 */
+export async function startTelegramAdvancedBatch(
+  query: TgAdvancedQuery,
+  selection: TgSelection,
+  action: TgBatchAction,
+) {
+  const ctx = state.telegramAdvancedSearch;
+  if (!ctx) return false;
+  try {
+    await api.telegramAdvancedBatch({ place_id: ctx.placeId, dir: ctx.dir, query, selection, action });
+    state.telegramAdvancedSearch = null;
+    openTransfers();
+    return true;
+  } catch (e) {
+    state.error = i18n.te(api.errCode(e), i18n.t('adv_search.batch_failed'));
     return false;
   }
 }

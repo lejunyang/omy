@@ -114,3 +114,63 @@ export interface PasswordManagerCredential {
   login: string;
   group: string;
 }
+
+/* ---------------- Telegram 对话高级搜索 ----------------
+ * 前端界面先行、后端待实现：下面是 telegram_advanced_search / telegram_advanced_batch
+ * 两个命令的载荷契约，设计说明见 docs/research/19-telegram-advanced-search.md。
+ * 改这里的字段，那份文档与 dev-mock.ts 里的假实现要一起改。 */
+
+/** 可以按「是否包含」过滤的消息媒体种类。与 Telegram 服务端的消息过滤器一一对应，
+ *  后端据此尽量下推到 messages.search 的 filter，而不是全部拉回本地再筛。 */
+export type TgMediaKind = 'photo' | 'video' | 'gif' | 'audio' | 'voice' | 'file' | 'link';
+
+/** 单个搜索条件。每种都带 negate：true 表示「不满足这一条」才命中。 */
+export type TgSearchCondition =
+  /** 消息带的媒体属于其中任一种（negate：不属于其中任何一种，纯文本消息也算命中）。 */
+  | { kind: 'media'; types: TgMediaKind[]; negate: boolean }
+  /** 文件扩展名（小写、不带点）属于其中任一个；没有文件的消息不命中（negate 时命中）。 */
+  | { kind: 'ext'; exts: string[]; negate: boolean }
+  /** 文件字节数落在 [min, max] 闭区间，任一端为 null 表示不限；没有文件的消息不命中。 */
+  | { kind: 'size'; min: number | null; max: number | null; negate: boolean }
+  /** 消息正文或媒体说明包含这段文字（不区分大小写）。 */
+  | { kind: 'text'; text: string; negate: boolean };
+
+/** 一次高级搜索的查询：条件按 match 组合，all = 全部满足，any = 任一满足。 */
+export interface TgAdvancedQuery {
+  match: 'all' | 'any';
+  conditions: TgSearchCondition[];
+}
+
+/** 一条命中结果。id 与文件视图的条目 id 同构（tg:<chat>:<msg>），批量动作与
+ *  「定位源消息」都靠它对回原条目。 */
+export interface TgSearchHit {
+  id: string;
+  message: number;
+  date: number;
+  text: string;
+  media: TgMediaKind | null;
+  file_name: string | null;
+  file_size: number | null;
+  /** 缩略图令牌，拼 /pthumb/<token>；没有缩略图为 null。 */
+  thumb_token: string | null;
+}
+
+/** telegram_advanced_search 的一页结果。后端按时间从新到旧扫描历史，
+ *  每页返回这一段里命中的条目；cursor 为 null 表示已扫到对话开头。 */
+export interface TgSearchPage {
+  hits: TgSearchHit[];
+  cursor: string | null;
+  /** 截至这一页累计扫描过的消息条数，用来给用户显示进度。 */
+  scanned: number;
+}
+
+/** 批量动作的选择范围。
+ *  - ids：只对明确勾选的这些条目执行；
+ *  - all：对**全部命中**执行，包括还没扫描到的——后端按同一个 query 从头遍历，
+ *    跳过 except 里被用户取消勾选的条目。界面上只加载了一部分时也能全选，靠的就是它。 */
+export type TgSelection =
+  | { mode: 'ids'; ids: string[] }
+  | { mode: 'all'; except: string[] };
+
+/** 批量动作种类：永久保留、原生转发、添加到虚拟远程、上传到另一个远程位置。 */
+export type TgBatchAction = 'pin' | 'forward' | 'add_virtual' | 'upload_to';
