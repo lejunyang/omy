@@ -232,20 +232,28 @@ jq 从事件 JSON（`GITHUB_EVENT_PATH`）读出，不插值进 shell，避免�
 现在统一成一个入口：发布必须同时产出全部平台产物与 registry 包，不允许
 只做一半；标签由流水线自动创建，不再手工打。
 
-### 构建门禁：四个任务全部必过
+### 构建门禁：所有目标全部必过
 
 | 任务 | runner | 产物 |
 |---|---|---|
-| build-windows | windows-latest | Windows x86_64 zip（内置自建 FFmpeg） |
+| build-windows | windows-latest | Windows x86_64 综合 zip（内置 FFmpeg）与独立 CLI zip |
 | build-android | ubuntu-latest | 四个 ABI 的未签名 APK |
-| build-linux | ubuntu-latest | Linux x86_64 tar.gz |
-| build-macos | macos-latest | macOS aarch64 与 x86_64 两个 tar.gz |
+| build-linux | ubuntu-22.04 | Linux x86_64 deb/rpm/AppImage（内置 FFmpeg） |
+| build-linux-cli | ubuntu-22.04 / ubuntu-22.04-arm | x86_64 / ARM64 的 GNU / musl 独立 CLI，共四份 tar.gz |
+| build-macos | macos-latest | macOS aarch64 / x86_64 的综合包与独立 CLI，共四份 tar.gz |
 
-四个任务**都是硬门禁**，不再有 `continue-on-error`：既然发布承诺三系统
+所有构建（含 Linux CLI 矩阵的四个目标）**都是硬门禁**，不再有 `continue-on-error`：既然发布承诺三系统
 桌面目标加 APK，哪个平台编不过就不该出 Release。但「CI 编过」不等于
 「真机用过」——目前 Windows、Android 与 macOS（Apple Silicon）真机实测过，
 Linux 与 macOS（Intel）仅保证编译、打包与 FFmpeg 产物校验成功，
 这一点明确写在 Release 说明的状态表里，不混淆。
+
+各平台的独立 CLI 都由 `scripts/package-cli.py` 打包，只含可执行文件与 README，
+不内置 FFmpeg；脚本实际解包并运行 `--version`，避免错包或缺少运行时库也上传成功。
+Linux CLI 的两个 CPU 架构都原生构建，GNU 保持 Ubuntu 22.04 的 glibc 2.35 基线。
+musl 通过 omy-secret 的目标条件启用 keyring/vendored，从源码静态编入 D-Bus
+客户端；构建后用 readelf 拒绝 INTERP 与 NEEDED，保证到 Alpine 不依赖 glibc。
+静态链接只免去客户端动态库，保存凭据仍需要 D-Bus 与 Secret Service 服务。
 
 macOS 在 arm64 runner 上由 `osdk install rust` 按 osdk.toml
 `[tools].rust.targets` 装好 aarch64/x86_64-apple-darwin，再交叉编译一份
@@ -282,10 +290,10 @@ Android 任务还会额外装 `android-build-tools@35.0.0`：AGP 8.11 对没写
 
 ### 合并前先在分支上验证构建
 
-四个构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面
+发布构建任务只在发布时运行，PR 上的「测试」流水线覆盖不到它们，所以上面
 那类配置错误（以及 Linux 的 frontendDist 问题）要到真正发布才暴露。改了
 release.yml、osdk.toml、tauri.conf.json 或其它打包相关配置后，先在分支上
-手动触发一次「发布」并勾选 `build_only`：只跑四个构建任务，不建 Release、
+手动触发一次「发布」并勾选 `build_only`：只跑全部构建任务，不建 Release、
 不传 crates.io。
 
 ```

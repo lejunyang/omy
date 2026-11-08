@@ -14,6 +14,7 @@
 # 一次触发按顺序做两件事：
 #
 # 1. 构建 Windows / Linux / macOS（Apple Silicon + Intel）/ Android 全部产物，
+#    桌面目标均另发独立 CLI，Linux CLI 覆盖 x86_64 / ARM64 的 GNU / musl；
 #    全绿后创建 GitHub Release（自动打 v{version} 标签并挂产物）；
 # 2. 发布到 crates.io（omy-core → omy-config → omy-secret → omy-media →
 #    omy-net → omy-remote → omy-cli → omy-password-manager，共 8 个；
@@ -31,7 +32,7 @@
 #
 # # 平台策略
 #
-# 四个构建任务全部是硬门禁（不再有 continue-on-error）：既然要发布三系统
+# 所有构建任务全部是硬门禁（不再有 continue-on-error）：既然要发布三系统
 # 桌面目标与 APK，哪个平台编不过就不该出 Release，否则用户下载到的就是
 # 缺平台的版本。但「CI 构建通过」不等于「真机实测通过」——目前 Windows、
 # Android 与 macOS（Apple Silicon）真正在真机上跑过 build/test/clippy；
@@ -41,7 +42,7 @@
 # # 内置 FFmpeg
 #
 # Windows / Linux / macOS（两种架构）产物都内置同一份自建裁剪 FFmpeg
-# （含 H.264/HEVC，见 scripts/ffmpeg-build/），解压即用。Linux 的命令行裸包
+# （含 H.264/HEVC，见 scripts/ffmpeg-build/），解压即用。各平台独立 CLI 包
 # 与 Android 不内置。裁剪构建只在配方/版本/脚本或 omy-media 改动时在
 # 「内置 FFmpeg」工作流里跑；本流水线在打包时再编一遍并作为门禁。
 
@@ -54,11 +55,11 @@ on:
   workflow_dispatch:
     inputs:
       build_only:
-        # 四个构建任务只在发布时跑，PR 的「测试」流水线覆盖不到。0.0.1 首次
+        # 发布构建任务只在发布时跑，PR 的「测试」流水线覆盖不到。0.0.1 首次
         # 发布时 Android 与 Linux 两个构建都挂在配置问题上，而这些问题在
         # 合并前没有任何途径暴露。勾上它可以在分支上只验证构建：
         #   gh workflow run release.yml --ref <分支> -f build_only=true
-        description: 只跑四个平台构建，不创建 Release、不发布 crates.io
+        description: 只跑全部平台和 CLI 构建，不创建 Release、不发布 crates.io
         type: boolean
         default: false
 
@@ -124,7 +125,7 @@ jobs:
           echo "发布         = $publish"
           echo "版本         = $version"
 
-  # ---- 构建产物：四个任务全部是发布门禁 ----
+  # ---- 构建产物：全部任务都是发布门禁 ----
 
   build-windows:
     name: 构建 Windows（已实测平台）
@@ -213,6 +214,11 @@ jobs:
         # GUI 的 build.rs 会自动构建前端，所以这里不需要单独跑前端命令；
         # 但**必须**已经装好 Node 与 pnpm，见上面的说明
         run: cargo build --release -p omy-gui
+
+      - name: 打包独立 CLI
+        run: >-
+          python scripts/package-cli.py --target x86_64-pc-windows-msvc
+          --version ${{ needs.decide.outputs.version }} --binary target/release/omy.exe
 
       - name: 打包
         shell: pwsh
@@ -441,27 +447,92 @@ jobs:
         working-directory: crates/omy-gui
         run: cargo tauri build
 
-      - name: 同时构建独立 CLI 并打裸 tarball
-        # 给只想要命令行、不想装 deb 的用户；不内置 FFmpeg（保持精简），
-        # 这类用户自行安装系统 FFmpeg 即可
-        run: |
-          cargo build --release -p omy-cli
-          version='${{ needs.decide.outputs.version }}'
-          mkdir -p dist-cli
-          cp target/release/omy README.md dist-cli/
-          tar -czf "omy-${version}-x86_64-unknown-linux-gnu-cli.tar.gz" -C dist-cli .
-
       - name: 收集产物
         run: |
           mkdir -p out
           find target/release/bundle -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} out/ \;
-          cp *.tar.gz out/
           ls -la out/
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: linux
           path: out/*
+
+  build-linux-cli:
+    name: 构建 Linux CLI（${{ matrix.target }}）
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 CLI 构建依赖
+        # 两个架构都原生构建，避免交叉链接时误用宿主 glibc/DBus 库。
+        # GNU 保持 glibc 2.35 基线；musl 的 D-Bus 客户端由 vendored 特性静态编入。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake perl pkg-config libdbus-1-dev musl-tools
+
+      - name: 安装 Rust
+        run: rustup toolchain install stable --profile minimal --target "$TARGET"
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: release-cli-${{ matrix.target }}
+
+      - name: 构建 CLI
+        run: |
+          if [[ "$TARGET" == *-musl ]]; then
+            # musl-gcc 只编 C 依赖；Rust 默认链接器使用自带 CRT。
+            # 把 musl-gcc 当链接器会混入另一套启动对象，产物编过却启动崩溃。
+            export CC=musl-gcc
+          fi
+          cargo build --locked --release -p omy-cli --target "$TARGET"
+
+      - name: 校验 musl 没有动态库依赖
+        if: endsWith(matrix.target, '-musl')
+        # 只看文件名不能证明真静态：带解释器或 NEEDED 的包到 Alpine 仍会启动失败。
+        run: |
+          binary="target/$TARGET/release/omy"
+          file "$binary"
+          program_headers="$(readelf -l "$binary")"
+          dynamic_tags="$(readelf -d "$binary")"
+          if [[ "$program_headers" == *INTERP* ]]; then
+            echo 'musl CLI 不应依赖动态加载器'
+            exit 1
+          fi
+          if [[ "$dynamic_tags" == *NEEDED* ]]; then
+            echo 'musl CLI 不应依赖动态库'
+            exit 1
+          fi
+
+      - name: 打包并启动解包后的 CLI
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: >-
+          python3 scripts/package-cli.py --target "$TARGET" --version "$VERSION"
+          --binary "target/$TARGET/release/omy"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: cli-${{ matrix.target }}
+          path: '*-cli.tar.gz'
+          if-no-files-found: error
 
   build-macos:
     name: 构建 macOS（Apple Silicon 已真机实测，Intel 仅交叉构建）
@@ -539,6 +610,10 @@ jobs:
       - name: 打包
         run: |
           version='${{ needs.decide.outputs.version }}'
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            python3 scripts/package-cli.py --target "$target" --version "$version" \
+              --binary "target/$target/release/omy"
+          done
           mkdir -p dist-arm/ffmpeg dist-x86/ffmpeg
           cp target/aarch64-apple-darwin/release/omy \
              target/aarch64-apple-darwin/release/omy-gui README.md dist-arm/
@@ -560,8 +635,8 @@ jobs:
 
   release:
     name: 创建 GitHub Release
-    needs: [decide, build-windows, build-android, build-linux, build-macos]
-    # 四个构建全部成功才出 Release。这里不再需要 always()：所有依赖都是
+    needs: [decide, build-windows, build-android, build-linux, build-linux-cli, build-macos]
+    # 所有构建全部成功才出 Release。这里不再需要 always()：所有依赖都是
     # 硬门禁，不存在「允许失败」的构建任务了。
     # 另外两条：build_only 只验证构建；只从 main 发布——手动触发可以选
     # 任意分支，忘勾 build_only 时不能把分支上的代码当正式版发出去。
@@ -597,11 +672,14 @@ jobs:
             echo "| 文件 | 平台 |"
             echo "|---|---|"
             echo "| \`*-x86_64-pc-windows-msvc.zip\` | Windows 10/11 x86_64（内置 FFmpeg，解压即用） |"
+            echo "| \`*-x86_64-pc-windows-msvc-cli.zip\` | Windows x86_64 独立 CLI |"
             echo "| \`*.deb\` / \`*.rpm\` | Linux x86_64（Debian/Ubuntu/Fedora 等，内置 FFmpeg） |"
             echo "| \`*.AppImage\` | Linux x86_64（免安装，内置 FFmpeg） |"
-            echo "| \`*-x86_64-unknown-linux-gnu-cli.tar.gz\` | 仅命令行的裸包，不内置 FFmpeg |"
+            echo "| \`*-x86_64-unknown-linux-gnu-cli.tar.gz\` / \`*-aarch64-unknown-linux-gnu-cli.tar.gz\` | Linux x86_64 / ARM64 独立 CLI（glibc） |"
+            echo "| \`*-x86_64-unknown-linux-musl-cli.tar.gz\` / \`*-aarch64-unknown-linux-musl-cli.tar.gz\` | Linux x86_64 / ARM64 静态 CLI（musl，适用 Alpine） |"
             echo "| \`*-aarch64-apple-darwin.tar.gz\` | macOS（Apple Silicon，内置 FFmpeg） |"
             echo "| \`*-x86_64-apple-darwin.tar.gz\` | macOS（Intel，内置 FFmpeg） |"
+            echo "| \`*-aarch64-apple-darwin-cli.tar.gz\` / \`*-x86_64-apple-darwin-cli.tar.gz\` | macOS Apple Silicon / Intel 独立 CLI |"
             echo "| \`*.apk\` | Android（四个 ABI，**未签名**） |"
             echo
             echo "### 平台验证状态"
@@ -617,8 +695,9 @@ jobs:
             echo "Linux 发行包在 Ubuntu 22.04（glibc 2.35）上构建，Debian 12、"
             echo "Ubuntu 22.04 及更新的发行版可用；deb/rpm 安装后 \`omy-gui\` 位于"
             echo "应用菜单，内置 FFmpeg 随包安装。CLI 裸包不内置 FFmpeg，需要自行"
-            echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。Windows 与 macOS"
-            echo "（两种架构）的 FFmpeg 都随压缩包内置在 \`ffmpeg/\` 子目录，解压即用；"
+            echo "安装或用 \`OMY_FFMPEG\` / \`OMY_FFPROBE\` 指定。musl CLI 静态链接，"
+            echo "不依赖 glibc；保存凭据仍需要运行中的 D-Bus 与 Secret Service。Windows 与 macOS"
+            echo "（两种架构）的综合包内置 FFmpeg 于 \`ffmpeg/\` 子目录；独立 CLI 包均不内置。"
             echo "macOS Apple Silicon 已在真机跑通 build/test/clippy，Intel 产物仅经过"
             echo "CI 交叉编译、打包与 FFmpeg 产物校验，未在 Intel 真机上运行过。"
             echo
@@ -652,8 +731,8 @@ jobs:
     name: 发布到 crates.io
     # 与 Release 共享同一组构建门禁：crates.io 的版本发布后**无法删除**
     # （只能 yank，且版本号不能复用），这个不可撤销的动作不能在任何平台
-    # 构建红着的时候发生。四个构建全绿才允许上传。
-    needs: [decide, build-windows, build-android, build-linux, build-macos]
+    # 构建红着的时候发生。所有构建（含 Linux CLI 矩阵）全绿才允许上传。
+    needs: [decide, build-windows, build-android, build-linux, build-linux-cli, build-macos]
     # 条件与 release 任务相同，理由见那里（改一处两处都要改）
     if: >-
       needs.decide.outputs.publish == 'true'

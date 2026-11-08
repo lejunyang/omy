@@ -13,7 +13,7 @@ which is higher than edition 2024's own 1.85 floor.
 rustc --version
 ```
 
-The CLI needs nothing else. The GUI additionally needs Node.js and a package manager, since the interface is built with Vue 3 and Vite.
+The CLI needs Rust and the platform's C build toolchain; Linux GNU builds also need `pkg-config` and `libdbus-1-dev`. The GUI additionally needs Node.js and a package manager, since the interface is built with Vue 3 and Vite.
 
 ## Building the CLI only
 
@@ -24,6 +24,25 @@ cargo build --release -p omy-cli
 ```
 
 The artifact is `target/release/omy` (`omy.exe` on Windows). Note the binary is called `omy`, not `omy-cli`.
+
+### Static Linux musl CLI
+
+Build on a Debian / Ubuntu host with the same CPU architecture as the target:
+
+```bash
+sudo apt install build-essential cmake perl musl-tools
+target=x86_64-unknown-linux-musl  # use aarch64-unknown-linux-musl on an ARM64 host
+rustup target add "$target"
+export CC=musl-gcc
+cargo build --locked --release -p omy-cli --target "$target"
+```
+
+The binary is `target/<target>/release/omy`. Musl targets automatically build and
+statically link the D-Bus client, without a system libdbus development package.
+Saving credentials still needs running D-Bus and Secret Service providers.
+Use `musl-gcc` only for C dependencies; leave Rust's linker at its default so it uses the bundled CRT.
+Release CI builds the four GNU / musl targets natively on x86_64 and ARM64
+runners and rejects musl binaries with a dynamic loader or shared dependencies.
 
 ## Building the GUI
 

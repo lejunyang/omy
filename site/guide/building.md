@@ -13,7 +13,7 @@ title: 从源码构建
 rustc --version
 ```
 
-命令行工具只需要 Rust。图形界面还需要 Node.js 与一个包管理器（界面是 Vue 3 + Vite 构建的）。
+命令行工具需要 Rust 与平台的 C 构建工具链；Linux GNU 构建还需要 `pkg-config` 和 `libdbus-1-dev`。图形界面还需要 Node.js 与一个包管理器（界面是 Vue 3 + Vite 构建的）。
 
 ## 只构建命令行工具
 
@@ -24,6 +24,24 @@ cargo build --release -p omy-cli
 ```
 
 产物在 `target/release/omy`（Windows 上 `omy.exe`）。注意二进制名是 `omy`，不是 `omy-cli`。
+
+### Linux musl 静态 CLI
+
+在与目标 CPU 架构相同的 Debian / Ubuntu 主机上构建：
+
+```bash
+sudo apt install build-essential cmake perl musl-tools
+target=x86_64-unknown-linux-musl  # ARM64 主机改为 aarch64-unknown-linux-musl
+rustup target add "$target"
+export CC=musl-gcc
+cargo build --locked --release -p omy-cli --target "$target"
+```
+
+产物位于 `target/<目标>/release/omy`。musl 目标自动从源码静态编译 D-Bus 客户端，
+无需系统的 libdbus 开发包；保存凭据时仍需要 D-Bus 与 Secret Service 服务。
+`musl-gcc` 只用于 C 依赖；Rust 链接阶段使用默认工具链与自带 CRT，不要把它设为 Rust 链接器。
+发布 CI 分别在 x86_64 与 ARM64 runner 上原生构建 GNU / musl 四个目标，
+并拒绝含动态加载器或动态库依赖的 musl 产物。
 
 ## 构建图形界面
 

@@ -17,10 +17,29 @@ Each release attaches artifacts for every platform to [GitHub Releases](https://
 | Platform | Artifact | Notes |
 |---|---|---|
 | Windows | `omy-<version>-x86_64-pc-windows-msvc.zip` | Contains `omy.exe`, `omy-gui.exe`, and a bundled FFmpeg; unzip and run |
-| Linux | `omy-<version>-x86_64-unknown-linux-gnu.tar.gz` | Contains `omy` and `omy-gui`; no bundled FFmpeg |
+| Linux x86_64 GUI | `*.deb` / `*.rpm` / `*.AppImage` | Bundled FFmpeg |
 | macOS (Apple Silicon) | `omy-<version>-aarch64-apple-darwin.tar.gz` | Contains `omy`, `omy-gui`, and a bundled FFmpeg; unzip and run |
 | macOS (Intel) | `omy-<version>-x86_64-apple-darwin.tar.gz` | Same as above |
 | Android | `*.apk` (one per ABI) | GUI; **unsigned**, requires allowing unknown sources |
+
+Every desktop target also has a standalone CLI archive containing only `omy`
+(`omy.exe` on Windows) and the README, without FFmpeg:
+
+| Platform | Standalone CLI artifact |
+|---|---|
+| Windows x86_64 | `omy-<version>-x86_64-pc-windows-msvc-cli.zip` |
+| macOS Apple Silicon | `omy-<version>-aarch64-apple-darwin-cli.tar.gz` |
+| macOS Intel | `omy-<version>-x86_64-apple-darwin-cli.tar.gz` |
+| Linux x86_64 (glibc) | `omy-<version>-x86_64-unknown-linux-gnu-cli.tar.gz` |
+| Linux ARM64 (glibc) | `omy-<version>-aarch64-unknown-linux-gnu-cli.tar.gz` |
+| Linux x86_64 (musl) | `omy-<version>-x86_64-unknown-linux-musl-cli.tar.gz` |
+| Linux ARM64 (musl) | `omy-<version>-aarch64-unknown-linux-musl-cli.tar.gz` |
+
+The Linux GNU CLI and GUI packages are built on Ubuntu 22.04 (glibc 2.35).
+For Alpine and other musl systems, choose the musl CLI matching your CPU. It is
+statically linked and needs neither glibc nor a system libdbus shared library.
+Saving remote-location credentials still requires running D-Bus and a Secret
+Service provider such as GNOME Keyring; missing services produce an explicit error.
 
 The Linux and macOS (Intel) artifacts are compiled and packaged in CI but have not been exercised on real machines; Windows, Android, and macOS (Apple Silicon) have been tested.
 
@@ -77,9 +96,9 @@ For per-platform system dependencies and Android packaging, see [Building from s
 
 ## FFmpeg
 
-**Both the Windows and macOS builds ship with FFmpeg** — unzip and it works, no separate install. It lives in the `ffmpeg/` subdirectory inside the archive (`ffmpeg\` on Windows) and is our own trimmed build (with H.264 / HEVC / VP8 / VP9 / AV1 decoders), depending on nothing beyond the system libraries.
+**The combined Windows and macOS archives ship with FFmpeg** — unzip and it works, no separate install. It lives in the `ffmpeg/` subdirectory inside the archive (`ffmpeg\` on Windows) and is our own trimmed build (with H.264 / HEVC / VP8 / VP9 / AV1 decoders), depending on nothing beyond the system libraries.
 
-Among the other platforms, the Linux graphical packages (deb/rpm/AppImage) also bundle it; only the Linux bare CLI tarball and Android ship **without** FFmpeg and need their own install.
+The Linux GUI packages (deb/rpm/AppImage) also bundle FFmpeg. Standalone CLI archives on every platform and Android ship **without** FFmpeg and need their own install.
 
 Without FFmpeg, encryption, decryption, sharding and sharing all work normally; only these features are unavailable:
 

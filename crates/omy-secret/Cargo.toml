@@ -53,5 +53,10 @@ keyring = { version = "3", default-features = false, features = [
   "crypto-rust",
 ] }
 
+# musl 产物不能链接宿主的 glibc 版 libdbus；仍保留同一个 Secret Service
+# 后端，只把客户端库从源码静态编入，避免为了可移植性牺牲凭据持久化。
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+keyring = { version = "3", default-features = false, features = ["vendored"] }
+
 [dev-dependencies]
 serde_json = { workspace = true }
